@@ -1,0 +1,113 @@
+package wasmnest:plugin@0.0.1;
+// ======================================================================
+// 对等网络能力域自持契约分片（ADR 0052 D2/D3）
+//
+// 本文件是 `wasmnest-server-peer-net` 持有的**共享契约真源**（world `cap-peer`
+// 只 import `host-peer`）：双端 `compose.json` 的 caps.peer 直接指向本文件
+// （pty 先例）——契约与实现同属一处，端组合不再经 core.wit 间接消费。
+//
+// 端生成物由 `scripts/compose-wit.mjs` 拼装（本文件与 core.wit 及其余 cap 分片
+// 同 package 同版本）。分片只换绑定源、不换装配语义：`impl Host` / `HostModule` /
+// `MODULE_*` / `DESC` 与 WIT 契约的函数集逐字一致。
+// ======================================================================
+
+/// 对等网络基础能力：宿主只提供能力原语，
+/// file-transfer 插件是首个上层消费者
+///
+/// 发现/信任/拨号/收发/浏览的引擎全部在宿主 peer-net 层；本接口只是
+/// 命令面的 WASM 投影。DTO 一律 JSON 字符串承载（camelCase，与 Tauri
+/// 命令返回形状一致）。事件经消息总线 `peer:*` topic 推送（host-bus 订阅）：
+/// - `peer:devices`    发现缓存全量列表变化
+/// - `peer:connection` 节点连上/断开
+/// - `peer:consent`    首次连接确认请求
+/// - `peer:transfer-event` / `peer:receive-event` 引擎原始事件流（唯一回流——
+///   旧快照 topic `peer:transfer` / `peer:receive` 已退役，任务状态真源在
+///   插件事件归约状态机）
+interface host-peer {
+    /// 按 endpoint 拨号连接（ADR 0022 v2 终态，原 dial-peer-endpoint 转正）：
+    /// endpoint = `{ nodeId, addr, port }`（camelCase JSON，插件从自身设备缓存/
+    /// mdns 事件解析后显式传入；宿主不内藏 node-id → 地址解析表）。握手期
+    /// 「证书指纹 ↔ nodeId 绑定 + 信任检查」语义不变。成功返回 session 句柄
+    /// （`sess-<uuid>`，后续按句柄寻址）；denied/unreachable 以错误上抛
+    dial-peer: func(endpoint-json: string) -> result<string, string>;
+    /// 统一资源关闭（ADR 0022 v2）：session 句柄 = 断开连接；传输句柄 = 取消传输
+    /// （先发送批取消、后接收批取消——pending 接收批被关闭即拒绝，闸门 fail-safe
+    /// 的自然结果）。返回是否命中并关闭了任意资源
+    close: func(handle: string) -> result<bool, string>;
+    /// 首次连接确认应答（返回是否命中了待确认项）
+    respond-consent: func(request-id: string, accepted: bool) -> result<bool, string>;
+    /// 可信对端列表 → TrustedPeerDto JSON 数组
+    list-trusted: func() -> result<string, string>;
+    /// 撤销对指定节点的信任（返回是否删除了条目）
+    revoke-trusted: func(node-id: string) -> result<bool, string>;
+    /// 向单个对端发送一批文件（目录递归展开、同名去重由宿主完成；
+    /// 扇出 = 对多个对端各调一次，各批相互独立）→ 传输句柄（batch-id 字符串）
+    ///
+    /// 一次调用 = 一个会话立即发起，无宿主并发闸门排队——发送方向并发节流由
+    /// 调用方在调用前自控（插件侧并发闸门）。paths 元素双形态：纯 string 或
+    /// `{ path, encrypt? }` 对象（任一元素 encrypt=true → 本批强制加密）；
+    /// 旧产物载荷携带的 `concurrency` 并发脉冲字段已退役，出现即**显性报错**
+    /// （fail-visible：旧产物按当前 SDK 重建）。连接已断时以句柄记忆的
+    /// endpoint 自动重拨（信任检查照走引擎握手）
+    send-files: func(session-handle: string, paths-json: string) -> result<string, string>;
+    /// 接收批应答：accept=false 或超时视为拒绝
+    respond-transfer: func(batch-id: string, accept: bool) -> result<_, string>;
+    /// 设置接收策略（引擎安全闸门配置原语，ADR 0022 v3）：mode = "ask" |
+    /// "always_accept" | "always_deny"；产品真源在插件侧，经本原语推送宿主闸门
+    set-receive-policy: func(mode: string, timeout-secs: u64) -> result<_, string>;
+    /// 显式暂停进行中的发送批（batch-id 寻址）：会话数据面门控（wire Pause 帧
+    /// + 供方停推流，连接保持），任务保留（含已传字节）不落历史；本端发起的
+    /// 活跃会话查句柄表、serve 供流批查 handler 注册表。无命中返回错误
+    pause-transfer: func(batch-id: string) -> result<_, string>;
+    /// 恢复暂停的发送批（batch-id 寻址）：活跃会话写 Resume 帧续流；会话已
+    /// 中断的以句柄表记忆的源清单重新拨号续传（断点真源在接收端落盘侧）。
+    /// 无命中返回错误
+    resume-transfer: func(batch-id: string) -> result<_, string>;
+    /// 批量恢复暂停的发送批：**本接口不提供**——「全部」编排归插件自己
+    /// 完成（遍历暂停批逐个调 [`resume-transfer`]，并发节流由插件侧闸门
+    /// 自控），宿主句柄表不做批量调度。该批量函数已删除：旧产物 import
+    /// 它在实例化期因缺失 interface 显性失败（按当前 SDK 重建）
+    /// 全量幂等替换本插件声明的共享根清单（ADR 0022 v2）：
+    /// 条目 `[{ id, name, path }]`（camelCase JSON；移动端 SAF 树以
+    /// `safTreeUri` 字段替代 `path`）。注册表 CRUD 真源在插件侧，本函数
+    /// 只同步暴露面镜像；任一条目非法整批拒绝
+    set-shared-roots: func(dirs-json: string) -> result<_, string>;
+    /// 浏览对端共享根清单 → PeerSharedRootDto JSON 数组（仅 session 句柄寻址；
+    /// 连接已断时以句柄记忆的 endpoint 自动重拨）
+    list-shared-roots: func(session-handle: string) -> result<string, string>;
+    /// 目录下钻 → RemoteBrowseDto JSON（仅 session 句柄寻址；重拨语义同上）
+    browse-directory: func(session-handle: string, dir-id: string, rel-path: string) -> result<string, string>;
+    /// 拉取对端文件（files = RemotePullFileDto JSON 数组）→ 入队文件数
+    /// （仅 session 句柄寻址；重拨语义同上）。逐文件会话立即发起、无宿主
+    /// 并发信号量——并发节流由调用方分批调用自控；每个拉取会话发起时经
+    /// `peer:receive-event` 直推 `pull-started` 引擎事实事件
+    /// （batchId/nodeId/files/totalSize/tsMs），任务行由插件事件归约自建
+    pull-files: func(session-handle: string, dir-id: string, files-json: string) -> result<u32, string>;
+    /// 设置接收落点目录（空串 = 恢复默认 Downloads\WasmNest\；引擎落盘配置原语，
+    /// ADR 0022 v3）
+    set-download-dir: func(path: string) -> result<_, string>;
+    /// 按需启动本机 peer 节点（引擎级生命周期原语）：数据目录与设备名
+    /// 由宿主解析，起来后开始广播与监听。幂等——节点已在跑时返回 false（未改变状态）。
+    ///
+    /// 属主语义：把节点从「未跑」带到「跑」的那次调用，其调用方成为节点属主；
+    /// 已被别的插件起着的节点**不可被本调用接管**（报错，且文案不回带他方身份）。
+    /// 谁起谁停：内核不再按硬编码插件 id 猜测节点归属
+    /// （旧 `peer_net::FILE_TRANSFER_PLUGIN_ID` 与激活外壳随之退役）。
+    start-node: func() -> result<bool, string>;
+    /// 让本机节点下线（幂等；节点未跑为 no-op）：停广播 / 关监听 / 排水连接与
+    /// 入站记账。仅节点属主可关停——非属主报错，文案不回带属主身份
+    stop-node: func() -> result<bool, string>;
+    /// 活跃传输批清单（实现 = 会话句柄表投影，接口形状不变）：`[{ batchId, direction, status, totalBytes, transferredBytes,
+    /// rateBps, updatedAtMs }]`（camelCase JSON 数组）。仅引擎会话事实——不含
+    /// peerName / 文件清单 / 原因码等业务字段（展示名与业务视图由插件自持）；
+    /// 供插件事件归约状态机首屏重建（激活晚于事件时的兜底查询）
+    active-transfers: func() -> result<string, string>;
+    /// 收集发送源：paths = string[] JSON，目录递归展开 + 批内同名去重
+    /// （「名称 (2).ext」编号——批内 remote 路径唯一性属 wire 协议正确性）
+    /// → `[{ path, size }]` JSON（path 为相对落位形状，size 为字节）。
+    /// 仅读元数据不读内容；路径应来自 host-platform pick-* 用户选择（选择即授权）
+    collect-outgoing: func(paths-json: string) -> result<string, string>;
+}
+world cap-peer {
+    import host-peer;
+}

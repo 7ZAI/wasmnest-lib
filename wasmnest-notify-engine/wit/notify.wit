@@ -1,0 +1,51 @@
+package wasmnest:plugin@0.0.1;
+// ======================================================================
+// 通知域共享契约（唯一真源；ADR 0052 D2/D3 · domain-owned-contracts 票 04）
+//
+// 本文件是 `host-notify` 的单一事实源：
+// - 双端 `compose.json` 的 caps.notify 直接指向本文件（pty 先例推广）；
+// - 有实现两端投递机制不同、且都只有几行宿主代码，故本域没有共享引擎，
+//   按 ADR 0052 D2/D4 用**轻量契约房**（`packages/wasmnest-notify-engine`）承载；
+//   实现按端住宿主（桌面 / 移动各自 `src-tauri/src/plugin/notify.rs`）。
+//
+// ## 功能级口径（票 04 统一）
+//
+// - 原桌面 `host-events-desktop.notify(title, body)` 与原移动
+//   `host-notify.notify(title, body, options-json)` 合并为本接口的单一签名；
+//   桌面 `host-events-desktop` 整 interface 退役。
+// - 移动附加的权限查询 / 请求、即时震动、提示音 4 函数不是交集（桌面无
+//   对应平台概念），改名 `host-notify-mobile` 留移动端 cap（`cap-mobile.wit`）。
+//
+// ## options-json 契约
+//
+// `{ "vibrate"?: bool, "sound"?: bool }`（camelCase；字段可省，缺省均为 `true`，
+// 与移动端 v18 起的既有行为一致）。**严格解析**：非法 JSON / 字段类型错误 →
+// `Err`（禁静默降级成默认值）。
+//
+// **平台不支持的选项静默忽略**（桌面无震动 / 提示音通道；移动全部支持）：
+// 报错会让「只想发通知」的桌面调用点无谓失败，而选项是装饰性诉求；
+// 调用方按同一份代码跨端调用，不需要按端裁剪 options。
+//
+// ## 权限（各端自持，契约不规定门）
+//
+// - 桌面：**无权限门**（弹提示是插件常规能力，与退役前 `plugin_notify` /
+//   `host-events-desktop.notify` 口径逐字一致）；
+// - 移动：`notify`（fail-closed，未声明即拒——通知 / 震动 / 声音是用户打扰面）。
+//
+// 门在各端函数实现内（正确性由 Rust 端仲裁），契约面只描述签名。
+// ======================================================================
+
+/// 系统通知（功能级交集；实现按端住宿主）
+interface host-notify {
+    /// 发送系统通知（文案由插件 i18n 构建、原样透传，宿主不做文案加工）。
+    ///
+    /// options-json（camelCase，字段可省）：`{ vibrate?: bool, sound?: bool }`，
+    /// 缺省均 true；非法 JSON / 字段类型错误 → Err（严格解析）。
+    /// 平台不支持的选项**静默忽略**（桌面无震动 / 提示音通道）。
+    notify: func(title: string, body: string, options-json: string) -> result<_, string>;
+}
+
+/// 通知域端组合 world（双端 compose.json 的 `caps.notify` 指向本文件）
+world cap-notify {
+    import host-notify;
+}

@@ -1,0 +1,10 @@
+# ==================== server lib 共享 target 目录 ====================
+# server-lib-split（AGENTS §3 target 治理）：6 个 server lib 各自独立 crate，
+# cargo 默认把产物写进各自 crate 根 target/；本文件让 cwd 在其下的一切 cargo
+# 调用都落到**仓库根** target/server-libs（相对本 crate 根是 `../../`——与宿主
+# src-tauri/target、cross-end-tests/target 都分开的独立目录，避免与宿主/夹具/wasm-apps
+# 产物混占）。
+# 注意：`pnpm run target:size` 的 rootTargetDirs 目前只列 cross-end-tests/target，
+# **不含本目录**（票 09 归口 build-process.md 的 target 治理时补齐）。
+[build]
+target-dir = "../../target/server-libs"

@@ -1,0 +1,4 @@
+# wasmnest-wasm-core target 治理：仓库根 target/host-kits（与机制内核/能力域同族共享）
+# 相对本 crate 根（packages/wasmnest-wasm-core，2026-10-08 迁根）解析为仓库根 target/host-kits
+[build]
+target-dir = "../../target/host-kits"

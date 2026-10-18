@@ -1,0 +1,3 @@
+# server-lib-split target 治理：仓库根 target/server-libs（相对本 crate 根 `../../`）
+[build]
+target-dir = "../../target/server-libs"

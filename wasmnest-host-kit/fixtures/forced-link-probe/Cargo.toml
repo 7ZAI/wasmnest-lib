@@ -1,0 +1,19 @@
+[package]
+name = "wasmnest-cap-forced-link-probe"
+version = "0.0.1"
+description = "能力模块强制链接实证用的探针 crate：只自报一个空壳能力模块，供 host-kit 的两个集成测试二进制对比「引用 / 不引用」的收集结果"
+authors = ["binblink"]
+license = "MIT"
+repository = "https://github.com/7ZAI/BedCode"
+edition = "2021"
+
+[dependencies]
+# 被测机制本体（提交类型 `ModuleEntry` 与 `HostModule` 契约都在它那里）。
+# 依赖方向：host-kit --dev-dep--> probe --> host-kit，构成 **dev-dependency 环**——
+# Cargo 明确允许（经典先例：serde --dev-dep--> serde_derive --> serde），
+# 因为 dev-dep 不进入发布图与依赖方构建路径。
+wasmnest-host-kit = { path = "../.." }
+# 能力 crate 自报用的宏（`submit_module!` 展开为 inventory 静态提交）
+inventory = "0.3"
+# `HostModule::register` 的签名面（`Linker` / `Result`）
+wasmtime = { version = "48", features = ["component-model"] }

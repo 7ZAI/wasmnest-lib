@@ -1,0 +1,28 @@
+package wasmnest:plugin@0.0.1;
+// ======================================================================
+// HTTP 能力域自持契约分片（ADR 0052 D2/D3）
+//
+// 本文件是 `wasmnest-server-http` 持有的**共享契约真源**（world `cap-http`
+// 只 import 出站域 `host-http`）：双端 `compose.json` 的 caps.http 直接指向
+// 本文件（pty 先例）——契约与实现同属一处。
+//
+// 服务端域 `host-http-endpoint`（桌面扩展）**不在本文件**：声明真源在桌面
+// `plugin-sdk-desktop/rust/wit-src/cap-http.wit`（world `cap-http-endpoint`），
+// 实现随端扩展归桌面宿主（ADR 0052 D4）。
+//
+// 端生成物由 `scripts/compose-wit.mjs` 拼装（本文件与 core.wit 及其余 cap 分片
+// 同 package 同版本）。分片只换绑定源、不换装配语义：`impl Host` / `HostModule` /
+// `MODULE_*` / `DESC` 与 WIT 契约的函数集逐字一致。
+// ======================================================================
+
+/// HTTP 出站代理（原 http.rs：http_fetch，双端交集 1 函数）
+///
+/// 桌面独有服务端域（入站路由注册，v29）拆入 [`host-http-endpoint`]
+/// （cap-http 分片，移动端不承载服务端网关、不跟演）；本接口只剩双端交集
+/// 出站 `fetch`。
+interface host-http {
+    fetch: func(request-json: string) -> result<option<string>, string>;
+}
+world cap-http {
+    import host-http;
+}

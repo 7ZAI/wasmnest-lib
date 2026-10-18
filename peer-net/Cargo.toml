@@ -1,0 +1,69 @@
+[package]
+name = "wasmnest-peer-net"
+version = "0.0.1"
+license = "MIT"
+description = "WasmNest 对等网络共享基础设施：Ed25519 节点身份 + 自签证书 + 双节点 harness 缝"
+authors = ["binblink"]
+edition = "2021"
+
+[dependencies]
+# 节点身份密钥（Ed25519）；rand_core feature 启用 SigningKey::generate
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+# OsRng：节点身份首启纯随机生成（决策 D2 重装即新身份，不做设备标识派生）
+rand_core = { version = "0.6", features = ["getrandom"] }
+# node_id 指纹哈希
+sha2 = "0.10"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 自签 TLS 证书（证书公钥即节点公钥，决策 D4 关键点）
+rcgen = "0.13"
+# 绑定校验侧：从证书 DER 提取 SPKI 原始公钥
+x509-parser = "0.17"
+# 主版本与两端宿主一致（均为 1.x），宿主 map_err 时错误链兼容
+thiserror = "1"
+tracing = "0.1"
+# 虚拟网卡过滤的接口枚举（两端宿主均已有 0.6，无版本漂移）
+local-ip-address = "0.6"
+# 可信对端元数据时间戳（added_at）；两端宿主均已有 0.4，无版本漂移
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+# ==================== ticket 02：TLS 直连栈 ====================
+# crypto provider 显式锁定 ring：aws-lc-rs 在 Android 需 CMake/NDK 构建链，且
+# 两端宿主 Cargo.lock 现状均只有 ring 0.17（无 aws-lc-rs），关默认 feature 实现零漂移。
+# 配置构建时显式传入 rustls::crypto::ring::default_provider()，不用全局 install_default()
+# （避免污染宿主进程全局状态、规避多 provider 安装竞态）。
+# rt：spawn 类 API（accept 循环 / ticket 03 mDNS 事件循环）在 crate 自身编译单元可用，
+# 不依赖宿主的 feature 统一；macros：transport.rs 的 tokio::select! 同理
+tokio = { version = "1", features = ["net", "io-util", "time", "sync", "rt", "macros", "fs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+# TCP keepalive 探测参数（拨号/接听即设）：对端静默死亡（WiFi 骤断等无 FIN
+# 场景）在探测窗口内以读错误浮现，会话常驻等待语义依赖此机制收敛
+socket2 = "0.6"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# TLS 1.3 CertificateVerify 的真实 Ed25519 签名验证直用 ring（Decision 1 安全约束）
+ring = "0.17"
+
+# ==================== 传输应用层加密（Offer/Decision 自定义头协商）====================
+# x25519-dalek：会话临时 ECDH 密钥协商；hkdf：HKDF-SHA256 派生对称密钥；
+# aes-gcm：AES-256-GCM 数据块加解密。均为纯 Rust 实现，Android 构建链无额外要求。
+# 版本对齐两端宿主既有依赖（src-tauri utils/crypto 同款），无 lockfile 版本漂移。
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+aes-gcm = "0.10"
+
+# ==================== ticket 03：mDNS 节点发现 ====
+# 对等网络专用 mDNS 发现（_wasmnest-peer._tcp.local.，与终端链路 _wasmnest._tcp 并存）。
+# 版本严格对齐两端宿主 Cargo.lock 现状（均 0.20.1），避免同进程多实例版本分叉。
+# async feature：事件循环全异步（recv_async_timeout 可被 select! 组合），
+# 取代旧「tokio worker 内阻塞 recv_timeout(5s)」形态。
+mdns-sd = { version = "0.20", features = ["async"] }
+# 浏览订阅通道类型（PeerMdnsBrowse::receiver，宿主类型中枢 fan-out 出口；mdns-sd
+# 自身 Receiver 无法在库外构造）+ 事件循环退出原因判别。版本随 mdns-sd 的传递依赖
+# （两端宿主 lock 均为 0.12）
+flume = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
+# #[tokio::test] 需要 macros；双节点并发测试需要多线程运行时调度
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

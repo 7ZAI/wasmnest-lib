@@ -1,0 +1,23 @@
+[package]
+name = "wasmnest-link-crypto"
+version = "0.0.1"
+license = "MIT"
+description = "WasmNest 局域网链路报文加密协议核心——桌面 server 与移动端 Rust 侧（event WS）共享，消除第三份实现"
+authors = ["binblink"]
+edition = "2021"
+
+[dependencies]
+# AES-256-GCM AEAD（HTTP 信封与 WS 帧载荷）；主版本与桌面宿主一致（0.10）
+aes-gcm = "0.10"
+base64 = "0.22"
+# HKDF-SHA256 方向分离派生；主版本与两端宿主一致（0.12）
+hkdf = "0.12"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# X25519 双 ECDH 握手；static_secrets 支持从原始字节构造临时私钥
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+# OsRng：临时密钥纯随机生成
+rand_core = { version = "0.6", features = ["getrandom"] }
+# 主版本与两端宿主一致（1.x），宿主 map_err 时错误链兼容
+thiserror = "1"
