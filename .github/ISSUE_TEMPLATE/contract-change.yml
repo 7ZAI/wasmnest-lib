@@ -1,0 +1,41 @@
+name: 契约变更（Contract Change）
+description: WIT / ABI / wire / 权限 / 包版本变更。契约真源在本仓 wasmnest-contract/src/lib.rs，本模板走 bump 流程核对。
+title: "[contract] "
+labels: ["kind:contract", "cross-repo"]
+body:
+  - type: textarea
+    id: change
+    attributes:
+      label: 变更内容
+      description: 改什么面（WIT / ABI / wire / 权限 / 包版本），函数级追加还是接口增删
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: 真源位置与版本
+      description: wasmnest-contract/src/lib.rs；当前线 @wasmnest:plugin@0.0.1
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: 双端影响评估
+      description: 桌面 / 移动宿主各自改动面；是否破坏性（ABI bump？插件产物是否需重建）；移动端不跟演桌面破坏性接口
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 流程核对（bump 7 步）
+      value: |
+        - [ ] wasmnest-contract/src/lib.rs 字面量同步（含硬编码 @x.y.z / EXPORTS / MODULE_INTERFACES）
+        - [ ] 平台 compose-wit.mjs --all + check:wit
+        - [ ] 重建全部插件产物
+        - [ ] check:manifest --print-hash → check:manifest
+        - [ ] 相关锁（wire_drift / permission_vocabulary / wit_package_version / 双端治理锁…）
+  - type: textarea
+    id: locks
+    attributes:
+      label: 需同步的锁 / 副本
+      description: 7 个 crate 的 wire 自持副本、权限生成物、双端治理锁；逐项点名
