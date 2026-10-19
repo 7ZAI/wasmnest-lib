@@ -78,6 +78,10 @@ wasmtime-wasi = { version = "48", features = ["p3"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process", "test-util"] }
 
 # ==================== 插件机制内核 + 能力域（前作资产，不搬不重写） ====================
+# 契约常量（包名 / 版本唯一手写真源）：普通 crate 依赖 + `use`，不再跨目录
+# `include!`——`cargo package` 的归档只含 crate 目录内文件，跨目录 include 会让
+# 验证构建必失败，且 rust-analyzer / 增量重编都看不见这条依赖边。
+wasmnest-contract = { path = "../wasmnest-contract" }
 # 机制内核（仓库根，双端共享锚点）：HostModule / WasmPluginState / HostPorts / 注册表
 wasmnest-host-kit = { path = "../wasmnest-host-kit" }
 # host_api 共享实现核（票 18：无 WIT 依赖域的实现层；本 crate 只持各域 adapter）

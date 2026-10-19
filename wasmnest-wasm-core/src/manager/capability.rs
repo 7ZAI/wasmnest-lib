@@ -58,8 +58,8 @@ pub(crate) const CAP_AUTH_POLICY: &str = "auth-policy";
 /// `Instance::get_func` 的 str 查找命中，wasmtime 47 实证）
 ///
 /// **不设本地常量**：表项一律经 [`crate::contract::export_item`] 派生（版本后缀是
-/// 构造参数，真源在仓根 `contracts/wasmnest-plugin-package.rs`）。写成 `const` 会把
-/// 版本复制到第二处——那正是票 03 要消灭的散落字面量。
+/// 构造参数，真源在 `wasmnest-contract` crate 的 `PACKAGE_VERSION`）。写成 `const`
+/// 会把版本复制到第二处——那正是票 03 要消灭的散落字面量。
 
 /// `host-storage` 内建行的导出表（端口住宿主 `host_api/sqlite_ports.rs`）
 ///

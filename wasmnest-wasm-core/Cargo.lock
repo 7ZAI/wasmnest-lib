@@ -6338,6 +6338,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmnest-contract"
+version = "0.0.1"
+
+[[package]]
 name = "wasmnest-crypto-engine"
 version = "0.0.1"
 dependencies = [
@@ -6570,6 +6574,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "uuid",
+ "wasmnest-contract",
  "wasmnest-host-api-core",
  "wasmnest-host-kit",
  "wasmnest-link-crypto",

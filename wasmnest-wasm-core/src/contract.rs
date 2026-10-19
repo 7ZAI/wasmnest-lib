@@ -18,20 +18,15 @@
 //!
 //! ## 版本真源
 //!
-//! [`PACKAGE_NAME`] / [`PACKAGE_VERSION`] / [`PACKAGE`] `include!` 仓根唯一手写处
-//! `contracts/wasmnest-plugin-package.rs`。改版本只改那一个文件；const 上下文
-//! （能力域 crate 的 `inventory` 静态自报）直接 `include!` 同一文件，编译期即一致；
-//! 其余散落副本由 `桌面宿主 src-tauri/tests/wit_package_version_lock.rs` 钉住。
+//! [`PACKAGE_NAME`] / [`PACKAGE_VERSION`] / [`PACKAGE`] 由 `wasmnest-contract`
+//! crate 提供（全仓唯一手写处）。本模块只做 re-export + 运行期派生——改版本只改
+//! 那个 crate；编译器、Cargo、rust-analyzer 都看得见这条依赖边，`cargo package`
+//! 也不再因跨目录 `include!` 失败。散落副本仍由
+//! `桌面宿主 src-tauri/tests/wit_package_version_lock.rs` 钉住。
 
 use std::sync::{Mutex, OnceLock};
 
-mod package {
-    // 能力仓仓根直挂 crate（standalone = `wasmnest-lib/`，mount 后 = 平台仓
-    // `packages/`）：从 `src/` 上两级即仓根，contracts 随仓根同处，两种布局同值。
-    include!("../../contracts/wasmnest-plugin-package.rs");
-}
-
-pub use package::{PACKAGE, PACKAGE_NAME, PACKAGE_VERSION};
+pub use wasmnest_contract::{PACKAGE, PACKAGE_NAME, PACKAGE_VERSION};
 
 /// 派生缓存（进程内唯一；条目数为导出词汇的常数上界，构造期一次性填齐）
 ///

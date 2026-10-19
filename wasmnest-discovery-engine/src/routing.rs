@@ -37,12 +37,13 @@ pub const FORWARD_PREFIX: &str = "mdns";
 /// stop-advertise / is-advertising），宿主 adapter 逐条按名取用。
 ///
 /// **版本后缀是契约包的组成部分**（ADR 0051 D3）：组件导出实例的键 = `ns:pkg/iface@version`，
-/// 无版本写法对版本化产物恒不命中。字面量里的 `@0.0.1` 与仓根真源
-/// `contracts/wasmnest-plugin-package.rs` 必须一致——本表走 `inventory` 静态自报
-/// （`static ROUTE` + `submit_routable_capability!` 要求编译期常量），字面量无法跨文件
-/// 派生，故由机械锁钉住：`桌面宿主 src-tauri/tests/wit_package_version_lock.rs`
-/// （值层）+ 内核 `manager::capability` 的
-/// `mdns_call_surface_names_match_the_domain_self_report`（与内核调用面对偶）。
+/// 无版本写法对版本化产物恒不命中。字面量里的 `@0.0.1` 必须与 `wasmnest-contract`
+/// crate 的真源一致——本表走 `inventory` 静态自报（`static ROUTE` +
+/// `submit_routable_capability!` 要求编译期常量），版本嵌在串中段的组合名没有
+/// const 插值机制（`concat!` 只收字面量、`format!` 非 const），故由机械锁钉住：
+/// `桌面宿主 src-tauri/tests/wit_package_version_lock.rs`（值层）+ 内核
+/// `manager::capability` 的 `mdns_call_surface_names_match_the_domain_self_report`
+/// （与内核调用面对偶）。
 pub const EXPORTS: &[&str] = &[
     "wasmnest:plugin/host-mdns.browse@0.0.1",
     "wasmnest:plugin/host-mdns.stop-browse@0.0.1",
