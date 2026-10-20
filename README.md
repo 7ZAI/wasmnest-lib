@@ -1,6 +1,13 @@
 # wasmnest-lib
 
-**WasmNest 能力仓（应用无关引擎仓）**：三仓（平台仓 / 应用仓 / 能力仓）中唯一的**可复用机制 + 端口抽象 + 契约**仓库。本仓不读平台/应用源码、不做产品判断，只提供任何宿主（桌面宿主 / 移动宿主 / 无头宿主）都能直接引用的插件机制与能力域引擎。
+**WasmNest 能力仓（应用无关引擎仓）**：四仓（平台 / 能力 / 应用 / 测试）中唯一的**可复用机制 + 端口抽象 + 契约**仓库。本仓不读平台 / 应用源码、不做产品判断，只提供任何宿主（桌面宿主 / 移动宿主 / 无头宿主）都能直接引用的插件机制与能力域引擎。
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![WebAssembly](https://img.shields.io/badge/WebAssembly-Component-654FF0?logo=webassembly&logoColor=white)](https://component-model.bytecodealliance.org)
+[![Status](https://img.shields.io/badge/status-alpha-orange)](#9-项目状态)
+
+简体中文 | [English](README_en.md)
 
 > 本 README 是**导航性介绍**，不是开发规范。硬约束、边界锁、任务路由以 [AGENTS.md](./AGENTS.md) 与各 crate 真源（`Cargo.toml` description、`src/lib.rs` 头注、WIT）为准；文档字面与事实冲突时以真源 + 可执行锁为准。
 
@@ -93,7 +100,41 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 - `wasmnest-host-kit/fixtures/forced-link-probe`：强制链接实证——链接期属性无法同进程既「有」又「无」，对应两个独立测试二进制（`forced_link` / `forced_link_absent`）。
 - `wasmnest-wasm-core/fixtures/{wasi-test,wasip3-test,p3-async-host-import-test}`：自持 WASI / WASI p3 / 异步宿主导入测试夹具，绑定本 crate `wit/core.wit`，零 SDK 依赖。
 
-## 6. 相关指针
+## 6. 四仓协作
+
+本仓是四仓里的**机制真源**：平台双端宿主经 Cargo sibling path 直接消费，测试仓以同一物理路径读取（保证依赖图中只有一份，类型同一性成立），应用仓只经 SDK 使用能力。
+
+```text
+wasmnest/        平台仓：双端宿主 + 端内 SDK + 构建 / 发布工具
+wasmnest-lib/    能力仓（本仓）：应用无关引擎 + 端口抽象 + WIT 契约真源
+wasmnest-apps/   应用仓：全部业务 wasm 应用
+wasmnest-test/   测试仓：跨端真实互连 + 跨仓契约锁
+```
+
+| 仓 | 与本仓的关系 |
+| --- | --- |
+| [wasmnest](https://github.com/7ZAI/wasmnest) | 经 `../../../wasmnest-lib/<crate>` 直接依赖；版本由平台仓 `release-manifest.json` 的 `repos.lib.tag` 钉住 |
+| [wasmnest-lib](https://github.com/7ZAI/wasmnest-lib)（本仓） | 不读平台 / 应用源码；契约与机制的单一真源 |
+| [wasmnest-apps](https://github.com/7ZAI/wasmnest-apps) | 不直接依赖本仓；应用只使用平台仓 SDK，本仓机制经宿主装配后生效 |
+| [wasmnest-test](https://github.com/7ZAI/wasmnest-test) | 以 sibling path 引用本仓与两端宿主，跑真实互连与跨仓锁 |
+
+平台仓不复制、不镜像、不挂 submodule；默认同级目录 `../wasmnest-lib`，可用 `WASMNEST_LIB_ROOT` 覆盖（node resolver = 平台仓 `scripts/lib-paths.mjs`，测试仓 = `tests/common/repo_paths.rs::lib_root()`）。
+
+## 7. 快速验证
+
+本仓**无根 workspace**，命令一律在 crate 目录执行：
+
+```bash
+cd wasmnest-wasm-core && cargo test
+cd ../wasmnest-host-kit && cargo test
+cd ../wasmnest-headless-host-probe && cargo test
+```
+
+- 根 `.cargo/config.toml` 强制 `rustc-wrapper = "sccache"`；未安装时 cargo 直接失败，这是显性设计，不要绕过。
+- `jobs = 4` 是内存兜底；内存充足时用 `CARGO_BUILD_JOBS` 覆盖。**不要设 `CARGO_INCREMENTAL=1`**，sccache 会拒绝执行。
+- 跨仓契约与真实互连验证在测试仓 `cross-end-tests`（wire / 权限词汇 / mDNS 锁 + 跨端场景）。
+
+## 8. 相关指针
 
 | 需求 | 入口 |
 | --- | --- |
@@ -106,6 +147,12 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 | 平台仓治理锁 | 平台仓双端 `src-tauri/tests/`（形态 / 语义 / 整核 / 纯净性锁） |
 | 四仓通用规范 | 平台仓 `docs/public/{git,commenting,testing,versioning,issues}.md` |
 
----
+## 9. 项目状态
 
-*版本线 `0.0.1`；本仓独立 tag 线 `lib-vX.Y.Z`，发布时由平台仓 `release-manifest.json` 钉精确 tag。*
+- 研发起步期，版本线 `0.0.1`；无对外 ABI 兼容义务，破坏性变更可直接进行，但跨仓契约按精确 tag 钉住。
+- 本仓独立 tag 线 `lib-vX.Y.Z`；发布时由平台仓 `release-manifest.json` 钉住精确 tag，并同步契约版本与 WIT 指纹。
+- 只有发布时才 bump 版本号 / 打 tag；日常开发不 bump。
+
+## 10. 许可证
+
+[MIT](LICENSE) © 2026 7ZAI
