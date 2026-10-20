@@ -3,14 +3,17 @@
 # wasmtime-wasi（两者编译产物数 GB），若默认落进 crate 根 `target/`，则
 # 「本 crate 自身测试」与「宿主构建」会各编一份 wasmtime，磁盘与时间双倍。
 #
-# 落点选 **仓库根 `target/host-kits`**：与 `target/server-libs`（六个服务端库
-# 共享）同族——都是仓库根级、跨端共享、非夹具非 wasm 产物的桶。与宿主
+# 落点选 **本仓根 `target/host-kits`**：与 `target/server-libs`（六个服务端库
+# 共享）同族——都是本仓根级、跨端共享、非夹具非 wasm 产物的桶。与宿主
 # `src-tauri/target`、平台仓夹具 `target/fixtures`、wasm 应用
 # `target/wasm-apps` 刻意分开（profile 与依赖图都不同）。
 #
-# 相对路径以**本 `.cargo` 目录的父目录**（= `packages/wasmnest-host-kit/`）为基准
-# 解析，故 `../../target/host-kits` 落在仓库根。改这一行后必须核验：
-#   cd packages/wasmnest-host-kit && cargo metadata --no-deps --format-version 1
-# 其 `target_directory` 应为 `<repo>/target/host-kits`。
+# 路径以**本 `.cargo` 目录的父目录**（= crate 根 `wasmnest-host-kit/`）为基准
+# 解析，故 `../target/host-kits` 落在本仓根（平台仓切 sibling 布局后 crate 从
+# `<平台>/packages/<crate>` 变成 `<WASMNEST>/wasmnest-lib/<crate>`，深度少一层，
+# 旧写法 `../../target/...` 会静默落到三仓共同父目录 `<WASMNEST>/target/...`）。
+# 改这一行后必须核验（写错一层 `..` 不会报错，只会安静落到别处）：
+#   cd wasmnest-host-kit && cargo metadata --no-deps --format-version 1
+# 其 `target_directory` 应为 `<wasmnest-lib>/target/host-kits`。
 [build]
-target-dir = "../../target/host-kits"
+target-dir = "../target/host-kits"

@@ -270,8 +270,8 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 
 - **同一份 `.cargo/config.toml` 在两种装配下解析到不同位置**：crate 级 `target-dir` 相对该 crate 根解析——
   - **平台装配下**（宿主从 `<平台>/<end>/src-tauri` 构建，本仓 crate 以 sibling path 入图）：产物落**宿主的** `target/<bucket>`；本仓 crate 的 `.cargo/config.toml` 不参与宿主编译；
-  - **独立克隆下**（crate 在 `<能力仓>/<crate>`）：落到**本仓的上级目录** `WasmNest/target/<bucket>`（三仓共同父目录）——不是「仓库根」。
-- 各 crate `target-dir` 注释写的是旧单仓口径的「仓库根」，**判据以运行时为准**：`cargo metadata --no-deps --format-version 1` 的 `target_directory`（或 `CARGO_TARGET_DIR=<crate>/target` 强制仓内落点）。改任何 `target-dir` 后必须逐 crate 核验——写错一层 `..` **不会报错**，只会安静落到别处。
+  - **独立克隆下**（crate 在 `<能力仓>/<crate>`）：落到**本仓根** `<能力仓>/target/<bucket>`（2026-10-20 收口：平台仓删除 `packages/` submodule 挂载点后 crate 深度少一层，10 个 crate 的 `target-dir` 从 `../../target/*` 统一改为 `../target/*`）。
+- **判据以运行时为准**：`cargo metadata --no-deps --format-version 1` 的 `target_directory`（或 `CARGO_TARGET_DIR=<crate>/target` 强制落点）。改任何 `target-dir` 后必须逐 crate 核验——写错一层 `..` **不会报错**，只会安静落到别处（2026-10-20 前就曾整体落到三仓共同父目录 `${WASMNEST}/target/*`）。
 - 桶位对照：`server-libs` = 5 个 server crate + crypto-engine；`host-kits` = host-kit / discovery / pty / wasm-core；夹具 = `<crate>/target/fixtures`（wasm-core 自持夹具）；`cross-end-tests/target` 独立（平台/测试仓侧）。
 - 构建资源：仓根 `.cargo/config.toml` 强制 `jobs = 4` + `rustc-wrapper = "sccache"`（**未装 sccache 一切 cargo 命令直接失败**——显性失败设计，不绕过；本机已装 0.18）。**绝不要设 `CARGO_INCREMENTAL=1`**（sccache 0.18 检测到会拒绝执行，成批失败）；`SCCACHE_CACHE_SIZE` 只认纯字节数字。磁盘吃紧先 `sccache --show-stats`，清理见 §5「清理 target/磁盘」。
 - `Cargo.lock` **随仓库跟踪**（夹具 / 探针需要可复现构建），只经 cargo 变更、禁止手编。**当前已知状态**：部分 crate 的 lock 里内部 crate 版本仍残留 `0.1.0`（版本线重开为 `0.0.1` 后只刷新了 7 个根包），首次构建/测试会自动把它刷新成 `0.0.1`——这会让 `--locked` 失败（预期）。刷新结果作为独立 `chore(lib)` 提交（先例：`chore(lib): 7 个 crate 的 Cargo.lock 根包版本随 0.0.1 刷新`），不要混进功能提交。
@@ -307,7 +307,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 | 增加 crates.io 依赖 / 升级依赖 | 先问用户；`Cargo.lock` 随改随提交（§4.4） |
 | 发版 / 钉平台指针 | §4.5；未经授权不改平台仓 |
 | 独立克隆测试 / 构建失败 | §4.2（wasm-core 解析点）+ §4.4（`target_directory` 判据 + `--locked` 与陈旧 lock） |
-| 清理 target / 磁盘吃紧 | 先 `df -h` / `du -sh` 定位；安全优先级：`cross-end-tests/target`、夹具 target、`<lib>/target/host-kits` 历史残留；`cargo clean` 只对该 crate 且确认不误伤平台装配桶（§4.4） |
+| 清理 target / 磁盘吃紧 | 先 `df -h` / `du -sh` 定位；安全优先级：旧落点 `${WASMNEST}/target/{host-kits,server-libs}`（2026-10-20 前的漂移产物，无活引用可整删）、`cross-end-tests/target`、夹具 target；本仓 `target/*` 是**活跃桶**（host-kits ≈11G 可复用），`cargo clean` 只对该 crate 且确认不误伤平台装配桶（§4.4） |
 | 排查「改了没生效」 | 先确认构建读的是哪一份源码：平台装配读 sibling `<平台>/../wasmnest-lib/<crate>`，独立克隆读本仓工作树（现在两者是同一物理路径）；再确认 target 桶与 sccache 状态 |
 | 定位 crate / 符号 | `rg` 全文 + `cargo metadata`；真源先在 `Cargo.toml` description 与 `src/lib.rs` 头注 |
 
@@ -381,7 +381,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 1. **旧路径注释**：本仓（~30 处）与应用仓（4 处）注释仍引旧路径 `cross-end-tests/...`。更新本仓注释需同步 `release-manifest.json` 的 tag，**用户当前未授权**——不要顺手改（详见 pi scratchpad 的同名条目）。
 2. **wasm-core 的 SDK 版本依赖（架构债）**：`desktop-assembly` → `wasmnest-plugin-api = "0.0.1"`（未发布）导致独立克隆无法解析（§4.2）。终态清偿票据未做，勿扩大。
 3. **`Cargo.lock` 版本残留**：多个 crate 的 lock 里内部 crate 版本仍是 `0.1.0`（应 `0.0.1`，§4.4）；这些 crate 首次 cargo 运行会自动刷新（刷完才可用 `--locked`，刷前 `--locked` 直接失败）。
-4. **`target-dir` 注释与独立克隆落点不一致**：注释按旧单仓「仓库根」写，独立克隆实际落到本仓上级 `WasmNest/target/…`（§4.4）；另有历史残留 `<lib>/target/host-kits`（~11G）。
+4. **（已收口 2026-10-20）`target-dir` 落点漂移**：10 个 crate 已统一改为 `../target/<bucket>`，独立克隆落本仓根；旧落点 `${WASMNEST}/target/{host-kits,server-libs}` 为漂移产物（无活引用，可整删），本仓 `target/host-kits` 的历史残留即当前活跃桶。核查方法见 §4.4。
 5. **平台治理锁滞后于拆分**：例如 `capability_crates_no_product_ids` 的 `SCANNED_CRATES` 仍含已迁出本仓的 `wasmnest-componentize`；`capability_crates_unit_tests_only` 的「治理 crate 根禁 `tests/`」与 `wasmnest-wasm-core/tests/` 的关系待平台侧同步。**改动相关面时在平台侧一并校正，不要假设锁当前全绿。**
 6. **wasm-core 两处产品 id 泄漏**：`security/fs_auth.rs` 的 `FIRST_PARTY_TRUSTED_DIRS`、`manager/host/activation.rs` 的 `LEGACY_API_PLUGIN_ALIASES`——由独立票据处置；平台语义锁因此暂不扫 `wasm-core`。
 7. **本仓无 CI**（CI 重建明确不立项）；验证靠本地命令与跨仓锁。

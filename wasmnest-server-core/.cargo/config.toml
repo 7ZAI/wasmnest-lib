@@ -1,3 +1,6 @@
-# server-lib-split target 治理：仓库根 target/server-libs（相对本 crate 根 `../../`）
+# server-lib-split target 治理：本仓根 target/server-libs（相对本 crate 根 `../`；
+# 旧 `../../` 是按 `<平台>/packages/<crate>` 深度写的，sibling 布局后会静默落到
+# 三仓共同父目录）。改后核验 `cargo metadata --no-deps --format-version 1` 的
+# `target_directory` 是否为 `<wasmnest-lib>/target/server-libs`。
 [build]
-target-dir = "../../target/server-libs"
+target-dir = "../target/server-libs"
