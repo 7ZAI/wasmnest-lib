@@ -27,8 +27,30 @@ use std::sync::{Arc, RwLock};
 //
 // 可见性以 `pub use` 原样转发，既有 `monitor::PluginMetrics` 等引用路径逐字不变。
 pub use wasmnest_host_kit::metrics::{
-    AuthzDecisionKind, CallTimer, LifecycleEvent, PluginMetrics, PluginMetricsSnapshot,
+    AuthzDecisionKind, CallTimer, LifecycleEvent, PluginMetrics, PluginMetricsSnapshot, TrapKind,
 };
+
+// ==================== 快照出口端口（WIT `host-metrics` 的宿主侧句柄） ====================
+
+/// 指标快照源（宿主装配面注入；内核不反向依赖宿主持有方式）
+///
+/// 由 `WasmRuntime` 在装配期把 [`MetricsRegistry`] 写进 `WasmHostContext` 的槽位，
+/// WIT `host-metrics.snapshot` 只经本 trait 取字符串——内核绑定层不认识「谁持有
+/// 注册表」，移动 / 桌面 / 无头三种装配同一条路径。
+///
+/// 未装配时返回 `Err`（fail-visible）：不返回 `{}` 冒充「没有插件」，
+/// 否则监控应用会把断链显示成「一切正常」。
+pub trait MetricsSnapshotSource: Send + Sync {
+    /// 全量快照 JSON（形状同 [`MetricsRegistry::snapshot`]）
+    fn snapshot_json(&self) -> Result<String, String>;
+}
+
+impl MetricsSnapshotSource for MetricsRegistry {
+    fn snapshot_json(&self) -> Result<String, String> {
+        serde_json::to_string(&self.snapshot())
+            .map_err(|e| format!("metrics snapshot serialization failed: {e}"))
+    }
+}
 
 // ==================== 系统维度快照源（注册制） ====================
 

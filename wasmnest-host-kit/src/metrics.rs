@@ -87,6 +87,87 @@ impl LifecycleEvent {
     ];
 }
 
+// ==================== trap 原因 ====================
+
+/// trap 原因（诊断维度；由宿主按 wasmtime 错误全链文本分类）
+///
+/// 与 [`LifecycleEvent::Trap`] 的关系：后者只记「发生了 trap」的总数，
+/// 本枚举把总数拆成可行动的类别——死循环（燃料耗尽）/ 递归过深（栈溢出）/
+/// 越界访问 / 显式 panic（unreachable）/ 宿主调用失败 / 其他。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrapKind {
+    /// 燃料耗尽（guest 死循环或单次计算量超预算）
+    FuelExhausted,
+    /// wasm 栈溢出（深递归）
+    StackOverflow,
+    /// 线性内存越界
+    MemoryOutOfBounds,
+    /// `unreachable` 指令（Rust panic / 显式 trap）
+    Unreachable,
+    /// 宿主函数返回错误穿过 wasm 边界
+    HostError,
+    /// 其他（无法分类时保留原始日志，不丢事件）
+    Other,
+}
+
+impl TrapKind {
+    fn idx(self) -> usize {
+        match self {
+            Self::FuelExhausted => 0,
+            Self::StackOverflow => 1,
+            Self::MemoryOutOfBounds => 2,
+            Self::Unreachable => 3,
+            Self::HostError => 4,
+            Self::Other => 5,
+        }
+    }
+
+    /// 快照导出的稳定键名
+    fn key(self) -> &'static str {
+        match self {
+            Self::FuelExhausted => "fuel_exhausted",
+            Self::StackOverflow => "stack_overflow",
+            Self::MemoryOutOfBounds => "memory_out_of_bounds",
+            Self::Unreachable => "unreachable",
+            Self::HostError => "host_error",
+            Self::Other => "other",
+        }
+    }
+
+    const ALL: [Self; 6] = [
+        Self::FuelExhausted,
+        Self::StackOverflow,
+        Self::MemoryOutOfBounds,
+        Self::Unreachable,
+        Self::HostError,
+        Self::Other,
+    ];
+
+    /// 从 wasmtime 错误全链文本分类（`{:#}` 含 `Caused by:`，只打 Display 会丢原因）
+    ///
+    /// 大小写不敏感子串匹配：wasmtime 文案随版本微调，分类失败一律落 `Other`
+    /// （不丢事件；原始文本仍由宿主 `trap_detail` 日志保全）。
+    pub fn classify(message: &str) -> Self {
+        let m = message.to_ascii_lowercase();
+        if m.contains("all fuel consumed") || m.contains("out of fuel") {
+            Self::FuelExhausted
+        } else if m.contains("call stack exhausted") || m.contains("stack overflow") {
+            Self::StackOverflow
+        } else if m.contains("out of bounds memory access")
+            || m.contains("memory out of bounds")
+            || m.contains("out of bounds")
+        {
+            Self::MemoryOutOfBounds
+        } else if m.contains("unreachable") {
+            Self::Unreachable
+        } else if m.contains("host function") || m.contains("host call") {
+            Self::HostError
+        } else {
+            Self::Other
+        }
+    }
+}
+
 // ==================== 耗时直方图 ====================
 
 /// 直方图桶上界（微秒）：1ms / 10ms / 100ms / 1s / 10s / +Inf
@@ -106,6 +187,8 @@ pub struct PluginMetrics {
     memory_peak_bytes: AtomicU64,
     /// 导出调用总次数
     calls_total: AtomicU64,
+    /// 当前在飞（已开始未结束）的导出调用数
+    calls_in_flight: AtomicU64,
     /// 燃料消耗总量（指令数；口径：两次燃料注入之间的消耗，首次含实例化与 ABI 协商）
     fuel_consumed_total: AtomicU64,
     /// 导出调用耗时总量（微秒）
@@ -118,6 +201,16 @@ pub struct PluginMetrics {
     lifecycle_counts: [AtomicU64; 6],
     /// 生命周期事件最近发生时间（unix 秒）
     lifecycle_last_unix: [AtomicU64; 6],
+    /// trap 原因计数（按 [`TrapKind::idx`] 索引）
+    trap_counts: [AtomicU64; 6],
+    /// 线性内存增长被 ResourceLimiter 拒绝的次数（触及 256 MiB 上限的健康信号）
+    memory_grow_denied_total: AtomicU64,
+    /// 表增长被 ResourceLimiter 拒绝的次数
+    table_grow_denied_total: AtomicU64,
+    /// activate() 累计耗时（微秒；与 it 调用聚合分开，便于看启动成本）
+    activation_us_total: AtomicU64,
+    /// activate() 单次最大耗时（微秒）
+    activation_us_max: AtomicU64,
     /// 授权决策计数（按 [`AuthzDecisionKind`] 索引：allow/deny/require_approval）
     authz_decisions: [AtomicU64; 3],
     /// 授权记录落账被容量上限丢弃的计数（安全账本封顶，非决策计数）
@@ -126,6 +219,14 @@ pub struct PluginMetrics {
     bus_dropped_total: AtomicU64,
     /// 消息总线格式不匹配拒绝计数（订阅方格式偏好与消息格式不符）
     bus_format_rejected_total: AtomicU64,
+    /// 配额上限快照（实例化时由 [`crate::limits::StoreLimits`] 写入一次）：
+    /// 燃料预算 / 内存上限 / 表元素上限 / 实例数 / 内存数 / 表数
+    quota_fuel_per_call: AtomicU64,
+    quota_memory_bytes: AtomicU64,
+    quota_table_entries: AtomicU64,
+    quota_instances: AtomicU64,
+    quota_memories: AtomicU64,
+    quota_tables: AtomicU64,
 }
 
 impl Default for PluginMetrics {
@@ -134,16 +235,28 @@ impl Default for PluginMetrics {
             memory_current_bytes: AtomicU64::new(0),
             memory_peak_bytes: AtomicU64::new(0),
             calls_total: AtomicU64::new(0),
+            calls_in_flight: AtomicU64::new(0),
             fuel_consumed_total: AtomicU64::new(0),
             call_duration_us_total: AtomicU64::new(0),
             call_duration_us_max: AtomicU64::new(0),
             call_duration_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
             lifecycle_counts: std::array::from_fn(|_| AtomicU64::new(0)),
             lifecycle_last_unix: std::array::from_fn(|_| AtomicU64::new(0)),
+            trap_counts: std::array::from_fn(|_| AtomicU64::new(0)),
+            memory_grow_denied_total: AtomicU64::new(0),
+            table_grow_denied_total: AtomicU64::new(0),
+            activation_us_total: AtomicU64::new(0),
+            activation_us_max: AtomicU64::new(0),
             authz_decisions: std::array::from_fn(|_| AtomicU64::new(0)),
             authz_records_dropped_total: AtomicU64::new(0),
             bus_dropped_total: AtomicU64::new(0),
             bus_format_rejected_total: AtomicU64::new(0),
+            quota_fuel_per_call: AtomicU64::new(0),
+            quota_memory_bytes: AtomicU64::new(0),
+            quota_table_entries: AtomicU64::new(0),
+            quota_instances: AtomicU64::new(0),
+            quota_memories: AtomicU64::new(0),
+            quota_tables: AtomicU64::new(0),
         }
     }
 }
@@ -167,11 +280,33 @@ impl PluginMetrics {
             .fetch_add(consumed, Ordering::Relaxed);
     }
 
+    /// 写入配额上限快照（实例化时一次；纯原子写，不参与热路径）
+    ///
+    /// 监控页据此算「内存使用率 / 燃料预算使用率」——只下发上限与当前值，
+    /// 不在宿主侧算业务阈值（阈值是应用的产品策略）。
+    pub fn set_limits(&self, limits: &crate::limits::StoreLimits) {
+        self.quota_fuel_per_call
+            .store(limits.fuel_per_call, Ordering::Relaxed);
+        self.quota_memory_bytes
+            .store(limits.max_memory_bytes as u64, Ordering::Relaxed);
+        self.quota_table_entries
+            .store(limits.max_table_entries as u64, Ordering::Relaxed);
+        self.quota_instances
+            .store(limits.max_instances as u64, Ordering::Relaxed);
+        self.quota_memories
+            .store(limits.max_memories as u64, Ordering::Relaxed);
+        self.quota_tables
+            .store(limits.max_tables as u64, Ordering::Relaxed);
+    }
+
     /// 一次导出调用计时开始（RAII：drop 时记录耗时并计数）
     ///
     /// 计时器持有 `Arc<Self>`（owning），不借用调用方上下文——
     /// 插件方法拿到计时器后还需 `&mut self` 驱动导出调用
     pub fn start_call(self: &Arc<Self>) -> CallTimer {
+        // 在飞计数在起点 +1、终点 -1（`record_call_duration`）——
+        // 监控页用它区分「正常运行」与「卡在长调用里」
+        self.calls_in_flight.fetch_add(1, Ordering::Relaxed);
         CallTimer {
             metrics: self.clone(),
             start: Instant::now(),
@@ -184,6 +319,11 @@ impl PluginMetrics {
     /// 才会触发——单测要断言「1ms→桶 0 / 1ms→桶 1 / 10s→末桶」这类分桶边界而不
     /// sleep（CI 无 flake，仓库既有做法），只能直接喂入耗时值。
     pub fn record_call_duration(&self, duration_us: u64) {
+        // 在飞计数回落：单测会直接调用本函数（不经 `start_call`），
+        // 用 checked_sub 防下溢——否则 0-1 回卷成 u64::MAX，监控页出现不可能的读数
+        let _ = self
+            .calls_in_flight
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1));
         self.calls_total.fetch_add(1, Ordering::Relaxed);
         self.call_duration_us_total
             .fetch_add(duration_us, Ordering::Relaxed);
@@ -204,6 +344,31 @@ impl PluginMetrics {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         self.lifecycle_last_unix[event.idx()].store(now, Ordering::Relaxed);
+    }
+
+    /// trap 原因记账（调用级失败路径；由宿主按 wasmtime 错误文本分类）
+    pub fn record_trap(&self, kind: TrapKind) {
+        self.trap_counts[kind.idx()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 线性内存增长被 limiter 拒绝的记账（触及上限的健康信号）
+    pub fn record_memory_denied(&self) {
+        self.memory_grow_denied_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 表增长被 limiter 拒绝的记账
+    pub fn record_table_denied(&self) {
+        self.table_grow_denied_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// activate() 耗时记账（微秒；调用聚合之外单列，便于看启动成本）
+    pub fn record_activation(&self, duration_us: u64) {
+        self.activation_us_total
+            .fetch_add(duration_us, Ordering::Relaxed);
+        self.activation_us_max
+            .fetch_max(duration_us, Ordering::Relaxed);
     }
 
     /// 授权决策记账（安全决策管线的唯一埋点点）
@@ -248,10 +413,18 @@ impl PluginMetrics {
                 lifecycle_last_unix.insert(event.key().to_string(), last);
             }
         }
+        let mut trap_reasons = HashMap::new();
+        for kind in TrapKind::ALL {
+            trap_reasons.insert(
+                kind.key().to_string(),
+                self.trap_counts[kind.idx()].load(Ordering::Relaxed),
+            );
+        }
         PluginMetricsSnapshot {
             memory_current_bytes: self.memory_current_bytes.load(Ordering::SeqCst),
             memory_peak_bytes: self.memory_peak_bytes.load(Ordering::SeqCst),
             calls_total: self.calls_total.load(Ordering::Relaxed),
+            calls_in_flight: self.calls_in_flight.load(Ordering::Relaxed),
             fuel_consumed_total: self.fuel_consumed_total.load(Ordering::Relaxed),
             call_duration_us_total: self.call_duration_us_total.load(Ordering::Relaxed),
             call_duration_us_max: self.call_duration_us_max.load(Ordering::Relaxed),
@@ -262,6 +435,39 @@ impl PluginMetrics {
                 .collect(),
             lifecycle,
             lifecycle_last_unix,
+            trap_reasons,
+            memory_grow_denied_total: self
+                .memory_grow_denied_total
+                .load(Ordering::Relaxed),
+            table_grow_denied_total: self.table_grow_denied_total.load(Ordering::Relaxed),
+            activation_us_total: self.activation_us_total.load(Ordering::Relaxed),
+            activation_us_max: self.activation_us_max.load(Ordering::Relaxed),
+            quota: HashMap::from([
+                (
+                    "fuel_per_call".to_string(),
+                    self.quota_fuel_per_call.load(Ordering::Relaxed),
+                ),
+                (
+                    "memory_bytes".to_string(),
+                    self.quota_memory_bytes.load(Ordering::Relaxed),
+                ),
+                (
+                    "table_entries".to_string(),
+                    self.quota_table_entries.load(Ordering::Relaxed),
+                ),
+                (
+                    "instances".to_string(),
+                    self.quota_instances.load(Ordering::Relaxed),
+                ),
+                (
+                    "memories".to_string(),
+                    self.quota_memories.load(Ordering::Relaxed),
+                ),
+                (
+                    "tables".to_string(),
+                    self.quota_tables.load(Ordering::Relaxed),
+                ),
+            ]),
             authz: HashMap::from([
                 (
                     "allow".to_string(),
@@ -316,6 +522,8 @@ pub struct PluginMetricsSnapshot {
     pub memory_peak_bytes: u64,
     /// 导出调用总次数
     pub calls_total: u64,
+    /// 当前在飞（已开始未结束）的导出调用数
+    pub calls_in_flight: u64,
     /// 燃料消耗总量（指令数）
     pub fuel_consumed_total: u64,
     /// 导出调用耗时总量（微秒）
@@ -328,6 +536,18 @@ pub struct PluginMetricsSnapshot {
     pub lifecycle: HashMap<String, u64>,
     /// 生命周期事件最近发生时间 unix 秒（仅发生过的事件出现）
     pub lifecycle_last_unix: HashMap<String, u64>,
+    /// trap 原因计数（key 见 [`TrapKind::key`]）
+    pub trap_reasons: HashMap<String, u64>,
+    /// 线性内存增长被 limiter 拒绝的次数
+    pub memory_grow_denied_total: u64,
+    /// 表增长被 limiter 拒绝的次数
+    pub table_grow_denied_total: u64,
+    /// activate() 累计耗时（微秒）
+    pub activation_us_total: u64,
+    /// activate() 单次最大耗时（微秒）
+    pub activation_us_max: u64,
+    /// 配额上限（实例化时写入；key 见 `set_limits`）
+    pub quota: HashMap<String, u64>,
     /// 授权决策计数（allow / deny / require_approval）
     pub authz: HashMap<String, u64>,
     /// 消息总线指标：dropped = 队列满丢弃；format_rejected = 格式不匹配拒绝

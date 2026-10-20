@@ -529,6 +529,13 @@ pub(crate) fn wasmtime_backtrace_details(details: BacktraceDetails) -> WasmBackt
 /// host 调用错误）在 `Caused by:` 里——只打 Display 会丢原因。
 pub(crate) fn log_trap(store: &Store<WasmPluginState>, export: &str, err: &wasmtime::Error) {
     store.data().metrics.record_lifecycle(LifecycleEvent::Trap);
+    // 原因分类用 Debug 全链（`{:#}` 含 `Caused by:`）：只打 Display 会丢
+    // 「all fuel consumed / call stack exhausted / out of bounds」这些真正原因。
+    // 分类失败的落 Other，原始文本仍由下方 `trap_detail` 保全。
+    store
+        .data()
+        .metrics
+        .record_trap(crate::monitor::TrapKind::classify(&format!("{:#}", err)));
     tracing::error!(
         plugin_id = %store.data().plugin_id,
         export = %export,

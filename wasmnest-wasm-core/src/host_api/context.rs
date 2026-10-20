@@ -338,6 +338,12 @@ pub struct WasmHostContext {
     /// [`UnimplementedHostFacts`] 是 fail-visible 占位（无头 / 测试上下文命中即显性
     /// 失败，不猜端值）。
     host_facts: Arc<std::sync::RwLock<Arc<dyn HostFactsPort>>>,
+    /// 运行时指标快照源（`host-metrics.snapshot` 的宿主侧句柄）
+    ///
+    /// 两阶段注入（同 `host_facts` / `platform_picker`）：`WasmRuntime` 构造完成后
+    /// 由装配点写入 `runtime.monitor()`；缺省 `UnimplementedMetricsSnapshot`
+    /// fail-visible（无头 / 测试上下文不返回空快照冒充「没有插件」）。
+    metrics_snapshot: Arc<std::sync::RwLock<Arc<dyn crate::monitor::MetricsSnapshotSource>>>,
     /// 插件错误状态上报回调（移动装配面，票 02 B5 并入超集）：由
     /// `host_mark_plugin_error` 触发（置 Error + 持久化未启用 + 前端通知）。
     /// 桌面等价物是 `plugin_services.mark_plugin_error`，构造给 noop 缺省。
@@ -525,6 +531,8 @@ impl WasmHostContext {
             platform_picker: Arc::new(std::sync::RwLock::new(Arc::new(UnimplementedPlatformPicker))),
             // 端事实缺省：未注入即 fail-visible（`set_host_facts` 装配期覆盖）
             host_facts: Arc::new(std::sync::RwLock::new(Arc::new(UnimplementedHostFacts))),
+            // 指标快照缺省：未注入即 fail-visible（装配期写 `runtime.monitor()`）
+            metrics_snapshot: Arc::new(std::sync::RwLock::new(Arc::new(UnimplementedMetricsSnapshot))),
             status_reporter: Arc::new(|_, _| {}),
         }
     }
@@ -597,6 +605,8 @@ impl WasmHostContext {
             platform_picker: Arc::new(std::sync::RwLock::new(platform_picker)),
             // 端事实缺省：移动/桌面宿主装配后经 `set_host_facts` 注入本端实现
             host_facts: Arc::new(std::sync::RwLock::new(Arc::new(UnimplementedHostFacts))),
+            // 指标快照缺省：移动装配点随后写 `runtime.monitor()`（同 `host_facts` 两阶段）
+            metrics_snapshot: Arc::new(std::sync::RwLock::new(Arc::new(UnimplementedMetricsSnapshot))),
             status_reporter,
         }
     }
@@ -749,6 +759,28 @@ impl WasmHostContext {
     /// 取宿主端事实（缺省 [`UnimplementedHostFacts`]；热路径只 clone 一个 Arc）
     pub fn host_facts(&self) -> Arc<dyn HostFactsPort> {
         self.host_facts
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// 装配期注入运行时指标快照源（`WasmRuntime::monitor()`）
+    ///
+    /// 与 [`Self::set_host_facts`] 同款两阶段注入：必须在任何插件能调用
+    /// `host-metrics.snapshot` 之前写入。桌面 / 移动装配点各一次。
+    pub fn set_metrics_snapshot_source(
+        &self,
+        source: Arc<dyn crate::monitor::MetricsSnapshotSource>,
+    ) {
+        *self
+            .metrics_snapshot
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = source;
+    }
+
+    /// 取指标快照源（缺省 [`UnimplementedMetricsSnapshot`]，命中即 fail-visible）
+    pub fn metrics_snapshot(&self) -> Arc<dyn crate::monitor::MetricsSnapshotSource> {
+        self.metrics_snapshot
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
@@ -1206,6 +1238,18 @@ impl CapabilityScope for WasmHostContext {
 impl SecretsScope for WasmHostContext {
     fn secrets_cache(&self) -> &Arc<std::sync::RwLock<std::collections::HashMap<(String, String), String>>> {
         &self.secrets_cache
+    }
+}
+
+/// 指标快照源缺失占位（无头 / 测试 / 装配漏接）
+///
+/// **fail-visible**：返回 `Err` 而不是 `{}`——空快照会让监控应用把「宿主没接上」
+/// 显示成「没有插件在跑」，正好掩盖故障。
+struct UnimplementedMetricsSnapshot;
+
+impl crate::monitor::MetricsSnapshotSource for UnimplementedMetricsSnapshot {
+    fn snapshot_json(&self) -> Result<String, String> {
+        Err("metrics snapshot unavailable: host runtime not wired".to_string())
     }
 }
 
