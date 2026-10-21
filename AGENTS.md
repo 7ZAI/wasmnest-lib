@@ -151,7 +151,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 | 本仓 · `wasmnest-wasm-core/src/crate_boundary_lock.rs` | `SPLIT_CRATES` 登记表（**单一事实源**）+ 边合法性；新增/改名/移出 split crate 改这一处，平台侧锁同步消费 |
 | 本仓 · `*/src/dependency_direction_lock.rs`、`boundary_lock.rs` | server 传输面 / peer-net / host-api-core / ws-client-engine 的「只向下、零横向、零回接宿主路径」 |
 | 本仓 · `wasmnest-wasm-core/tests/platform_reference_registry_lock.rs` | 仓根全文零平台仓目录名字面量（唯二豁免见 §0） |
-| 平台仓 · `wasmnest-{desktop}/src-tauri/tests/capability_crates_unit_tests_only.rs` | 治理 crate 根不得有 `tests/`/`benches/`/`examples/` 与内部 dev-dependencies（豁免：`wasmnest-host-kit`；`wasm-core/tests` 的新增与之的关系见 §8） |
+| 平台仓 · `wasmnest-{desktop}/src-tauri/tests/capability_crates_unit_tests_only.rs` | 治理 crate 根不得有 `tests/`/`benches/`/`examples/` 与内部 dev-dependencies（豁免：`wasmnest-host-kit`；`wasm-core/tests/platform_reference_registry_lock.rs` 已按文件登记在 `CRATE_TEST_DIR_EXCEPTIONS`） |
 | 平台仓 · `capability_crates_no_product_ids.rs` | 能力 crate 生产代码零产品插件 id / 零退役宿主面词汇（按 `SCANNED_CRATES` 登记；`wasm-core` 暂不在面内，见 §8） |
 | 平台仓 · `host_module_desc_noun_lock.rs`（双端）/ `wasm_core_whole_crate_lock.rs` / `l2_gating_lock.rs` / `wit_package_version_lock.rs` | 描述符零产品名词 / 整核垫片形态 / L2 反向依赖白名单 / 契约版本字面量（`@0.0.1`） |
 | 平台仓 · `wasmnest-{mobile}/src-tauri/tests/{mobile_wasm_core_purity_lock, kernel_schema_single_truth_lock, peer_engine_consolidation_lock, mobile_host_websocket_client_domain_lock, retired_*}.rs` | 内核纯净性七判据 / 主库 schema / 引擎集中化 / 客户端域边界 / fork 与退役面不复活 |
@@ -382,10 +382,10 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 2. **wasm-core 的 SDK 版本依赖（架构债）**：`desktop-assembly` → `wasmnest-plugin-api = "0.0.1"`（未发布）导致独立克隆无法解析（§4.2）。终态清偿票据未做，勿扩大。
 3. **`Cargo.lock` 版本残留**：多个 crate 的 lock 里内部 crate 版本仍是 `0.1.0`（应 `0.0.1`，§4.4）；这些 crate 首次 cargo 运行会自动刷新（刷完才可用 `--locked`，刷前 `--locked` 直接失败）。
 4. **（已收口 2026-10-20）`target-dir` 落点漂移**：10 个 crate 已统一改为 `../target/<bucket>`，独立克隆落本仓根；旧落点 `${WASMNEST}/target/{host-kits,server-libs}` 为漂移产物（无活引用，可整删），本仓 `target/host-kits` 的历史残留即当前活跃桶。核查方法见 §4.4。
-5. **平台治理锁滞后于拆分**：例如 `capability_crates_no_product_ids` 的 `SCANNED_CRATES` 仍含已迁出本仓的 `wasmnest-componentize`；`capability_crates_unit_tests_only` 的「治理 crate 根禁 `tests/`」与 `wasmnest-wasm-core/tests/` 的关系待平台侧同步。**改动相关面时在平台侧一并校正，不要假设锁当前全绿。**
+5. **（已收口 2026-10-21）平台治理锁滞后于拆分**：平台仓 `capability_crates_no_product_ids` 的 `crate_dir()` 已对 `wasmnest-componentize` 单独解析 `tools/componentize`（目录存在，不会 panic）；`capability_crates_unit_tests_only` 的 `CRATE_TEST_DIR_EXCEPTIONS` 已登记 `wasmnest-wasm-core/tests/platform_reference_registry_lock.rs`。两把锁在平台仓实测全绿：`cargo test --offline --test capability_crates_no_product_ids --test capability_crates_unit_tests_only` → 6 + 5 passed。
 6. **wasm-core 两处产品 id 泄漏**：`security/fs_auth.rs` 的 `FIRST_PARTY_TRUSTED_DIRS`、`manager/host/activation.rs` 的 `LEGACY_API_PLUGIN_ALIASES`——由独立票据处置；平台语义锁因此暂不扫 `wasm-core`。
 7. **本仓无 CI**（CI 重建明确不立项）；验证靠本地命令与跨仓锁。
-8. 平台仓桌面 SDK 的 README / template / dev-shell 与 ADR 0057 挂载包形态不一致（属平台仓侧漂移；本仓不代改）。
+8. 平台仓桌面 SDK 的 `README.md` / `template/` 仍与 ADR 0057 挂载包形态不一致（dev-shell 已于 2026-10-21 对齐；属平台仓侧漂移，本仓不代改；跟踪 `7ZAI/wasmnest#1`）。
 
 ---
 
