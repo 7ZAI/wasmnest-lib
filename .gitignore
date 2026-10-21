@@ -13,6 +13,7 @@
 *.sublime-workspace
 *.sublime-project
 *.iml
+*.codebuddy
 
 # OS
 .DS_Store
