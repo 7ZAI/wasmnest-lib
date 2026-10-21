@@ -18,8 +18,9 @@ impl PluginHost {
         if self.plugins.read().await.contains_key(&plugin_id) {
             let dir = self.user_plugins_dir.join(&plugin_id);
             if dir.exists() {
-                std::fs::remove_dir_all(&dir)
-                    .map_err(|e| crate::AppError::Plugin(format!("Failed to rollback plugin dir: {}", e)))?;
+                std::fs::remove_dir_all(&dir).map_err(|e| {
+                    crate::AppError::Plugin(format!("Failed to rollback plugin dir: {}", e))
+                })?;
             }
             return Err(crate::AppError::Plugin(format!(
                 "Plugin '{}' is already installed. Uninstall it first to install a new version.",
@@ -45,7 +46,10 @@ impl PluginHost {
         let (record, instance) = self.instantiate_wasm_plugin(&loaded);
         self.plugins.write().await.insert(plugin_id.clone(), record);
         if let Some(instance) = instance {
-            self.wasm_plugins.write().await.insert(plugin_id.clone(), instance);
+            self.wasm_plugins
+                .write()
+                .await
+                .insert(plugin_id.clone(), instance);
         }
         // 注册 manifest contributes 扩展点（commands/views/fileHandlers 等）
         self.register_plugin_contributions(&plugin_id).await;
@@ -71,9 +75,9 @@ impl PluginHost {
     pub async fn approve_plugin(&self, plugin_id: &str) -> crate::Result<Vec<String>> {
         let (source, extension_path, version, requested) = {
             let plugins = self.plugins.read().await;
-            let loaded = plugins
-                .get(plugin_id)
-                .ok_or_else(|| crate::AppError::Plugin(format!("Plugin not found: {}", plugin_id)))?;
+            let loaded = plugins.get(plugin_id).ok_or_else(|| {
+                crate::AppError::Plugin(format!("Plugin not found: {}", plugin_id))
+            })?;
             (
                 loaded.source.clone(),
                 loaded.extension_path.clone(),
@@ -102,7 +106,9 @@ impl PluginHost {
         let content_hash =
             tokio::task::spawn_blocking(move || crate::security::approval::compute_dir_hash(&dir))
                 .await
-                .map_err(|e| crate::AppError::Plugin(format!("Approval hash task failed: {}", e)))??;
+                .map_err(|e| {
+                    crate::AppError::Plugin(format!("Approval hash task failed: {}", e))
+                })??;
 
         crate::security::approval::PluginApprovalStore::new(self.storage.clone())
             .approve(plugin_id, &approved, &content_hash, &version)
@@ -157,9 +163,9 @@ impl PluginHost {
         // app_data_dir/plugins，二者都是「插件自有的安装目录」，删除语义一致
         let plugin_dir = {
             let plugins = self.plugins.read().await;
-            let loaded = plugins
-                .get(plugin_id)
-                .ok_or_else(|| crate::AppError::Plugin(format!("Plugin not found: {}", plugin_id)))?;
+            let loaded = plugins.get(plugin_id).ok_or_else(|| {
+                crate::AppError::Plugin(format!("Plugin not found: {}", plugin_id))
+            })?;
             // 规则：仅未启用插件可卸载（Activating 是激活进行中的瞬时态，同样拒绝）
             if matches!(
                 loaded.state,
@@ -192,7 +198,11 @@ impl PluginHost {
             );
         } else if plugin_dir.exists() {
             std::fs::remove_dir_all(&plugin_dir).map_err(|e| {
-                crate::AppError::Plugin(format!("Failed to remove plugin dir '{}': {}", plugin_dir.display(), e))
+                crate::AppError::Plugin(format!(
+                    "Failed to remove plugin dir '{}': {}",
+                    plugin_dir.display(),
+                    e
+                ))
             })?;
         }
 
@@ -213,11 +223,18 @@ impl PluginHost {
         }
         self.plugins.write().await.remove(plugin_id);
 
+        // 指标注册表与已加载插件集合求一致：不清会让卸载后的旧计数以幽灵卡
+        // 出现在监控快照里，直到宿主重启；只清卸载路径，重载 / 重装保留累计值
+        self.wasm_runtime.monitor().remove(plugin_id);
+
         // 顺带清理用户插件目录下同 id 的孤儿残留（无 plugin.json 的数据目录）：
         // 这类目录不参与加载、UI 不可见，但会卡住同 id 重装（install 的磁盘查重
         // 会误判为已安装）。含 plugin.json 时视为另一来源的有效安装，保留不删。
         let orphan_dir = self.user_plugins_dir.join(plugin_id);
-        if orphan_dir != plugin_dir && orphan_dir.exists() && !orphan_dir.join(PLUGIN_MANIFEST_FILE).exists() {
+        if orphan_dir != plugin_dir
+            && orphan_dir.exists()
+            && !orphan_dir.join(PLUGIN_MANIFEST_FILE).exists()
+        {
             match std::fs::remove_dir_all(&orphan_dir) {
                 Ok(()) => {
                     tracing::info!(

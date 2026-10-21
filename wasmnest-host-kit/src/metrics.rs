@@ -553,3 +553,125 @@ pub struct PluginMetricsSnapshot {
     /// 消息总线指标：dropped = 队列满丢弃；format_rejected = 格式不匹配拒绝
     pub bus: HashMap<String, u64>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::limits::StoreLimits;
+
+    /// 六类 trap 文案映射：classify 是监控页「Trap 原因」分布的唯一入口，
+    /// 任何一类落错桶都会让死循环 / 递归过深 / 越界无从区分。
+    #[test]
+    fn trap_kind_classifies_known_wasmtime_messages() {
+        let cases = [
+            (
+                "wasm trap: all fuel consumed by WebAssembly",
+                TrapKind::FuelExhausted,
+            ),
+            ("wasm trap: OUT OF FUEL", TrapKind::FuelExhausted),
+            ("wasm trap: call stack exhausted", TrapKind::StackOverflow),
+            (
+                "wasm trap: out of bounds memory access",
+                TrapKind::MemoryOutOfBounds,
+            ),
+            (
+                "wasm trap: wasm `unreachable` instruction executed",
+                TrapKind::Unreachable,
+            ),
+            (
+                "host function `host-net` returned an error",
+                TrapKind::HostError,
+            ),
+            ("wasm trap: unknown failure", TrapKind::Other),
+        ];
+        for (message, expected) in cases {
+            assert_eq!(TrapKind::classify(message), expected, "message: {message}");
+        }
+    }
+
+    /// 在飞计数：start_call +1，计时器 drop 时 -1；总调用数只由 drop 落账
+    #[test]
+    fn calls_in_flight_tracks_call_timer_lifecycle() {
+        let metrics = Arc::new(PluginMetrics::default());
+        let first = metrics.start_call();
+        assert_eq!(metrics.snapshot().calls_in_flight, 1);
+        let second = metrics.start_call();
+        assert_eq!(metrics.snapshot().calls_in_flight, 2);
+
+        drop(first);
+        assert_eq!(metrics.snapshot().calls_in_flight, 1);
+        drop(second);
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.calls_in_flight, 0, "全部计时器 drop 后在飞必须归零");
+        assert_eq!(snap.calls_total, 2);
+    }
+
+    /// 直接喂耗时（单测分桶路径）不得把在飞计数减到 u64::MAX
+    #[test]
+    fn record_call_duration_without_in_flight_saturates_at_zero() {
+        let metrics = PluginMetrics::default();
+        metrics.record_call_duration(42);
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.calls_in_flight, 0);
+        assert_eq!(snap.calls_total, 1);
+        assert_eq!(snap.call_duration_us_total, 42);
+    }
+
+    /// 配额上限六字段逐一写入快照（上限不是实时占用，但必须完整）
+    #[test]
+    fn set_limits_snapshots_all_quota_fields() {
+        let limits = StoreLimits {
+            fuel_per_call: 11,
+            max_memory_bytes: 22,
+            max_table_entries: 33,
+            max_instances: 44,
+            max_memories: 55,
+            max_tables: 66,
+            ..StoreLimits::default()
+        };
+        let metrics = PluginMetrics::default();
+        metrics.set_limits(&limits);
+
+        let quota = metrics.snapshot().quota;
+        assert_eq!(quota["fuel_per_call"], 11);
+        assert_eq!(quota["memory_bytes"], 22);
+        assert_eq!(quota["table_entries"], 33);
+        assert_eq!(quota["instances"], 44);
+        assert_eq!(quota["memories"], 55);
+        assert_eq!(quota["tables"], 66);
+    }
+
+    /// 激活耗时累计 / 峰值与 grow 拒绝计数各自独立落账
+    #[test]
+    fn activation_and_grow_denied_counters_are_independent() {
+        let metrics = PluginMetrics::default();
+        metrics.record_activation(100);
+        metrics.record_activation(250);
+        metrics.record_memory_denied();
+        metrics.record_memory_denied();
+        metrics.record_table_denied();
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.activation_us_total, 350);
+        assert_eq!(snap.activation_us_max, 250);
+        assert_eq!(snap.memory_grow_denied_total, 2);
+        assert_eq!(snap.table_grow_denied_total, 1);
+    }
+
+    /// trap 原因分布六桶齐全且互不串位（快照消费方按 key 取值）
+    #[test]
+    fn snapshot_exposes_all_trap_reason_buckets() {
+        let metrics = PluginMetrics::default();
+        for kind in TrapKind::ALL {
+            metrics.record_trap(kind);
+        }
+
+        let reasons = metrics.snapshot().trap_reasons;
+        assert_eq!(reasons.len(), 6);
+        for kind in TrapKind::ALL {
+            assert_eq!(reasons[kind.key()], 1, "trap 桶 {} 计数错误", kind.key());
+        }
+    }
+}

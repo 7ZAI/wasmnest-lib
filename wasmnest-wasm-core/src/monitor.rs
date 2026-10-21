@@ -130,10 +130,28 @@ impl MetricsRegistry {
         {
             return m.clone();
         }
-        let mut map = self.plugins.write().unwrap_or_else(|e| recovered(e, "plugins"));
+        let mut map = self
+            .plugins
+            .write()
+            .unwrap_or_else(|e| recovered(e, "plugins"));
         map.entry(plugin_id.to_string())
             .or_insert_with(|| Arc::new(PluginMetrics::default()))
             .clone()
+    }
+
+    /// 移除插件指标句柄（卸载路径调用）
+    ///
+    /// 注册表必须与「已加载插件集合」一致：卸载后残留的旧计数会以状态未知的
+    /// 幽灵卡形式出现在监控快照里，直到宿主重启。重装 / 停机重载**不**走这里
+    /// ——它们的累计计数应延续，只有卸载意味着插件生命周期真正结束。
+    ///
+    /// 返回是否命中；已取出的 `Arc<PluginMetrics>` 句柄仍可记账，但不再进入快照。
+    pub fn remove(&self, plugin_id: &str) -> bool {
+        self.plugins
+            .write()
+            .unwrap_or_else(|e| recovered(e, "plugins"))
+            .remove(plugin_id)
+            .is_some()
     }
 
     /// 全量快照（JSON）：`{ "plugins": { "<plugin_id>": { ... } }, <source_name>: { ... }, ... }`
@@ -150,7 +168,10 @@ impl MetricsRegistry {
     /// 调用，杜绝「快照持读锁 → 源回调请求写锁 → 自锁/饥饿」。
     pub fn snapshot(&self) -> serde_json::Value {
         let plugins: serde_json::Map<String, serde_json::Value> = {
-            let map = self.plugins.read().unwrap_or_else(|e| recovered(e, "plugins"));
+            let map = self
+                .plugins
+                .read()
+                .unwrap_or_else(|e| recovered(e, "plugins"));
             map.iter()
                 .map(|(id, m)| {
                     (
@@ -164,7 +185,10 @@ impl MetricsRegistry {
         out.insert("plugins".to_string(), serde_json::Value::Object(plugins));
         // 短锁收集源（Arc 克隆），锁外调用用户回调
         let sources: Vec<(String, Arc<dyn MetricsSource>)> = {
-            let s = self.sources.read().unwrap_or_else(|e| recovered(e, "sources"));
+            let s = self
+                .sources
+                .read()
+                .unwrap_or_else(|e| recovered(e, "sources"));
             s.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
         };
         for (name, source) in sources {
@@ -186,6 +210,34 @@ mod tests {
         let b = reg.plugin("com.wasmnest.b");
         assert!(Arc::ptr_eq(&a1, &a2), "同插件必须返回同一句柄");
         assert!(!Arc::ptr_eq(&a1, &b));
+    }
+
+    /// 卸载清理：移除后快照不再包含该插件，其他插件不受影响；重装从零开始
+    #[test]
+    fn remove_plugin_drops_only_its_snapshot_entry() {
+        let reg = MetricsRegistry::new();
+        reg.plugin("com.wasmnest.a")
+            .record_lifecycle(LifecycleEvent::Instantiate);
+        reg.plugin("com.wasmnest.b")
+            .record_lifecycle(LifecycleEvent::Instantiate);
+
+        assert!(reg.remove("com.wasmnest.a"));
+        let snap = reg.snapshot();
+        assert!(
+            snap["plugins"].get("com.wasmnest.a").is_none(),
+            "卸载后旧指标不得继续出现在快照里: {snap}"
+        );
+        assert_eq!(
+            snap["plugins"]["com.wasmnest.b"]["lifecycle"]["instantiate"],
+            1
+        );
+
+        assert!(!reg.remove("com.wasmnest.a"), "重复移除是无害 no-op");
+        assert_eq!(
+            reg.plugin("com.wasmnest.a").snapshot().lifecycle["instantiate"],
+            0,
+            "重装同 id 必须从零计数，不继承卸载前指标"
+        );
     }
 
     #[test]
@@ -243,7 +295,10 @@ mod tests {
         m.record_authz_decision(AuthzDecisionKind::RequireApproval);
         let snap = m.snapshot();
         assert_eq!(snap.authz["allow"], 2);
-        assert_eq!(snap.authz["deny"], 1, "deny 不得记入 allow/require_approval 桶");
+        assert_eq!(
+            snap.authz["deny"], 1,
+            "deny 不得记入 allow/require_approval 桶"
+        );
         assert_eq!(snap.authz["require_approval"], 3);
     }
 
@@ -311,12 +366,19 @@ mod tests {
             "memory_current_bytes",
             "memory_peak_bytes",
             "calls_total",
+            "calls_in_flight",
             "fuel_consumed_total",
             "call_duration_us_total",
             "call_duration_us_max",
             "call_duration_buckets",
             "lifecycle",
             "lifecycle_last_unix",
+            "trap_reasons",
+            "memory_grow_denied_total",
+            "table_grow_denied_total",
+            "activation_us_total",
+            "activation_us_max",
+            "quota",
             "authz",
             "bus",
         ] {
@@ -365,7 +427,10 @@ mod tests {
             .record_lifecycle(LifecycleEvent::Instantiate);
         reg.register_source("task", Box::new(FakeTask));
         let snap = reg.snapshot();
-        assert_eq!(snap["plugins"]["com.wasmnest.a"]["lifecycle"]["instantiate"], 1);
+        assert_eq!(
+            snap["plugins"]["com.wasmnest.a"]["lifecycle"]["instantiate"],
+            1
+        );
         assert_eq!(snap["task"]["jobsSubmittedTotal"], 7);
     }
 
@@ -433,7 +498,9 @@ mod tests {
         impl MetricsSource for Reentrant {
             fn snapshot(&self) -> serde_json::Value {
                 // 回捣：取插件句柄并记账（需要写锁路径）——持读锁期间调用即死锁
-                self.reg.plugin("com.wasmnest.reentrant").record_memory_growth(8);
+                self.reg
+                    .plugin("com.wasmnest.reentrant")
+                    .record_memory_growth(8);
                 serde_json::json!({ "ok": true })
             }
         }
@@ -443,7 +510,12 @@ mod tests {
         let snap = reg.snapshot();
         assert_eq!(snap["reentrant"]["ok"], serde_json::json!(true));
         // 回调的记账确实落盘（回调发生在 plugins 段构建之后，故第二次快照才可见）
-        assert_eq!(reg.plugin("com.wasmnest.reentrant").snapshot().memory_current_bytes, 8);
+        assert_eq!(
+            reg.plugin("com.wasmnest.reentrant")
+                .snapshot()
+                .memory_current_bytes,
+            8
+        );
         assert_eq!(
             reg.snapshot()["plugins"]["com.wasmnest.reentrant"]["memory_current_bytes"],
             8,

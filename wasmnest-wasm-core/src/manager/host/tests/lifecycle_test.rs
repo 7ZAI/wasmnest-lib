@@ -2,6 +2,7 @@
 
 use super::scaffold::*;
 use super::*;
+use crate::monitor::LifecycleEvent;
 
 // ==================== 激活 / 停用（非 WASM 插件） ====================
 
@@ -14,7 +15,10 @@ async fn test_activate_plugin_file_scan_flow() {
     );
 
     // 未注册插件 → Err
-    let err = host.activate_plugin("com.missing", false).await.unwrap_err();
+    let err = host
+        .activate_plugin("com.missing", false)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("not found"));
 
     host.activate_plugin(TEST_PLUGIN_ID, false).await.unwrap();
@@ -50,7 +54,9 @@ async fn test_activate_plugin_recovers_from_error_state() {
         make_plugin(
             TEST_PLUGIN_ID,
             PluginSource::FileScan,
-            PluginState::Error { error: "wasm load failed".into() },
+            PluginState::Error {
+                error: "wasm load failed".into(),
+            },
         ),
     );
 
@@ -80,7 +86,11 @@ async fn test_deactivate_plugin_flow() {
     let host = setup_host().await;
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
     );
     // 预注册一条命令贡献，验证停用时从 registry 摘除
     host.registry()
@@ -112,7 +122,10 @@ async fn test_deactivate_plugin_flow() {
     assert!(host.registry().list_commands().await.is_empty());
 
     // 未注册插件 → Err
-    let err = host.deactivate_plugin("com.missing", false).await.unwrap_err();
+    let err = host
+        .deactivate_plugin("com.missing", false)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("not found"));
 }
 
@@ -129,7 +142,10 @@ async fn test_deactivate_all() {
     host.deactivate_all().await.unwrap();
 
     for id in ["com.wasmnest.a", "com.wasmnest.b"] {
-        assert_eq!(host.get_plugin(id).await.unwrap().state, PluginState::Deactivated);
+        assert_eq!(
+            host.get_plugin(id).await.unwrap().state,
+            PluginState::Deactivated
+        );
     }
 }
 
@@ -173,18 +189,27 @@ async fn test_deactivate_all_covers_degraded() {
         make_plugin(
             "com.wasmnest.degraded",
             PluginSource::FileScan,
-            PluginState::Degraded { error: "init failed".to_string() },
+            PluginState::Degraded {
+                error: "init failed".to_string(),
+            },
         ),
     );
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
     );
 
     host.deactivate_all().await.unwrap();
 
     assert_eq!(
-        host.get_plugin("com.wasmnest.degraded").await.unwrap().state,
+        host.get_plugin("com.wasmnest.degraded")
+            .await
+            .unwrap()
+            .state,
         PluginState::Deactivated,
         "Degraded 实例必须在退出流程中被停用"
     );
@@ -202,7 +227,11 @@ async fn test_repeat_activation_during_activating_is_idempotent() {
     let host = setup_host().await;
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Activating),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activating,
+        ),
     );
 
     host.activate_plugin(TEST_PLUGIN_ID, false).await.unwrap();
@@ -220,9 +249,13 @@ async fn declared_ws_endpoint_follows_activation_lifecycle() {
     let plugin_id = "com.test.ws-endpoint-lifecycle";
     let mut plugin = make_plugin(plugin_id, PluginSource::FileScan, PluginState::Loaded);
     plugin.manifest.permissions.push("ws:server".to_string());
-    plugin.manifest.contributes.ws_endpoints =
-        vec![crate::manifest::WsEndpointContribution::Path("echo".to_string())];
-    host.plugins.write().await.insert(plugin_id.to_string(), plugin);
+    plugin.manifest.contributes.ws_endpoints = vec![crate::manifest::WsEndpointContribution::Path(
+        "echo".to_string(),
+    )];
+    host.plugins
+        .write()
+        .await
+        .insert(plugin_id.to_string(), plugin);
 
     let mount = wasmnest_server_websocket::endpoint::mount_path(plugin_id, "echo");
     host.activate_plugin(plugin_id, false).await.unwrap();
@@ -250,12 +283,18 @@ async fn declared_ws_endpoint_follows_activation_lifecycle() {
 /// ⇒ 前半段转红。
 #[tokio::test(flavor = "multi_thread")]
 async fn auth_records_survive_deactivate_and_are_purged_on_uninstall() {
-    use crate::security::auth_policy::{AuthPolicyStore, AuthRecordSource, AuthResource, AuthStrategy};
+    use crate::security::auth_policy::{
+        AuthPolicyStore, AuthRecordSource, AuthResource, AuthStrategy,
+    };
 
     let host = setup_host().await;
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
     );
     let store = AuthPolicyStore::new(host.storage().db());
     store
@@ -275,7 +314,10 @@ async fn auth_records_survive_deactivate_and_are_purged_on_uninstall() {
 
     // 停用：记录与策略都在
     host.deactivate_plugin(TEST_PLUGIN_ID, false).await.unwrap();
-    let after_deactivate = store.overview(TEST_PLUGIN_ID, "T", Vec::new()).await.unwrap();
+    let after_deactivate = store
+        .overview(TEST_PLUGIN_ID, "T", Vec::new())
+        .await
+        .unwrap();
     assert_eq!(
         after_deactivate.records.len(),
         1,
@@ -292,8 +334,21 @@ async fn auth_records_survive_deactivate_and_are_purged_on_uninstall() {
     );
 
     // 卸载：清空（重装即全新授权）
+    host.wasm_runtime()
+        .monitor()
+        .plugin(TEST_PLUGIN_ID)
+        .record_lifecycle(LifecycleEvent::Instantiate);
     host.uninstall_plugin(TEST_PLUGIN_ID).await.unwrap();
-    let after_uninstall = store.overview(TEST_PLUGIN_ID, "T", Vec::new()).await.unwrap();
+    assert!(
+        host.wasm_runtime().monitor().snapshot()["plugins"]
+            .get(TEST_PLUGIN_ID)
+            .is_none(),
+        "卸载必须同步清掉指标注册表条目，避免监控快照残留幽灵插件"
+    );
+    let after_uninstall = store
+        .overview(TEST_PLUGIN_ID, "T", Vec::new())
+        .await
+        .unwrap();
     assert!(
         after_uninstall.records.is_empty(),
         "卸载必须清空授权记录：重装不该继承前一任的授权"
