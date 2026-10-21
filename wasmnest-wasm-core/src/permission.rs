@@ -121,6 +121,15 @@ pub const PERMISSION_CRYPTO_AEAD: &str = "crypto:aead";
 pub const PERMISSION_CRYPTO_ASYM: &str = "crypto:asym";
 /// 宿主加密引擎·密钥派生域（host-crypto，v26）：HKDF
 pub const PERMISSION_CRYPTO_KDF: &str = "crypto:kdf";
+/// 运行监控（WIT `host-metrics.snapshot`）：读取所有已加载插件的运行时指标快照
+///
+/// **为什么单独立位**：快照可读**全局**插件维度（内存 / 调用量 / 耗时 / trap /
+/// 授权决策 / 总线背压），能推断其他应用的活跃度与健康度——这是监控应用的
+/// 功能性前提，但也是跨应用信息面。与 `session:read` / `connection:read` 同款
+/// 判据：能读到「别人在做什么」的能力必须能被用户单独拒绝。
+///
+/// 数据面**只含计数与 plugin_id**，不含会话文本 / 文件内容 / 凭据。
+pub const PERMISSION_METRICS_READ: &str = "metrics:read";
 
 
 /// 权限词汇反射表：`(常量标识符, 权限串)`
@@ -162,6 +171,7 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
     (stringify!(PERMISSION_CRYPTO_AEAD), PERMISSION_CRYPTO_AEAD),
     (stringify!(PERMISSION_CRYPTO_ASYM), PERMISSION_CRYPTO_ASYM),
     (stringify!(PERMISSION_CRYPTO_KDF), PERMISSION_CRYPTO_KDF),
+    (stringify!(PERMISSION_METRICS_READ), PERMISSION_METRICS_READ),
 ];
 
 /// 合法权限集合 — 桌面端权限词汇的**唯一真源**（由 [`PERMISSION_VOCABULARY`] 派生）
@@ -294,6 +304,9 @@ pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
     (PERMISSION_CRYPTO_AEAD, &["crypto.aeadEncrypt", "crypto.aeadDecrypt", "crypto.aeadGenerateKey", "crypto.aeadGenerateNonce"]),
     (PERMISSION_CRYPTO_ASYM, &["crypto.keyAgreementGenerate", "crypto.keyAgreementShared"]),
     (PERMISSION_CRYPTO_KDF, &["crypto.kdfDerive"]),
+    // 运行监控（WASM-only：宿主 `host-metrics.snapshot`，无前端调用点）。
+    // 门禁落点 = `manager/runtime/core_binding.rs` 的 Host impl 首行。
+    (PERMISSION_METRICS_READ, &["metrics.snapshot"]),
 ];
 
 /// 权限管理器

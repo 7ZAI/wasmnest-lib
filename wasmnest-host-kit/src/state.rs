@@ -99,6 +99,8 @@ impl WasmPluginState {
         wasi_ctx: wasmtime_wasi::WasiCtx,
         spec: StoreSpec,
     ) -> Self {
+        // 配额上限随实例化写入指标（监控页算使用率用；纯原子写，一次）
+        spec.metrics.set_limits(&spec.limits);
         Self {
             plugin_id,
             host,
@@ -168,6 +170,7 @@ impl wasmtime::ResourceLimiter for WasmPluginState {
                 max_bytes = self.limits.max_memory_bytes,
                 "WASM memory growth denied by resource limiter"
             );
+            self.metrics.record_memory_denied();
             Ok(false)
         } else {
             // 指标记账：当前值/峰值（纯原子操作，不进日志）
@@ -189,6 +192,7 @@ impl wasmtime::ResourceLimiter for WasmPluginState {
                 max_entries = self.limits.max_table_entries,
                 "WASM table growth denied by resource limiter"
             );
+            self.metrics.record_table_denied();
             Ok(false)
         } else {
             Ok(true)

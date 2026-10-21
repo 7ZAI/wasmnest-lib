@@ -151,6 +151,24 @@ interface host-log {
 interface host-config {
     get: func(key: string) -> result<option<string>, string>;
 }
+/// 运行监控（core-monitor）：只读运行时指标快照
+///
+/// **权限 `metrics:read`（manifest 必须单独声明）**：未声明即 `Err`。
+/// 返回 JSON 字符串，形状与内核 `MetricsRegistry::snapshot()` 逐字一致：
+/// `{ "plugins": { "<plugin_id>": {...} }, "<source>": {...} }`——每插件段含
+/// 内存 current/peak、调用次数/在飞数、燃料总量、耗时 total/max/直方图、
+/// trap 原因分布、生命周期计数与最近时间、授权决策、总线背压、配额上限。
+///
+/// 语义边界：
+/// - **只读**：不重置任何计数器，不影响被观测插件；
+/// - **无业务内容**：只有数值计数与 plugin_id / 枚举键，不含会话文本、文件内容、
+///   凭据或任何应用数据；
+/// - **全局可见**：授权一次即可读**所有已加载插件**的聚合指标（监控用途所需），
+///   因此可据此推断其他应用的活跃度（侧信道）——权限描述已写明；
+/// - 快照源未装配（无头 / 测试上下文）时 `Err`（fail-visible，不返回空对象冒充）。
+interface host-metrics {
+    snapshot: func() -> result<string, string>;
+}
 /// 插件独立数据库（原 database.rs：plugin_db_*）
 interface host-plugin-database {
     execute: func(sql: string) -> result<u32, string>;
@@ -192,7 +210,7 @@ interface manifest {
     get: func() -> string;
 }
 
-// 核心 world：只含内核机制能力（8 import + 3 必选导出；events-binary 是可选出
+// 核心 world：只含内核机制能力（9 import + 3 必选导出；events-binary 是可选出
 // 导出面，不在 world 内）。合成 package 的每端 world plugin 由 include core 并入
 // 这些成员，其余端成员由各端 cap-*.wit 的 world 并入；业务能力交集由双端
 // compose.json 直接消费能力域 crate 的 `wit/<domain>.wit`（ADR 0052 D2）。
@@ -205,6 +223,7 @@ world core {
     import host-log;
     import host-config;
     import host-plugin-database;
+    import host-metrics;
 
     export command;
     export lifecycle;

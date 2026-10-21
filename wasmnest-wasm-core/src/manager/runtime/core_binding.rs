@@ -34,8 +34,10 @@
 //! 可选导出（`events-binary` / `events-ws` / `events-task`）一律实例化后用原生
 //! `TypedFunc` 探测，不经绑定（见 `WasmPluginState` 的可选导出字段）。
 
+use crate::host_api::check_permission;
 use crate::host_api::context::HostCtxOf;
 use crate::host_api::{bus, config, database, events, fs, log, platform, sqlite, status, storage};
+use crate::permission::PERMISSION_METRICS_READ;
 use crate::AppError;
 use wasmnest_host_kit::WasmPluginState;
 use wasmtime::component::{bindgen, Linker};
@@ -171,6 +173,29 @@ impl wasmnest::plugin::host_config::Host for WasmPluginState {
             &self.plugin_id,
             &key,
         )
+    }
+}
+
+// ==================== host-metrics ====================
+//
+// 只读快照出口：权限门在**调用点首行**（词汇漂移锁按 `PERMISSION_*` 引用还原
+// 门禁落点）；快照源由装配面注入（`WasmHostContext::set_metrics_snapshot_source`），
+// 内核绑定层不认识注册表持有者。未装配 → `Err`（fail-visible，不返回空对象）。
+
+impl wasmnest::plugin::host_metrics::Host for WasmPluginState {
+    fn snapshot(&mut self) -> Result<String, String> {
+        if !check_permission(
+            self.host_ctx(),
+            &self.plugin_id,
+            PERMISSION_METRICS_READ,
+            "metrics.snapshot",
+        ) {
+            return Err(format!(
+                "permission denied: {} (declare it in plugin.json permissions)",
+                PERMISSION_METRICS_READ
+            ));
+        }
+        self.host_ctx().metrics_snapshot().snapshot_json()
     }
 }
 
@@ -361,6 +386,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<WasmPluginState>) -> crate::Resu
         wasmnest::plugin::host_fs::add_to_linker::<WasmPluginState, D>,
         wasmnest::plugin::host_bus::add_to_linker::<WasmPluginState, D>,
         wasmnest::plugin::host_platform::add_to_linker::<WasmPluginState, D>,
+        wasmnest::plugin::host_metrics::add_to_linker::<WasmPluginState, D>,
     ] {
         iface(linker, |s| s).map_err(|e| {
             AppError::Plugin(format!(

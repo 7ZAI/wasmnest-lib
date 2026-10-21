@@ -598,22 +598,32 @@ impl LoadedWasmPlugin {
     /// pub（票 05b）：lib 集成测试（session_e2e）直接驱动真实产物激活
     pub fn activate(&mut self) -> crate::Result<i32> {
         let _timer = self.track_call();
-        let exports = self.core_exports()?;
-        let lifecycle = exports.wasmnest_plugin_lifecycle();
-        match block_on_async(async { lifecycle.call_activate(&mut self.store).await }) {
-            Ok(Ok(())) => {
-                self.store.data().metrics.record_lifecycle(LifecycleEvent::ActivateOk);
-                Ok(0)
+        // 激活耗时单独记账：调用聚合含 `activate`，但监控页需要把「启动成本」
+        // 与平时命令调用分开看（激活失败也要落账，否则失败样本消失）
+        let started = std::time::Instant::now();
+        let outcome = (|| -> crate::Result<i32> {
+            let exports = self.core_exports()?;
+            let lifecycle = exports.wasmnest_plugin_lifecycle();
+            match block_on_async(async { lifecycle.call_activate(&mut self.store).await }) {
+                Ok(Ok(())) => {
+                    self.store.data().metrics.record_lifecycle(LifecycleEvent::ActivateOk);
+                    Ok(0)
+                }
+                Ok(Err(msg)) => {
+                    self.store.data().metrics.record_lifecycle(LifecycleEvent::ActivateFail);
+                    Err(AppError::Plugin(format!("WASM activate() failed: {}", msg)))
+                }
+                Err(e) => {
+                    self.store.data().metrics.record_lifecycle(LifecycleEvent::ActivateFail);
+                    Err(engine::trapped(&self.store, "activate", e))
+                }
             }
-            Ok(Err(msg)) => {
-                self.store.data().metrics.record_lifecycle(LifecycleEvent::ActivateFail);
-                Err(AppError::Plugin(format!("WASM activate() failed: {}", msg)))
-            }
-            Err(e) => {
-                self.store.data().metrics.record_lifecycle(LifecycleEvent::ActivateFail);
-                Err(engine::trapped(&self.store, "activate", e))
-            }
-        }
+        })();
+        self.store
+            .data()
+            .metrics
+            .record_activation(started.elapsed().as_micros() as u64);
+        outcome
     }
 
     /// 调用插件的 deactivate 导出

@@ -471,6 +471,10 @@ impl PluginHost {
             message_bus.clone(),
             Arc::new(crate::manager::capability::CapabilityRegistry::new()),
         ));
+        // 运行监控出口（WIT `host-metrics`）：快照源 = 本运行时注册表。
+        // 与 guest_events / host_facts 同款两阶段注入——实例化前写入，
+        // 插件激活期即可调用（监控应用自身也走这条路径）。
+        wasm_host_ctx.set_metrics_snapshot_source(wasm_runtime.monitor());
 
         // core-security × core-monitor：决策计数埋点两阶段注入
         // （monitor 生于 WasmRuntime，晚于宿主上下文构建）

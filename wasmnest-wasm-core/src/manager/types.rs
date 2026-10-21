@@ -5,7 +5,7 @@
 
 // 中性词汇（票 02 M4）：机制层不再按形态引用 SDK——清单/状态/类型词汇
 // 统一取自 crate::manifest（超集；双端绑定层转换）
-use crate::manifest::{PluginContributes, PluginManifest, PluginState, PluginType};
+use crate::manifest::{PluginContributes, PluginKind, PluginManifest, PluginState, PluginType};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 
@@ -74,6 +74,9 @@ pub struct HostPluginInfo {
     pub author: String,
     pub main: String,
     pub plugin_type: PluginType,
+    /// 装配角色（L1 基础服务 / L2 内部业务 / L3 应用）；缺省 = L3
+    #[serde(default)]
+    pub kind: PluginKind,
     /// WASM 模块文件名（仅 rust-ts 类型插件使用）
     pub rust_library: String,
     pub permissions: Vec<String>,
@@ -102,6 +105,7 @@ impl From<&LoadedPlugin> for HostPluginInfo {
             author: p.manifest.author.clone(),
             main: p.manifest.main.clone(),
             plugin_type: p.manifest.plugin_type.clone(),
+            kind: p.manifest.kind,
             rust_library: p.manifest.rust_library.clone(),
             permissions: p.manifest.permissions.clone(),
             state: p.state.clone(),
@@ -153,7 +157,7 @@ fn manifest_installed_at(extension_path: &str) -> Option<i64> {
 mod tests {
     use super::*;
     // 中性词汇（票 02 M4）：测试段同机制层口径
-    use crate::manifest::{PluginManifest, PluginState, PluginType};
+    use crate::manifest::{PluginKind, PluginManifest, PluginState, PluginType};
 
     /// 构造带完整字段的测试 manifest
     ///
@@ -206,6 +210,7 @@ mod tests {
         assert_eq!(info.author, "tester");
         assert_eq!(info.main, "index.ts");
         assert_eq!(info.plugin_type, PluginType::RustTs);
+        assert_eq!(info.kind, PluginKind::BusinessApp);
         assert_eq!(info.rust_library, "wasmnest_test.wasm");
         assert_eq!(info.permissions, vec!["broadcast", "storage"]);
         assert_eq!(info.state, PluginState::Activated);
@@ -226,6 +231,25 @@ mod tests {
         assert_eq!(json["pluginType"], "rust-ts", "PluginType 序列化为 kebab-case");
         assert!(json.get("icon").is_none(), "icon=None 时应省略字段");
         assert!(json.get("installedAt").is_none());
+    }
+
+    /// 装配角色随清单透传，并按 kebab-case 序列化（监控页用它区分服务 / 应用）
+    #[test]
+    fn test_host_info_serializes_plugin_kind() {
+        let mut plugin = sample_loaded(PluginSource::Wasm);
+        plugin.manifest.kind = PluginKind::InternalBusiness;
+        let info = HostPluginInfo::from(&plugin);
+
+        assert_eq!(info.kind, PluginKind::InternalBusiness);
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["kind"], "internal-business");
+
+        // 旧载荷缺 kind 时按缺省 L3 反序列化（向后兼容）
+        let decoded: HostPluginInfo = serde_json::from_value(json).unwrap();
+        let mut legacy = serde_json::to_value(&decoded).unwrap();
+        legacy.as_object_mut().unwrap().remove("kind");
+        let legacy_info: HostPluginInfo = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy_info.kind, PluginKind::BusinessApp);
     }
 
     /// icon 有值时透传并在序列化中保留
