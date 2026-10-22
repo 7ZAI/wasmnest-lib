@@ -21,7 +21,7 @@ use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::{PeerNetError, Result};
+use crate::base::error::{PeerNetError, Result};
 
 /// 身份持久化文件名（与宿主 `device_identity.json` 并列、互不相干）
 const IDENTITY_FILE: &str = "node_identity.json";

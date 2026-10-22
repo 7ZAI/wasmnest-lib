@@ -129,7 +129,8 @@ wasmnest-plugin-api = { version = "0.0.1", optional = true }
 # 测试组件编码（core module → 组件）依赖随夹具构建器迁平台仓（票 08 批次三）；
 # 能力仓自持夹具均直出组件（wasip2 直出 / wit-bindgen 直出），不再需要本依赖。
 # 对等网络共享基础设施（节点身份 + 自签证书）——双端共享（移动 fork 同依赖）
-wasmnest-peer-net = { path = "../peer-net" }
+# 2026-10-22 peer-net-dissolve：`wasmnest-peer-net` 已拆分并入
+# `wasmnest-server-peer-net`（本 crate 的 PeerCtx 消费链本就指向后者），此死依赖删除
 # 链路报文加密协议核心（link_crypto 算法）——双端共享
 wasmnest-link-crypto = { path = "../link-crypto" }
 

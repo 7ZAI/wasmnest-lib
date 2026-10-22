@@ -5653,13 +5653,13 @@ name = "wasmnest-discovery-engine"
 version = "0.0.1"
 dependencies = [
  "flume",
+ "local-ip-address",
  "mdns-sd",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "uuid",
- "wasmnest-peer-net",
 ]
 
 [[package]]
@@ -5698,34 +5698,6 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "x25519-dalek",
-]
-
-[[package]]
-name = "wasmnest-peer-net"
-version = "0.0.1"
-dependencies = [
- "aes-gcm",
- "chrono",
- "ed25519-dalek",
- "flume",
- "hex",
- "hkdf",
- "local-ip-address",
- "mdns-sd",
- "rand_core 0.6.4",
- "rcgen",
- "ring",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "socket2",
- "thiserror 1.0.69",
- "tokio",
- "tokio-rustls",
- "tracing",
- "x25519-dalek",
- "x509-parser",
 ]
 
 [[package]]
@@ -5812,15 +5784,32 @@ dependencies = [
 name = "wasmnest-server-peer-net"
 version = "0.0.1"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
+ "chrono",
+ "ed25519-dalek",
+ "flume",
+ "hex",
+ "hkdf",
+ "local-ip-address",
+ "mdns-sd",
+ "rand_core 0.6.4",
+ "rcgen",
+ "ring",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2",
+ "socket2",
+ "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "uuid",
- "wasmnest-peer-net",
  "wasmnest-server-base",
+ "x25519-dalek",
+ "x509-parser",
 ]
 
 [[package]]

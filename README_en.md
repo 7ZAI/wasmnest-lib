@@ -46,17 +46,16 @@ desktop / mobile host src-tauri/src/ (composition root · thin shell) — platfo
 | `wasmnest-server-core` | Transport-agnostic server core: supervisor / filter chain / link_crypto / metrics / `TransportFace` + serve | no features | — | platform assembly, http/ws depend downward, test repo |
 | `wasmnest-server-http` | HTTP transport + `host-http` binding layer (endpoint registry / gateway / middleware / DTO anchors) | `default = []`; `common-host` | `wit/http.wit` | desktop host (common-host), wasm-core (engine face), mobile host (engine face), test repo |
 | `wasmnest-server-websocket` | WebSocket transport + `host-websocket` client-domain wiring / server-side engine functions | same as above | `wit/ws.wit` (shared with ws-client-engine) | same as http |
-| `wasmnest-server-peer-net` | Peer-to-peer **engine domain** + `host-peer` binding layer (not a transport; does not join the actix composition) | same as above | `wit/peer.wit` | desktop (common-host), mobile (engine face), wasm-core (`PeerCtx`), test repo |
+| `wasmnest-server-peer-net` | Peer-to-peer **engine domain** (incl. base mechanisms in `base/`: identity/TLS/trust/mDNS registration/transfer-session primitives — absorbed from the former `wasmnest-peer-net`) + `host-peer` binding layer (not a transport; does not join the actix composition) | same as above | `wit/peer.wit` | desktop (common-host), mobile (engine face), wasm-core (`PeerCtx`), test repo |
 | `wasmnest-discovery-engine` | mDNS capability domain: shared daemon + type hub + browse/advertise handle tables + host advertiser face | same as above | `wit/mdns.wit` | desktop (common-host), mobile (engine face), test repo |
 | `wasmnest-pty-engine` | PTY capability domain + cross-platform pseudo-terminal engine (process lifecycle / reader thread / ring buffer) | same as above | `wit/pty.wit` | desktop host (common-host) |
 | `wasmnest-ws-client-engine` | WS **outbound client** domain: handle table / two tasks / heartbeat / backoff reconnect / reclaim on disable | no features | `wit/ws.wit` (shared contract source) | mobile host, test repo |
 | `wasmnest-crypto-engine` | Neutral cryptographic primitives (aes_gcm/chacha/hybrid/kdf/rsa/x25519) + name-addressed registry | no features | — (WIT face lives in host `plugin/crypto.rs`) | desktop host, server-core |
 | `wasmnest-notify-engine` | Notification **contract room**: holds only WIT + port vocabulary (currently no ports), zero implementation | no features | `wit/notify.wit` | both hosts' `compose.json` — **no Rust consumer** |
-| `peer-net` (`wasmnest-peer-net`) | Shared peer-to-peer foundation: Ed25519 node identity / self-signed certificates / TLS direct connections / trust gate / mDNS discovery | no features | — | wasm-core, server-peer-net, discovery-engine, both hosts, test repo |
 | `link-crypto` (`wasmnest-link-crypto`) | Link-message encryption protocol core: HTTP envelope / WS handshake IKM / binary frames | no features | — | wasm-core (`link_crypto`), both hosts |
 | `wasmnest-headless-host-probe` | Headless-host probe: references every capability domain in non-desktop form, proving "default shape is consumable by any host" | no features (never enables `common-host`), zero dev-deps | — | gate only — **must not enter any host dependency list** |
 
-> The only two directory names that differ from their package names are `link-crypto` (package `wasmnest-link-crypto`) and `peer-net` (package `wasmnest-peer-net`).
+> The only directory name that differs from its package name is `link-crypto` (package `wasmnest-link-crypto`).
 
 ## 4. Group Details
 
@@ -73,7 +72,7 @@ Default shape = **pure engine mechanisms + port abstractions**, with zero WIT / 
 
 - **`wasmnest-server-http`**: HTTP transport + `host-http` binding layer (2 inbound + 1 outbound primitive).
 - **`wasmnest-server-websocket`**: WebSocket transport (connection skeleton / plugin endpoint channels / registry / graceful shutdown) + `host-websocket` binding layer.
-- **`wasmnest-server-peer-net`**: the peer-to-peer **engine domain**, not a transport — it does not join the actix composition, filter chain or link encryption. mDNS handles are injected as plain values through `MdnsPort` (single-listener invariant). Product business (transfer tasks / policies / history / shared roots / browsing orchestration) lives in apps-repo plugins; this crate keeps only engine primitives and lifecycle.
+- **`wasmnest-server-peer-net`**: the peer-to-peer **engine domain**, not a transport — it does not join the actix composition, filter chain or link encryption. mDNS handles are injected as plain values through `MdnsPort` (single-listener invariant). Product business (transfer tasks / policies / history / shared roots / browsing orchestration) lives in apps-repo plugins; this crate keeps only engine primitives and lifecycle, plus the base mechanisms (absorbed from `wasmnest-peer-net` in 2026-10-22: identity/TLS/trust/mDNS registration/transfer-session primitives) as its own `base/` submodule.
 - **`wasmnest-discovery-engine`**: mDNS capability domain. The process-wide shared daemon may only be created once, in `engine.rs`; for a given service type only `type_hub.rs` may call `daemon.browse` / `stop_browse` (a duplicate browse silently kills other event streams).
 - **`wasmnest-pty-engine`**: PTY capability domain (`host-pty` 6 primitives) plus the plugin-private pseudo-terminal engine face. The engine face is cross-platform and wasm-free; it accepts only caller-computed argv and does no shell wrapping; output goes through a ring buffer with watermark notifications.
 
@@ -85,7 +84,7 @@ Default shape = **pure engine mechanisms + port abstractions**, with zero WIT / 
 
 ### 4.4 Foundations, Independent Domains and the Contract Room
 
-- **`peer-net`**: shared peer-to-peer foundation. Reinstalling means a new identity (deliberately separate from device identity); certificate public key = node public key, fingerprint = identity (`node_id = hex(SHA-256(raw ed25519 key))`); untrusted inbound connections stop at an application-layer confirmation gate; `_wasmnest-peer._tcp.local.` is completely independent of the legacy terminal link service `_wasmnest._tcp`.
+- **Peer-to-peer base mechanisms** (absorbed from the former `wasmnest-peer-net` crate into `wasmnest-server-peer-net`'s `base/` in the 2026-10-22 dissolve): reinstalling means a new identity (deliberately separate from device identity); certificate public key = node public key, fingerprint = identity (`node_id = hex(SHA-256(raw ed25519 key))`); untrusted inbound connections stop at an application-layer confirmation gate; `_wasmnest-peer._tcp.local.` is completely independent of the legacy terminal link service `_wasmnest._tcp`.
 - **`link-crypto`**: link-message encryption protocol core, pure byte protocol only. Constants and algorithms are a compatibility surface and must match the mobile TypeScript implementation byte for byte — changing a constant is a cross-end breaking change.
 - **`wasmnest-ws-client-engine`**: WS outbound client domain (`host-websocket` client subset, 5 primitives + reclaim on disable). Platform differences (permission gate / delivery / background tasks / jwt issuance / backoff) are injected through `WsClientPorts`; the production dependency list contains zero internal crates.
 - **`wasmnest-crypto-engine`**: exposes only neutral algorithm primitives with no business semantics; no authentication orchestration, negotiation or key policy; key material is always supplied by the caller, and host identity keys are never touched.

@@ -9,7 +9,7 @@
 
 1. **插件机制**：`wasmnest-wasm-core`（运行期整核）+ `wasmnest-host-kit`（装配期内核）+ `wasmnest-host-api-core`（域实现层）；
 2. **能力域引擎**：`wasmnest-{discovery,pty,ws-client,crypto,notify}-engine` + 五个 `wasmnest-server-*`（传输面与内核）；
-3. **共享底座**：`peer-net`（对等网络身份/TLS/发现）、`link-crypto`（链路加密协议）；
+3. **共享底座**：`link-crypto`（链路加密协议）；对等网络底座机制（身份/TLS/信任/mDNS 注册/传输会话引擎原语）拆分并入 `wasmnest-server-peer-net` 的 `base/` 子模块（2026-10-22 peer-net-dissolve，原 `wasmnest-peer-net` crate 已删除）；
 4. **契约真源**：`wasmnest-contract` crate（`src/lib.rs`）与各 `wit/<domain>.wit`——`wasmnest:plugin@0.0.2` 包名/版本只在本仓手写。
 
 **边界一句话**：产品语义（会话 / 终端 / 文件传输 / AI / Agent）住应用仓；端差异与装配（宿主薄壳、SDK、WIT 组合、权限门落点）住平台仓；本仓只做**可复用机制 + 端口抽象 + 契约**，不读平台/应用源码、不做产品判断。
@@ -46,7 +46,7 @@ wasmnest-lib/
 ├─ wasmnest-host-api-core/                # host_api 无 WIT 域实现层
 ├─ wasmnest-server-{base,core,http,websocket,peer-net}/
 ├─ wasmnest-{discovery,pty,crypto,ws-client,notify}-engine/
-├─ link-crypto/  peer-net/                # 包名分别是 wasmnest-link-crypto / wasmnest-peer-net
+├─ link-crypto/                           # 包名 wasmnest-link-crypto（唯一目录名≠包名例外）
 └─ wasmnest-headless-host-probe/          # 默认形态可引用性的长期门禁
 ```
 
@@ -77,13 +77,12 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 | `wasmnest-server-core` | 与传输无关的 server 内核：supervisor / 过滤链 / link_crypto / metrics / `TransportFace` + serve | 无 feature | — | 平台双端装配、http/ws 向下依赖、测试仓 |
 | `wasmnest-server-http` | HTTP 传输面 + `host-http` 绑定层（端点注册表 / 网关 / 中间件 / DTO 锚点） | `default = []`；`common-host` | `wit/http.wit` | 桌面宿主（common-host）、wasm-core（引擎面）、移动宿主（引擎面）、测试仓 |
 | `wasmnest-server-websocket` | WebSocket 传输面 + `host-websocket` 客户端域接线 / 服务端引擎函数 | 同上 | `wit/ws.wit` | 同 http |
-| `wasmnest-server-peer-net` | 对等网络**引擎域** + `host-peer` 绑定层（非传输面，不参与 actix 组合） | 同上 | `wit/peer.wit` | 桌面（common-host）、移动（引擎面）、wasm-core（`PeerCtx`）、测试仓 |
+| `wasmnest-server-peer-net` | 对等网络**引擎域**（含底座机制 `base/`：身份/TLS/信任/mDNS 注册/传输会话引擎原语——原 `wasmnest-peer-net` 拆分并入）+ `host-peer` 绑定层（非传输面，不参与 actix 组合） | 同上 | `wit/peer.wit` | 桌面（common-host）、移动（引擎面）、wasm-core（`PeerCtx`）、测试仓 |
 | `wasmnest-discovery-engine` | mDNS 能力域：共享守护 + 类型中枢 + 浏览/广播双句柄表 + 宿主自播面 | 同上 | `wit/mdns.wit` | 桌面（common-host）、移动（引擎面）、测试仓 |
 | `wasmnest-pty-engine` | PTY 能力域 + 跨平台伪终端引擎（进程生命周期 / 读取线程 / 环形缓冲） | 同上 | `wit/pty.wit` | 桌面宿主（common-host） |
 | `wasmnest-ws-client-engine` | WS **出站客户端**能力域：句柄表 / 双任务 / 心跳 / 退避重连 / 停用回收 | 无 feature | `wit/ws.wit` | 移动宿主、测试仓 |
 | `wasmnest-crypto-engine` | 中性加密算法原语（aes_gcm/chacha/hybrid/kdf/rsa/x25519）+ 名称寻址注册表 | 无 feature | —（WIT 面在宿主 `plugin/crypto.rs`） | 桌面宿主、server-core |
 | `wasmnest-notify-engine` | 通知域**契约房**：只持 WIT + 端口词汇（当前无端口），零实现 | 无 feature | `wit/notify.wit` | 双端 `compose.json` 组合——**无 Rust 消费者** |
-| `peer-net`（`wasmnest-peer-net`） | 对等网络共享底座：Ed25519 节点身份 / 自签证书 / TLS 直连 / 信任闸门 / mDNS 发现 | 无 feature | — | wasm-core、server-peer-net、discovery-engine、双端宿主、测试仓 |
 | `link-crypto`（`wasmnest-link-crypto`） | 链路报文加密协议核心：HTTP 信封 / WS 握手 IKM / 二进制帧 | 无 feature | — | wasm-core（`link_crypto`）、双端宿主 |
 | `wasmnest-headless-host-probe` | 无头宿主探针：以非桌面形态引用全部能力域，钉「默认形态任何宿主可引用」 | 无 feature（永不开 `common-host`）、零 dev-deps | — | 仅门禁——**不得进任何宿主依赖清单** |
 
@@ -97,7 +96,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 - 版本线 `0.0.1` 与 tag：本仓独立打 `lib-vX.Y.Z`（当前线 `lib-v0.0.x`）；平台仓 `release-manifest.json` 的 `repos.lib.tag` 指向**精确 tag**，平台侧校验本仓 HEAD == 该 tag 且工作树干净。
 - **版本号只在发布时 bump**：crate `version` / `PACKAGE_VERSION` 不随 dev 日常改动（功能 / 修复 / 重构）变动；发布时联动打 tag + 平台仓 manifest（规则见 `../wasmnest`/`docs/public/versioning.md`；契约版本另有 §2.2 流程，与普通发版解耦）。
 
-**命名纪律**：新 crate 目录名 = 包名（`wasmnest-<域>`）；唯二例外是历史底座 `link-crypto` / `peer-net`（目录名与包名不同形，引用时看清）。`plugin-sdk-*` / `wasmnest-componentize` 等**不属于本仓**（分别在平台仓 SDK 与平台仓 `tools/`）。
+**命名纪律**：新 crate 目录名 = 包名（`wasmnest-<域>`）；唯一例外是历史底座 `link-crypto`（目录名与包名不同形，引用时看清）。`plugin-sdk-*` / `wasmnest-componentize` 等**不属于本仓**（分别在平台仓 SDK 与平台仓 `tools/`）。
 
 ---
 
@@ -109,7 +108,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 - **平台仓 → 本仓**：宿主 `src-tauri/Cargo.toml` 直接 path 依赖 `../../../wasmnest-lib/<crate>`；`common-host` feature 由桌面宿主开启（5 个能力域），移动宿主不开（用自有 `host_domains/*` 实现，只取引擎面）。
 - **唯一已知反向边（架构债）**：`wasmnest-wasm-core` 的 `desktop-assembly`（默认开）对桌面 SDK 的 `wasmnest-plugin-api = { version = "0.0.1" }` 版本依赖。该 SDK 未发布到 crates.io，消费侧（桌面宿主、测试仓）用 `[patch.crates-io]` 指回工作树 SDK（`<平台>/wasmnest-{desktop}/packages/plugin-sdk-desktop/rust`）；**版本必须与 SDK `Cargo.toml` 逐字一致**，否则 patch 不生效、解析失败。终态由票据清偿（`desktop-assembly` 整体迁桌面宿主、依赖删除）——本次勿扩大该债。
 - **能力域 crate 的 `[dependencies]` 不得含任何下游 crate**：禁 SDK（`wasmnest-plugin-api*`）、禁双端 wasm-core、禁 `wasmnest-host-kit`（机制内核只经 `common-host` 装配）、禁宿主平台（`tauri`）与传输栈（`actix`，传输面自身除外）。每条规则都有配对锁（§2.4）。
-- **路径依赖重命名**：依赖被重命名时（如跨端夹具 `package = "..."`）依赖键必须显式写 `package`；lib name 与 package name 不同形（`link-crypto` / `peer-net`）是本仓的检查重点。
+- **路径依赖重命名**：依赖被重命名时（如跨端夹具 `package = "..."`）依赖键必须显式写 `package`；lib name 与 package name 不同形（`link-crypto` 是唯一目录名≠包名用例）是本仓的检查重点。
 
 ### 2.2 契约真源与版本（改 WIT 前必读）
 
@@ -187,7 +186,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 
 - `server-base` 是叶子地基，在地基位置——改它的依赖面影响全仓（含无头宿主）。`tauri-compat` 默认开只为 `From<tauri::Error> for AppError` 一个 impl；非 Tauri 消费方 `default-features = false`，代价是边界处显式 `map_err`（孤儿规则，无法下游补写）。
 - `server-core` 传输无关（supervisor / filter / link_crypto / metrics / `TransportFace` + serve，依赖倒置）；http / ws 只**向下**依赖它，**彼此零横向 import**，也不得反向认识宿主（由各自 `dependency_direction_lock.rs` 双向钉死）。
-- `server-peer-net` 是**引擎域**不是传输面（不过 actix 组合、不过过滤链、不用链路加密）：只向下依赖 base 与共享 `peer-net`；清单不得含 core/http/websocket、`wasmnest-discovery-engine`（mDNS 句柄以纯值经 `MdnsPort` 注入，ADR 0054 单 listener 不变量）；「产品业务（传输任务 / 策略 / 历史 / 共享根 / 浏览编排）真源在 file-transfer 插件」，本 crate 只留无业务语义的引擎原语与生命周期。
+- `server-peer-net` 是**引擎域**不是传输面（不过 actix 组合、不过过滤链、不用链路加密）：只向下依赖 base；底座机制（原 `wasmnest-peer-net`，2026-10-22 peer-net-dissolve 拆分并入 `base/` 子模块：身份/TLS/信任/mDNS 注册/传输会话引擎原语）为 crate 自身内容；清单不得含 core/http/websocket、`wasmnest-discovery-engine`（mDNS 句柄以纯值经 `MdnsPort` 注入，ADR 0054 单 listener 不变量；拆分后 discovery-engine 零内部 crate 依赖，mDNS 机制 `disable_virtual_interfaces` 归位该 crate）；「产品业务（传输任务 / 策略 / 历史 / 共享根 / 浏览编排）真源在 file-transfer 插件」，本 crate 只留无业务语义的引擎原语与生命周期。
 - 改依赖方向 = 改边界锁的判据：**锁与清单一起改，且要先说明不变量为何改变**。
 
 ### 3.4 引擎、底座与契约房
@@ -197,7 +196,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 - `wasmnest-pty-engine`：引擎面（跨平台、零 wasm）+ 能力域（句柄表 / 配额仲裁 / 退出事件 / 限频通知 / 6 原语）；只接受调用方算好的 argv，**不做 shell 包装**；输出走环形缓冲 + 水印通知。
 - `wasmnest-ws-client-engine`：`host-websocket` 客户端子集 5 原语 + 停用回收；平台差（权限门 / 投递 / 后台任务 / jwt 代发 / 退避）全经 `WsClientPorts` 注入；生产清单零内部 crate 依赖（锁钉死）。
 - `wasmnest-notify-engine`：契约房，只持 WIT，零实现；平台不支持项（桌面无震动等）**静默忽略写死在契约文档**，实现端不得改成报错。
-- `peer-net`：重装即新身份（与设备身份刻意分离）；证书公钥即节点公钥、指纹即身份（`node_id = hex(SHA-256(raw ed25519 key))`）；未信任拨入停应用层确认闸门；`_wasmnest-peer._tcp.local.` 与终端链路旧 `_wasmnest._tcp` 完全独立。
+- 对等网络底座机制（原 `wasmnest-peer-net` crate，2026-10-22 peer-net-dissolve 拆分并入 `wasmnest-server-peer-net` 的 `base/`）：重装即新身份（与设备身份刻意分离）；证书公钥即节点公钥、指纹即身份（`node_id = hex(SHA-256(raw ed25519 key))`）；未信任拨入停应用层确认闸门；`_wasmnest-peer._tcp.local.` 与终端链路旧 `_wasmnest._tcp` 完全独立。
 - `link-crypto`：只做纯字节协议（配置域 / 身份落盘 / 过滤器接线留宿主）；常量与算法**是协议兼容性表面**，与移动 TS 实现逐字节一致——改常量 = 跨端破坏性变更，先读头注的兼容性清单。
 
 ### 3.5 写代码前的归属三问（顺序不可颠倒）

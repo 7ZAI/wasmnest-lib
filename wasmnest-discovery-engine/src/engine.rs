@@ -61,12 +61,44 @@ fn init_daemon() -> ServiceDaemon {
     // 虚拟/回环网卡禁用：多接口监听会在空等解析响应（VMware/Hyper-V/WSL 虚拟
     // 交换机不转发组播，对端 resolve 可延迟分钟级）。仅初始化执行一次——共享
     // 守护对 peer-net 引擎与全部插件浏览一视同仁（peer-net 不再重复执行）
-    wasmnest_peer_net::disable_virtual_interfaces(&daemon);
+    disable_virtual_interfaces(&daemon);
     // 平台钩子（可选）：移动端 Android 多播锁随守护常驻获取
     if let Some(hook) = DAEMON_INIT_HOOK.get() {
         hook();
     }
     daemon
+}
+
+/// 已知虚拟/回环网卡名模式（mDNS 机制，2026-10-22 peer-net-dissolve 归位：
+/// 原住 `wasmnest-peer-net`，本质是 mDNS 守护的接口过滤，随守护一并归属本 crate）
+const VIRTUAL_IFACE_PATTERNS: &[&str] = &[
+    "vmware", "virtualbox", "vbox", "vethernet", "hyper-v", "wsl", "docker",
+    "loopback", "loopback pseudo", "virbr", "libvirt",
+];
+
+/// 禁用已知虚拟/回环网卡的 mDNS 收发（枚举失败则保持默认全接口，降级不阻断）
+///
+/// pub：宿主侧独立浏览订阅（host-mdns）同样受多网卡解析延迟困扰，复用本逻辑。
+pub fn disable_virtual_interfaces(daemon: &ServiceDaemon) {
+    let Ok(ifaces) = local_ip_address::list_afinet_netifas() else {
+        tracing::debug!("peer mDNS interface enumeration unavailable, keep all interfaces");
+        return;
+    };
+    let mut disabled: Vec<String> = Vec::new();
+    for (name, _) in &ifaces {
+        let lower = name.to_lowercase();
+        if VIRTUAL_IFACE_PATTERNS.iter().any(|p| lower.contains(p))
+            && !disabled.iter().any(|d| d == name)
+        {
+            match daemon.disable_interface(name.as_str()) {
+                Ok(()) => disabled.push(name.clone()),
+                Err(e) => tracing::debug!(iface = %name, error = %e, "disable interface failed"),
+            }
+        }
+    }
+    if !disabled.is_empty() {
+        tracing::info!(ifaces = ?disabled, "peer mDNS virtual interfaces disabled");
+    }
 }
 
 /// 取全局守护（首次访问触发初始化）

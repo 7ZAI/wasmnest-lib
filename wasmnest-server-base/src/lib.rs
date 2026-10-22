@@ -7,8 +7,9 @@
 //! 各面反向需要的宿主能力，由宿主壳注入实现）。
 //!
 //! 本 crate 是 `wasmnest-server-core` / `-http` / `-websocket` / `-peer-net`
-//! 的共同底座；peer-net 只依赖本 crate（+ `wasmnest-peer-net`），不依赖 core
-//! 的传输机制（spec D2 意图）。spec 端口表把 `BusPort` / `EventSink` /
+//! 的共同底座；`-peer-net` 只依赖本 crate（2026-10-22 peer-net-dissolve：底座机制
+//! 拆分并入该 crate 自身 `base/`，不再有独立共享引擎），不依赖 core 的传输机制
+//! （spec D2 意图）。spec 端口表把 `BusPort` / `EventSink` /
 //! `PathsPort` 记在 server-core 而 peer-net 又不依赖 core，是 4-crate 形状内
 //! 的自相矛盾——实施裁决：共享端口 traits 落本 crate，peer-net 依赖本 crate
 //! 取用。

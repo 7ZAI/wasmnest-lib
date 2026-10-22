@@ -147,7 +147,7 @@ pub enum TransferFrame {
     /// 暴露方 → 浏览方：共享根清单应答（issue 11；按注册序，含内置免授权条目）
     RootsResponse {
         /// 暴露中的共享根（id 供后续 Browse/Pull 寻址，name 为展示名）
-        dirs: Vec<crate::shared::SharedRootMeta>,
+        dirs: Vec<crate::base::shared::SharedRootMeta>,
     },
     /// 任一侧 → 对端：暂停本批数据面（pause 门控，不关连接、不弃断点）
     ///
@@ -331,7 +331,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transfer::batch::FileMeta;
+    use crate::base::transfer::batch::FileMeta;
 
     fn sample_offer() -> TransferFrame {
         TransferFrame::Offer {
@@ -411,11 +411,11 @@ mod tests {
             },
             TransferFrame::RootsResponse {
                 dirs: vec![
-                    crate::shared::SharedRootMeta {
+                    crate::base::shared::SharedRootMeta {
                         id: "r-1".to_string(),
                         name: "docs".to_string(),
                     },
-                    crate::shared::SharedRootMeta {
+                    crate::base::shared::SharedRootMeta {
                         id: "r-2".to_string(),
                         name: "downloads".to_string(),
                     },

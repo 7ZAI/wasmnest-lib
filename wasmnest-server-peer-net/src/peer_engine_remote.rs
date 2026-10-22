@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use wasmnest_peer_net::{
+use crate::base::{
     browse_shared_dir, list_shared_roots, pull_shared_file, CancelToken, NodeId, PauseCmd, PauseSlot, PeerNetError,
     TransferEvent,
 };
@@ -206,7 +206,7 @@ pub(crate) fn register_pull_for_test(ctx: &PeerCtx, batch_id: &str) -> Arc<Pause
 ///
 /// denied/unreachable 以带上下文的错误上抛——入口仅在已连接态展示，
 /// 到达此处仍被拒说明信任关系已变化，如实呈现给调用方。
-async fn dial_peer(ctx: &PeerCtx, node_id: &NodeId, action: &str) -> Result<wasmnest_peer_net::Connection> {
+async fn dial_peer(ctx: &PeerCtx, node_id: &NodeId, action: &str) -> Result<crate::base::Connection> {
     let (node, cache) = runtime_snapshot(ctx)
         .await
         .ok_or_else(|| AppError::Internal(format!("peer-net {action} failed: node not started")))?;
@@ -375,12 +375,12 @@ pub async fn pull_peer_files(
 async fn run_pull_queue(
     ctx: Arc<PeerCtx>,
     peer: NodeId,
-    node: wasmnest_peer_net::PeerNetNode,
-    record: wasmnest_peer_net::StaticPeerRecord,
+    node: crate::base::PeerNetNode,
+    record: crate::base::StaticPeerRecord,
     dir_id: String,
     files: Vec<RemotePullFileDto>,
-    config: wasmnest_peer_net::TransferConfig,
-    cancel_root: wasmnest_peer_net::CancelToken,
+    config: crate::base::TransferConfig,
+    cancel_root: crate::base::CancelToken,
     events: mpsc::Sender<TransferEvent>,
 ) {
     let state = &ctx.remote;
@@ -446,7 +446,7 @@ async fn run_pull_queue(
                         super::TOPIC_RECEIVE_EVENT,
                         super::engine_terminal_payload(
                             &batch_id_spawn,
-                            &wasmnest_peer_net::TerminalState::Failed {
+                            &crate::base::TerminalState::Failed {
                                 detail: format!("dial failed: {e}"),
                             },
                         ),

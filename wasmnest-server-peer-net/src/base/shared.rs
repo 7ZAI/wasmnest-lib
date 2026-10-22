@@ -12,7 +12,7 @@
 //!        B=发送角色、A=接收角色；A 端策略恒放行——拉取是用户主动获取)
 //! ```
 //!
-//! 复用而非另起炉灶：拉取的接收半程直接调 [`crate::transfer::receive_files_after_accept`]
+//! 复用而非另起炉灶：拉取的接收半程直接调 [`crate::base::transfer::receive_files_after_accept`]
 //! （断点真源/取消/落位钩子全继承），服务端推流循环镜像 `drive_send` 的
 //! 「拆读写半 + 取消感知」骨架。只读约束是结构性的：线协议不存在任何指向
 //! 暴露端的写语义帧，路径安全由 [`resolve_rel_path`] 在服务端强制。
@@ -36,16 +36,16 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::NodeId;
-use crate::transfer::message::{
+use crate::base::NodeId;
+use crate::base::transfer::message::{
     self, CancelOrigin, IncomingFrame, TransferFrame, TRANSFER_PROTOCOL_VERSION,
 };
-use crate::transfer::{
+use crate::base::transfer::{
     emit, next_frame_handling_pause, next_pause_cmd, proto_violation, receive_files_after_accept,
     run_receive, sess_io, CancelToken, FileMeta, PauseCmd, RateTracker, SessionPause, TerminalState,
     TransferConfig, TransferEvent,
 };
-use crate::transport::{Connection, ConnectionHandler, HandlerFuture};
+use crate::base::transport::{Connection, ConnectionHandler, HandlerFuture};
 
 /// 首帧与会话级等待超时（镜像 transfer 的 OFFER_TIMEOUT：信任放行后对端应立即发起请求）
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -57,17 +57,17 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const SAF_NOT_FOUND_PREFIX: &str = "not-found";
 
 /// 构造适配层「目标不存在」错误（[`SharedSafAccess`] 实现方使用）
-pub fn saf_not_found(detail: impl std::fmt::Display) -> crate::error::PeerNetError {
-    crate::error::PeerNetError::TransferProtocol {
+pub fn saf_not_found(detail: impl std::fmt::Display) -> crate::base::error::PeerNetError {
+    crate::base::error::PeerNetError::TransferProtocol {
         role: "saf",
         detail: format!("{SAF_NOT_FOUND_PREFIX}: {detail}"),
     }
 }
 
 /// 判定一个 crate 错误是否为适配层报告的「目标不存在」
-pub(crate) fn is_saf_not_found(e: &crate::error::PeerNetError) -> bool {
+pub(crate) fn is_saf_not_found(e: &crate::base::error::PeerNetError) -> bool {
     match e {
-        crate::error::PeerNetError::TransferProtocol { detail, .. } => {
+        crate::base::error::PeerNetError::TransferProtocol { detail, .. } => {
             detail.starts_with(SAF_NOT_FOUND_PREFIX)
         }
         _ => false,
@@ -92,10 +92,10 @@ pub trait SeqReader: Send + Sync {
 /// 「目标不存在」以 [`saf_not_found`] 报告，其余失败为一般错误（read-failed）。
 pub trait SharedSafAccess: Send + Sync {
     /// 列出 tree_uri 下 rel 相对路径目录的子条目（排序由引擎统一做）
-    fn list_dir(&self, tree_uri: &str, rel: &str) -> crate::Result<Vec<crate::transfer::batch::DirEntry>>;
+    fn list_dir(&self, tree_uri: &str, rel: &str) -> crate::base::Result<Vec<crate::base::transfer::batch::DirEntry>>;
 
     /// 打开 rel 指向的文件为顺序读取源（不存在/是目录以 [`saf_not_found`] 报告）
-    fn open_read(&self, tree_uri: &str, rel: &str) -> crate::Result<Arc<dyn SeqReader>>;
+    fn open_read(&self, tree_uri: &str, rel: &str) -> crate::base::Result<Arc<dyn SeqReader>>;
 
     /// 列目录结果可能因本端存储权限被过滤的提示位（issue 11）
     ///
@@ -137,12 +137,12 @@ struct SharedHandlerInner {
     /// 活动会话登记表（batch_id/dir_id → 子取消令牌）：按批取消入口
     sessions: std::sync::Mutex<HashMap<String, CancelToken>>,
     /// 服务侧拉取会话暂停登记表（serve batch_id → 暂停句柄）：按批暂停/恢复入口
-    pauses: Arc<std::sync::Mutex<HashMap<String, Arc<crate::transfer::PauseSlot>>>>,
+    pauses: Arc<std::sync::Mutex<HashMap<String, Arc<crate::base::transfer::PauseSlot>>>>,
     /// push 接收会话暂停登记表（接收 batch_id → 暂停句柄）：接收方本地暂停入口
     ///
     /// 与 `pauses` 分表：两者是同一任务的两端视角（本端收 vs 本端供），
     /// 但寻址的 batch_id 各自独立，合表会产生键碰撞时的错误路由。
-    receive_pauses: Arc<std::sync::Mutex<HashMap<String, Arc<crate::transfer::PauseSlot>>>>,
+    receive_pauses: Arc<std::sync::Mutex<HashMap<String, Arc<crate::base::transfer::PauseSlot>>>>,
     /// 服务侧拉取会话取消登记表（serve batch_id → 会话子令牌）
     ///
     /// 与 `sessions` 分表：`sessions` 以**请求键**登记（pull 用 dir_id，供
@@ -229,9 +229,9 @@ impl SharedDirHandler {
         match slot {
             Some(slot) => {
                 let cmd = if paused {
-                    crate::transfer::PauseCmd::Pause
+                    crate::base::transfer::PauseCmd::Pause
                 } else {
-                    crate::transfer::PauseCmd::Resume
+                    crate::base::transfer::PauseCmd::Resume
                 };
                 tracing::info!(batch_id = %batch_id, paused, "serve transfer pause cmd by host");
                 slot.send(cmd).await;
@@ -282,9 +282,9 @@ impl SharedDirHandler {
         match slot {
             Some(slot) => {
                 let cmd = if paused {
-                    crate::transfer::PauseCmd::Pause
+                    crate::base::transfer::PauseCmd::Pause
                 } else {
-                    crate::transfer::PauseCmd::Resume
+                    crate::base::transfer::PauseCmd::Resume
                 };
                 tracing::info!(batch_id = %batch_id, paused, "receive transfer pause cmd by host");
                 slot.send(cmd).await;
@@ -395,7 +395,7 @@ impl ConnectionHandler for SharedDirHandler {
                             SessionGuard::new(Arc::clone(&inner), batch_id.clone(), cancel.clone());
                         // 接收侧本地暂停句柄：会话存续期登记（守卫 drop 摘除），
                         // 宿主可对 push 接收批按 batch_id 下发暂停/恢复
-                        let receive_pause = crate::transfer::PauseSlot::new();
+                        let receive_pause = crate::base::transfer::PauseSlot::new();
                         let _pause_guard = TableGuard::new(
                             Arc::clone(&inner.receive_pauses),
                             batch_id.clone(),
@@ -505,7 +505,7 @@ impl ConnectionHandler for SharedDirHandler {
                             &mut conn,
                             &TransferFrame::Decision {
                                 accepted: false,
-                                reason: Some(crate::transfer::RejectReason::PolicyDenied),
+                                reason: Some(crate::base::transfer::RejectReason::PolicyDenied),
                                 enc_pub_key: None,
                             },
                         )
@@ -540,15 +540,15 @@ impl ConnectionHandler for SharedDirHandler {
 /// 写一条拒绝 Decision（尽力而为：写失败只记日志，连接即将关闭）
 async fn write_rejection(
     conn: &mut Connection,
-    reason: crate::transfer::RejectReason,
+    reason: crate::base::transfer::RejectReason,
 ) {
-    if let Err(e) = crate::transfer::write_decision(conn, false, Some(reason), None).await {
+    if let Err(e) = crate::base::transfer::write_decision(conn, false, Some(reason), None).await {
         tracing::debug!("write rejection decision failed: {e}");
     }
 }
 
 /// 版本守卫：请求版本大于自身支持 → 报协议违规（调用方先回 PolicyDenied 拒绝帧）
-fn check_version(protocol_version: u32) -> crate::Result<()> {
+fn check_version(protocol_version: u32) -> crate::base::Result<()> {
     if protocol_version > TRANSFER_PROTOCOL_VERSION {
         return Err(proto_violation(
             "share",
@@ -571,10 +571,10 @@ async fn serve_browse(
     protocol_version: u32,
     dir_id: &str,
     rel_path: &str,
-) -> crate::Result<()> {
+) -> crate::base::Result<()> {
     const ROLE: &str = "share";
     if let Err(e) = check_version(protocol_version) {
-        write_rejection(&mut conn, crate::transfer::RejectReason::PolicyDenied).await;
+        write_rejection(&mut conn, crate::base::transfer::RejectReason::PolicyDenied).await;
         return Err(e);
     }
 
@@ -605,8 +605,8 @@ async fn serve_browse(
 
 /// 列目录错误分流（NotFound 承载线上拒绝原因；Engine 为本端故障）
 enum ListError {
-    NotFound(crate::transfer::RejectReason),
-    Engine(crate::error::PeerNetError),
+    NotFound(crate::base::transfer::RejectReason),
+    Engine(crate::base::error::PeerNetError),
 }
 
 /// 共享根清单服务流程：校验版本 → 注册表快照（含内置条目，按注册序）→ 应答
@@ -614,7 +614,7 @@ async fn serve_roots(
     mut conn: Connection,
     store: &SharedDirStore,
     protocol_version: u32,
-) -> crate::Result<()> {
+) -> crate::base::Result<()> {
     const ROLE: &str = "share";
     if let Err(e) = check_version(protocol_version) {
         return Err(e);
@@ -639,8 +639,8 @@ async fn list_shared_dir(
     saf: Option<&Arc<dyn SharedSafAccess>>,
     dir_id: &str,
     rel_path: &str,
-) -> Result<Vec<crate::transfer::batch::DirEntry>, ListError> {
-    use crate::transfer::RejectReason;
+) -> Result<Vec<crate::base::transfer::batch::DirEntry>, ListError> {
+    use crate::base::transfer::RejectReason;
 
     let entry = store.get(dir_id).ok_or(ListError::NotFound(RejectReason::NotFound))?;
     let components =
@@ -671,7 +671,7 @@ async fn list_shared_dir(
                     Ok(m) => (false, m.len()),
                     Err(_) => (false, 0),
                 };
-                out.push(crate::transfer::batch::DirEntry::new(name, is_dir, size));
+                out.push(crate::base::transfer::batch::DirEntry::new(name, is_dir, size));
             }
             Ok(out)
         }
@@ -707,13 +707,13 @@ async fn serve_pull(
     protocol_version: u32,
     dir_id: &str,
     rel_path: &str,
-    pauses: Arc<std::sync::Mutex<HashMap<String, Arc<crate::transfer::PauseSlot>>>>,
+    pauses: Arc<std::sync::Mutex<HashMap<String, Arc<crate::base::transfer::PauseSlot>>>>,
     serve_cancels: Arc<std::sync::Mutex<HashMap<String, CancelToken>>>,
-) -> crate::Result<TerminalState> {
+) -> crate::base::Result<TerminalState> {
     const ROLE: &str = "share-sender";
 
     if let Err(e) = check_version(protocol_version) {
-        write_rejection(&mut conn, crate::transfer::RejectReason::PolicyDenied).await;
+        write_rejection(&mut conn, crate::base::transfer::RejectReason::PolicyDenied).await;
         return Err(e);
     }
 
@@ -739,7 +739,7 @@ async fn serve_pull(
     );
 
     // 服务侧暂停句柄：登记（宿主按 serve batch_id 暂停/恢复），会话结束摘除
-    let pause_slot = crate::transfer::PauseSlot::new();
+    let pause_slot = crate::base::transfer::PauseSlot::new();
     pauses
         .lock()
         .expect("serve pause table lock poisoned")
@@ -751,7 +751,7 @@ async fn serve_pull(
         cancel.clone(),
     );
     let session_pause =
-        crate::transfer::SessionPause::from_optional(Some(Arc::clone(&pause_slot))).await;
+        crate::base::transfer::SessionPause::from_optional(Some(Arc::clone(&pause_slot))).await;
     // 会话级暂停面：控制相等待（等 StartFile）期间同样消费本地暂停命令、
     // 容忍对端 Pause/Resume 帧（见 next_frame_handling_pause 文档）
     let mut session_pause = session_pause;
@@ -805,7 +805,7 @@ async fn serve_pull(
 
     // ---- 等接收端声明起点（断点真源）；错误同样收进 outcome，保证
     //      PullServed 之后必然上报一次 Terminal（服务侧任务不会悬挂 running）----
-    let outcome: crate::Result<TerminalState> = async {
+    let outcome: crate::base::Result<TerminalState> = async {
         // 暂停/恢复帧可能在推流前到达（拉取方快速暂停）：会话级暂停面统一
         // 处理（消费本地命令 + 容忍对端帧），本循环只裁决起点/取消/违规
         loop {
@@ -913,8 +913,8 @@ async fn serve_pull(
 }
 
 enum PullResolveError {
-    NotFound(crate::transfer::RejectReason),
-    Engine(crate::error::PeerNetError),
+    NotFound(crate::base::transfer::RejectReason),
+    Engine(crate::base::error::PeerNetError),
 }
 
 struct ResolvedPullTarget {
@@ -960,7 +960,7 @@ async fn resolve_pull_target(
     dir_id: &str,
     rel_path: &str,
 ) -> Result<ResolvedPullTarget, PullResolveError> {
-    use crate::transfer::RejectReason;
+    use crate::base::transfer::RejectReason;
 
     let entry = store.get(dir_id).ok_or(PullResolveError::NotFound(RejectReason::NotFound))?;
     let components =
@@ -998,7 +998,7 @@ async fn resolve_pull_target(
                 return Err(PullResolveError::NotFound(RejectReason::ReadFailed));
             };
             let reader = saf.open_read(tree_uri, rel_path).map_err(|e| match e {
-                crate::error::PeerNetError::TransferProtocol { detail, .. }
+                crate::base::error::PeerNetError::TransferProtocol { detail, .. }
                     if detail.contains("not-found") =>
                 {
                     PullResolveError::NotFound(RejectReason::NotFound)
@@ -1028,7 +1028,7 @@ async fn stream_pull_source<W>(
     cancel: &CancelToken,
     remote: NodeId,
     pause: SessionPause,
-) -> crate::Result<TerminalState>
+) -> crate::base::Result<TerminalState>
 where
     W: tokio::io::AsyncWrite + Unpin + Send,
 {
@@ -1256,7 +1256,7 @@ pub struct SharedRootMeta {
 /// 列可信对端暴露中的共享根清单（单请求会话；issue 11）
 ///
 /// 浏览方先取此清单获得 dir_id，再逐根 [`browse_shared_dir`] 下钻。
-pub async fn list_shared_roots(mut conn: Connection) -> crate::Result<Vec<SharedRootMeta>> {
+pub async fn list_shared_roots(mut conn: Connection) -> crate::base::Result<Vec<SharedRootMeta>> {
     const ROLE: &str = "browser";
 
     message::write_control(
@@ -1289,7 +1289,7 @@ pub async fn list_shared_roots(mut conn: Connection) -> crate::Result<Vec<Shared
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowseListing {
     /// 子条目（已按「目录优先、按名排序」排好）
-    pub entries: Vec<crate::transfer::batch::DirEntry>,
+    pub entries: Vec<crate::base::transfer::batch::DirEntry>,
     /// 暴露端提示列表可能不全（Android 存储权限过滤；沿用既有 notice 语义）
     pub filtered: bool,
 }
@@ -1301,7 +1301,7 @@ pub async fn browse_shared_dir(
     mut conn: Connection,
     dir_id: &str,
     rel_path: &str,
-) -> crate::Result<BrowseListing> {
+) -> crate::base::Result<BrowseListing> {
     const ROLE: &str = "browser";
 
     message::write_control(
@@ -1330,7 +1330,7 @@ pub async fn browse_shared_dir(
             reason,
             ..
         } => {
-            let reason = reason.unwrap_or(crate::transfer::RejectReason::NotFound);
+            let reason = reason.unwrap_or(crate::base::transfer::RejectReason::NotFound);
             Err(proto_violation(
                 ROLE,
                 format!("browse '{rel_path}' in dir '{dir_id}' rejected: {}", reason.as_str()),
@@ -1358,8 +1358,8 @@ pub async fn pull_shared_file(
     config: TransferConfig,
     events: mpsc::Sender<TransferEvent>,
     cancel: CancelToken,
-    pause: Option<Arc<crate::transfer::PauseSlot>>,
-) -> crate::Result<TerminalState> {
+    pause: Option<Arc<crate::base::transfer::PauseSlot>>,
+) -> crate::base::Result<TerminalState> {
     let remote = conn.peer_node_id().clone();
 
     let state = match run_pull_session(
@@ -1403,8 +1403,8 @@ async fn run_pull_session(
     config: &TransferConfig,
     events: &mpsc::Sender<TransferEvent>,
     cancel: &CancelToken,
-    pause: Option<Arc<crate::transfer::PauseSlot>>,
-) -> crate::Result<TerminalState> {
+    pause: Option<Arc<crate::base::transfer::PauseSlot>>,
+) -> crate::base::Result<TerminalState> {
     const ROLE: &str = "puller";
     let remote = conn.peer_node_id().clone();
     let mut conn = conn;
@@ -1449,7 +1449,7 @@ async fn run_pull_session(
             reason,
             ..
         } => {
-            let reason = reason.unwrap_or(crate::transfer::RejectReason::NotFound);
+            let reason = reason.unwrap_or(crate::base::transfer::RejectReason::NotFound);
             return Ok(TerminalState::Rejected { reason });
         }
         other => {
@@ -1471,7 +1471,7 @@ async fn run_pull_session(
         total_size,
         // 拉取路径暂无应用层加密：对端 pull 服务 Offer 不携带加密头
         None,
-        crate::transfer::SessionPause::from_optional(pause).await,
+        crate::base::transfer::SessionPause::from_optional(pause).await,
     )
     .await
 }

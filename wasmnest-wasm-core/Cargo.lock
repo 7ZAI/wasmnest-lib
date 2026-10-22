@@ -6394,34 +6394,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasmnest-peer-net"
-version = "0.0.1"
-dependencies = [
- "aes-gcm",
- "chrono",
- "ed25519-dalek",
- "flume",
- "hex",
- "hkdf",
- "local-ip-address",
- "mdns-sd",
- "rand_core 0.6.4",
- "rcgen",
- "ring",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "socket2",
- "thiserror 1.0.69",
- "tokio",
- "tokio-rustls",
- "tracing",
- "x25519-dalek",
- "x509-parser",
-]
-
-[[package]]
 name = "wasmnest-plugin-api"
 version = "0.0.1"
 dependencies = [
@@ -6504,19 +6476,36 @@ dependencies = [
 name = "wasmnest-server-peer-net"
 version = "0.0.1"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
+ "chrono",
+ "ed25519-dalek",
+ "flume",
+ "hex",
+ "hkdf",
  "inventory",
+ "local-ip-address",
+ "mdns-sd",
+ "rand_core 0.6.4",
+ "rcgen",
+ "ring",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2",
+ "socket2",
+ "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "uuid",
  "wasmnest-host-kit",
- "wasmnest-peer-net",
  "wasmnest-server-base",
  "wasmtime",
  "wit-bindgen 0.60.0",
+ "x25519-dalek",
+ "x509-parser",
 ]
 
 [[package]]
@@ -6580,7 +6569,6 @@ dependencies = [
  "wasmnest-host-api-core",
  "wasmnest-host-kit",
  "wasmnest-link-crypto",
- "wasmnest-peer-net",
  "wasmnest-plugin-api",
  "wasmnest-server-base",
  "wasmnest-server-http",

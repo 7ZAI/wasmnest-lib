@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use wasmnest_peer_net::{
+use crate::base::{
     CancelToken, Connection, DiscoveredPeerRecord, OutgoingFile, PauseCmd, PauseSlot, PeerNetNode, TerminalState,
     TransferEvent,
 };
@@ -447,7 +447,7 @@ fn drive_send_session(ctx: Arc<PeerCtx>, node: PeerNetNode, record: DiscoveredPe
                 .unwrap_or_else(CancelToken::new);
             let sources = session_ctx.transfer.sources_of(&session_batch_id).unwrap_or_default();
             let encrypt = session_ctx.transfer.encrypt_of(&session_batch_id).unwrap_or(false);
-            let _ = wasmnest_peer_net::send_batch(
+            let _ = crate::base::send_batch(
                 conn,
                 session_batch_id,
                 sources,
@@ -558,7 +558,7 @@ impl PeerTransferState {
 async fn dial_for_send(node: &PeerNetNode, record: &DiscoveredPeerRecord) -> Result<Connection, String> {
     match node.dial(&record.to_static_peer_record()).await {
         Ok(conn) => Ok(conn),
-        Err(wasmnest_peer_net::PeerNetError::DialDeniedByPeer { .. }) => {
+        Err(crate::base::PeerNetError::DialDeniedByPeer { .. }) => {
             Err("dial denied by peer (trust revoked or first-connect pending)".to_string())
         }
         Err(e) => Err(format!("dial unreachable: {e}")),

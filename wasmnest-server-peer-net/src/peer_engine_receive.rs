@@ -21,9 +21,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use wasmnest_peer_net::transfer::batch::validate_ask_timeout_secs;
-use wasmnest_peer_net::transfer::DEFAULT_ASK_TIMEOUT_SECS;
-use wasmnest_peer_net::{NodeId, ReceivePolicy, SharedDirHandler, TransferConfig, TransferEvent};
+use crate::base::transfer::batch::validate_ask_timeout_secs;
+use crate::base::transfer::DEFAULT_ASK_TIMEOUT_SECS;
+use crate::base::{NodeId, ReceivePolicy, SharedDirHandler, TransferConfig, TransferEvent};
 use wasmnest_server_base::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;

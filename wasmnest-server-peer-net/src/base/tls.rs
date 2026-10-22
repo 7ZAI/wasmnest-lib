@@ -39,9 +39,9 @@ use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{DigitallySignedStruct, DistinguishedName, Error as RustlsError};
 use rustls::{SignatureScheme, version};
 
-use crate::cert::{extract_spki_raw_public_key, identity_pkcs8_private_key, node_id_from_cert};
-use crate::error::{PeerNetError, Result};
-use crate::identity::{NodeId, NodeIdentity};
+use crate::base::cert::{extract_spki_raw_public_key, identity_pkcs8_private_key, node_id_from_cert};
+use crate::base::error::{PeerNetError, Result};
+use crate::base::identity::{NodeId, NodeIdentity};
 
 // ==================== 常量 ====================
 
@@ -295,7 +295,7 @@ mod tests {
     }
 
     fn identity_cert(identity: &NodeIdentity) -> Vec<u8> {
-        crate::cert::generate_self_signed_cert(identity).expect("generate cert")
+        crate::base::cert::generate_self_signed_cert(identity).expect("generate cert")
     }
 
     fn dummy_server_name() -> ServerName<'static> {

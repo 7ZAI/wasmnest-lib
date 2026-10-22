@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::NodeId;
+use crate::base::NodeId;
 use tokio::sync::{mpsc, Notify};
 
 pub use batch::{
@@ -510,11 +510,11 @@ impl TransferReceiveHandler {
     }
 }
 
-impl crate::transport::ConnectionHandler for TransferReceiveHandler {
+impl crate::base::transport::ConnectionHandler for TransferReceiveHandler {
     fn handle(
         &self,
-        conn: crate::transport::Connection,
-    ) -> crate::transport::HandlerFuture {
+        conn: crate::base::transport::Connection,
+    ) -> crate::base::transport::HandlerFuture {
         let config = self.config.clone();
         let events = self.events.clone();
         let cancel = self.cancel.clone();
@@ -530,7 +530,7 @@ impl crate::transport::ConnectionHandler for TransferReceiveHandler {
                 remote.clone(),
                 &mut batch_slot,
                 // 独立接收处理器无 batch 注册表：暂停入口由上层装配提供
-                // （生产装配走 SharedDirHandler，见 crate::shared）
+                // （生产装配走 SharedDirHandler，见 crate::base::shared）
                 None,
                 None,
             )
@@ -558,16 +558,16 @@ impl crate::transport::ConnectionHandler for TransferReceiveHandler {
 }
 
 /// 错误构造辅助：会话层 IO/编解码失败
-pub(crate) fn sess_io(role: &'static str, e: std::io::Error) -> crate::error::PeerNetError {
-    crate::error::PeerNetError::TransferSession {
+pub(crate) fn sess_io(role: &'static str, e: std::io::Error) -> crate::base::error::PeerNetError {
+    crate::base::error::PeerNetError::TransferSession {
         role,
         detail: e.to_string(),
     }
 }
 
 /// 错误构造辅助：协议违规
-pub(crate) fn proto_violation(role: &'static str, detail: impl Into<String>) -> crate::error::PeerNetError {
-    crate::error::PeerNetError::TransferProtocol {
+pub(crate) fn proto_violation(role: &'static str, detail: impl Into<String>) -> crate::base::error::PeerNetError {
+    crate::base::error::PeerNetError::TransferProtocol {
         role,
         detail: detail.into(),
     }
@@ -689,10 +689,10 @@ where
 /// 发送会话门控推流（本端永不停止读，保证对端 Resume/Cancel 帧始终可达）。
 /// 这补齐了「双端对同一传输任务对称暂停」：此前仅发送端/供流端能本地门控。
 ///
-/// `pre_read`：上层分发器（issue 07 [`crate::shared::SharedDirHandler`]）已
+/// `pre_read`：上层分发器（issue 07 [`crate::base::shared::SharedDirHandler`]）已
 /// 预读首帧做会话分流时传入该帧（必须为 Offer），独立接收端传 `None`。
 pub(crate) async fn run_receive(
-    mut conn: crate::transport::Connection,
+    mut conn: crate::base::transport::Connection,
     config: &TransferConfig,
     events: &mpsc::Sender<TransferEvent>,
     cancel: &CancelToken,
@@ -700,7 +700,7 @@ pub(crate) async fn run_receive(
     batch_slot: &mut Option<String>,
     pause: Option<Arc<PauseSlot>>,
     pre_read: Option<IncomingFrame>,
-) -> crate::Result<TerminalState> {
+) -> crate::base::Result<TerminalState> {
     const ROLE: &str = "receiver";
 
     // ---- Offer（信任放行后应立即到达）----
@@ -865,7 +865,7 @@ pub(crate) async fn run_receive(
 /// （pull 是用户主动获取，恒放行）。`cipher`：加密协商成立时由调用方传入的
 /// 会话密码上下文——本函数只负责对每个数据帧自动解密后落盘。
 pub(crate) async fn receive_files_after_accept(
-    conn: crate::transport::Connection,
+    conn: crate::base::transport::Connection,
     config: &TransferConfig,
     events: &mpsc::Sender<TransferEvent>,
     cancel: &CancelToken,
@@ -875,7 +875,7 @@ pub(crate) async fn receive_files_after_accept(
     total_size: u64,
     cipher: Option<crypto::SessionCipher>,
     pause: SessionPause,
-) -> crate::Result<TerminalState> {
+) -> crate::base::Result<TerminalState> {
     const ROLE: &str = "receiver";
 
     // ---- 建落点目录，进入数据面 ----
@@ -1203,14 +1203,14 @@ impl OutgoingFile {
 /// `pause`：暂停控制句柄（宿主创建）；暂停时门控本端推流（连接保持），
 /// 对端暂停帧到达时同样置位门控并抬发 Paused/Resumed 事件。
 pub async fn send_batch(
-    conn: crate::transport::Connection,
+    conn: crate::base::transport::Connection,
     batch_id: String,
     files: Vec<OutgoingFile>,
     events: mpsc::Sender<TransferEvent>,
     cancel: CancelToken,
     encrypt: bool,
     pause: Option<Arc<PauseSlot>>,
-) -> crate::Result<TerminalState> {
+) -> crate::base::Result<TerminalState> {
     let remote = conn.peer_node_id().clone();
     // 宿主未挂暂停句柄时会话内自建：对端（接收方）发来的 Pause/Resume 帧
     // 必须总能门控本端推流。句柄缺位曾被静默吞掉——接收方按暂停，发送方
@@ -1252,7 +1252,7 @@ pub async fn send_batch(
 pub(crate) async fn next_frame_or_cancel(
     rx: &mut mpsc::Receiver<std::io::Result<IncomingFrame>>,
     cancel: &CancelToken,
-) -> crate::Result<Option<IncomingFrame>> {
+) -> crate::base::Result<Option<IncomingFrame>> {
     const ROLE: &str = "sender";
     tokio::select! {
         biased;
@@ -1295,7 +1295,7 @@ pub(crate) async fn next_frame_handling_pause<W>(
     events: &mpsc::Sender<TransferEvent>,
     remote: &NodeId,
     batch_id: &str,
-) -> crate::Result<Option<IncomingFrame>>
+) -> crate::base::Result<Option<IncomingFrame>>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
@@ -1368,7 +1368,7 @@ where
 /// BatchDone。连接拆读写两半：读半由独立任务持续收帧转发通道，写半在
 /// 主循环推流——保证流式推送期间仍能即时感知对端取消。
 async fn run_send(
-    mut conn: crate::transport::Connection,
+    mut conn: crate::base::transport::Connection,
     batch_id: &str,
     files: Vec<OutgoingFile>,
     events: &mpsc::Sender<TransferEvent>,
@@ -1376,7 +1376,7 @@ async fn run_send(
     remote: NodeId,
     encrypt: bool,
     pause: SessionPause,
-) -> crate::Result<TerminalState> {
+) -> crate::base::Result<TerminalState> {
     const ROLE: &str = "sender";
 
     // ---- 本地准备：stat 源文件构造 Offer 清单 ----
@@ -1472,9 +1472,9 @@ async fn drive_send(
     cancel: &CancelToken,
     remote: NodeId,
     frame_rx: &mut mpsc::Receiver<std::io::Result<IncomingFrame>>,
-    ephemeral: Option<crate::transfer::crypto::EphemeralKeys>,
+    ephemeral: Option<crate::base::transfer::crypto::EphemeralKeys>,
     mut pause: SessionPause,
-) -> crate::Result<TerminalState> {
+) -> crate::base::Result<TerminalState> {
     const ROLE: &str = "sender";
 
     // 暂停门控：供方侧门控自身推流（暂停时不再读源写网络，连接保持，

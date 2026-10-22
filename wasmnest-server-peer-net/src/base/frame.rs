@@ -42,7 +42,7 @@ pub enum TrustStatus {
 /// 信任状态控制帧：状态 + 所指节点
 ///
 /// `node_id` 是状态所指对象（拨入方自身 ID）。客户端收到后必须校验其等于
-/// 本节身份——不符说明对端状态机错乱，按 [`crate::error::PeerNetError::UnknownPeer`]
+/// 本节身份——不符说明对端状态机错乱，按 [`crate::base::error::PeerNetError::UnknownPeer`]
 /// 处理，防止未来多路复用演进时把 A 的状态误投给 B。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustStatusFrame {
@@ -56,21 +56,21 @@ pub struct TrustStatusFrame {
 
 impl TrustStatusFrame {
     /// 构造指向指定节点的 Accepted 帧
-    pub fn accepted(node_id: &crate::identity::NodeId) -> Self {
+    pub fn accepted(node_id: &crate::base::identity::NodeId) -> Self {
         Self::new(TrustStatus::Accepted, node_id)
     }
 
     /// 构造指向指定节点的 PendingConfirmation 帧
-    pub fn pending_confirmation(node_id: &crate::identity::NodeId) -> Self {
+    pub fn pending_confirmation(node_id: &crate::base::identity::NodeId) -> Self {
         Self::new(TrustStatus::PendingConfirmation, node_id)
     }
 
     /// 构造指向指定节点的 Denied 帧
-    pub fn denied(node_id: &crate::identity::NodeId) -> Self {
+    pub fn denied(node_id: &crate::base::identity::NodeId) -> Self {
         Self::new(TrustStatus::Denied, node_id)
     }
 
-    fn new(status: TrustStatus, node_id: &crate::identity::NodeId) -> Self {
+    fn new(status: TrustStatus, node_id: &crate::base::identity::NodeId) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
             status,
@@ -154,7 +154,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::NodeId;
+    use crate::base::identity::NodeId;
 
     fn sample_node_id(byte0: u8) -> NodeId {
         // 同一字节重复 32 次构成 64 位合法 hex，仅测试区分用

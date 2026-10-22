@@ -40,14 +40,14 @@ use tokio_rustls::server::TlsStream as ServerTlsStream;
 // 统一流枚举：Connection 需要同形承载 client/server 两侧移交的连接
 use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream as UnifiedTlsStream};
 
-use crate::cert::node_id_from_cert;
-use crate::error::{PeerNetError, Result};
-use crate::frame::{
+use crate::base::cert::node_id_from_cert;
+use crate::base::error::{PeerNetError, Result};
+use crate::base::frame::{
     TrustStatus, TrustStatusFrame, read_frame, write_frame,
 };
-use crate::identity::{NodeId, NodeIdentity};
-use crate::node::StaticPeerRecord;
-use crate::tls::{BINDING_MISMATCH_PREFIX, parse_binding_mismatch};
+use crate::base::identity::{NodeId, NodeIdentity};
+use crate::base::node::StaticPeerRecord;
+use crate::base::tls::{BINDING_MISMATCH_PREFIX, parse_binding_mismatch};
 
 // ==================== 常量 ====================
 
@@ -169,7 +169,7 @@ pub trait ConnectionHandler: Send + Sync + 'static {
 
 /// accept 循环与各连接任务共享的运行期状态（内部互斥，禁止 unsafe impl）
 pub(crate) struct NodeRuntime {
-    trust: Arc<crate::trust_store::TrustStore>,
+    trust: Arc<crate::base::trust_store::TrustStore>,
     events: mpsc::Sender<TrustEvent>,
     handler: Arc<dyn ConnectionHandler>,
     /// 当前处于确认闸门的节点 ID 集合（去重 + 上限判定）
@@ -178,7 +178,7 @@ pub(crate) struct NodeRuntime {
 
 impl NodeRuntime {
     pub(crate) fn new(
-        trust: Arc<crate::trust_store::TrustStore>,
+        trust: Arc<crate::base::trust_store::TrustStore>,
         events: mpsc::Sender<TrustEvent>,
         handler: Arc<dyn ConnectionHandler>,
     ) -> Self {
@@ -208,7 +208,7 @@ impl NodeRuntime {
             .remove(node_id);
     }
 
-    fn trust(&self) -> &Arc<crate::trust_store::TrustStore> {
+    fn trust(&self) -> &Arc<crate::base::trust_store::TrustStore> {
         &self.trust
     }
 }
@@ -217,7 +217,7 @@ impl NodeRuntime {
 
 /// accept 循环主体：TCP accept → TLS 握手 → 信任分流 → handler 移交
 ///
-/// 由 [`crate::node::PeerNetNode::start`] 系列方法在 tokio 任务中启动；正常
+/// 由 [`crate::base::node::PeerNetNode::start`] 系列方法在 tokio 任务中启动；正常
 /// 只因 shutdown 信号退出，退出前排空所有在途连接任务（见模块文档关停语义）。
 pub(crate) async fn run_accept_loop(
     listener: TcpListener,
@@ -457,7 +457,7 @@ fn enable_keepalive(tcp: &TcpStream) {
 pub(crate) async fn dial(
     identity: &NodeIdentity,
     own_cert_der: &[u8],
-    trust: &Arc<crate::trust_store::TrustStore>,
+    trust: &Arc<crate::base::trust_store::TrustStore>,
     record: &StaticPeerRecord,
 ) -> Result<Connection> {
     let tcp = TcpStream::connect(record.addr)
@@ -468,7 +468,7 @@ pub(crate) async fn dial(
         })?;
     enable_keepalive(&tcp);
 
-    let config = crate::tls::client_config(&record.node_id, identity, own_cert_der)?;
+    let config = crate::base::tls::client_config(&record.node_id, identity, own_cert_der)?;
     let connector = TlsConnector::from(Arc::new(config));
     // 自定义 verifier 忽略 server_name（身份由证书指纹钉扎）；IP 直连无 DNS，
     // 用 IpAddress 形态满足类型要求即可
@@ -601,7 +601,7 @@ fn log_join_result(label: &'static str, result: std::result::Result<(), JoinErro
 
 /// 节点运行句柄：accept 循环存活期的控制面
 ///
-/// 由 [`crate::node::PeerNetNode`] 的 start 系列方法产出；drop 句柄**不会**停
+/// 由 [`crate::base::node::PeerNetNode`] 的 start 系列方法产出；drop 句柄**不会**停
 /// 节点（任务已移交运行时），显式关停必须调用 [`RunningNode::shutdown`]。
 pub struct RunningNode {
     local_addr: SocketAddr,
@@ -645,7 +645,7 @@ pub(crate) fn spawn_running_node(
     listener: std::net::TcpListener,
     identity: &NodeIdentity,
     own_cert_der: &[u8],
-    trust: Arc<crate::trust_store::TrustStore>,
+    trust: Arc<crate::base::trust_store::TrustStore>,
     events: mpsc::Sender<TrustEvent>,
     handler: Arc<dyn ConnectionHandler>,
 ) -> Result<RunningNode> {
@@ -661,7 +661,7 @@ pub(crate) fn spawn_running_node(
             source,
         })?;
 
-    let server_config = Arc::new(crate::tls::server_config(identity, own_cert_der)?);
+    let server_config = Arc::new(crate::base::tls::server_config(identity, own_cert_der)?);
     let acceptor = TlsAcceptor::from(server_config);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let runtime = Arc::new(NodeRuntime::new(trust, events, handler));

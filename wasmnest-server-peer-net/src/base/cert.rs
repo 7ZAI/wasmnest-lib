@@ -13,8 +13,8 @@
 use rcgen::{CertificateParams, DnType, KeyPair};
 use x509_parser::prelude::*;
 
-use crate::error::{PeerNetError, Result};
-use crate::identity::{NodeId, NodeIdentity};
+use crate::base::error::{PeerNetError, Result};
+use crate::base::identity::{NodeId, NodeIdentity};
 
 /// X.509 证书的 DER 编码字节
 pub type CertDer = Vec<u8>;
@@ -142,7 +142,7 @@ pub(crate) fn extract_spki_raw_public_key(cert_der: &[u8]) -> Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::NodeIdentity;
+    use crate::base::identity::NodeIdentity;
 
     /// 独立身份辅助构造（各自 tempdir，互不共享目录）
     fn fresh_identity() -> (tempfile::TempDir, NodeIdentity) {

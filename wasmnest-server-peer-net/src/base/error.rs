@@ -6,7 +6,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use crate::identity::NodeId;
+use crate::base::identity::NodeId;
 
 /// crate 内统一 Result 别名
 pub type Result<T> = std::result::Result<T, PeerNetError>;

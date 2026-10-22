@@ -1,30 +1,31 @@
-//! peer-net 引擎域的依赖方向锁（server-lib-split 票 06）
+//! peer-net 引擎域（含底座机制）的依赖方向锁（server-lib-split 票 06）
 //!
 //! peer-net 与三个传输面（core / http / websocket）**不构成同一条依赖链**——spec
 //! 决策 D2 判它是「引擎域」而非「传输面」：它不参与 actix 组合装配、不过流量过滤链、
-//! 不用链路加密，只向下依赖基础层与共享引擎 crate `wasmnest-peer-net`。这条不变量在
+//! 不用链路加密，只向下依赖基础层。2026-10-22 peer-net-dissolve：原共享引擎 crate
+//! `wasmnest-peer-net` 已拆分，底座机制（身份 / TLS / 信任 / mDNS 注册 / 传输会话引擎
+//! 原语）并入本 crate `base/` 子模块，mDNS 机制 `disable_virtual_interfaces` 归位
+//! discovery-engine——本锁的「共享引擎清单」断言随之退役。这条不变量在
 //! 宿主单 crate 时代靠「`use crate::` 统计」人工确认，拆 crate 后改由**依赖清单**静态
 //! 钉死（比文本锁更难绕过：要引用必须先改清单，改动必然出现在 diff 里）。
 //!
-//! 四条断言：
+//! 三条断言：
 //!
 //! - **D2（引擎域独立）**：本 crate 清单**不得**含 `wasmnest-server-core` /
 //!   `-http` / `-websocket`（传输面）、`wasmnest-desktop`（宿主）、`tauri` / `actix`
 //!   （传输栈）。反向的「内核反向认识传输面」（spec 1.3 B 项）若发生，表现正是本
 //!   crate 清单里长出传输面依赖，故一并由本锁覆盖。
 //! - **D5 取用（必须向下）**：清单**必须**含 `wasmnest-server-base`（错误类型 /
-//!   `error_boundary` / 端口 traits）与 `wasmnest-peer-net`（共享引擎）——缺了说明
-//!   有人把宿主内模块复制进本 crate，或清单被误删。
+//!   `error_boundary` / 端口 traits）——缺了说明有人把宿主内模块复制进本 crate，
+//!   或清单被误删。
 //! - **叶子性**：其余三个 server lib 清单**不得**依赖本 crate（peer-net 是叶子，
 //!   任何面经它取能力都是新的横向依赖）。宿主组合根依赖本 crate 是合法的，故不在
 //!   本锁的扫描面内。
 //! - **mDNS 单 listener 不变量（ADR 0054 / spec §0.4）**：本 crate 清单**不得**含
 //!   `wasmnest-discovery-engine`——类型中枢句柄以**纯值**（`flume::Receiver` + 退订
 //!   守卫 + 重查闭包）经 `MdnsPort` 注入，server-peer-net 不认识 mDNS 引擎 crate。
-//!   与之配套的**唯一合法方向边**是 `wasmnest-discovery-engine → wasmnest-peer-net`
-//!   （`engine.rs::init_daemon` 调 `disable_virtual_interfaces`，spec §0.4 既有调用），
-//!   故共享引擎 `wasmnest-peer-net` 的清单反向引 discovery-engine 会成环——由本锁的
-//!   共享引擎清单断言钉成单向。
+//!   （2026-10-22 起 discovery-engine 零内部 crate 依赖，此边本就不存在；锁继续
+//!   钉死「引擎认识引擎」不复发。）
 //!
 //! 源码文本锁只守「不反向引用传输面 / 不回接宿主路径 / 不认识 tauri 类型」三形态
 //! （含注释与字符串形态——搬移时最容易把宿主路径连同文档一起带进来）。锁自身文件
@@ -53,8 +54,8 @@ const FORBIDDEN_DEPS: &[&str] = &[
     "wasmnest-discovery-engine",
 ];
 
-/// 必须出现在本 crate 依赖清单里的 crate（D5 向下取用）
-const REQUIRED_DEPS: &[&str] = &["wasmnest-server-base", "wasmnest-peer-net"];
+/// 必须出现在本 crate 依赖清单里的 crate（D5 向下取用；底座机制已并入本 crate）
+const REQUIRED_DEPS: &[&str] = &["wasmnest-server-base"];
 
 /// 不得出现在本 crate 源码里的传输面 crate 名（词边界匹配）
 const FORBIDDEN_FACE_CRATES: &[&str] = &[
@@ -85,14 +86,6 @@ const SIBLING_LIB_MANIFESTS: &[&str] = &[
     "wasmnest-server-http",
     "wasmnest-server-websocket",
 ];
-
-/// 共享引擎清单（`wasmnest-peer-net`，相对本 crate 根的 `../peer-net`）
-///
-/// 引擎→共享引擎方向只允许**单向**：`wasmnest-discovery-engine → wasmnest-peer-net`
-/// （`engine.rs::init_daemon` 调 `disable_virtual_interfaces`，spec §0.4 既有合法
-/// 调用）。共享引擎反向引 discovery-engine 会与这条边成环，故在本锁里钉死其缺席
-/// ——mDNS 引擎不得下沉进共享引擎。
-const SHARED_ENGINE_MANIFEST: &str = "../peer-net/Cargo.toml";
 
 fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
@@ -289,21 +282,10 @@ fn peer_net_stays_a_leaf_below_base_and_shared_engine() {
         );
     }
 
-    // 引擎→共享引擎方向单向（spec §0.4）：`wasmnest-discovery-engine → wasmnest-peer-net`
-    // 是既有合法边（`disable_virtual_interfaces`）；共享引擎反向引 discovery-engine 会
-    // 与这条边成环，故在此钉死反向缺席。
-    let shared_engine = crate_root().join(SHARED_ENGINE_MANIFEST);
-    assert!(
-        shared_engine.exists(),
-        "结构锁空转：找不到共享引擎清单 {}（路径错或 peer-net 未落该处）",
-        shared_engine.display()
-    );
-    let shared_deps = dependency_table(&read_file(&shared_engine));
-    assert!(
-        !shared_deps.contains("wasmnest-discovery-engine"),
-        "方向违反：`wasmnest-peer-net` 依赖清单出现 `wasmnest-discovery-engine`\
-         （引擎→共享引擎只允许单向；反向会成环，mDNS 引擎不得下沉进共享引擎）"
-    );
+    // 2026-10-22 peer-net-dissolve：共享引擎 `wasmnest-peer-net` 已拆并入本 crate
+    // （`base/` 子模块），「引擎→共享引擎单向、mDNS 引擎不下沉」的清单断言随其退役；
+    // discovery-engine 零内部依赖由该 crate 自己的清单保证（本锁的 FORBIDDEN_DEPS
+    // 仍钉死 server-peer-net 不得依赖 discovery-engine，引擎认识引擎不复发）。
 }
 
 /// 锁本体 B：本 crate 源码不反向引用传输面 / 不回接宿主路径与类型
@@ -379,10 +361,10 @@ fn matching_follows_word_and_prefix_boundaries() {
 
     // 段内方括号（`features = ["derive"]`）不得截断清单
     let with_features = "[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\n\
-                        wasmnest-peer-net = { path = \"../../../packages/peer-net\" }\n\n\
+                        wasmnest-server-base = { path = \"../../../wasmnest-lib/wasmnest-server-base\" }\n\n\
                         [build-dependencies]\ntauri = \"2\"\n";
     assert!(
-        dependency_table(with_features).contains("wasmnest-peer-net"),
+        dependency_table(with_features).contains("wasmnest-server-base"),
         "段内方括号截断了依赖清单：{:?}",
         dependency_table(with_features)
     );

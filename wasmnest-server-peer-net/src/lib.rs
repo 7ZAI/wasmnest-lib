@@ -2,8 +2,10 @@
 //!
 //! 节点身份初始化 + 节点/发现守护装配 + host-peer 原语（ADR 0022 v2）的引擎
 //! 转发唇口。**依赖方向**（spec D2）：本 crate 只**向下**依赖 `wasmnest-server-base`
-//! （错误 / 端口 traits）与共享引擎 crate `wasmnest-peer-net`，与
-//! `wasmnest-server-core` / `-http` / `-websocket` 三个传输面及宿主 crate **零依赖**
+//! （错误 / 端口 traits）；底座机制（原 `wasmnest-peer-net` crate，2026-10-22
+//! peer-net-dissolve 拆分并入本 crate 的 `base/` 子模块：身份 / 证书 / TLS / 信任 /
+//! mDNS 注册 / 传输会话引擎原语）为 crate 自身内容，与 `wasmnest-server-core` /
+//! `-http` / `-websocket` 三个传输面及宿主 crate **零依赖**
 //! ——它是「引擎域」不是「传输面」，不参与 I1/I2 传输面依赖链（由
 //! `dependency_direction_lock` 以依赖清单钉死）。
 //!
@@ -35,6 +37,11 @@
 //!   pull）的引擎适配模块；插件经 host-peer `*_plugin` 转发入口逐原语调用，
 //!   传输任务快照经 `publish_bus_only` 只推 `peer:transfer` / `peer:receive`
 //!   总线 topic，插件按 batchId 归并持久化业务视图。
+
+/// 对等网络底座机制（原 `wasmnest-peer-net` 拆分并入，2026-10-22 peer-net-dissolve）：
+/// 身份 / 证书 / TLS / 信任 / 帧 / 节点 / 连接 / mDNS 注册 / 传输会话引擎原语 / 共享目录线协议。
+/// 业务语义不留在底座：接收策略与共享暴露面经 WIT 由插件驱动。
+pub mod base;
 
 /// 引擎端口面（窄聚合）：引擎实际消费的五个宿主端口（bus / event_sink /
 /// paths / system_info / mdns）——宿主按端装配；trait 词汇复用 server-base
@@ -93,12 +100,24 @@ use std::time::Instant;
 use tokio::io::AsyncReadExt;
 
 use serde::Serialize;
-use wasmnest_peer_net::{
-    Connection, ConnectionHandler, DiscoveredPeerRecord, DiscoveryCache, DiscoveryConfig, DiscoveryDaemon, FileMeta,
-    HandlerFuture, NodeId, NodeIdentity, PeerNetError, PeerNetNode, PeerNetNodeConfig, RunningNode, SharedDirEntry,
-    SharedDirHandler, SharedDirStore, StaticPeerRecord, TerminalState, TransferConfig, TransferEvent, TrustEvent,
-    TrustStore, TrustedPeerEntry, CAP_FILE_TRANSFER,
+// 底座机制顶层 re-export（`wasmnest_peer_net` 拆分并入后对外符号名不变，消费方仅改前缀）
+// `base::Result`（PeerNetError 别名）刻意不在此 re-export：lib 顶层 Result 是
+// server-base AppError 别名，两义共存时冲突；消费方需要底座错误时用全限定 `base::Result`。
+pub use crate::base::{
+    CancelOrigin, CancelToken, CAP_FILE_TRANSFER, CONFIRM_TIMEOUT, CertDer, Connection, ConnectionHandler, DirEntry,
+    DISCOVERY_PROTOCOL_VERSION, DiscoveryCache, DiscoveryConfig, DiscoveryDaemon, DiscoveredPeerRecord, FileLanding,
+    FileMeta, HandlerFuture, IncomingFrame, MAX_PENDING_CONFIRMATIONS, NodeId, NodeIdentity, OutgoingFile, PauseCmd,
+    PauseSlot, PeerMdnsBrowse, PeerNetError, PeerNetNode, PeerNetNodeConfig, PEER_DISCOVERY_TTL, ReceivePolicy,
+    RejectReason, RunningNode, SERVICE_TYPE, SeqReader, SharedDirEntry, SharedDirHandler, SharedDirRoot,
+    SharedDirStore, SharedRootMeta, SharedSafAccess, StaticPeerRecord, SWEEP_INTERVAL, TerminalState, TransferConfig,
+    TransferEvent, TransferFrame, TransferReceiveHandler, TrustedPeerEntry, TrustEvent, TrustStatus, TrustStatusFrame,
+    TrustStore, browse_shared_dir, generate_self_signed_cert, list_shared_roots, pull_shared_file, resolve_rel_path,
+    saf_not_found, send_batch, sort_entries, spawn_peer_mdns_daemon, verify_cert_matches_node_id, BrowseListing,
+    BUILTIN_DOWNLOADS_ID,
 };
+// 底座子模块（`transfer` / `shared` 等）对消费方保持模块路径可用：旧 `wasmnest_peer_net::transfer`
+// 形态 → `wasmnest_server_peer_net::transfer`（测试仓集成场景沿用该路径）
+pub use crate::base::{shared, transfer};
 
 // ==================== 身份初始化（issue 01）====================
 
@@ -106,7 +125,7 @@ use wasmnest_peer_net::{
 ///
 /// 错误快速上抛走既有启动错误路径：静默换身份会让对端可信列表里记录的本机
 /// ID 全部失效（决策 D3），禁止吞错重试。
-pub fn init_node_identity(data_dir: &Path) -> wasmnest_peer_net::Result<NodeIdentity> {
+pub fn init_node_identity(data_dir: &Path) -> crate::base::Result<NodeIdentity> {
     let identity = NodeIdentity::load_or_create(data_dir)?;
     tracing::info!(
         "peer-net node identity ready: node_id={} (short fingerprint {})",
@@ -888,7 +907,7 @@ async fn start_locked(ctx: Arc<PeerCtx>, data_dir: &Path, device_name: String) -
     // 平台缝注入：落点提升钩子（移动 = MediaStore 尽力提升；桌面 None）
     let landing = ctx.ports.platform.as_ref().and_then(|seam| seam.file_landing());
     let config = TransferConfig {
-        policy: wasmnest_peer_net::ReceivePolicy::Ask {
+        policy: crate::base::ReceivePolicy::Ask {
             timeout: std::time::Duration::from_secs(60),
         },
         download_dir,
@@ -948,7 +967,7 @@ async fn start_locked(ctx: Arc<PeerCtx>, data_dir: &Path, device_name: String) -
     let subscription = ctx
         .ports
         .mdns
-        .subscribe_type(wasmnest_peer_net::SERVICE_TYPE)
+        .subscribe_type(crate::base::SERVICE_TYPE)
         .map_err(|e| AppError::Plugin(format!("mdns type subscription failed: {e}")))?;
     // receiver 与退订守卫**成对**移交：前者进 peer-net 事件循环，后者随
     // DiscoveryDaemon 存续期持有、stop 时释放（释放即退订）。两者不得分家，
@@ -958,12 +977,12 @@ async fn start_locked(ctx: Arc<PeerCtx>, data_dir: &Path, device_name: String) -
     // 30s 周期与「探索发现」即时重查都转调它——重发唯一 browse + receiver 换绑 +
     // 缓存重放广播全员归中枢，peer-net 侧零 daemon 交互（节奏仍留消费方）。
     let requery_ports = Arc::clone(&ctx.ports.mdns);
-    let mdns_browse = wasmnest_peer_net::PeerMdnsBrowse {
+    let mdns_browse = crate::base::PeerMdnsBrowse {
         receiver: browse_receiver,
         guard: browse_guard,
-        request_requery: Arc::new(move || requery_ports.request_type_requery(wasmnest_peer_net::SERVICE_TYPE)),
+        request_requery: Arc::new(move || requery_ports.request_type_requery(crate::base::SERVICE_TYPE)),
     };
-    let daemon = wasmnest_peer_net::spawn_peer_mdns_daemon(
+    let daemon = crate::base::spawn_peer_mdns_daemon(
         &node,
         &running,
         DiscoveryConfig {
@@ -978,7 +997,7 @@ async fn start_locked(ctx: Arc<PeerCtx>, data_dir: &Path, device_name: String) -
     let host_adv = ctx
         .ports
         .mdns
-        .register_host_service(wasmnest_peer_net::SERVICE_TYPE, daemon.service_fullname())
+        .register_host_service(crate::base::SERVICE_TYPE, daemon.service_fullname())
         .map_err(|e| AppError::Plugin(format!("mdns host service registration failed: {e}")))?;
 
     let node_id = node.node_id().to_string();
@@ -992,7 +1011,7 @@ async fn start_locked(ctx: Arc<PeerCtx>, data_dir: &Path, device_name: String) -
     });
     tracing::info!(
         "peer-net node started: addr={listen_addr}, discovery service={}",
-        wasmnest_peer_net::SERVICE_TYPE
+        crate::base::SERVICE_TYPE
     );
     spawn_discovery_refresh_subscriber(ctx.clone());
     Ok(PeerNodeStatus {
@@ -1586,7 +1605,7 @@ mod peer_net_tests {
     // `SharedDirRoot` 只被本组用例用到（生产面走 `SharedDirEntry` 的 serde 反序列化）：
     // 从 crate 顶部 import 列表移到这里，避免非 test 构建报 unused import
     use chrono::Utc;
-    use wasmnest_peer_net::{SharedDirRoot, TrustedPeerEntry};
+    use crate::base::{SharedDirRoot, TrustedPeerEntry};
 
     /// 64 位小写 hex 节点 ID（格式校验通过的最小形态）
     fn node_id(suffix: u8) -> NodeId {
@@ -1721,7 +1740,7 @@ mod peer_net_tests {
             (TerminalState::Completed, "completed"),
             (
                 TerminalState::Rejected {
-                    reason: wasmnest_peer_net::transfer::RejectReason::PolicyDenied,
+                    reason: crate::base::transfer::RejectReason::PolicyDenied,
                 },
                 "rejected",
             ),

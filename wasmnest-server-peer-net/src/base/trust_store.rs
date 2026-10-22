@@ -29,8 +29,8 @@ use std::sync::RwLock;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{PeerNetError, Result};
-use crate::identity::NodeId;
+use crate::base::error::{PeerNetError, Result};
+use crate::base::identity::NodeId;
 
 /// 可信节点列表文件名（位于宿主注入的数据目录下）
 const TRUSTED_NODES_FILE: &str = "trusted_nodes.json";

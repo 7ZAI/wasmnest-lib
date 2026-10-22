@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use wasmnest_server_base::error::{AppError, Result};
 
-use wasmnest_peer_net::OutgoingFile;
+use crate::base::OutgoingFile;
 
 /// 单批文件数上限：目录递归收集的失控保护
 pub(crate) const MAX_FILES_PER_BATCH: usize = 512;

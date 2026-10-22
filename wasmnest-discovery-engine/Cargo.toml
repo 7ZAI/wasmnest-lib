@@ -16,8 +16,9 @@ default = []
 common-host = ["dep:wasmnest-host-kit", "dep:wasmtime", "dep:wit-bindgen", "dep:inventory"]
 
 [dependencies]
-# 虚拟网卡过滤（共享守护初始化一次，peer-net 提供）
-wasmnest-peer-net = { path = "../peer-net" }
+# 虚拟网卡过滤的接口枚举（共享守护初始化一次；mDNS 机制随守护归位本 crate，
+# 2026-10-22 peer-net-dissolve；版本 0.6 对齐两端宿主既有依赖）
+local-ip-address = "0.6"
 # 组播 DNS 协议；版本严格对齐两端宿主 Cargo.lock（0.20.x），避免同进程版本分叉
 mdns-sd = { version = "0.20", features = ["async"] }
 # 类型中枢的订阅通道 / 控制通道（mdns-sd listener 的 Receiver 就是它 re-export 的

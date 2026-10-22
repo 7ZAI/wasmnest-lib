@@ -1,6 +1,6 @@
 //! 传输数据面应用层加密：临时 X25519 ECDH + HKDF-SHA256 → AES-256-GCM 分块加密。
 //!
-//! 协商语义（「自定义请求头」）：发送端在 [`crate::transfer::message::TransferFrame::Offer`]
+//! 协商语义（「自定义请求头」）：发送端在 [`crate::base::transfer::message::TransferFrame::Offer`]
 //! 携带 `encrypted=true` + 临时 X25519 公钥（即加密请求头）；接收端放行时在
 //! `Decision` 回带自己的临时公钥——两个头都齐了才算协商成立，任一侧缺头
 //! 即视为对端不支持，由发送端 fail-fast（静默明文降级比失败更危险）。

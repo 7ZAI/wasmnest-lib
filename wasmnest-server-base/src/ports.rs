@@ -255,7 +255,8 @@ impl MdnsTypeSubscription {
 
 /// peer-net 引擎接入宿主 mDNS 共享守护（替代 `wasm_core::host_api::mdns` 的
 /// `shared_daemon` / `register_host_service` / `stop_host_service` 三函数；
-/// `ServiceDaemon` 为 mdns-sd 类型，宿主壳实现与 `wasmnest-peer-net` 同源）
+/// `ServiceDaemon` 为 mdns-sd 类型，宿主壳实现与对等网络引擎同源——底座机制
+/// 拆分并入 `wasmnest-server-peer-net` 后 mdns-sd 依赖在该 crate 与 discovery-engine）
 ///
 /// 浏览面自「mDNS 类型中枢」（spec §2.3 / ADR 0054）起新增两方法：全进程对同一
 /// 服务类型的 `daemon.browse` / `stop_browse` 只由中枢代持，消费者经

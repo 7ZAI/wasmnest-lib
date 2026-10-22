@@ -30,7 +30,7 @@
 
 use std::sync::Arc;
 
-use wasmnest_peer_net::{FileLanding, SharedDirStore, SharedSafAccess};
+use crate::base::{FileLanding, SharedDirStore, SharedSafAccess};
 use wasmnest_server_base::ports::{BusPort, EventSink, MdnsPort, PathsPort, SystemInfoPort};
 
 /// 对等网络引擎的宿主端口聚合（五个 + 一个可选平台缝；字段与安装对象的

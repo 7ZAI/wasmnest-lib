@@ -413,10 +413,10 @@ pub fn peer_set_shared_roots(ports: &Arc<dyn PeerPorts>, plugin_id: &str, dirs_j
     for s in seeds {
         // 任一条目非法整批拒绝（WIT 契约）——缺两字段都缺时显性点名，不作静默跳过
         let root = match (s.path, s.saf_tree_uri) {
-            (Some(path), _) => wasmnest_peer_net::SharedDirRoot::Fs {
+            (Some(path), _) => crate::base::SharedDirRoot::Fs {
                 path: std::path::PathBuf::from(path),
             },
-            (None, Some(tree_uri)) => wasmnest_peer_net::SharedDirRoot::Saf { tree_uri },
+            (None, Some(tree_uri)) => crate::base::SharedDirRoot::Saf { tree_uri },
             (None, None) => {
                 return Err(format!(
                     "set shared roots: entry '{}' missing 'path' or 'safTreeUri'",
@@ -424,7 +424,7 @@ pub fn peer_set_shared_roots(ports: &Arc<dyn PeerPorts>, plugin_id: &str, dirs_j
                 ))
             }
         };
-        entries.push(wasmnest_peer_net::SharedDirEntry {
+        entries.push(crate::base::SharedDirEntry {
             id: s.id,
             name: s.name,
             root,

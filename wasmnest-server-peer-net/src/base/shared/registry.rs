@@ -8,7 +8,7 @@
 //! - [`SharedDirRoot::Saf`]：Android SAF 树 URI（content://tree/...）——系统
 //!   目录选择器产出、经 takePersistableUriPermission 持久授权，URI 本身即重启
 //!   后仍有效的凭据；crate 不感知 ContentResolver，读取经宿主注入的
-//!   [`crate::shared::SharedSafAccess`] 缝完成。
+//!   [`crate::base::shared::SharedSafAccess`] 缝完成。
 //!
 //! ## 持久化模式完全照抄 trust_store.rs
 //!
@@ -31,8 +31,8 @@ use std::sync::RwLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::{PeerNetError, Result};
-use crate::transfer::batch::DirEntry;
+use crate::base::error::{PeerNetError, Result};
+use crate::base::transfer::batch::DirEntry;
 
 /// 注册表文件名（位于宿主注入的数据目录下）
 const SHARED_DIRS_FILE: &str = "shared_dirs.json";

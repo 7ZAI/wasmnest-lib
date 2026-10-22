@@ -21,14 +21,14 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::cert::{CertDer, generate_self_signed_cert};
-use crate::discovery::DiscoveryCache;
-use crate::error::Result;
-use crate::identity::{NodeId, NodeIdentity};
-use crate::transport::{
+use crate::base::cert::{CertDer, generate_self_signed_cert};
+use crate::base::discovery::DiscoveryCache;
+use crate::base::error::Result;
+use crate::base::identity::{NodeId, NodeIdentity};
+use crate::base::transport::{
     Connection, ConnectionHandler, RunningNode, TrustEvent, spawn_running_node,
 };
-use crate::trust_store::TrustStore;
+use crate::base::trust_store::TrustStore;
 
 // ==================== 发现记录 ====================
 
@@ -104,7 +104,7 @@ impl PeerNetNode {
 
     /// 注入发现结果在线缓存（builder 风格，镜像 [`Self::with_trust_store`] 先例）
     ///
-    /// 挂载后 [`crate::discovery::spawn_peer_mdns_daemon`] 的事件循环（消费宿主编
+    /// 挂载后 [`crate::base::discovery::spawn_peer_mdns_daemon`] 的事件循环（消费宿主编
     /// 造的中枢浏览订阅）与测试的手工喂入共用该缓存实例（「同一通路」，D1）。
     pub fn with_discovery(mut self, cache: Arc<DiscoveryCache>) -> Self {
         self.discovery = Some(cache);
@@ -127,7 +127,7 @@ impl PeerNetNode {
     ) -> Result<RunningNode> {
         let listener =
             std::net::TcpListener::bind(self.config.bind_addr).map_err(|source| {
-                crate::error::PeerNetError::ListenBind {
+                crate::base::error::PeerNetError::ListenBind {
                     addr: self.config.bind_addr,
                     source,
                 }
@@ -157,7 +157,7 @@ impl PeerNetNode {
 
     /// 拨号对端并完成 mTLS 身份钉扎握手与信任状态协商（见 transport::dial）
     pub async fn dial(&self, record: &StaticPeerRecord) -> Result<Connection> {
-        crate::transport::dial(
+        crate::base::transport::dial(
             &self.config.identity,
             &self.certificate,
             &self.trust_store,
