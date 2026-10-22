@@ -186,4 +186,7 @@ peer-net 现有：ed25519-dalek / rand_core / sha2 / hex / serde / serde_json / 
 ## 10. 实施记录
 
 - 2026-10-22：设计定稿（用户确认 Q1/Q2/Q3）。本 spec 落盘 `.scratch/2026-10-22-peer-net-dissolve/`。
-- （实施中追加：Phase 1 本仓 / Phase 2 平台仓 / Phase 3 测试仓 的实际命令与结果。）
+- 2026-10-22（Phase 1 本仓，已提交 `1c1a85e`）：`peer-net/` 删除（git 识别为 rename → `wasmnest-server-peer-net/src/base/`，15 文件 + 新 mod.rs）；域代码 `wasmnest_peer_net::` → `crate::base::`；顶层 re-export 保持符号名不变（`wasmnest_server_peer_net::X`）；`disable_virtual_interfaces` 归位 discovery-engine（该 crate 零内部依赖，§3.3 唯一边退役）；wasm-core 删死依赖；dot 方向锁更新（REQUIRED 仅 base，共享引擎断言退役）；AGENTS/README 同步。验证：server-peer-net 153 / discovery-engine 39 / wasm-core 577+1 / 探针门禁 / platform_reference_registry_lock 全绿。
+- 2026-10-22（Phase 2 跨仓，已提交）：测试仓 `417350d`（peer 集成测试迁入 `tests/peer_*` 依赖 server-peer-net）；平台仓 `e8cd1eb`（双端删 peer-net 依赖 / 移动 4 处 use 前缀 / config patch）+ `6ccd24a`（移动锁 KEPT_ADAPTER_FACE 退役 FILE_TRANSFER_PLUGIN_ID 判据——服务租约既定方向）。双端编译绿 + 迁移集成测试 24 全绿 + 平台锁全绿。
+- **遗留（后续提交，未做）**：① ReceivePolicy 引擎 `Default` 仍为 Ask{60s}（spec §4.1 计划改 fail-closed AlwaysDeny，需应用仓 file-transfer activate 补策略推送，跨仓决策轮）；② `BUILTIN_DOWNLOADS_ID` 与内置免授权条目保留（迁移测试依赖它，属产品部分改造，同后续提交）。
+- **过程教训**：平台仓 `e8cd1eb` 的 `src/peer/net.rs` 中混入并发会话（服务租约波次）的删除改动（FILE_TRANSFER_PLUGIN_ID/node_owner/prewarm_platform）——提交前只核对了 use 前缀 diff 未看整份 diff。正确动作：并发工作树文件须逐项核验 diff 归属再 add（AGENTS §0 并发保护）。
