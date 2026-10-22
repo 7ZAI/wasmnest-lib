@@ -8,10 +8,10 @@
 //
 // world 本体住独立 package（`wasmnest:fixture-wasip3`），成员全部 `include` /
 // `export` 契约真源 package：产物里的 import/export 名仍逐字等于生产契约
-// （`wasmnest:plugin@0.0.2/...`），故组件可被内核壳原样实例化。
+// （`wasmnest:plugin@0.0.1/...`），故组件可被内核壳原样实例化。
 package wasmnest:fixture-wasip3@0.0.1;
 
 world wasip3-fixture {
-    include wasmnest:plugin/core@0.0.2;
-    export wasmnest:plugin/events-binary@0.0.2;
+    include wasmnest:plugin/core@0.0.1;
+    export wasmnest:plugin/events-binary@0.0.1;
 }

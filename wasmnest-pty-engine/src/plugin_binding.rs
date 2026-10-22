@@ -72,7 +72,7 @@ use wasmtime::component::{bindgen, Linker};
 pub const MODULE_NAME: &str = "pty";
 
 /// 能力模块接口路径（与 WIT 契约逐字一致；纯字符串，默认可用）
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.2/host-pty"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.1/host-pty"];
 
 /// 能力模块权限位（`pty:spawn` / `pty:io`；纯字符串，默认可用）
 pub const MODULE_PERMISSIONS: &[&str] = &["pty:spawn", "pty:io"];

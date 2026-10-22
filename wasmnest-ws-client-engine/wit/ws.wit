@@ -1,4 +1,4 @@
-package wasmnest:plugin@0.0.2;
+package wasmnest:plugin@0.0.1;
 // ======================================================================
 // WebSocket 客户端能力域自持契约分片（ADR 0052 D2/D4）
 //

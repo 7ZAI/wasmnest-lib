@@ -14,7 +14,7 @@
 ## 1. 工程形态
 
 - **无根 workspace**：17 个独立 crate（各自 `Cargo.toml` + 随仓库跟踪的 `Cargo.lock`）+ 4 个夹具 crate。命令一律在 crate 目录执行，不存在「仓级 cargo test」。
-- **版本线**：全部 crate 自 `0.0.1` 重开；契约版本 `wasmnest:plugin@0.0.2` 唯一手写真源在 `wasmnest-contract`。
+- **版本线**：全部 crate 自 `0.0.1` 重开；契约版本 `wasmnest:plugin@0.0.1` 唯一手写真源在 `wasmnest-contract`。
 - **消费方式**：平台双端宿主与测试仓经 sibling path 直接依赖本仓工作树（本仓不复制、不发布到 registry；唯一例外是 `wasmnest-wasm-core` 的 `desktop-assembly` 对桌面 SDK `wasmnest-plugin-api` 的版本依赖，消费侧用 `[patch.crates-io]` 指回 SDK 工作树）。
 
 ## 2. 依赖分层

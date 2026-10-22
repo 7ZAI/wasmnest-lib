@@ -80,7 +80,7 @@ pub use type_hub::{
 /// 能力模块名（白名单键；`HostModuleDesc::name` 的真源）
 pub const MODULE_NAME: &str = "discovery";
 /// 本模块提供的 guest interface 路径
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.2/host-mdns"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.1/host-mdns"];
 /// 本模块读写的权限位
 pub const MODULE_PERMISSIONS: &[&str] = &["network:mdns"];
 

@@ -26,7 +26,7 @@
 /// （`wasmnest:plugin@<version>/<interface>`，版本取自仓根
 /// `contracts/wasmnest-plugin-package.rs`）；
 /// **导出**名不带包版本（实例级 `interface#function`），故运行期按名探测导出不受版本影响。
-package wasmnest:plugin@0.0.2;
+package wasmnest:plugin@0.0.1;
 /// 插件 KV 存储（原 storage.rs：storage_get/set/delete）
 interface host-storage {
     get: func(key: string) -> result<option<string>, string>;
