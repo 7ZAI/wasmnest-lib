@@ -405,6 +405,30 @@ pub struct PluginContributes {
     /// 设置页扩展点（移动 manifest 专属；桌面形态不产出该 key，与桌面 SDK JSON 形状一致）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<SettingsContribution>,
+    /// 自定义监控面板声明（monitor 统一壳消费；面板实现住提供方应用工程）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monitor_panels: Vec<MonitorPanelContribution>,
+}
+
+/// 自定义监控面板声明
+///
+/// 只登记元数据（id / 标题 / 排序）；面板 UI 与取数逻辑由提供方应用导出
+/// `mountMonitorPanel`，宿主按需装载，monitor 不直接 import 他人 bundle。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorPanelContribution {
+    /// 面板 id（同一应用内唯一）
+    pub id: String,
+    /// 显示标题
+    pub title: String,
+    /// 排序权重（小者靠前；缺省 100，与双端 SDK 镜像 / 前端排序同口径）
+    #[serde(default = "default_monitor_panel_order")]
+    pub order: i32,
+}
+
+/// 面板缺省排序权重（与 TS SDK 文档 / monitor 壳的 `order ?? 100` 一致）
+fn default_monitor_panel_order() -> i32 {
+    100
 }
 
 /// 命令扩展点声明
@@ -630,7 +654,7 @@ pub struct ConfigProperty {
     pub enum_values: Option<Vec<String>>,
 }
 
-/// 生命周期钩子声明（桌面）
+/// 生命周期钩子声明（桌面 + 移动字段并集）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LifecycleContribution {
@@ -640,6 +664,33 @@ pub struct LifecycleContribution {
     /// 停用钩子
     #[serde(default)]
     pub on_shutdown: bool,
+    /// 移动端：WebSocket 认证成功
+    #[serde(default)]
+    pub on_auth_success: bool,
+    /// 移动端：连接断开
+    #[serde(default)]
+    pub on_disconnect: bool,
+    /// 移动端：会话创建
+    #[serde(default)]
+    pub on_session_created: bool,
+    /// 移动端：会话停止
+    #[serde(default)]
+    pub on_session_stopped: bool,
+}
+
+impl LifecycleContribution {
+    /// 检查是否声明了指定事件（wire 名；未知事件返回 false）
+    pub fn is_declared(&self, event_name: &str) -> bool {
+        match event_name {
+            "onStartup" => self.on_startup,
+            "onShutdown" => self.on_shutdown,
+            "onAuthSuccess" => self.on_auth_success,
+            "onDisconnect" => self.on_disconnect,
+            "onSessionCreated" => self.on_session_created,
+            "onSessionStopped" => self.on_session_stopped,
+            _ => false,
+        }
+    }
 }
 
 /// 底部导航扩展点声明（移动 manifest 专属）

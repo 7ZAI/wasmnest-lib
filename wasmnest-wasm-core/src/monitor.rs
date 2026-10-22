@@ -76,6 +76,9 @@ pub struct MetricsRegistry {
     plugins: RwLock<HashMap<String, Arc<PluginMetrics>>>,
     /// 系统维度快照源（键 = 快照输出段名，如 `task`；注册制注入，见 [`MetricsSource`]）
     sources: RwLock<HashMap<String, Arc<dyn MetricsSource>>>,
+    /// 插件元数据（name / kind / state 等只读展示字段；宿主在装载 / 状态变更时写入）。
+    /// 与指标分开：指标是热路径原子计数，元数据是低频结构化事实，不参与记账。
+    plugin_meta: RwLock<HashMap<String, serde_json::Value>>,
 }
 
 /// 锁中毒恢复：记录事件后继续（指标是对外观测面，锁中毒不应让整个监控面
@@ -96,6 +99,7 @@ impl MetricsRegistry {
         Self {
             plugins: RwLock::new(HashMap::new()),
             sources: RwLock::new(HashMap::new()),
+            plugin_meta: RwLock::new(HashMap::new()),
         }
     }
 
@@ -147,11 +151,29 @@ impl MetricsRegistry {
     ///
     /// 返回是否命中；已取出的 `Arc<PluginMetrics>` 句柄仍可记账，但不再进入快照。
     pub fn remove(&self, plugin_id: &str) -> bool {
-        self.plugins
+        let removed = self
+            .plugins
             .write()
             .unwrap_or_else(|e| recovered(e, "plugins"))
             .remove(plugin_id)
-            .is_some()
+            .is_some();
+        self.plugin_meta
+            .write()
+            .unwrap_or_else(|e| recovered(e, "plugin_meta"))
+            .remove(plugin_id);
+        removed
+    }
+
+    /// 写入 / 覆盖插件元数据（name / kind / state 等只读展示字段）。
+    ///
+    /// 宿主在装载、激活状态变更时调用；不属于指标热路径。快照中以
+    /// `plugin_meta.<plugin_id>` 输出，移动端 monitor 用它做服务 / 应用分类，
+    /// 避免为分类新增 WIT 原语或要求目标插件参与。
+    pub fn set_plugin_meta(&self, plugin_id: &str, meta: serde_json::Value) {
+        self.plugin_meta
+            .write()
+            .unwrap_or_else(|e| recovered(e, "plugin_meta"))
+            .insert(plugin_id.to_string(), meta);
     }
 
     /// 全量快照（JSON）：`{ "plugins": { "<plugin_id>": { ... } }, <source_name>: { ... }, ... }`
@@ -183,6 +205,17 @@ impl MetricsRegistry {
         };
         let mut out = serde_json::Map::new();
         out.insert("plugins".to_string(), serde_json::Value::Object(plugins));
+        // 插件元数据段（可选；没有写入时保持旧快照形状，旧消费方零迁移）
+        let meta: serde_json::Map<String, serde_json::Value> = {
+            let map = self
+                .plugin_meta
+                .read()
+                .unwrap_or_else(|e| recovered(e, "plugin_meta"));
+            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        if !meta.is_empty() {
+            out.insert("plugin_meta".to_string(), serde_json::Value::Object(meta));
+        }
         // 短锁收集源（Arc 克隆），锁外调用用户回调
         let sources: Vec<(String, Arc<dyn MetricsSource>)> = {
             let s = self
@@ -237,6 +270,25 @@ mod tests {
             reg.plugin("com.wasmnest.a").snapshot().lifecycle["instantiate"],
             0,
             "重装同 id 必须从零计数，不继承卸载前指标"
+        );
+    }
+
+    #[test]
+    fn plugin_meta_is_exposed_and_cleared_on_remove() {
+        let reg = MetricsRegistry::new();
+        reg.plugin("com.wasmnest.monitor");
+        reg.set_plugin_meta(
+            "com.wasmnest.monitor",
+            serde_json::json!({ "name": "Monitor", "kind": "internal-business" }),
+        );
+        let snap = reg.snapshot();
+        assert_eq!(snap["plugin_meta"]["com.wasmnest.monitor"]["kind"], "internal-business");
+
+        reg.remove("com.wasmnest.monitor");
+        let snap = reg.snapshot();
+        assert!(
+            snap.get("plugin_meta").is_none(),
+            "卸载后元数据不得以幽灵条目残留: {snap}"
         );
     }
 
