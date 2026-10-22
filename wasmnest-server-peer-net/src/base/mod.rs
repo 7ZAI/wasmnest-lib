@@ -43,9 +43,9 @@ pub use frame::{TrustStatus, TrustStatusFrame};
 pub use identity::{NodeId, NodeIdentity};
 pub use node::{PeerNetNode, PeerNetNodeConfig, StaticPeerRecord};
 pub use shared::{
-    BrowseListing, BUILTIN_DOWNLOADS_ID, SharedRootMeta, browse_shared_dir, list_shared_roots,
-    pull_shared_file, resolve_rel_path, saf_not_found, sort_entries, SeqReader, SharedDirEntry,
-    SharedDirHandler, SharedDirRoot, SharedSafAccess, SharedDirStore,
+    BrowseListing, SharedRootMeta, browse_shared_dir, list_shared_roots, pull_shared_file,
+    resolve_rel_path, saf_not_found, sort_entries, SeqReader, SharedDirEntry, SharedDirHandler,
+    SharedDirRoot, SharedSafAccess, SharedDirStore,
 };
 pub use transfer::{
     CancelOrigin, CancelToken, FileLanding, FileMeta, IncomingFrame, OutgoingFile, PauseCmd,

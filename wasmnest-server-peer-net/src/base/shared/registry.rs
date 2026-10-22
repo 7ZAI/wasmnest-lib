@@ -4,7 +4,7 @@
 //!
 //! 条目只有两种根形态，与平台解耦：
 //! - [`SharedDirRoot::Fs`]：真实文件系统目录——桌面端用户选择的文件夹、移动端
-//!   app 私有下载目录的免授权内置条目都落在此形态；
+//!   app 私有下载目录（宿主平台缝注入的普通条目）都落在此形态；
 //! - [`SharedDirRoot::Saf`]：Android SAF 树 URI（content://tree/...）——系统
 //!   目录选择器产出、经 takePersistableUriPermission 持久授权，URI 本身即重启
 //!   后仍有效的凭据；crate 不感知 ContentResolver，读取经宿主注入的
@@ -15,12 +15,6 @@
 //! 同一威胁模型：进程中途被杀不得产生半截 JSON，同目录临时文件 + rename 原子
 //! 落盘；文件损坏快速失败而非静默重建（静默清空等于「重启后暴露面消失」，对
 //! 已依赖该暴露面的可信对端是语义回退）。
-//!
-//! ## 内置条目不落盘
-//!
-//! 私有下载目录由宿主在构造时经 [`SharedDirStore::with_builtin_download_dir`]
-//! 注入（路径解析自运行环境，持久化它反而会在环境变化后留下悬空条目）；
-//! `load_or_create` 读出的磁盘条目不含内置项，`list` 输出时置于首位。
 //!
 //! 并发形态与 TrustStore 一致：同步 `RwLock` + 小集合 + 单个小文件落盘，
 //! 实例经调用方 `Arc` 共享；禁止 unsafe impl Send/Sync。
@@ -40,8 +34,6 @@ const SHARED_DIRS_FILE: &str = "shared_dirs.json";
 /// 文件格式版本：演进只允许追加字段，加载端拒绝更大版本
 const SHARED_DIRS_FORMAT_VERSION: u32 = 1;
 
-/// 内置下载目录条目的固定 ID（跨端一致；UI 据此识别免授权特殊条目）
-pub const BUILTIN_DOWNLOADS_ID: &str = "local-downloads";
 
 // ==================== 数据模型 ====================
 
@@ -125,8 +117,6 @@ pub struct SharedDirStore {
     path: Option<PathBuf>,
     /// 用户注册条目（插入序）
     dirs: RwLock<Vec<SharedDirEntry>>,
-    /// 内置免授权条目（私有下载目录；不参与持久化）
-    builtin: RwLock<Option<SharedDirEntry>>,
 }
 
 impl SharedDirStore {
@@ -147,7 +137,6 @@ impl SharedDirStore {
             let store = Self {
                 path: Some(path.clone()),
                 dirs: RwLock::new(Vec::new()),
-                builtin: RwLock::new(None),
             };
             store.write_atomic(&SharedDirsFile {
                 version: SHARED_DIRS_FORMAT_VERSION,
@@ -160,7 +149,6 @@ impl SharedDirStore {
         Ok(Self {
             path: Some(path),
             dirs: RwLock::new(dirs),
-            builtin: RwLock::new(None),
         })
     }
 
@@ -169,37 +157,16 @@ impl SharedDirStore {
         Self {
             path: None,
             dirs: RwLock::new(Vec::new()),
-            builtin: RwLock::new(None),
         }
     }
 
-    /// 注入内置免授权下载目录条目（builder 风格；幂等覆盖）
-    ///
-    /// 移动端传 app 私有下载目录；桌面端同样可注入接收落点作为可浏览条目。
-    pub fn with_builtin_download_dir(self, name: impl Into<String>, path: PathBuf) -> Self {
-        *self.builtin.write().expect("builtin slot lock poisoned") = Some(SharedDirEntry {
-            id: BUILTIN_DOWNLOADS_ID.to_string(),
-            name: name.into(),
-            root: SharedDirRoot::Fs { path },
-        });
-        self
-    }
-
-    /// 全部条目（内置条目在首位，其余按插入序）
+    /// 全部条目（按插入序）
     pub fn list(&self) -> Vec<SharedDirEntry> {
-        let mut out = Vec::new();
-        if let Some(builtin) = self.builtin.read().expect("builtin slot lock poisoned").clone() {
-            out.push(builtin);
-        }
-        out.extend(self.dirs.read().expect("dirs lock poisoned").iter().cloned());
-        out
+        self.dirs.read().expect("dirs lock poisoned").iter().cloned().collect()
     }
 
-    /// 按 ID 取条目（含内置条目）
+    /// 按 ID 取条目
     pub fn get(&self, id: &str) -> Option<SharedDirEntry> {
-        if id == BUILTIN_DOWNLOADS_ID {
-            return self.builtin.read().expect("builtin slot lock poisoned").clone();
-        }
         self.dirs
             .read()
             .expect("dirs lock poisoned")
@@ -210,7 +177,7 @@ impl SharedDirStore {
 
     /// 新增用户条目并原子落盘
     ///
-    /// 校验：名称非空限长；Fs 根必须存在且为目录；同根去重（内置条目除外）。
+    /// 校验：名称非空限长；Fs 根必须存在且为目录；同根去重。
     /// 返回新条目（ID 由注册表分配）。
     pub fn add(&self, name: impl Into<String>, root: SharedDirRoot) -> Result<SharedDirEntry> {
         let name = name.into();
@@ -274,11 +241,10 @@ impl SharedDirStore {
     ///
     /// 注册表 CRUD 真源在插件侧（host-plugin-database），引擎侧注册表退化为
     /// 广播/浏览服务面的镜像：插件每次变更后推送全量列表，本方法整体替换
-    /// 用户条目并原子落盘；内置条目不受影响。
+    /// 用户条目并原子落盘。
     ///
     /// 校验与 [`Self::add`] 同尺逐条施加（名称限长、Fs 根存在且为目录、SAF
-    /// URI 形状、同根去重），另加：ID 非空、不得占用内置保留 ID、ID 与根
-    /// 全表唯一。任一条目非法即整批拒绝（全量语义下部分成功无意义），原有
+    /// URI 形状、同根去重），另加：ID 非空、ID 与根全表唯一。任一条目非法即整批拒绝（全量语义下部分成功无意义），原有
     /// 条目保持不变；落盘失败同样回滚内存态。
     pub fn replace_all(&self, entries: &[SharedDirEntry]) -> Result<()> {
         let mut seen_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -295,7 +261,7 @@ impl SharedDirStore {
                     ),
                 });
             }
-            if entry.id.trim().is_empty() || entry.id == BUILTIN_DOWNLOADS_ID {
+            if entry.id.trim().is_empty() {
                 return Err(PeerNetError::TransferSession {
                     role: "registry",
                     detail: format!("shared dir id '{}' is reserved or empty", entry.id),
@@ -362,11 +328,7 @@ impl SharedDirStore {
 
     /// 移除用户条目并原子落盘；返回该 ID 原本是否存在
     ///
-    /// 内置条目不可移除（恒 `false`）。
     pub fn remove(&self, id: &str) -> Result<bool> {
-        if id == BUILTIN_DOWNLOADS_ID {
-            return Ok(false);
-        }
         let mut dirs = self.dirs.write().expect("dirs lock poisoned");
         let Some(pos) = dirs.iter().position(|e| e.id == id) else {
             return Ok(false);
@@ -519,41 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn builtin_entry_is_listed_but_never_persisted_or_removable() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = SharedDirStore::load_or_create(dir.path())
-            .expect("create store")
-            .with_builtin_download_dir("下载", dir.path().join("dl"));
-
-        assert_eq!(store.list().len(), 1);
-        let builtin = store.get(BUILTIN_DOWNLOADS_ID).expect("builtin resolvable");
-        assert_eq!(builtin.id, BUILTIN_DOWNLOADS_ID);
-
-        // 不可移除
-        assert!(!store.remove(BUILTIN_DOWNLOADS_ID).expect("remove builtin"));
-
-        // 不落盘：全新重载不含内置条目
-        let reloaded = SharedDirStore::load_or_create(dir.path()).expect("reload");
-        assert!(reloaded.get(BUILTIN_DOWNLOADS_ID).is_none());
-        assert!(reloaded.list().is_empty());
-
-        // 用户条目与内置条目互不挤占 ID 空间（重载实例无内置注入 → 仅用户条目）
-        let added = reloaded
-            .add(
-                "docs",
-                SharedDirRoot::Fs { path: dir.path().to_path_buf() },
-            )
-            .expect("add user dir");
-        assert_ne!(added.id, BUILTIN_DOWNLOADS_ID);
-        assert_eq!(reloaded.list().len(), 1);
-
-        // 用户条目落盘持久：第三次加载可见，且仍无内置条目
-        let third = SharedDirStore::load_or_create(dir.path()).expect("third load");
-        assert_eq!(third.get(&added.id), Some(added.clone()));
-        assert!(third.get(BUILTIN_DOWNLOADS_ID).is_none());
-    }
-
-    #[test]
     fn add_validates_name_root_and_dedupes_roots() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = SharedDirStore::in_memory();
@@ -597,21 +524,18 @@ mod tests {
     #[test]
     fn replace_all_swaps_wholesale_and_persists() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = SharedDirStore::load_or_create(dir.path())
-            .expect("create store")
-            .with_builtin_download_dir("下载", dir.path().join("dl"));
+        let store = SharedDirStore::load_or_create(dir.path()).expect("create store");
         let old = store
             .add("old", SharedDirRoot::Fs { path: dir.path().to_path_buf() })
             .expect("seed old entry");
 
-        // 全量替换：旧条目消失，新条目（插件持有 ID）生效；内置条目不动
+        // 全量替换：旧条目消失，新条目（插件持有 ID）生效
         let seeds = vec![fs_entry("plugin-dir-1", "Docs", dir.path())];
         store.replace_all(&seeds).expect("replace");
         let listed = store.list();
-        assert_eq!(listed.len(), 2); // builtin + 1 user
+        assert_eq!(listed.len(), 1);
         assert!(store.get(&old.id).is_none());
         assert_eq!(store.get("plugin-dir-1").expect("new entry"), seeds[0]);
-        assert_eq!(listed[0].id, BUILTIN_DOWNLOADS_ID);
 
         // 空表替换 = 清空用户面（幂等）；重载后磁盘态一致
         store.replace_all(&[]).expect("clear via replace");
@@ -623,13 +547,10 @@ mod tests {
     #[test]
     fn replace_all_rejects_invalid_batch_atomically() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = SharedDirStore::in_memory().with_builtin_download_dir("下载", dir.path().join("dl"));
+        let store = SharedDirStore::in_memory();
         let good = fs_entry("a1", "A", dir.path());
         store.replace_all(std::slice::from_ref(&good)).expect("seed");
 
-        // 内置保留 ID 拒绝
-        let bad_id = vec![fs_entry(BUILTIN_DOWNLOADS_ID, "x", dir.path())];
-        assert!(store.replace_all(&bad_id).is_err());
         // 幽灵路径拒绝
         let ghost = vec![
             fs_entry("ok", "Ok", dir.path()),

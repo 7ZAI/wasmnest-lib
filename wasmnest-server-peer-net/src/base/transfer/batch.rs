@@ -149,10 +149,12 @@ pub enum ReceivePolicy {
 }
 
 impl Default for ReceivePolicy {
+    /// 引擎默认 **fail-closed**（AlwaysDeny）：产品默认（Ask + 审批窗口）由
+    /// 插件显式经 `host-peer.set-receive-policy` 推送（2026-10-22 peer-net-
+    /// dissolve：业务语义不留在底座，默认值变化会拒收一切传入传输直到插件
+    /// 装配时给出口径——file-transfer 激活期推送产品默认，见应用仓）
     fn default() -> Self {
-        ReceivePolicy::Ask {
-            timeout: Duration::from_secs(DEFAULT_ASK_TIMEOUT_SECS),
-        }
+        ReceivePolicy::AlwaysDeny
     }
 }
 
@@ -297,12 +299,10 @@ mod tests {
     }
 
     #[test]
-    fn default_policy_is_ask_with_default_window() {
+    fn default_policy_is_fail_closed_never_accept() {
         match ReceivePolicy::default() {
-            ReceivePolicy::Ask { timeout } => {
-                assert_eq!(timeout, Duration::from_secs(DEFAULT_ASK_TIMEOUT_SECS))
-            }
-            other => panic!("default policy must be Ask, got {other:?}"),
+            ReceivePolicy::AlwaysDeny => {}
+            other => panic!("engine default policy must be fail-closed AlwaysDeny, got {other:?}"),
         }
     }
 

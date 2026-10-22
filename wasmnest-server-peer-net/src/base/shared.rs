@@ -26,8 +26,7 @@
 pub mod registry;
 
 pub use registry::{
-    resolve_rel_path, sort_entries, BUILTIN_DOWNLOADS_ID, SharedDirEntry, SharedDirRoot,
-    SharedDirStore,
+    resolve_rel_path, sort_entries, SharedDirEntry, SharedDirRoot, SharedDirStore,
 };
 
 use std::collections::HashMap;

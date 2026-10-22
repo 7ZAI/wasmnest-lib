@@ -100,7 +100,7 @@ use std::time::Instant;
 use tokio::io::AsyncReadExt;
 
 use serde::Serialize;
-// 底座机制顶层 re-export（`wasmnest_peer_net` 拆分并入后对外符号名不变，消费方仅改前缀）
+
 // `base::Result`（PeerNetError 别名）刻意不在此 re-export：lib 顶层 Result 是
 // server-base AppError 别名，两义共存时冲突；消费方需要底座错误时用全限定 `base::Result`。
 pub use crate::base::{
@@ -113,7 +113,6 @@ pub use crate::base::{
     TransferEvent, TransferFrame, TransferReceiveHandler, TrustedPeerEntry, TrustEvent, TrustStatus, TrustStatusFrame,
     TrustStore, browse_shared_dir, generate_self_signed_cert, list_shared_roots, pull_shared_file, resolve_rel_path,
     saf_not_found, send_batch, sort_entries, spawn_peer_mdns_daemon, verify_cert_matches_node_id, BrowseListing,
-    BUILTIN_DOWNLOADS_ID,
 };
 // 底座子模块（`transfer` / `shared` 等）对消费方保持模块路径可用：旧 `wasmnest_peer_net::transfer`
 // 形态 → `wasmnest_server_peer_net::transfer`（测试仓集成场景沿用该路径）
@@ -887,11 +886,10 @@ async fn start_locked(ctx: Arc<PeerCtx>, data_dir: &Path, device_name: String) -
     );
 
     // 共享目录注册表 + 接收落点（issue 07）：落点根目录由端口给（各端自定）；
-    // 平台内置免授权条目（移动 = app 私有下载目录）经平台缝注入
-    let shared = Arc::new(crate::engine_ports::decorate_shared_store(
-        shared_handle_at(&data_dir).await?,
-        ctx.ports.platform.as_ref(),
-    ));
+    // 平台默认共享目录（移动 = app 私有下载目录）经平台缝注册为普通条目
+    let shared = shared_handle_at(&data_dir).await?;
+    crate::engine_ports::decorate_shared_store(&shared, ctx.ports.platform.as_ref());
+    let shared = Arc::new(shared);
     *ctx.state.shared.lock().await = Some(Arc::clone(&shared));
     let download_dir = resolve_download_dir(&ctx)?;
     if let Err(e) = tokio::fs::create_dir_all(&download_dir).await {
@@ -1178,10 +1176,8 @@ async fn shared_handle(ctx: &PeerCtx) -> Result<Arc<SharedDirStore>> {
     }
     let data_dir = app_data_dir(ctx)?;
     let store = shared_handle_at(&data_dir).await?;
-    let store = Arc::new(crate::engine_ports::decorate_shared_store(
-        store,
-        ctx.ports.platform.as_ref(),
-    ));
+    crate::engine_ports::decorate_shared_store(&store, ctx.ports.platform.as_ref());
+    let store = Arc::new(store);
     *guard = Some(Arc::clone(&store));
     Ok(store)
 }
