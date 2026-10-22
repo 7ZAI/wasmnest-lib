@@ -41,7 +41,10 @@ fn parse_business_marker(raw: &str) -> Option<(String, serde_json::Value)> {
         return None;
     }
     let code = obj.get("code")?.as_str()?;
-    let params = obj.get("params").cloned().unwrap_or(serde_json::Value::Null);
+    let params = obj
+        .get("params")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     Some((code.to_string(), params))
 }
 
@@ -63,27 +66,42 @@ impl PluginHost {
             return Err(crate::AppError::user_facing(
                 "host.plugin.not-activated",
                 serde_json::json!({ "plugin": plugin_id }),
-                format!("plugin {} is not activated (command {})", plugin_id, command_name),
+                format!(
+                    "plugin {} is not activated (command {})",
+                    plugin_id, command_name
+                ),
             ));
         }
 
         let source = {
             let plugins = self.plugins.read().await;
-            plugins.get(plugin_id).map(|p| p.source.clone()).ok_or_else(|| {
-                crate::AppError::user_facing(
-                    "host.plugin.not-found",
-                    serde_json::json!({ "plugin": plugin_id }),
-                    format!("plugin not found: {plugin_id} (command {command_name})"),
-                )
-            })?
+            plugins
+                .get(plugin_id)
+                .map(|p| p.source.clone())
+                .ok_or_else(|| {
+                    crate::AppError::user_facing(
+                        "host.plugin.not-found",
+                        serde_json::json!({ "plugin": plugin_id }),
+                        format!("plugin not found: {plugin_id} (command {command_name})"),
+                    )
+                })?
         };
 
         match source {
-            PluginSource::Wasm => self.invoke_wasm_command(plugin_id, command_name, args).await,
+            PluginSource::Wasm => {
+                self.invoke_wasm_command(plugin_id, command_name, args)
+                    .await
+            }
             // 用户 zip 安装的 rust-ts 插件：走 WASM 命令调用（与 Wasm 语义一致）；
             // ts-only 用户插件无 Rust 命令，wasm 实例缺失时报错
-            PluginSource::UserInstalled => self.invoke_wasm_command(plugin_id, command_name, args).await,
-            PluginSource::StaticRegistry => self.invoke_static_command(plugin_id, command_name, args).await,
+            PluginSource::UserInstalled => {
+                self.invoke_wasm_command(plugin_id, command_name, args)
+                    .await
+            }
+            PluginSource::StaticRegistry => {
+                self.invoke_static_command(plugin_id, command_name, args)
+                    .await
+            }
             PluginSource::FileScan => Err(crate::AppError::user_facing(
                 "host.plugin.not-found",
                 serde_json::json!({ "plugin": plugin_id }),
@@ -108,9 +126,14 @@ impl PluginHost {
 
         // 限频：距上次自动重载不足最小间隔则跳过（已在上次恢复或仍属持久性故障）
         {
-            let mut throttle = self.wasm_reload_throttle.lock().unwrap_or_else(|e| e.into_inner());
+            let mut throttle = self
+                .wasm_reload_throttle
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if let Some(last) = throttle.get(&plugin_id) {
-                if last.elapsed() < std::time::Duration::from_secs(PLUGIN_AUTO_RELOAD_MIN_INTERVAL_SECS) {
+                if last.elapsed()
+                    < std::time::Duration::from_secs(PLUGIN_AUTO_RELOAD_MIN_INTERVAL_SECS)
+                {
                     tracing::warn!(
                         plugin_id = %plugin_id,
                         "plugin trap recovery throttled (recent reload), keeping error state"
@@ -185,8 +208,9 @@ impl PluginHost {
             }
         }
 
-        let args_str = serde_json::to_string(&enriched_args)
-            .map_err(|e| crate::AppError::Plugin(format!("Failed to serialize command args: {}", e)))?;
+        let args_str = serde_json::to_string(&enriched_args).map_err(|e| {
+            crate::AppError::Plugin(format!("Failed to serialize command args: {}", e))
+        })?;
 
         // 调用失败（trap/store 中毒）时自动重载恢复，见 PluginHost::call_guest
         let reply = self
@@ -315,11 +339,28 @@ mod tests {
     ///
     /// 空插件目录 + 内存 DB；wasmtime 初始化一次。auth_service 测试同模式。
     async fn test_plugin_host() -> Arc<PluginHost> {
-        let db = Arc::new(Mutex::new(Database::new(Path::new(":memory:")).expect("in-memory db")));
-        db.lock().expect("db lock").init_schema().expect("init schema");
+        let db = Arc::new(Mutex::new(
+            Database::new(Path::new(":memory:")).expect("in-memory db"),
+        ));
+        db.lock()
+            .expect("db lock")
+            .init_schema()
+            .expect("init schema");
         let dir = std::env::temp_dir().join(format!("wasmnest-cmd-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
-        let host = PluginHost::new(db, &dir, &dir, None, None, Vec::new(), crate::manager::runtime::AbiPolicy::UNCONSTRAINED, std::sync::Arc::new(crate::host_api::ports::UnimplementedHostFacts), None).await;
+        let host = PluginHost::new(
+            db,
+            &dir,
+            &dir,
+            None,
+            None,
+            Vec::new(),
+            crate::manager::runtime::AbiPolicy::UNCONSTRAINED,
+            std::sync::Arc::new(crate::host_api::ports::UnimplementedHostFacts),
+            None,
+            None,
+        )
+        .await;
         host.init_message_bus().await;
         host
     }
@@ -361,12 +402,23 @@ mod tests {
             "session.input",
             r#"{"__wasmnest_error__":true,"code":"com.wasmnest.terminal-session.session.error.sessionNotFound","params":{"sessionId":"s-1"}}"#,
         );
-        let AppError::UserFacing { code, params, detail } = err else {
+        let AppError::UserFacing {
+            code,
+            params,
+            detail,
+        } = err
+        else {
             panic!("应为 UserFacing，实际: {err}");
         };
-        assert_eq!(code, "com.wasmnest.terminal-session.session.error.sessionNotFound");
+        assert_eq!(
+            code,
+            "com.wasmnest.terminal-session.session.error.sessionNotFound"
+        );
         assert_eq!(params, serde_json::json!({ "sessionId": "s-1" }));
-        assert!(detail.contains("session.input"), "detail 应带命令上下文: {detail}");
+        assert!(
+            detail.contains("session.input"),
+            "detail 应带命令上下文: {detail}"
+        );
     }
 
     /// 正例：标记信封 params 缺失 → Null 透传
@@ -386,13 +438,28 @@ mod tests {
     /// 反例：普通错误字符串（未标记）→ 兜底码 + plugin 标识参数，原文只进 detail
     #[test]
     fn plain_error_falls_back_to_host_internal() {
-        let err = plugin_command_error("com.wasmnest.legacy", "old.cmd", "database locked at path /secret/db");
-        let AppError::UserFacing { code, params, detail } = err else {
+        let err = plugin_command_error(
+            "com.wasmnest.legacy",
+            "old.cmd",
+            "database locked at path /secret/db",
+        );
+        let AppError::UserFacing {
+            code,
+            params,
+            detail,
+        } = err
+        else {
             panic!("应为 UserFacing")
         };
         assert_eq!(code, crate::system::error::DEFAULT_ERROR_CODE);
-        assert_eq!(params, serde_json::json!({ "plugin": "com.wasmnest.legacy" }));
-        assert!(detail.contains("database locked"), "detail 只进日志: {detail}");
+        assert_eq!(
+            params,
+            serde_json::json!({ "plugin": "com.wasmnest.legacy" })
+        );
+        assert!(
+            detail.contains("database locked"),
+            "detail 只进日志: {detail}"
+        );
     }
 
     /// 反例：畸形标记（marker 非 true / code 非字符串 / 非法 JSON）→ 兜底
@@ -405,7 +472,10 @@ mod tests {
             r#"not json at all"#,
             r#"{"code":"x"}"#,
         ] {
-            assert!(parse_business_marker(raw).is_none(), "畸形标记应当拒绝: {raw}");
+            assert!(
+                parse_business_marker(raw).is_none(),
+                "畸形标记应当拒绝: {raw}"
+            );
         }
     }
 
@@ -416,9 +486,13 @@ mod tests {
             parse_business_marker(r#"{"__wasmnest_error__":true,"code":"a.b.c","params":{}}"#),
             Some(("a.b.c".to_string(), serde_json::json!({})))
         );
-        assert!(parse_business_marker(r#"{"__wasmnest_error__":true,"code":"a.b","params":null}"#).is_some());
         assert!(
-            parse_business_marker(r#"{"__wasmnest_error__":true,"code":"a.b","extra":1}"#).is_some(),
+            parse_business_marker(r#"{"__wasmnest_error__":true,"code":"a.b","params":null}"#)
+                .is_some()
+        );
+        assert!(
+            parse_business_marker(r#"{"__wasmnest_error__":true,"code":"a.b","extra":1}"#)
+                .is_some(),
             "额外字段应忽略"
         );
     }

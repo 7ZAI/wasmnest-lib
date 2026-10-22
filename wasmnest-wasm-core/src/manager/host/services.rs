@@ -27,7 +27,8 @@ impl PluginServices for PluginHost {
             // 仅通知前端提示：不置 Error、不持久化，插件保持激活，会话照常运行。
             // hooks 安装失败等自检错误属可恢复/局部问题，不应因此禁用整个插件。
             // 详情（error）只进日志；前端收错误信封（见 notify_plugin_self_check_error）
-            self.notify_plugin_self_check_error(&plugin_id, &error).await;
+            self.notify_plugin_self_check_error(&plugin_id, &error)
+                .await;
         });
     }
 
@@ -42,39 +43,43 @@ impl PluginServices for PluginHost {
         let host = self.clone();
         let pid = plugin_id.clone();
         let cmd = command.clone();
-        let handle = crate::system::error_boundary::spawn_with_error_boundary("plugin_timer_loop", async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
-            // 首个 tick 立即触发：跳过，从下一个周期开始（避免注册瞬间就回调）
-            interval.tick().await;
-            loop {
+        let handle = crate::system::error_boundary::spawn_with_error_boundary(
+            "plugin_timer_loop",
+            async move {
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+                // 首个 tick 立即触发：跳过，从下一个周期开始（避免注册瞬间就回调）
                 interval.tick().await;
+                loop {
+                    interval.tick().await;
 
-                let now = chrono::Utc::now();
-                let args = serde_json::json!({
-                    "now_ms": now.timestamp_millis(),
-                    // 与 SQLite datetime('now') 同格式（UTC，无时区后缀），
-                    // 便于插件在 SQL 中直接字符串比较到期时间
-                    "now_utc": now.format("%Y-%m-%d %H:%M:%S").to_string(),
-                    // 本地时区基准（task-scheduler spec §5.1）：
-                    // 调度时间表达式按用户本地时间解释，由宿主注入（WASM 无系统时钟）
-                    "now_local": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                });
+                    let now = chrono::Utc::now();
+                    let args = serde_json::json!({
+                        "now_ms": now.timestamp_millis(),
+                        // 与 SQLite datetime('now') 同格式（UTC，无时区后缀），
+                        // 便于插件在 SQL 中直接字符串比较到期时间
+                        "now_utc": now.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        // 本地时区基准（task-scheduler spec §5.1）：
+                        // 调度时间表达式按用户本地时间解释，由宿主注入（WASM 无系统时钟）
+                        "now_local": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    });
 
-                // 到点调用插件 command；插件未激活/已卸载时返回 Err，
-                // 属预期内路径（定时器中止前的空窗期），仅记 debug 日志
-                match host.invoke_rust_command(&pid, &cmd, args).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::debug!(
-                            plugin_id = %pid,
-                            command = %cmd,
-                            error = %e,
-                            "[PluginHost] timer tick skipped"
-                        );
+                    // 到点调用插件 command；插件未激活/已卸载时返回 Err，
+                    // 属预期内路径（定时器中止前的空窗期），仅记 debug 日志
+                    match host.invoke_rust_command(&pid, &cmd, args).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::debug!(
+                                plugin_id = %pid,
+                                command = %cmd,
+                                error = %e,
+                                "[PluginHost] timer tick skipped"
+                            );
+                        }
                     }
                 }
-            }
-        });
+            },
+        );
 
         timers.insert(plugin_id.clone(), handle);
         drop(timers);
@@ -134,7 +139,12 @@ impl PluginServices for PluginHost {
                 return;
             }
         };
-        match self.call_guest_blocking(&plugin_id, GuestOp::OnTaskEvent { event_json: event_str }) {
+        match self.call_guest_blocking(
+            &plugin_id,
+            GuestOp::OnTaskEvent {
+                event_json: event_str,
+            },
+        ) {
             Ok(GuestReply::Bool(true)) => {}
             Ok(GuestReply::Bool(false)) => {
                 // 旧 SDK 产物（未导出 events-task）：事件丢弃 + 计数
@@ -178,7 +188,10 @@ impl PluginServices for PluginHost {
             let exe = super::app_cli::exe_name(&file_name);
             let src = std::path::Path::new(&extension_path).join("cli").join(&exe);
             if !src.exists() {
-                return Err(format!("install_cli: CLI artifact not found: {}", src.display()));
+                return Err(format!(
+                    "install_cli: CLI artifact not found: {}",
+                    src.display()
+                ));
             }
 
             let bin_dir = if bin_dir.is_empty() {
@@ -186,10 +199,17 @@ impl PluginServices for PluginHost {
             } else {
                 std::path::PathBuf::from(&bin_dir)
             };
-            std::fs::create_dir_all(&bin_dir).map_err(|e| format!("install_cli: create bin dir failed: {}", e))?;
+            std::fs::create_dir_all(&bin_dir)
+                .map_err(|e| format!("install_cli: create bin dir failed: {}", e))?;
             let dst = bin_dir.join(&exe);
-            std::fs::copy(&src, &dst)
-                .map_err(|e| format!("install_cli: copy {} -> {} failed: {}", src.display(), dst.display(), e))?;
+            std::fs::copy(&src, &dst).map_err(|e| {
+                format!(
+                    "install_cli: copy {} -> {} failed: {}",
+                    src.display(),
+                    dst.display(),
+                    e
+                )
+            })?;
 
             // PATH 注册（幂等）
             #[cfg(target_os = "windows")]
@@ -233,8 +253,9 @@ impl PluginServices for PluginHost {
             // 删除文件（不存在视为已卸载，幂等）
             let file = bin_dir.join(&exe);
             if file.exists() {
-                std::fs::remove_file(&file)
-                    .map_err(|e| format!("uninstall_cli: remove {} failed: {}", file.display(), e))?;
+                std::fs::remove_file(&file).map_err(|e| {
+                    format!("uninstall_cli: remove {} failed: {}", file.display(), e)
+                })?;
             }
 
             // PATH 条目移除（仅本插件条目，保留用户原有项）
@@ -260,6 +281,61 @@ impl PluginServices for PluginHost {
                 .get(&plugin_id)
                 .map(|p| crate::manager::loader::strip_verbatim_prefix(&p.extension_path))
                 .ok_or_else(|| format!("plugin_resource_dir: plugin not found: {}", plugin_id))
+        })
+    }
+
+    fn register_path(
+        &self,
+        plugin_id: String,
+        dir: String,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move {
+            let path = std::path::PathBuf::from(&dir);
+            // allowlist：目录必须落在应用数据根 / 用户 bin 根之内——PATH 是持久化
+            // 用户环境面，越界目录一律拒绝并点名实际路径（fail-visible）
+            if !super::app_cli::path_dir_allowed(&path) {
+                return Err(format!(
+                    "register_path: directory outside allowed roots: {}",
+                    path.display()
+                ));
+            }
+            if !path.is_dir() {
+                return Err(format!(
+                    "register_path: directory not found: {}",
+                    path.display()
+                ));
+            }
+            super::app_cli::register_path_dir(&path).await?;
+            tracing::info!(
+                plugin_id = %plugin_id,
+                "[PluginHost] PATH dir registered: {}",
+                path.display()
+            );
+            Ok(())
+        })
+    }
+
+    fn unregister_path(
+        &self,
+        plugin_id: String,
+        dir: String,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move {
+            let path = std::path::PathBuf::from(&dir);
+            // 摘除同样过 allowlist：不让插件借「摘除」面探测任意路径是否存在
+            if !super::app_cli::path_dir_allowed(&path) {
+                return Err(format!(
+                    "unregister_path: directory outside allowed roots: {}",
+                    path.display()
+                ));
+            }
+            super::app_cli::unregister_path_dir(&path).await?;
+            tracing::info!(
+                plugin_id = %plugin_id,
+                "[PluginHost] PATH dir unregistered: {}",
+                path.display()
+            );
+            Ok(())
         })
     }
 }
@@ -293,7 +369,11 @@ impl Clone for PluginHost {
 // ==================== MessageDispatcher Implementation ====================
 
 impl crate::bus::MessageDispatcher for PluginHost {
-    fn dispatch_to_wasm(&self, plugin_id: &str, msg: &crate::bus::BusMessage) -> anyhow::Result<()> {
+    fn dispatch_to_wasm(
+        &self,
+        plugin_id: &str,
+        msg: &crate::bus::BusMessage,
+    ) -> anyhow::Result<()> {
         // v11：按载荷格式路由——二进制消息走可选导出 on_message_binary
         // （总线已按订阅者格式偏好过滤，不会对无导出的旧插件发二进制消息）
         let op = if let Some(bytes) = &msg.payload_binary {
@@ -327,7 +407,11 @@ impl crate::bus::MessageDispatcher for PluginHost {
     ) -> anyhow::Result<bool> {
         use crate::bus::WsFrameDispatch;
         let op = match frame {
-            WsFrameDispatch::Client { handle, kind, payload } => GuestOp::WsClientMessage {
+            WsFrameDispatch::Client {
+                handle,
+                kind,
+                payload,
+            } => GuestOp::WsClientMessage {
                 handle: handle.clone(),
                 kind: kind.clone(),
                 payload: payload.clone(),
@@ -379,11 +463,28 @@ mod tests {
 
     /// 构造最小 PluginHost（与 commands.rs 测试同模式）
     async fn test_plugin_host() -> Arc<PluginHost> {
-        let db = Arc::new(Mutex::new(Database::new(Path::new(":memory:")).expect("in-memory db")));
-        db.lock().expect("db lock").init_schema().expect("init schema");
+        let db = Arc::new(Mutex::new(
+            Database::new(Path::new(":memory:")).expect("in-memory db"),
+        ));
+        db.lock()
+            .expect("db lock")
+            .init_schema()
+            .expect("init schema");
         let dir = std::env::temp_dir().join(format!("wasmnest-svc-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
-        let host = PluginHost::new(db, &dir, &dir, None, None, Vec::new(), crate::manager::runtime::AbiPolicy::UNCONSTRAINED, std::sync::Arc::new(crate::host_api::ports::UnimplementedHostFacts), None).await;
+        let host = PluginHost::new(
+            db,
+            &dir,
+            &dir,
+            None,
+            None,
+            Vec::new(),
+            crate::manager::runtime::AbiPolicy::UNCONSTRAINED,
+            std::sync::Arc::new(crate::host_api::ports::UnimplementedHostFacts),
+            None,
+            None, // 服务租约注册表
+        )
+        .await;
         host.init_message_bus().await;
         host
     }
@@ -417,9 +518,26 @@ mod tests {
         .expect("manifest");
 
         let host = rt.block_on(async {
-            let db = Arc::new(Mutex::new(Database::new(Path::new(":memory:")).expect("in-memory db")));
-            db.lock().expect("db lock").init_schema().expect("init schema");
-            let host = PluginHost::new(db, &dir, &dir, None, None, Vec::new(), crate::manager::runtime::AbiPolicy::UNCONSTRAINED, std::sync::Arc::new(crate::host_api::ports::UnimplementedHostFacts), None).await;
+            let db = Arc::new(Mutex::new(
+                Database::new(Path::new(":memory:")).expect("in-memory db"),
+            ));
+            db.lock()
+                .expect("db lock")
+                .init_schema()
+                .expect("init schema");
+            let host = PluginHost::new(
+                db,
+                &dir,
+                &dir,
+                None,
+                None,
+                Vec::new(),
+                crate::manager::runtime::AbiPolicy::UNCONSTRAINED,
+                std::sync::Arc::new(crate::host_api::ports::UnimplementedHostFacts),
+                None,
+                None,
+            )
+            .await;
             host.init_message_bus().await;
             Arc::new(host)
         });
@@ -447,6 +565,9 @@ mod tests {
         let err = rt
             .block_on(host.plugin_resource_dir("com.wasmnest.nonexistent".to_string()))
             .unwrap_err();
-        assert!(err.contains("plugin not found"), "未知插件必须显性报错，got: {err}");
+        assert!(
+            err.contains("plugin not found"),
+            "未知插件必须显性报错，got: {err}"
+        );
     }
 }

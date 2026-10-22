@@ -69,6 +69,14 @@ pub trait PeerPorts: Send + Sync + 'static {
     /// **必须复用宿主那份实现**，不得在本域复制第二份桥（重入自锁与 ambient
     /// runtime 语义是实测产物）。
     fn block_on_any(&self, fut: BoxedBlocked) -> Box<dyn Any + Send>;
+
+    /// 应用作用域服务注册表（宿主机制；service-leases §4.1）。
+    ///
+    /// `None` = 无头 / 测试装配，绑定层退化为直接调引擎（不记账）并落一条
+    /// `warn` 说明「无租约装配」。生产桌面 / 移动必须返回 `Some`（有装配锁）。
+    fn service_registry(&self) -> Option<Arc<wasmnest_server_base::service::ServiceRegistry>> {
+        None
+    }
 }
 
 // ==================== 泛型助手 ====================

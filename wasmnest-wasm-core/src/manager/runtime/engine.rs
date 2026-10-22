@@ -329,7 +329,7 @@ pub(crate) fn build_engine_config(core_config: &CoreConfig, debug_mode: bool) ->
     }
     config.wasm_backtrace_details(wasmtime_backtrace_details(tuning.backtrace_details));
     // 线性内存预留 = 估算的最大线性内存（与 limiter 上限严格一致，见
-    // MAX_PLUGIN_MEMORY_BYTES）：实例化时一次性预留 256MiB 虚拟地址空间，
+    // MAX_PLUGIN_MEMORY_BYTES）：实例化时一次性预留 128MiB 虚拟地址空间，
     // 增长零系统调用、基址恒定；相比 64-bit 默认（4GiB 预留 + 32MiB guard/
     // 内存）大幅降低 VA 占用。GC 堆未显式配置时沿用同值（wasmtime 语义：
     // gc_heap_* 缺省继承 memory_* 配置）

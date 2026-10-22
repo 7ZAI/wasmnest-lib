@@ -10,7 +10,8 @@
 pub struct NetworkConfig {
     /// WebSocket 服务器端口
     pub port: u16,
-    /// 应用启动时是否自动开启服务器
+    /// **已退役**（service-leases）：传输面由应用引用记账按需启停，本字段仅为
+    /// 配置文件向后兼容保留，不再影响任何行为。
     pub auto_start: bool,
     /// 服务器运行时阻止系统休眠（允许屏幕熄灭）
     #[serde(default = "default_prevent_sleep")]

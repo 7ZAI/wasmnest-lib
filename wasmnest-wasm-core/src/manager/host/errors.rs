@@ -29,7 +29,10 @@ pub fn runtime_error_code(kind: &str) -> &'static str {
 ///
 /// `params.name` 是 manifest 显示名——用户面唯一允许出现的应用标识。
 pub fn runtime_error_envelope(plugin_name: &str, kind: &str) -> EventEnvelope {
-    EventEnvelope::new(runtime_error_code(kind), serde_json::json!({ "name": plugin_name }))
+    EventEnvelope::new(
+        runtime_error_code(kind),
+        serde_json::json!({ "name": plugin_name }),
+    )
 }
 
 /// 自检失败事件信封（纯函数，同上）
@@ -46,10 +49,17 @@ impl PluginHost {
     /// `error` 是**宿主侧诊断事实**（故障分类、失败原因），按 ADR 0030 决定 11
     /// 不得被 UI 渲染——用户面只出徽标 + 通用文案，技术详情走本函数调用点的日志。
     pub async fn mark_error(&self, plugin_id: &str, error: String) {
-        let mut plugins = self.plugins.write().await;
-        if let Some(loaded) = plugins.get_mut(plugin_id) {
+        {
+            let mut plugins = self.plugins.write().await;
+            let Some(loaded) = plugins.get_mut(plugin_id) else {
+                return;
+            };
             loaded.state = PluginState::Error { error };
         }
+        // Error 态的活实例已不可服务：释放其应用作用域服务租约（不得继续对外广告）。
+        // 锁外调用：release 会 await 服务 stop，不能持 plugins 锁。
+        self.release_services_for(plugin_id, "plugin marked error")
+            .await;
     }
 
     /// 插件展示名（manifest.name），查不到时退回插件 ID
@@ -98,7 +108,9 @@ impl PluginHost {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             if let Some(last) = throttle.get(plugin_id) {
-                if last.elapsed() < std::time::Duration::from_secs(PLUGIN_RUNTIME_ERROR_NOTIFY_INTERVAL_SECS) {
+                if last.elapsed()
+                    < std::time::Duration::from_secs(PLUGIN_RUNTIME_ERROR_NOTIFY_INTERVAL_SECS)
+                {
                     tracing::debug!(
                         plugin_id = %plugin_id,
                         kind = %kind,
@@ -115,7 +127,10 @@ impl PluginHost {
         let Some(handle) = self.wasm_host_ctx().app_handle() else {
             return;
         };
-        if let Err(e) = handle.emit(crate::system::constants::PLUGIN_RUNTIME_ERROR, envelope.payload()) {
+        if let Err(e) = handle.emit(
+            crate::system::constants::PLUGIN_RUNTIME_ERROR,
+            envelope.payload(),
+        ) {
             // 前端事件派发失败不致命：日志已全量记录，仅提示通道中断
             tracing::warn!(
                 plugin_id = %plugin_id,

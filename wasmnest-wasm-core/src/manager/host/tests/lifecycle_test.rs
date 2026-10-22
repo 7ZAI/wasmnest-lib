@@ -361,3 +361,134 @@ async fn auth_records_survive_deactivate_and_are_purged_on_uninstall() {
         "卸载必须清空策略档位（重装回到默认档）"
     );
 }
+
+// ==================== 应用作用域服务租约的生命周期回收 ====================
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+/// 租约测试替身：只记录启停次数，不触网络
+struct LeaseProbe {
+    key: &'static str,
+    starts: AtomicUsize,
+    stops: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl wasmnest_server_base::service::ScopedService for LeaseProbe {
+    fn key(&self) -> &'static str {
+        self.key
+    }
+
+    async fn start(&self) -> Result<(), String> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<(), String> {
+        self.stops.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// 三条离开运行态的路径都必须调用 `release_all_for`：
+/// 停用成功 / 激活失败 / 进入 Error 态。
+#[tokio::test(flavor = "multi_thread")]
+async fn test_service_leases_released_on_deactivate_activation_failure_and_error() {
+    use wasmnest_server_base::service::{ScopedService, ServiceRegistry};
+
+    let host = setup_host().await;
+    let probe = Arc::new(LeaseProbe {
+        key: "test.lease",
+        starts: AtomicUsize::new(0),
+        stops: AtomicUsize::new(0),
+    });
+    let registry = Arc::new(ServiceRegistry::new());
+    registry
+        .register(probe.clone() as Arc<dyn ScopedService>)
+        .unwrap();
+    host.wasm_host_ctx()
+        .set_service_registry(Some(registry.clone()));
+
+    // ① 停用成功：guest 清理之后释放租约
+    host.plugins.write().await.insert(
+        TEST_PLUGIN_ID.to_string(),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
+    );
+    registry
+        .acquire("test.lease", TEST_PLUGIN_ID)
+        .await
+        .unwrap();
+    assert_eq!(probe.starts.load(Ordering::SeqCst), 1);
+    host.deactivate_plugin(TEST_PLUGIN_ID, false).await.unwrap();
+    let snapshot = registry.snapshot().await;
+    assert!(snapshot[0].holders.is_empty(), "停用后 holder 必须清空");
+    assert!(!snapshot[0].running, "最后一个引用释放后服务必须关停");
+    assert_eq!(probe.stops.load(Ordering::SeqCst), 1);
+
+    // ② 激活失败：外层补偿释放激活半程已取的租约
+    registry.acquire("test.lease", "com.missing").await.unwrap();
+    assert!(host.activate_plugin("com.missing", false).await.is_err());
+    assert!(
+        registry.snapshot().await[0].holders.is_empty(),
+        "激活失败后不得残留 holder"
+    );
+
+    // ③ Error 态：活实例已不可服务，必须释放并停播
+    host.plugins.write().await.insert(
+        TEST_PLUGIN_ID.to_string(),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
+    );
+    registry
+        .acquire("test.lease", TEST_PLUGIN_ID)
+        .await
+        .unwrap();
+    host.mark_error(TEST_PLUGIN_ID, "trap".to_string()).await;
+    let snapshot = registry.snapshot().await;
+    assert!(snapshot[0].holders.is_empty(), "Error 态必须释放租约");
+    assert!(!snapshot[0].running, "Error 态不得继续对外提供服务");
+}
+
+/// 内核生命周期只经通用服务租约释放，不再点名 peer 域（service-leases §4.2）。
+#[test]
+fn kernel_lifecycle_owns_no_peer_owner_hooks() {
+    for (name, src) in [
+        ("activation.rs", include_str!("../activation.rs")),
+        ("errors.rs", include_str!("../errors.rs")),
+    ] {
+        for forbidden in [
+            "release_node_for",
+            "node_owner",
+            "start_node_owned",
+            "stop_node_owned",
+            "FILE_TRANSFER_PLUGIN_ID",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{name} 不得再出现 peer 专属生命周期耦合：{forbidden}"
+            );
+        }
+        assert!(
+            src.contains("release_services_for"),
+            "{name} 必须走通用服务租约释放（release_services_for）"
+        );
+    }
+
+    let context = include_str!("../../../host_api/context.rs");
+    assert!(
+        context.contains("set_service_registry"),
+        "WasmHostContext 必须提供注册表晚绑注入"
+    );
+    assert!(
+        context.contains("pub fn service_registry"),
+        "WasmHostContext 必须提供注册表读取面"
+    );
+}

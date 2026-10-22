@@ -503,39 +503,69 @@ pub fn peer_set_download_dir(ports: &Arc<dyn PeerPorts>, plugin_id: &str, path: 
     sync_result(block_on(ports, crate::set_download_dir_for_plugin(ctx, path)))
 }
 
-/// 按需启动本机 peer 节点（审计票 12 引擎级生命周期原语）：幂等，
-/// 返回 `true` = 本次调用把节点从「未跑」带到「跑」（调用方即成为属主）。
+/// 无租约装配时的兼容路径警告（每进程一次，不刷屏）
+fn warn_no_lease_assembly(api: &str) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            api = %api,
+            "peer service lease registry not assembled (headless/test); \
+             falling back to direct node lifecycle without holder accounting"
+        );
+    });
+}
+
+/// 按需获取本机 peer 节点引用（`host-peer.start-node`）：幂等。
 ///
-/// 内核侧不再持有产品 id 常量——旧 `activation.rs` 的「插件 id == file-transfer 就起节点」
-/// 外壳由本原语 + `peer_net` 的属主记账替代。他主占用时以错误上抛，
-/// 且**文案不回带对方 id**（与 `ensure_handle_owner` 同口径，票 05）
+/// 生产装配走应用作用域服务注册表（`net.peer-node`）：首个引用拉起节点，
+/// 多应用共享；返回 `true` = 本次调用真正拉起了节点。
+/// 无租约装配（无头 / 测试）退化为直接调引擎并落一次 `warn`。
+///
+/// 非持有者停止时以错误上抛，文案不回带对方 id（与 `ensure_handle_owner` 同口径）。
 pub fn peer_start_node(ports: &Arc<dyn PeerPorts>, plugin_id: &str) -> Result<bool, String> {
     if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_start_node") {
         return Err(denied());
     }
+    if let Some(registry) = ports.service_registry() {
+        let holder = plugin_id.to_string();
+        let outcome = block_on(ports, async move {
+            registry.acquire(crate::service::PEER_NODE_SERVICE_KEY, &holder).await
+        })
+        .map_err(|e| e.to_string())?;
+        return Ok(matches!(
+            outcome,
+            wasmnest_server_base::service::AcquireOutcome::Started
+        ));
+    }
+    warn_no_lease_assembly("host_peer_start_node");
     let ctx = ports.peer_ctx()?;
-    // 调用方 id 取有主副本：同步桥要求 future 为 `'static`（跨线程驱动），
-    // 故 `async move` 把这份副本搬进 future 再借用
-    let caller = plugin_id.to_string();
-    sync_result(block_on(
-        ports,
-        async move { crate::start_node_owned(ctx, &caller).await },
-    ))
+    sync_result(block_on(ports, crate::start_peer_node(ctx))).map(|_| true)
 }
 
-/// 属主插件让本机节点下线（审计票 12）：停广播 / 关监听 / 排水连接与入站记账。
-/// 非属主拒绝（不猜测「谁该停」，也不提供强制关停的后门）
+/// 释放本机节点引用（`host-peer.stop-node`）：最后一个引用释放才真正关停
+/// （停广播 / 关监听 / 排水连接与入站记账）。
+///
+/// 未持有该引用时以「not owner of peer node」拒绝（保持旧「非属主拒绝」语义，
+/// 不猜测「谁该停」，也不提供强制关停的后门）。
 pub fn peer_stop_node(ports: &Arc<dyn PeerPorts>, plugin_id: &str) -> Result<bool, String> {
     if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_stop_node") {
         return Err(denied());
     }
+    if let Some(registry) = ports.service_registry() {
+        let holder = plugin_id.to_string();
+        let outcome = block_on(ports, async move {
+            registry.release(crate::service::PEER_NODE_SERVICE_KEY, &holder).await
+        })
+        .map_err(|e| e.to_string())?;
+        return match outcome {
+            wasmnest_server_base::service::ReleaseOutcome::NotHeld => Err("not owner of peer node".to_string()),
+            wasmnest_server_base::service::ReleaseOutcome::Released
+            | wasmnest_server_base::service::ReleaseOutcome::Stopped => Ok(true),
+        };
+    }
+    warn_no_lease_assembly("host_peer_stop_node");
     let ctx = ports.peer_ctx()?;
-    // 同上：取有主副本搬进 future 再借用（同步桥要求 `'static`）
-    let caller = plugin_id.to_string();
-    sync_result(block_on(
-        ports,
-        async move { crate::stop_node_owned(ctx, &caller).await },
-    ))
+    sync_result(block_on(ports, crate::stop_peer_node(ctx))).map(|_| true)
 }
 
 /// 活跃传输批清单（传输编排下沉票 1）：宿主会话表投影（仅引擎会话事实），
@@ -578,7 +608,7 @@ use wasmtime::component::{bindgen, Linker};
 pub const MODULE_NAME: &str = "peer-net";
 
 /// 本域提供的 WIT 接口（必须与 `wasmnest.wit` 逐字一致；改错即 guest import 失配）
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.1/host-peer"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.2/host-peer"];
 
 /// 本域的权限位（必须与 `wasmnest.wit` / SDK 权限表逐字一致）
 pub const MODULE_PERMISSIONS: &[&str] = &["peer"];

@@ -140,12 +140,15 @@ impl AuthStrategy {
 /// 与库值一一对应（`plugin_auth_records.source`），语义见 spec §8.4：
 /// - [`User`](Self::User)：用户在弹窗里确认并「记住」；
 /// - [`AlwaysAllow`](Self::AlwaysAllow)：`always_allow` 档免询问自动放行（界面标「未经确认」）；
+/// - [`Service`](Self::Service)：**随包服务型插件**的声明路径免询问放行（issue #6 D4；
+///   与 `AlwaysAllow` 的区别是判据来自加载来源 + 角色，不是用户配的策略档，界面需能区分）；
 /// - [`Legacy`](Self::Legacy)：旧版遗留记录（`fs_granted_paths` 首次迁入新表时的来源位，本期只读不做迁移）；
 /// - [`UserDeny`](Self::UserDeny)：用户显式拒绝（弹窗「以后都拒绝」或管理界面撤销）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthRecordSource {
     User,
     AlwaysAllow,
+    Service,
     Legacy,
     UserDeny,
 }
@@ -155,6 +158,7 @@ impl AuthRecordSource {
         match self {
             Self::User => "user",
             Self::AlwaysAllow => "always_allow",
+            Self::Service => "service",
             Self::Legacy => "legacy",
             Self::UserDeny => "user_deny",
         }

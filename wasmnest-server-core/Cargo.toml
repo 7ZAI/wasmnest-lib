@@ -28,8 +28,10 @@ chrono = { version = "0.4", features = ["serde"] }
 wasmnest-crypto-engine = { path = "../wasmnest-crypto-engine" }
 # 链路报文加密协议核心（link_crypto `use wasmnest_link_crypto as proto`）
 wasmnest-link-crypto = { path = "../link-crypto" }
-# 共享基础（错误/常量/端口 traits）
+# 共享基础（错误/常量/端口 traits/服务租约模板）
 wasmnest-server-base = { path = "../wasmnest-server-base" }
+# service：ScopedService 异步 trait
+async-trait = "0.1"
 # 测试/内部使用
 base64 = "0.22"
 hex = "0.4"

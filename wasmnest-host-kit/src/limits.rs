@@ -33,7 +33,11 @@ pub mod defaults {
     /// - 每次导出调用前重置燃料，预算只约束单次调用内 guest 计算量，
     ///   与宿主延迟彻底解耦
     ///   64G 指令 ≈ 数十秒纯 guest 计算（wasm32 release 约 1-3G 指令/秒），
-    ///   覆盖大 JSON 解析等重活；死循环最迟烧完被 trap
+    ///   覆盖大 JSON 解析等重活；死循环最迟烧完被 trap。
+    ///   **2026-10-22 实测**：开发机上 64G 死循环约 133s（≈0.5G 指令/秒，
+    ///   见移动 e2e `test_component_fuel_trap`）——预算偏宽；需要更快的看门狗
+    ///   反应时经 `wasm-core.json` 的 `store.fuel_per_call` 调低（debug 模式另有
+    ///   [`FUEL_DEBUG_MULTIPLIER`] 放大，反应时间同比例拉长）
     pub const FUEL_PER_CALL: u64 = 64_000_000_000;
     /// 插件调试模式（`WASMNEST_PLUGIN_DEBUG=1`）下燃料预算放大倍率
     ///
@@ -50,8 +54,13 @@ pub mod defaults {
     /// 一次性预留虚拟地址空间，guest 内存增长全程落在预留内（零系统调用、基址不搬移），
     /// 触及上限前已被 limiter 拒绝。预留只占虚拟地址空间，物理内存仍按实际触碰页提交。
     /// 两处必须严格一致：预留小于上限会让合法增长退化为搬移路径，
-    /// 大于上限则白白放大 VA 占用
-    pub const MAX_PLUGIN_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+    /// 大于上限则白白放大 VA 占用。
+    ///
+    /// 2026-10-22 由 256MiB 收紧到 128MiB：移动端单进程可用物理内存有限，
+    /// 桌面按「单插件常驻峰值」实测也远低于 128MiB。插件若在单次调用内需要更大
+    /// 工作集，应改成分片处理（逐片读→处理→释放），而不是抬高硬顶；宿主
+    /// `ResourceLimiter` 拒绝增长时 guest 拿到 `memory allocation failed` trap
+    pub const MAX_PLUGIN_MEMORY_BYTES: usize = 128 * 1024 * 1024;
     /// 单插件表元素上限
     pub const MAX_PLUGIN_TABLE_ENTRIES: usize = 1_000_000;
     /// Wasm 执行栈深度上限（字节）——guest 深度递归超限即确定性栈溢出 trap
@@ -67,8 +76,9 @@ pub mod defaults {
     pub const MAX_PLUGIN_INSTANCES_PER_STORE: usize = 8;
     /// 单 Store 线性内存数量上限
     ///
-    /// 每个线性内存独立预留 VA（上限 × ~288MiB 含 guard），多内存声明会线性
-    /// 放大虚拟地址空间占用，WASI preview2 插件正常仅 1 个内存
+    /// 每个线性内存独立预留 VA（[`defaults::MAX_PLUGIN_MEMORY_BYTES`] + guard
+    /// page），多内存声明会线性放大虚拟地址空间占用，WASI preview2 插件正常
+    /// 仅 1 个内存
     pub const MAX_PLUGIN_MEMORIES_PER_STORE: usize = 4;
     /// 单 Store 表数量上限
     pub const MAX_PLUGIN_TABLES_PER_STORE: usize = 16;

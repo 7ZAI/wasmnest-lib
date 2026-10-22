@@ -1078,7 +1078,7 @@ pub const MODULE_NAME: &str = "websocket";
 /// `wasmnest-ws-client-engine/wit/ws.wit`，本 crate 的 `common-host` 绑定暂留客户端实现
 /// （Q4 裁决；双轨收敛另行立项）；服务端域 `host-websocket-server`（桌面扩展）的
 /// WIT 声明与 `impl Host` 已归桌面宿主（本模块不再注册/声明它）。
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.1/host-websocket"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.2/host-websocket"];
 
 /// 本域的权限位（必须与 WIT / SDK 权限表逐字一致）
 ///

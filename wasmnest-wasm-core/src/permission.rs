@@ -82,6 +82,16 @@ pub const PERMISSION_PROCESS: &str = "process:run";
 /// 与 process:run 同信任域（CLI 本质是进程执行入口的封装）；
 /// 幂等安装/卸载，仅操作本插件声明的文件与 PATH 条目
 pub const PERMISSION_APP_CLI: &str = "app:cli";
+/// 用户级 PATH 目录登记（host-app `register-path` / `unregister-path`）
+///
+/// 与 `app:cli` 分域：`app:cli` 管「插件随包 CLI 装到宿主默认 bin 目录」，
+/// 本位管「把某个**已有目录**登记进用户 PATH」——两者写的 PATH 条目来源不同
+/// （宿主 bin 目录 vs 插件自持目录，如插件自己下载的运行时）。
+///
+/// **必须单独立位**：PATH 是**持久化**用户环境面——一条被塞进用户 PATH 的目录
+/// 会在之后每个新开的终端/进程里生效，恶意插件借此获得持久化劫持面。
+/// 审批文案必须让用户看清「把某个目录加入你的用户 PATH，新开终端生效」。
+pub const PERMISSION_APP_PATH: &str = "app:path";
 /// 对等网络：发现/信任/拨号/收发/浏览的宿主 peer-net 能力（host-peer）
 pub const PERMISSION_PEER: &str = "peer";
 /// mDNS 基础能力服务（host-mdns v2）：浏览 + 广播原语，事件按属主定向投递
@@ -160,6 +170,7 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
     (stringify!(PERMISSION_TIMER), PERMISSION_TIMER),
     (stringify!(PERMISSION_PROCESS), PERMISSION_PROCESS),
     (stringify!(PERMISSION_APP_CLI), PERMISSION_APP_CLI),
+    (stringify!(PERMISSION_APP_PATH), PERMISSION_APP_PATH),
     (stringify!(PERMISSION_PEER), PERMISSION_PEER),
     (stringify!(PERMISSION_MDNS), PERMISSION_MDNS),
     (stringify!(PERMISSION_WS_CLIENT), PERMISSION_WS_CLIENT),
@@ -244,6 +255,8 @@ pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
     (PERMISSION_TIMER, &["timer.register"]),
     (PERMISSION_PROCESS, &["process.run", "process.kill"]),
     (PERMISSION_APP_CLI, &["app.cliInstall", "app.cliUninstall"]),
+    // 用户级 PATH 目录登记：审批文案必须点明「新开终端生效」（持久化用户环境面）
+    (PERMISSION_APP_PATH, &["app.pathRegister", "app.pathUnregister"]),
     (PERMISSION_PEER, &[
         "peer.listDevices",
         "peer.dial",

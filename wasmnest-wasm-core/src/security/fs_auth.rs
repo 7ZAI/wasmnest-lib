@@ -757,6 +757,63 @@ impl FsAuthChecker {
         }
     }
 
+    /// 随包服务型插件的**免询问放行**（issue #6 D4）
+    ///
+    /// 判据不在这里：调用方（`PluginHost::preauthorize_plugin`）先按「来源非
+    /// `UserInstalled` **且** manifest 角色驱动（L1/L2）」裁定，本方法只做
+    /// 「落账 + 不弹窗」这一件事。
+    ///
+    /// 落账来源 = [`AuthRecordSource::Service`]：与用户确认的 `User`、策略档的
+    /// `AlwaysAllow` 区分开，安全面板才能解释「这条授权来自随包服务，不是用户点的」。
+    /// 落账粒度 = 路径本身（与插件直请路径的 `GrantScope::Exact` 同口径）：服务声明
+    /// 什么就放行什么；上溯父目录等于替用户扩大授权面。
+    ///
+    /// 失败（库错 / 容量上限）**不阻断激活**：记录缺位的后果是后续访问重新走询问层
+    /// （安全方向不变，只是回到未豁免前的噪声），比「服务起不来」可接受。
+    ///
+    /// @returns 成功落账的路径条数（日志 / 测试用）
+    pub async fn grant_service_paths(&self, plugin_id: &str, paths: &[String], ops: FsOps) -> usize {
+        let mut stored = 0usize;
+        for path in paths {
+            let Some(target) = Self::grant_target(path, GrantScope::Exact) else {
+                tracing::warn!(
+                    plugin_id = %plugin_id,
+                    path = %path,
+                    "fs_auth: 服务型免询问放行的目标规范化失败，跳过落账"
+                );
+                continue;
+            };
+            match self
+                .auth_records
+                .grant(
+                    plugin_id,
+                    AuthResource::Fs,
+                    &target,
+                    &ops.to_wire(),
+                    AuthRecordSource::Service,
+                )
+                .await
+            {
+                Ok(GrantOutcome::Stored) => stored += 1,
+                Ok(GrantOutcome::DroppedByCap) => {}
+                Err(e) => tracing::warn!(
+                    plugin_id = %plugin_id,
+                    path = %target,
+                    error = %e,
+                    "fs_auth: 服务型免询问放行落账失败（后续访问会重新询问）"
+                ),
+            }
+        }
+        tracing::info!(
+            plugin_id = %plugin_id,
+            stored,
+            requested = paths.len(),
+            ops = ops.as_wire_str(),
+            "fs_auth: 随包服务型插件免询问放行"
+        );
+        stored
+    }
+
     /// 落账 allow 记录（用户勾「记住」后点头的路径，操作集 = 本次请求）
     async fn land_allow_records(&self, request: &PendingRequest) {
         for path in &request.paths {

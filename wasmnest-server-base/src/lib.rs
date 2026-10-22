@@ -21,4 +21,6 @@ pub mod identity;
 pub mod info;
 pub mod ports;
 pub mod process;
+/// 应用作用域共享服务的租约模板（依赖服务按插件引用记账启停）
+pub mod service;
 pub mod wire;

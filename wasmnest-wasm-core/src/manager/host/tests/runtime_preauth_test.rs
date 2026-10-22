@@ -165,6 +165,94 @@ async fn preauthorize_collects_manifest_preopen_dirs_ungranted_denied() {
     );
 }
 
+// ==================== 服务型 wasm 免目录授权弹窗（issue #6 D4） ====================
+
+/// 随包服务型插件（L2 + 非用户安装）→ 声明路径**直接放行**，不弹目录授权框
+///
+/// 无头上下文（无 `AppHandle`）是这条用例的判据本体：弹窗路径在无头下必然失败
+/// （`check_batch` 保守拒绝），只有「免询问 + 落账」才能通过。同时断言授权记录
+/// 来源是 `service`（安全面板要能区分「随包服务」与「用户点过」）。
+#[tokio::test]
+async fn packaged_service_grants_declared_paths_without_dialog() {
+    let host = setup_host().await;
+    let expanded = format!(
+        "{}/.wasmnest-service-preauth-probe",
+        std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
+    );
+    host.plugins.write().await.insert(
+        TEST_PLUGIN_ID.to_string(),
+        make_plugin(TEST_PLUGIN_ID, PluginSource::Wasm, PluginState::Loaded),
+    );
+    {
+        let mut plugins = host.plugins.write().await;
+        let plugin = plugins.get_mut(TEST_PLUGIN_ID).expect("test plugin in map");
+        plugin.manifest.kind = PluginKind::InternalBusiness;
+        plugin.manifest.wasi_preopen_dirs =
+            vec![WasiPreopenDir::writable("${home}/.wasmnest-service-preauth-probe")];
+    }
+
+    host.preauthorize_plugin(TEST_PLUGIN_ID)
+        .await
+        .expect("随包服务型插件必须免弹窗放行（无头上下文亦可通过）");
+
+    assert!(
+        host.wasm_runtime
+            .fs_auth()
+            .is_granted(
+                TEST_PLUGIN_ID,
+                &expanded,
+                crate::security::fs_auth::FsOps::READ_WRITE
+            )
+            .await,
+        "声明路径必须已落账（后续 host-fs 访问不再弹窗）"
+    );
+    let overview = host
+        .wasm_runtime
+        .fs_auth()
+        .auth_records()
+        .overview(TEST_PLUGIN_ID, "test", Vec::new())
+        .await
+        .expect("auth overview");
+    let row = overview
+        .records
+        .iter()
+        .find(|r| r.target == expanded)
+        .expect("声明路径必须有授权记录");
+    assert_eq!(
+        row.source, "service",
+        "来源必须是 service（与用户确认 / 策略档区分，安全面板据此解释）"
+    );
+}
+
+/// 回归锁：随包 **L3 业务应用** 不免弹窗（既有口径不变）
+///
+/// 同一个 manifest 声明目录，只把 `type` 换成 `business-app` 就必须回到
+/// 「收集 → 弹窗」路径（无头下被拒）——否则本轮豁免扩到了所有应用。
+#[tokio::test]
+async fn packaged_business_app_still_requires_dialog() {
+    let host = setup_host().await;
+    host.plugins.write().await.insert(
+        TEST_PLUGIN_ID.to_string(),
+        make_plugin(TEST_PLUGIN_ID, PluginSource::Wasm, PluginState::Loaded),
+    );
+    {
+        let mut plugins = host.plugins.write().await;
+        let plugin = plugins.get_mut(TEST_PLUGIN_ID).expect("test plugin in map");
+        plugin.manifest.kind = PluginKind::BusinessApp;
+        plugin.manifest.wasi_preopen_dirs =
+            vec![WasiPreopenDir::writable("${home}/.wasmnest-service-preauth-probe")];
+    }
+
+    let err = host
+        .preauthorize_plugin(TEST_PLUGIN_ID)
+        .await
+        .expect_err("L3 业务应用的声明目录仍须经授权弹窗（无头下被拒）");
+    assert!(
+        err.to_string().contains("denied"),
+        "必须走 check_batch 拒绝，而不是被服务型判据放行，实际: {err}"
+    );
+}
+
 /// 声明目录已授权(storage fs_granted_paths 前缀命中)→ check_batch 短路
 /// 通过,preauthorize 整体放行。**仅 worker 类别可达**（ADR 0034）：本用例
 /// 直接设 manifest 字段测机制，在策略闸门（validation.rs）之下。

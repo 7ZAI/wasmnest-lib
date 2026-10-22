@@ -8,7 +8,6 @@
 
 use super::*;
 
-
 /// 同 id 同时存在于内置与用户目录：内置条目必须胜出，且激活不得被审批门禁拒绝
 #[tokio::test]
 async fn user_copy_must_not_shadow_builtin_scan_plugin() {
@@ -44,7 +43,19 @@ async fn user_copy_must_not_shadow_builtin_scan_plugin() {
         Database::new(&std::path::PathBuf::from(":memory:")).unwrap(),
     ));
     db.lock().expect("db lock").init_schema().unwrap();
-    let host = PluginHost::new(db, &builtin_dir, &user_dir, None, None, Vec::new(), crate::manager::runtime::AbiPolicy::UNCONSTRAINED, std::sync::Arc::new(crate::host_api::ports::UnimplementedHostFacts), None).await;
+    let host = PluginHost::new(
+        db,
+        &builtin_dir,
+        &user_dir,
+        None,
+        None,
+        Vec::new(),
+        crate::manager::runtime::AbiPolicy::UNCONSTRAINED,
+        std::sync::Arc::new(crate::host_api::ports::UnimplementedHostFacts),
+        None,
+        None,
+    )
+    .await;
 
     let info = host.get_plugin(shadowed_id).await.expect("plugin present");
     assert_eq!(
@@ -62,7 +73,10 @@ async fn user_copy_must_not_shadow_builtin_scan_plugin() {
         .await
         .expect("内置来源免审批，激活不得被审批门禁拒绝");
     assert_eq!(
-        host.get_plugin(shadowed_id).await.expect("plugin present").state,
+        host.get_plugin(shadowed_id)
+            .await
+            .expect("plugin present")
+            .state,
         PluginState::Activated
     );
 }

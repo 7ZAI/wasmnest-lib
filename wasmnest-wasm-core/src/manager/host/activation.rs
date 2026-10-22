@@ -26,7 +26,12 @@ impl PluginHost {
         let plugins = self.plugins.read().await;
         plugins
             .get(plugin_id)
-            .map(|p| matches!(p.state, PluginState::Activated | PluginState::Degraded { .. }))
+            .map(|p| {
+                matches!(
+                    p.state,
+                    PluginState::Activated | PluginState::Degraded { .. }
+                )
+            })
             .unwrap_or(false)
     }
 
@@ -34,7 +39,8 @@ impl PluginHost {
     pub async fn deactivate_all(&self) -> crate::Result<()> {
         // 置关闭标志：deactivate 内的卸载动作（CLI 清理等）跳过，
         // 保留随包产物供下次启动重新激活（幂等安装）
-        self.shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.shutting_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let plugin_ids: Vec<String> = {
             let plugins = self.plugins.read().await;
@@ -43,7 +49,12 @@ impl PluginHost {
             // 此前只收 Activated，Degraded 插件在应用关闭时被静默跳过（审计票 09）。
             plugins
                 .values()
-                .filter(|p| matches!(p.state, PluginState::Activated | PluginState::Degraded { .. }))
+                .filter(|p| {
+                    matches!(
+                        p.state,
+                        PluginState::Activated | PluginState::Degraded { .. }
+                    )
+                })
                 .map(|p| p.manifest.id.clone())
                 .collect()
         };
@@ -83,49 +94,41 @@ impl PluginHost {
     /// - WASM 插件：调用 __wasmnest_activate 导出函数
     /// - TS-only 插件：前端模块加载在 PluginLoader 中完成
     pub async fn activate_plugin(&self, plugin_id: &str, persist: bool) -> crate::Result<()> {
-        // 外壳（审计票 12）：激活**失败**时按属主回收 peer-net 节点。
-        // 节点生命周期已改由插件自己经 `host-peer.start-node` 请求，内核不再认得
-        // 任何产品 id；这里只剩一条与产品无关的补偿——插件可能在 activate() 里已经
-        // 把节点带起来、随后才失败，若不回收就会出现「插件未激活、本机仍在
-        // `_wasmnest-peer` 广播」。旧实现靠「外壳只在成功时才起节点」天然没有这个
-        // 窗口，改成插件自起之后，补偿必须显式存在。属主不匹配即 no-op，
-        // 所以任何插件都能安全走这一条
+        // 激活**失败**时回收该插件已 acquire 的应用作用域服务租约：插件可能在
+        // activate() 里已经取用了服务、随后才失败；不回收就会留下「插件未激活、
+        // 服务仍在运行 / 仍在广播」的孤儿引用。释放是幂等的（未持有即 no-op）。
         let result = self.activate_plugin_inner(plugin_id, persist).await;
         if result.is_err() {
-            self.release_peer_node_if_owned(plugin_id, "activation failed").await;
+            self.release_services_for(plugin_id, "activation failed")
+                .await;
         }
         result
     }
 
-    /// 按属主释放 peer-net 节点（审计票 12）：该插件起着节点就停掉，没起过是 no-op
+    /// 释放插件持有的全部应用作用域服务租约（停用 / 激活失败 / Error 态共用）
     ///
-    /// 无 app_handle 或未注入 `PeerCtxProvider` 端口的无头上下文（测试）直接跳过。
-    /// 停用与激活失败两条生命周期路径共用它，替代旧的两个
-    /// `plugin_id == FILE_TRANSFER_PLUGIN_ID` 硬编码分支
-    async fn release_peer_node_if_owned(&self, plugin_id: &str, reason: &str) {
-        let Some(app) = self.wasm_host_ctx.app_handle() else {
+    /// 未注入注册表（无头 / 测试）→ no-op。单个服务的停止失败只记录日志，
+    /// 不阻断插件生命周期（注册表保留 `running` 槽并在下次 release / 宿主退出时重试）。
+    pub(crate) async fn release_services_for(&self, plugin_id: &str, reason: &str) {
+        let Some(registry) = self.wasm_host_ctx.service_registry() else {
             return;
         };
-        let Some(provider) = self.wasm_host_ctx.peer_ctx_provider() else {
-            return;
-        };
-        let ctx = provider(&app);
-        match wasmnest_server_peer_net::release_node_for(ctx, plugin_id).await {
-            Ok(true) => {
-                tracing::info!(
+        for report in registry.release_all_for(plugin_id).await {
+            match &report.outcome {
+                Ok(outcome) => tracing::info!(
                     plugin_id = %plugin_id,
+                    service_key = %report.key,
+                    outcome = ?outcome,
                     reason = %reason,
-                    "peer-net node released: its owning plugin stopped running"
-                );
-            }
-            Ok(false) => {}
-            Err(error) => {
-                tracing::error!(
+                    "scoped service released on plugin lifecycle"
+                ),
+                Err(error) => tracing::error!(
                     plugin_id = %plugin_id,
+                    service_key = %report.key,
                     error = %error,
                     reason = %reason,
-                    "peer-net node release on plugin lifecycle failed"
-                );
+                    "scoped service release on plugin lifecycle failed"
+                ),
             }
         }
     }
@@ -151,7 +154,12 @@ impl PluginHost {
                     loaded.extension_path.clone(),
                     loaded.manifest.permissions.clone(),
                 ),
-                None => return Err(crate::AppError::Plugin(format!("Plugin not found: {}", plugin_id))),
+                None => {
+                    return Err(crate::AppError::Plugin(format!(
+                        "Plugin not found: {}",
+                        plugin_id
+                    )))
+                }
             }
         };
         // 信任分档（裁决 2）：随包内置插件属应用构建信任域，本门禁只作用 UserInstalled
@@ -164,10 +172,11 @@ impl PluginHost {
         // 目录哈希不进 async 事件循环
         let dir = PathBuf::from(&extension_path);
         let record_for_hash = record.clone();
-        let (status, _current_hash) =
-            tokio::task::spawn_blocking(move || approval::verify_approval(record_for_hash.as_ref(), &dir))
-                .await
-                .map_err(|e| crate::AppError::Plugin(format!("Approval verify task failed: {}", e)))??;
+        let (status, _current_hash) = tokio::task::spawn_blocking(move || {
+            approval::verify_approval(record_for_hash.as_ref(), &dir)
+        })
+        .await
+        .map_err(|e| crate::AppError::Plugin(format!("Approval verify task failed: {}", e)))??;
 
         match status {
             ApprovalStatus::Approved => Ok(Some(approval::effective_permissions(
@@ -210,7 +219,11 @@ impl PluginHost {
         }
     }
 
-    pub(crate) async fn activate_plugin_inner(&self, plugin_id: &str, persist: bool) -> crate::Result<()> {
+    pub(crate) async fn activate_plugin_inner(
+        &self,
+        plugin_id: &str,
+        persist: bool,
+    ) -> crate::Result<()> {
         tracing::info!(plugin_id = %plugin_id, persist, "[PluginHost] activate_plugin");
 
         // 阶段 0.0（无锁）：审批门禁（ADR 0020）——用户 zip 安装的插件必须先获人工批准，
@@ -355,7 +368,10 @@ impl PluginHost {
         // 激活（见 PluginHost::new 的 activate_system_components），故此处的
         // 注册表快照对应用插件而言已含全部系统组件提供者。
         if !plan.dependencies.is_empty() {
-            let missing = self.wasm_host_ctx.capabilities().missing(&plan.dependencies);
+            let missing = self
+                .wasm_host_ctx
+                .capabilities()
+                .missing(&plan.dependencies);
             if !missing.is_empty() {
                 let msg = format!(
                     "plugin dependencies not satisfied, missing capabilities: {}",
@@ -393,9 +409,10 @@ impl PluginHost {
             let rebuild_reason: Option<String> = {
                 let entry = self.get_instance(plugin_id).await;
                 match &entry {
-                    Some(entry) if entry.owner_stopped() => {
-                        Some("instance owner stopped (previous deactivation dropped the store)".to_string())
-                    }
+                    Some(entry) if entry.owner_stopped() => Some(
+                        "instance owner stopped (previous deactivation dropped the store)"
+                            .to_string(),
+                    ),
                     Some(entry) if !plan.declared_preopen_dirs.is_empty() => {
                         let resolved = crate::manager::runtime::resolve_preopen_dirs(
                             &self.wasm_host_ctx,
@@ -414,7 +431,9 @@ impl PluginHost {
                         })
                     }
                     // 实例缺失：走重建路径补建（与 reload 语义一致）
-                    None if !plan.declared_preopen_dirs.is_empty() => Some("no wasm instance".to_string()),
+                    None if !plan.declared_preopen_dirs.is_empty() => {
+                        Some("no wasm instance".to_string())
+                    }
                     _ => None,
                 }
             };
@@ -430,7 +449,8 @@ impl PluginHost {
             if self.get_instance(plugin_id).await.is_none() {
                 tracing::error!(plugin_id = %plugin_id, "WASM plugin not found in wasm_plugins map");
                 // phase 1 已置 Activating 中间态：失败路径必须落终态，不留悬挂
-                self.mark_error(plugin_id, "WASM module not loaded".to_string()).await;
+                self.mark_error(plugin_id, "WASM module not loaded".to_string())
+                    .await;
                 return Err(crate::AppError::Plugin(format!(
                     "Plugin {} WASM module not loaded",
                     plugin_id
@@ -447,8 +467,11 @@ impl PluginHost {
                         code = %code,
                         "[PluginHost] Plugin activate() returned error code"
                     );
-                    self.mark_error(plugin_id, format!("activate() returned error code {}", code))
-                        .await;
+                    self.mark_error(
+                        plugin_id,
+                        format!("activate() returned error code {}", code),
+                    )
+                    .await;
                     return Err(crate::AppError::Plugin(format!(
                         "Plugin {} activate() returned error code {}",
                         plugin_id, code
@@ -458,7 +481,10 @@ impl PluginHost {
                     let msg = format!("activate() returned unexpected guest reply: {:?}", other);
                     tracing::error!(plugin_id = %plugin_id, reply = ?other, "[PluginHost] Plugin activate() reply unexpected");
                     self.mark_error(plugin_id, msg.clone()).await;
-                    return Err(crate::AppError::Plugin(format!("Plugin {} {}", plugin_id, msg)));
+                    return Err(crate::AppError::Plugin(format!(
+                        "Plugin {} {}",
+                        plugin_id, msg
+                    )));
                 }
                 Err(failure) => match failure.panic_message {
                     // panic：与改造前同文案分支（Store 已污染，恢复依赖 trap 自动重载）
@@ -539,7 +565,9 @@ impl PluginHost {
             let mut plugins = self.plugins.write().await;
             if let Some(loaded) = plugins.get_mut(plugin_id) {
                 loaded.state = match &startup_failure {
-                    Some(reason) => PluginState::Degraded { error: reason.clone() },
+                    Some(reason) => PluginState::Degraded {
+                        error: reason.clone(),
+                    },
                     None => PluginState::Activated,
                 };
                 loaded.activated_at = Some(Utc::now());
@@ -575,7 +603,8 @@ impl PluginHost {
         // 声明了但没接事件的插件即时看到的形态是可连但无回包——fail-visible 需按插件端
         // 是否实现回调判定，宿主只负责「按声明登记、按声明可达」。
         if !plan.ws_endpoints.is_empty() {
-            self.register_declared_ws_endpoints(plugin_id, &plan.ws_endpoints).await;
+            self.register_declared_ws_endpoints(plugin_id, &plan.ws_endpoints)
+                .await;
         }
 
         // L1 基础服务激活后装配能力注册表——实例化时探测到的可路由能力导出
@@ -589,7 +618,9 @@ impl PluginHost {
         if !plan.subscribes.is_empty() {
             let plugin_id_owned = plugin_id.to_string();
             for topic in &plan.subscribes {
-                self.message_bus.subscribe_wasm(&plugin_id_owned, topic).await;
+                self.message_bus
+                    .subscribe_wasm(&plugin_id_owned, topic)
+                    .await;
             }
             tracing::info!(
                 plugin_id = %plugin_id_owned,
@@ -646,11 +677,11 @@ impl PluginHost {
         // 提供者句柄 = 装配条目（经窄端口 `CapabilityTarget` 转发，两种调用模型同构）
         let target: Arc<dyn crate::host_api::context::CapabilityTarget> = entry;
         for capability in exported {
-            if let Err(e) =
-                self.wasm_host_ctx
-                    .capabilities()
-                    .register_system_component(&capability, plugin_id, target.clone())
-            {
+            if let Err(e) = self.wasm_host_ctx.capabilities().register_system_component(
+                &capability,
+                plugin_id,
+                target.clone(),
+            ) {
                 tracing::error!(
                     plugin_id = %plugin_id,
                     capability = %capability,
@@ -670,18 +701,22 @@ impl PluginHost {
     }
 
     pub async fn deactivate_plugin(&self, plugin_id: &str, persist: bool) -> crate::Result<()> {
-        // 外壳（审计票 12）：停用**成功**后按属主回收 peer-net 节点（对端即时感知
-        // 下线；该插件没起过节点则 no-op，幂等）。插件自己也会经
-        // `host-peer.stop-node` 关停，这一层是它没能关停（忘了调 / deactivate 里
-        // 提前返回）时的兜底——按属主判断，不认产品 id
+        // 停用**成功**（guest 清理已跑完）后回收该插件的应用作用域服务租约：
+        // 对端即时感知下线；插件自己没主动 release（忘了调 / deactivate 提前返回）
+        // 时由这一层兜底。顺序必须是「先 guest 清理，再 release」。
         let result = self.deactivate_plugin_inner(plugin_id, persist).await;
         if result.is_ok() {
-            self.release_peer_node_if_owned(plugin_id, "plugin deactivated").await;
+            self.release_services_for(plugin_id, "plugin deactivated")
+                .await;
         }
         result
     }
 
-    pub(crate) async fn deactivate_plugin_inner(&self, plugin_id: &str, persist: bool) -> crate::Result<()> {
+    pub(crate) async fn deactivate_plugin_inner(
+        &self,
+        plugin_id: &str,
+        persist: bool,
+    ) -> crate::Result<()> {
         tracing::info!(plugin_id = %plugin_id, persist, "[PluginHost] deactivate_plugin");
 
         // 步骤 ①（票 06 §5.6 / I3③）：先停属主 + 丢 store，再做资源回收。
@@ -739,7 +774,8 @@ impl PluginHost {
         if wasm_source == Some(PluginSource::Wasm) {
             match self.get_instance(plugin_id).await {
                 Some(entry) if entry.call_model() == CallModel::EventLoop => {
-                    let skipped_total = self.owner_cleanup_skipped.fetch_add(1, Ordering::Relaxed) + 1;
+                    let skipped_total =
+                        self.owner_cleanup_skipped.fetch_add(1, Ordering::Relaxed) + 1;
                     tracing::warn!(
                         plugin_id = %plugin_id,
                         skipped = "on_shutdown+deactivate",
@@ -878,7 +914,10 @@ impl PluginHost {
             if loaded.manifest.kind.is_role_driven() {
                 continue;
             }
-            let is_active = matches!(loaded.state, PluginState::Activated | PluginState::Degraded { .. });
+            let is_active = matches!(
+                loaded.state,
+                PluginState::Activated | PluginState::Degraded { .. }
+            );
             map.insert(id.clone(), is_active);
         }
         tracing::debug!(
@@ -901,7 +940,10 @@ impl PluginHost {
             tracing::debug!(plugin_id = %id, persist = active, "[PluginHost]   Persist");
         }
         if let Err(e) = self.storage.save_activated_plugins(&activated_map).await {
-            tracing::error!("[PluginHost] Failed to persist plugin activation state: {}", e);
+            tracing::error!(
+                "[PluginHost] Failed to persist plugin activation state: {}",
+                e
+            );
         }
     }
 
@@ -959,7 +1001,8 @@ fn find_duplicate_id_claim(
 /// .com.wasmnest.session.*`）时照常可达；`owner_of` 解旧名时也落到本插件，
 /// 回复道 sender 校验口径一致。与 HTTP 前缀别名（`legacy_http_alias`）同一决策；
 /// 窗口关闭（全量更新后）时删除本条即可。
-const LEGACY_API_PLUGIN_ALIASES: &[(&str, &str)] = &[("com.wasmnest.terminal-session", "com.wasmnest.session")];
+const LEGACY_API_PLUGIN_ALIASES: &[(&str, &str)] =
+    &[("com.wasmnest.terminal-session", "com.wasmnest.session")];
 
 /// 为新 plugin_id 的 api 清单附加旧名别名；无别名命中时原样返回。
 ///
@@ -1016,7 +1059,10 @@ mod tests {
     /// 正常注册表：目标 id 的记录以自身为键 → 无冲突
     #[test]
     fn duplicate_claim_absent_in_normal_registry() {
-        let map = map_of(vec![("com.a.plugin", "com.a.plugin"), ("com.b.plugin", "com.b.plugin")]);
+        let map = map_of(vec![
+            ("com.a.plugin", "com.a.plugin"),
+            ("com.b.plugin", "com.b.plugin"),
+        ]);
         assert!(find_duplicate_id_claim(&map, "com.a.plugin").is_none());
         assert!(find_duplicate_id_claim(&map, "com.b.plugin").is_none());
     }
@@ -1039,7 +1085,10 @@ mod tests {
     /// 同名不同插件（manifest.id 不同）互不干扰
     #[test]
     fn duplicate_claim_ignores_distinct_ids() {
-        let map = map_of(vec![("com.a.plugin", "com.a.plugin"), ("com.b.plugin", "com.b.plugin")]);
+        let map = map_of(vec![
+            ("com.a.plugin", "com.a.plugin"),
+            ("com.b.plugin", "com.b.plugin"),
+        ]);
         assert!(find_duplicate_id_claim(&map, "com.nonexistent").is_none());
     }
 

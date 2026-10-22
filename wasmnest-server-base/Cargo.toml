@@ -43,8 +43,8 @@ wasmnest-link-crypto = { path = "../link-crypto" }
 wasmnest-host-api-core = { path = "../wasmnest-host-api-core" }
 # error_boundary（futures FutureExt::catch_unwind）
 futures-util = "0.3"
-# error_boundary 测试
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+# 服务租约：槽位互斥（service::ServiceRegistry 持锁跨 await）
+tokio = { version = "1", features = ["sync"] }
 # ports：异步 trait
 async-trait = "0.1"
 # ports：MdnsPort（peer-net 发现守护接入，ServiceDaemon 类型）
@@ -60,3 +60,5 @@ anyhow = "1"
 [dev-dependencies]
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry", "ansi"] }
+# service 模块单测：#[tokio::test] 运行时（sync feature 由普通依赖提供）
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

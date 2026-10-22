@@ -184,3 +184,60 @@ async fn approve_rejects_trusted_source() {
     let err = host.approve_plugin(id).await.unwrap_err();
     assert!(err.to_string().contains("approval is not required"), "实际: {err}");
 }
+
+// ==================== 服务型 wasm 免权限拦截（issue #6 D4） ====================
+
+/// 判据：来源非 UserInstalled **且** 角色驱动（L1/L2）才豁免
+#[test]
+fn service_exemption_requires_trusted_source_and_role() {
+    use crate::manager::host::preauth::is_exempt_service;
+
+    // 随包 + L1/L2 → 免
+    assert!(is_exempt_service(&PluginSource::FileScan, PluginKind::InternalBusiness));
+    assert!(is_exempt_service(&PluginSource::Wasm, PluginKind::BasicService));
+    // 随包但 L3 业务应用 → 不免（既有口径不变，仍需目录授权弹窗）
+    assert!(!is_exempt_service(&PluginSource::FileScan, PluginKind::BusinessApp));
+    // **硬红线**：用户安装来源永不豁免，即使自报 L1/L2
+    assert!(!is_exempt_service(
+        &PluginSource::UserInstalled,
+        PluginKind::InternalBusiness
+    ));
+    assert!(!is_exempt_service(
+        &PluginSource::UserInstalled,
+        PluginKind::BasicService
+    ));
+}
+
+/// **反例（D4 硬红线）**：用户 zip 安装的插件自报 `internal-business` 仍必须经审批
+///
+/// `type` 是插件自报字段，只允许在「来源已可信」的前提下参与判定；否则自报 L2
+/// 就等于同时拿到「免审批门 + 免目录授权弹窗」两条提权通道。
+#[tokio::test]
+async fn user_installed_cannot_claim_service_exemption() {
+    let host = setup_host().await;
+    let id = "com.wasmnest.test-fake-service";
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(tmp.path().join(PLUGIN_MANIFEST_FILE), r#"{"id":"x"}"#).unwrap();
+    register_user_installed(&host, id, tmp.path(), &["storage"]).await;
+    host.plugins
+        .write()
+        .await
+        .get_mut(id)
+        .expect("plugin present")
+        .manifest
+        .kind = PluginKind::InternalBusiness;
+
+    let err = host.activate_plugin(id, false).await.unwrap_err();
+    assert!(
+        err.to_string().contains("requires user approval"),
+        "自报 L2 的用户安装插件不得绕过审批门，实际: {err}"
+    );
+    assert_eq!(
+        host.get_plugin(id).await.expect("plugin present").state,
+        PluginState::NeedsApproval
+    );
+    assert!(
+        host.permission().get_granted(id).is_empty(),
+        "未批准路径不得授予任何权限"
+    );
+}

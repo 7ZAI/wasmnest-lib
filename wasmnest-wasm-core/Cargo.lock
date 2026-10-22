@@ -6462,6 +6462,7 @@ dependencies = [
  "actix-cors",
  "actix-service",
  "actix-web",
+ "async-trait",
  "base64 0.22.1",
  "chrono",
  "hex",
@@ -6504,6 +6505,7 @@ name = "wasmnest-server-peer-net"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "inventory",
  "serde",
  "serde_json",

@@ -217,8 +217,8 @@ pub(crate) fn install_capability_domain_ports(
     // （见 `test_support::kernel_test_domain_ports` 模块文档）；宿主集成测试链的是不带
     // cfg(test) 的本 crate ⇒ 该分支不存在，不会盖掉宿主装配的真端口。
     // 三条 Cargo 边保留（ws / peer / http）：内核仍消费它们的**引擎面**（ws 帧投递窄端口与
-    // 端点登记、peer 的 `release_node_for`/`PeerCtx`、http 的 `HttpUnitExecutor`），那不是
-    // 能力域端口 adapter 的范畴。
+    // 端点登记、peer 的 `PeerCtx` 类型（服务租约后内核不再调 peer 生命周期）、http 的
+    // `HttpUnitExecutor`），那不是能力域端口 adapter 的范畴。
     let host_ports: std::sync::Arc<dyn wasmnest_host_kit::ports::HostPorts> = host_ctx.clone();
     let installed = wasmnest_host_kit::install_domain_ports(host_ports);
     if !installed.is_empty() {
@@ -246,8 +246,8 @@ pub fn grant_permissions(ctx: &WasmHostContext, plugin_id: &str, perms: &[&str])
 #[cfg(all(test, feature = "desktop-assembly"))]
 pub(crate) mod tests {
     use super::*;
-    use crate::db::Database;
     use crate::bus::MessageBus;
+    use crate::db::Database;
     use crate::permission::PermissionManager;
     use crate::security::fs_auth::FsAuthChecker;
     use crate::storage::PluginStorage;
@@ -324,7 +324,12 @@ pub(crate) mod tests {
     #[test]
     fn check_permission_ungranted_plugin_rejected() {
         let ctx = build_host_ctx();
-        assert!(!check_permission(ctx.as_ref(), "p1", "storage", "host_test"));
+        assert!(!check_permission(
+            ctx.as_ref(),
+            "p1",
+            "storage",
+            "host_test"
+        ));
     }
 
     /// 授权了 A 权限但请求 B 权限：拒绝（权限粒度隔离）
@@ -332,6 +337,11 @@ pub(crate) mod tests {
     fn check_permission_wrong_permission_rejected() {
         let ctx = build_host_ctx();
         grant_permissions(&ctx, "p1", &[crate::permission::PERMISSION_STORAGE]);
-        assert!(!check_permission(ctx.as_ref(), "p1", "fs:read", "host_test"));
+        assert!(!check_permission(
+            ctx.as_ref(),
+            "p1",
+            "fs:read",
+            "host_test"
+        ));
     }
 }

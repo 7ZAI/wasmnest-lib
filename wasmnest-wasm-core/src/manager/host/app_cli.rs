@@ -30,7 +30,11 @@ pub fn default_bin_dir() -> PathBuf {
 
 /// CLI 可执行文件名（Windows 补 .exe）
 pub fn exe_name(file_name: &str) -> String {
-    let base = if file_name.is_empty() { "bedtask" } else { file_name };
+    let base = if file_name.is_empty() {
+        "bedtask"
+    } else {
+        file_name
+    };
     #[cfg(target_os = "windows")]
     {
         if base.ends_with(".exe") {
@@ -50,6 +54,231 @@ fn user_local_bin() -> PathBuf {
     dirs::home_dir()
         .map(|d| d.join(".local").join("bin"))
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+// ==================== 目录级 PATH 登记（register-path / unregister-path） ====================
+
+/// 允许登记进**用户级 PATH** 的目录根（allowlist）
+///
+/// 只接受落在这些根之内的目录：
+/// - `~/.wasmnest`——应用数据根（插件自有数据目录在它之下，如
+///   `~/.wasmnest/agent-hub/runtime/node/v24.22.1/bin`）；
+/// - `%LOCALAPPDATA%/com.wasmnest.app`（Windows 应用数据目录）；
+/// - `~/.local`（unix 用户 bin 根，symlink 落点）。
+///
+/// **为什么必须 allowlist**：PATH 是**持久化**用户环境面——被登记的目录会在之后
+/// 每个新开的终端/进程里生效。放开任意路径等于给插件一条持久化劫持通道
+///（把 `/tmp/evil` 或 `C:\Windows` 塞进用户 PATH）。越界一律拒绝并点名实际路径。
+pub fn allowed_path_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".wasmnest"));
+        roots.push(home.join(".local"));
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(local) = dirs::data_local_dir() {
+        roots.push(local.join("com.wasmnest.app"));
+    }
+    roots
+}
+
+/// 路径词法规范化（allowlist 比较用）：消解 `.` / `..`、去尾分隔符
+///
+/// **词法而非文件系统解析**：目录可能尚不存在（登记调用方先校验存在性），
+/// 且 `..` 不能穿透 allowlist 根——`~/.wasmnest/../evil` 必须归一到 `~/evil`
+/// 再判定，而不是字面比较骗过门。
+fn normalize_for_compare(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::RootDir => out.push(comp.as_os_str()),
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// 路径分量相等（Windows 大小写不敏感，unix 敏感）
+fn component_eq(a: &std::path::Component, b: &std::path::Component) -> bool {
+    let (x, y) = (
+        a.as_os_str().to_string_lossy(),
+        b.as_os_str().to_string_lossy(),
+    );
+    if cfg!(target_os = "windows") {
+        x.eq_ignore_ascii_case(&y)
+    } else {
+        x == y
+    }
+}
+
+/// `dir` 是否位于 `root` 之内（分量级比较，Windows 大小写不敏感）
+fn path_starts_with(dir: &Path, root: &Path) -> bool {
+    let dir_parts: Vec<_> = dir.components().collect();
+    let root_parts: Vec<_> = root.components().collect();
+    if root_parts.len() > dir_parts.len() {
+        return false;
+    }
+    root_parts
+        .iter()
+        .zip(dir_parts.iter())
+        .all(|(r, d)| component_eq(r, d))
+}
+
+/// 目录是否在 allowlist 之内（纯函数，可单测）
+///
+/// 相对路径一律拒绝（绝对路径才谈得上「位于某根之内」）。
+pub fn path_dir_allowed_in(dir: &Path, roots: &[PathBuf]) -> bool {
+    if !dir.is_absolute() {
+        return false;
+    }
+    let dir = normalize_for_compare(dir);
+    roots
+        .iter()
+        .any(|root| path_starts_with(&dir, &normalize_for_compare(root)))
+}
+
+/// 目录是否在默认 allowlist 之内
+pub fn path_dir_allowed(dir: &Path) -> bool {
+    path_dir_allowed_in(dir, &allowed_path_roots())
+}
+
+/// 目录登记进用户 PATH（跨平台入口）
+///
+/// Windows：把目录本身追加进 `HKCU\Environment\Path`（保留 `REG_EXPAND_SZ`
+/// 类型与用户原有项，写后广播 `WM_SETTINGCHANGE`）。
+/// unix：为目录下每个可执行常规文件建 `~/.local/bin/<name>` symlink。
+pub async fn register_path_dir(dir: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        register_path_windows(dir).await
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        register_path_dir_unix(dir).map(|_| ())
+    }
+}
+
+/// 目录从用户 PATH 摘除（跨平台入口，幂等）
+pub async fn unregister_path_dir(dir: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        unregister_path_windows(dir).await
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        unregister_path_dir_unix(dir).map(|_| ())
+    }
+}
+
+/// unix：为目录下**每个可执行常规文件**建 `~/.local/bin/<name>` symlink
+///
+/// 覆盖式创建（先删旧链再建）→ 幂等；返回建链的文件名列表。
+/// 只认**常规文件**（`DirEntry::file_type` 不跟随符号链接）：目录、软链、
+/// 设备文件都不链。
+#[cfg(not(target_os = "windows"))]
+pub fn register_path_dir_unix(dir: &Path) -> Result<Vec<String>, String> {
+    register_path_dir_unix_in(dir, &user_local_bin())
+}
+
+/// unix：建链实现（落点可注入——单测用临时目录，不写真实 `~/.local/bin`）
+#[cfg(not(target_os = "windows"))]
+pub fn register_path_dir_unix_in(dir: &Path, link_dir: &Path) -> Result<Vec<String>, String> {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    std::fs::create_dir_all(link_dir)
+        .map_err(|e| format!("create {} failed: {}", link_dir.display(), e))?;
+    let mut linked = Vec::new();
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("read dir {} failed: {}", dir.display(), e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read dir entry failed: {}", e))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("stat {} failed: {}", entry.path().display(), e))?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let meta = entry
+            .metadata()
+            .map_err(|e| format!("stat {} failed: {}", entry.path().display(), e))?;
+        // 可执行位：无执行位的文件链进 PATH 不会被 shell 当命令跑
+        if meta.permissions().mode() & 0o111 == 0 {
+            continue;
+        }
+        let name = entry.file_name();
+        let link = link_dir.join(&name);
+        let target = dir.join(&name);
+        let _ = std::fs::remove_file(&link);
+        symlink(&target, &link).map_err(|e| {
+            format!(
+                "symlink {} -> {} failed: {}",
+                link.display(),
+                target.display(),
+                e
+            )
+        })?;
+        linked.push(name.to_string_lossy().to_string());
+    }
+    tracing::info!(
+        "[AppCli] PATH dir registered (unix symlinks): {} -> {} ({} entries)",
+        dir.display(),
+        link_dir.display(),
+        linked.len()
+    );
+    Ok(linked)
+}
+
+/// unix：摘除 `~/.local/bin` 中**指向该目录内**的 symlink
+///
+/// 只删指向本目录的符号链接：其他链接与**真实文件**（同名用户自建文件）
+/// 一律不碰。返回被摘除的链接名列表。
+#[cfg(not(target_os = "windows"))]
+pub fn unregister_path_dir_unix(dir: &Path) -> Result<Vec<String>, String> {
+    unregister_path_dir_unix_in(dir, &user_local_bin())
+}
+
+/// unix：摘链实现（落点可注入——单测用临时目录，不动真实 `~/.local/bin`）
+#[cfg(not(target_os = "windows"))]
+pub fn unregister_path_dir_unix_in(dir: &Path, link_dir: &Path) -> Result<Vec<String>, String> {
+    use std::fs::symlink_metadata;
+    if !link_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let dir_norm = normalize_for_compare(dir);
+    let mut removed = Vec::new();
+    let entries = std::fs::read_dir(link_dir)
+        .map_err(|e| format!("read dir {} failed: {}", link_dir.display(), e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read dir entry failed: {}", e))?;
+        let path = entry.path();
+        let Ok(meta) = symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_symlink() {
+            // 同名真实文件：不是本机制建的，不动
+            continue;
+        }
+        let Ok(target) = std::fs::read_link(&path) else {
+            continue;
+        };
+        if !path_starts_with(&normalize_for_compare(&target), &dir_norm) {
+            // 指向别处的链接：不动
+            continue;
+        }
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("remove symlink {} failed: {}", path.display(), e))?;
+        removed.push(entry.file_name().to_string_lossy().to_string());
+    }
+    tracing::info!(
+        "[AppCli] PATH dir unregistered (unix symlinks): {} ({} entries)",
+        dir.display(),
+        removed.len()
+    );
+    Ok(removed)
 }
 
 // ==================== PATH 条目维护（纯函数） ====================
@@ -105,7 +334,12 @@ pub fn path_remove(path: &str, entry: &str) -> (String, bool) {
         .filter(|p| !eq(p, entry))
         .map(str::to_string)
         .collect();
-    let changed = kept.len() != path.split(';').map(|p| p.trim()).filter(|p| !p.is_empty()).count();
+    let changed = kept.len()
+        != path
+            .split(';')
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .count();
     (kept.join(";"), changed)
 }
 
@@ -121,7 +355,10 @@ async fn reg_query_path() -> Result<Option<(String, bool)>, String> {
     {
         cmd.creation_flags(0x0800_0000);
     }
-    let output = cmd.output().await.map_err(|e| format!("reg query failed: {}", e))?;
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("reg query failed: {}", e))?;
     if !output.status.success() {
         // 值不存在（首次安装）：reg 返回非零且输出 ERROR 提示
         return Ok(None);
@@ -142,13 +379,20 @@ async fn reg_query_path() -> Result<Option<(String, bool)>, String> {
     let _name = it.next().unwrap_or("");
     let reg_type = it.next().unwrap_or("");
     let value = it.next().unwrap_or("").trim().to_string();
-    Ok(Some((value, reg_type.eq_ignore_ascii_case("REG_EXPAND_SZ"))))
+    Ok(Some((
+        value,
+        reg_type.eq_ignore_ascii_case("REG_EXPAND_SZ"),
+    )))
 }
 
 /// 写回 HKCU\Environment\Path（保留原 REG_EXPAND_SZ 类型）
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 async fn reg_write_path(value: &str, is_expand_sz: bool) -> Result<(), String> {
-    let reg_type = if is_expand_sz { "REG_EXPAND_SZ" } else { "REG_SZ" };
+    let reg_type = if is_expand_sz {
+        "REG_EXPAND_SZ"
+    } else {
+        "REG_SZ"
+    };
     let mut cmd = tokio::process::Command::new("reg");
     cmd.args([
         "add",
@@ -166,7 +410,10 @@ async fn reg_write_path(value: &str, is_expand_sz: bool) -> Result<(), String> {
     {
         cmd.creation_flags(0x0800_0000);
     }
-    let output = cmd.output().await.map_err(|e| format!("reg add failed: {}", e))?;
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("reg add failed: {}", e))?;
     if !output.status.success() {
         return Err(format!(
             "reg add failed: {}",
@@ -182,7 +429,10 @@ fn broadcast_setting_change() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
     };
-    let env: Vec<u16> = "Environment".encode_utf16().chain(std::iter::once(0)).collect();
+    let env: Vec<u16> = "Environment"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     // 失败仅记日志：注册表已写入，新终端从注册表读取仍会生效
     let mut result: usize = 0;
     let _ = unsafe {
@@ -240,12 +490,20 @@ pub async fn unregister_path_windows(bin_dir: &Path) -> Result<(), String> {
 pub fn register_path_unix(bin_dir: &Path, exe: &str) -> Result<(), String> {
     use std::os::unix::fs::symlink;
     let link_dir = user_local_bin();
-    std::fs::create_dir_all(&link_dir).map_err(|e| format!("create {} failed: {}", link_dir.display(), e))?;
+    std::fs::create_dir_all(&link_dir)
+        .map_err(|e| format!("create {} failed: {}", link_dir.display(), e))?;
     let link = link_dir.join(exe);
     let target = bin_dir.join(exe);
     // 覆盖式创建：先删旧链（已存在则直接建会失败）
     let _ = std::fs::remove_file(&link);
-    symlink(&target, &link).map_err(|e| format!("symlink {} -> {} failed: {}", link.display(), target.display(), e))?;
+    symlink(&target, &link).map_err(|e| {
+        format!(
+            "symlink {} -> {} failed: {}",
+            link.display(),
+            target.display(),
+            e
+        )
+    })?;
     tracing::info!(
         "[AppCli] symlink registered: {} -> {}",
         link.display(),
@@ -283,7 +541,8 @@ pub fn unregister_path_unix(bin_dir: &Path, exe: &str) -> Result<(), String> {
             return Ok(());
         }
     }
-    std::fs::remove_file(&link).map_err(|e| format!("remove symlink {} failed: {}", link.display(), e))?;
+    std::fs::remove_file(&link)
+        .map_err(|e| format!("remove symlink {} failed: {}", link.display(), e))?;
     tracing::info!("[AppCli] symlink removed: {}", link.display());
     Ok(())
 }
@@ -347,5 +606,121 @@ mod tests {
             assert_eq!(exe_name("bedtask"), "bedtask");
             assert_eq!(exe_name(""), "bedtask");
         }
+    }
+
+    // ==================== 目录级登记：allowlist + unix symlink ====================
+
+    /// allowlist：根之内放行、根之外拒绝、相对路径拒绝、`..` 不得穿透根
+    #[test]
+    fn path_dir_allowed_enforces_roots() {
+        let roots = vec![
+            PathBuf::from("/home/u/.wasmnest"),
+            PathBuf::from("/home/u/.local"),
+        ];
+        // 根之内（含嵌套）
+        assert!(path_dir_allowed_in(
+            Path::new("/home/u/.wasmnest/agent-hub/runtime/node/v24.22.1/bin"),
+            &roots
+        ));
+        assert!(path_dir_allowed_in(Path::new("/home/u/.local/bin"), &roots));
+        // 根之外
+        assert!(!path_dir_allowed_in(Path::new("/tmp/evil"), &roots));
+        assert!(!path_dir_allowed_in(Path::new("/home/u/other"), &roots));
+        assert!(!path_dir_allowed_in(Path::new("/etc"), &roots));
+        // 相对路径一律拒绝
+        assert!(!path_dir_allowed_in(Path::new("relative/dir"), &roots));
+        // `..` 不得穿透根（词法归一后再判定）
+        assert!(!path_dir_allowed_in(
+            Path::new("/home/u/.wasmnest/../evil"),
+            &roots
+        ));
+        // 根自身放行（等号边界）
+        assert!(path_dir_allowed_in(Path::new("/home/u/.wasmnest"), &roots));
+    }
+
+    /// allowlist：`..` 归一后仍在根内则放行（不得误杀合法嵌套路径）
+    #[test]
+    fn path_dir_allowed_normalizes_dot_segments() {
+        let roots = vec![PathBuf::from("/home/u/.wasmnest")];
+        assert!(path_dir_allowed_in(
+            Path::new("/home/u/.wasmnest/agent-hub/./runtime"),
+            &roots
+        ));
+        assert!(path_dir_allowed_in(
+            Path::new("/home/u/.wasmnest/agent-hub/runtime/../runtime"),
+            &roots
+        ));
+    }
+
+    /// 默认根含应用数据根与用户 bin 根（越界目录必被拒）
+    #[test]
+    fn default_roots_cover_app_data_and_local_bin() {
+        let roots = allowed_path_roots();
+        assert!(!roots.is_empty());
+        let _home = dirs::home_dir().expect("home dir");
+        assert!(roots.iter().any(|r| r.ends_with(".wasmnest")));
+        assert!(roots.iter().any(|r| r.ends_with(".local")));
+        assert!(!path_dir_allowed(Path::new("/tmp/evil")));
+    }
+
+    /// unix：为目录下每个可执行常规文件建链（无执行位 / 目录不链），幂等
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn register_path_dir_unix_links_executables_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("appcli-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let src = base.join("src");
+        let links = base.join("links");
+        std::fs::create_dir_all(&src).expect("src dir");
+
+        let exe = src.join("node");
+        std::fs::write(&exe, b"#!/bin/sh\n").expect("write exe");
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let plain = src.join("README.md");
+        std::fs::write(&plain, b"x").expect("write plain");
+        std::fs::create_dir_all(src.join("subdir")).expect("subdir");
+
+        let names = register_path_dir_unix_in(&src, &links).expect("register ok");
+        // 只链「可执行常规文件」
+        assert_eq!(names, vec!["node".to_string()]);
+        assert!(links.join("node").exists());
+        assert!(!links.join("README.md").exists());
+        // 幂等：重复登记不报错，链接仍指向源文件
+        let again = register_path_dir_unix_in(&src, &links).expect("register again ok");
+        assert_eq!(again, vec!["node".to_string()]);
+        assert_eq!(
+            std::fs::read_link(links.join("node")).expect("read link"),
+            exe
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// unix：摘除只删指向本目录的链接，同名真实文件与其他目录的链接不碰
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unregister_path_dir_unix_only_removes_own_links() {
+        let base = std::env::temp_dir().join(format!("appcli-rm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let src = base.join("src");
+        let other = base.join("other");
+        let links = base.join("links");
+        std::fs::create_dir_all(&src).expect("src dir");
+        std::fs::create_dir_all(&other).expect("other dir");
+        std::fs::create_dir_all(&links).expect("links dir");
+
+        // 指向本目录的链接 + 指向别处的链接 + 同名真实文件
+        std::os::unix::fs::symlink(src.join("a"), links.join("a")).expect("symlink a");
+        std::fs::write(other.join("b"), b"x").expect("write target b");
+        std::os::unix::fs::symlink(other.join("b"), links.join("b")).expect("symlink b");
+        std::fs::write(links.join("c"), b"real file").expect("write c");
+
+        let removed = unregister_path_dir_unix_in(&src, &links).expect("unregister ok");
+        assert_eq!(removed, vec!["a".to_string()]);
+        assert!(!links.join("a").exists());
+        // 别的目录的链接与真实文件都不动
+        assert!(links.join("b").exists());
+        assert!(links.join("c").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

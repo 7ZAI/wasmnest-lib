@@ -23,6 +23,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 引擎事件与生命周期日志
 tracing = { version = "0.1", features = ["attributes"] }
+# service：ScopedService 异步 trait（原仅 dev-dep，租约适配转普通依赖）
+async-trait = "0.1"
 # 首连确认弹窗请求 id / 发送 batch id
 uuid = { version = "1", features = ["v4"] }
 # BusMessageHandler::on_message 的 anyhow::Result（生产代码里的 trait 签名）
@@ -52,8 +54,6 @@ inventory = { version = "0.3", optional = true }
 tempfile = "3"
 # 可信条目 DTO 用例以 Utc::now() 造 added_at
 chrono = { version = "0.4", features = ["serde"] }
-# 无头 PeerCtx 夹具需实现 server-base 的端口 traits（BusPort 是 async_trait）
-async-trait = "0.1"
 # 同上：MdnsPort 的 shared_daemon 返回 mdns-sd 的守护句柄类型（版本与
 # server-base / peer-net 同源，经传递依赖已在编译图内，不新增编译成本）
 mdns-sd = "0.20"

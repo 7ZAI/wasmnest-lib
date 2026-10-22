@@ -1,4 +1,4 @@
-package wasmnest:plugin@0.0.1;
+package wasmnest:plugin@0.0.2;
 // ======================================================================
 // 通知域共享契约（唯一真源；ADR 0052 D2/D3 · domain-owned-contracts 票 04）
 //

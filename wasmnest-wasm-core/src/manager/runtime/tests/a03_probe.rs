@@ -260,7 +260,7 @@ fn a03_p2_fuel_async_semantics() {
 }
 
 /// P2 内存：ResourceLimiter 在 async store 下仍强制生效——紧内存上限实例（经
-/// ResourceOverrides 请求，自我收紧合法）无法完成探针命令，对照实例（默认 256MiB）
+/// ResourceOverrides 请求，自我收紧合法）无法完成探针命令，对照实例（默认 128MiB）
 /// 成功；失败形态（实例化被拒 or 调用期 memory_growing 拒绝 trap）如实记录。
 #[test]
 fn a03_p2_resource_limiter_async_semantics() {
@@ -276,7 +276,7 @@ fn a03_p2_resource_limiter_async_semantics() {
         .instantiate_component(&component, A03_PLUGIN_ID, Arc::clone(&host_ctx), &[], None)
         .expect("对照实例必须实例化成功");
     let v = run_command(&mut control, CMD_HOST_LOG, "{}");
-    assert_eq!(v["ok"], true, "对照实例（默认 256MiB 上限）必须成功: {v}");
+    assert_eq!(v["ok"], true, "对照实例（默认 128MiB 上限）必须成功: {v}");
 
     // 紧内存实例：请求 64KiB（= 1 wasm 页）上限——自我收紧，仲裁合法放行。
     // 本 fixture 声明最小内存 17 页（~1.1MiB）> 上限 → 实例化阶段即被拒

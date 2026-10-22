@@ -36,12 +36,13 @@ use wasmnest_host_kit::state::WasmPluginState;
 /// 对等网络上下文装配端口（整核抽出 §3.3 唯一端口）：lib 实现 `peer_ctx(&AppHandle)`
 /// 构造 `Arc<PeerCtx>`（读 tauri managed state + server 端口装配）；无头/测试传 `None`
 /// → `HEADLESS_UNAVAILABLE` 语义不变。
-pub type PeerCtxProvider = dyn Fn(&tauri::AppHandle) -> Arc<wasmnest_server_peer_net::PeerCtx> + Send + Sync;
+pub type PeerCtxProvider =
+    dyn Fn(&tauri::AppHandle) -> Arc<wasmnest_server_peer_net::PeerCtx> + Send + Sync;
 
 use crate::db::Database;
 use crate::host_api::ports::{
-    EnginePortsPlatformPicker, HostEnginePorts, HostFactsPort, PlatformPickerPort, UnimplementedHostFacts,
-    UnimplementedPlatformPicker, UnimplementedPorts,
+    EnginePortsPlatformPicker, HostEnginePorts, HostFactsPort, PlatformPickerPort,
+    UnimplementedHostFacts, UnimplementedPlatformPicker, UnimplementedPorts,
 };
 use crate::permission::PermissionManager;
 use crate::security::fs_auth::FsAuthChecker;
@@ -125,6 +126,27 @@ pub trait PluginServices: Send + Sync + 'static {
         &self,
         plugin_id: String,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>;
+
+    /// 把目录登记进**用户级 PATH**（host-app `register-path`）：Windows 追加
+    /// `HKCU\Environment\Path` 条目（保留 `REG_EXPAND_SZ` + 广播
+    /// `WM_SETTINGCHANGE`），unix 为目录下可执行文件建 `~/.local/bin` 链接。
+    ///
+    /// 幂等；目录须在 allowlist 根之内（应用数据根 / `~/.local`），否则拒绝并
+    /// 点名实际路径——PATH 是持久化用户环境面，不能由插件任意指定。
+    fn register_path(
+        &self,
+        plugin_id: String,
+        dir: String,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
+
+    /// 从用户级 PATH 精确摘除该目录（host-app `unregister-path`，幂等）
+    ///
+    /// 只摘本目录的条目/链接，用户原有项与其他目录不动。
+    fn unregister_path(
+        &self,
+        plugin_id: String,
+        dir: String,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
 }
 
 /// 能力查询/路由端口（票 04 ISP 化）
@@ -179,23 +201,46 @@ pub trait CapabilityProvider: Send + Sync {
 /// 内层 `Result` = guest 层 WIT `result<.., string>` 本体。
 pub trait CapabilityTarget: Send + Sync + 'static {
     /// `host-storage.get`：`result<option<string>, string>`
-    fn storage_get(&self, key: &str) -> std::result::Result<std::result::Result<Option<String>, String>, String>;
+    fn storage_get(
+        &self,
+        key: &str,
+    ) -> std::result::Result<std::result::Result<Option<String>, String>, String>;
     /// `host-storage.set`（层次同 [`CapabilityTarget::storage_get`]）
-    fn storage_set(&self, key: &str, value: &str) -> std::result::Result<std::result::Result<(), String>, String>;
+    fn storage_set(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> std::result::Result<std::result::Result<(), String>, String>;
     /// `host-storage.delete`（层次同 [`CapabilityTarget::storage_get`]）
-    fn storage_delete(&self, key: &str) -> std::result::Result<std::result::Result<(), String>, String>;
+    fn storage_delete(
+        &self,
+        key: &str,
+    ) -> std::result::Result<std::result::Result<(), String>, String>;
     /// `host-mdns.browse`：`result<string, string>`（返回浏览句柄）
-    fn mdns_browse(&self, service_type: &str) -> std::result::Result<std::result::Result<String, String>, String>;
+    fn mdns_browse(
+        &self,
+        service_type: &str,
+    ) -> std::result::Result<std::result::Result<String, String>, String>;
     /// `host-mdns.stop-browse`：`result<bool, string>`（是否存在该句柄）
-    fn mdns_stop_browse(&self, browser_id: &str) -> std::result::Result<std::result::Result<bool, String>, String>;
+    fn mdns_stop_browse(
+        &self,
+        browser_id: &str,
+    ) -> std::result::Result<std::result::Result<bool, String>, String>;
     /// `host-mdns.advertise`：`result<string, string>`（返回广播句柄）
-    fn mdns_advertise(&self, config_json: &str) -> std::result::Result<std::result::Result<String, String>, String>;
+    fn mdns_advertise(
+        &self,
+        config_json: &str,
+    ) -> std::result::Result<std::result::Result<String, String>, String>;
     /// `host-mdns.stop-advertise`：`result<bool, string>`
-    fn mdns_stop_advertise(&self, advertise_id: &str)
-        -> std::result::Result<std::result::Result<bool, String>, String>;
+    fn mdns_stop_advertise(
+        &self,
+        advertise_id: &str,
+    ) -> std::result::Result<std::result::Result<bool, String>, String>;
     /// `host-mdns.is-advertising`：`result<bool, string>`
-    fn mdns_is_advertising(&self, advertise_id: &str)
-        -> std::result::Result<std::result::Result<bool, String>, String>;
+    fn mdns_is_advertising(
+        &self,
+        advertise_id: &str,
+    ) -> std::result::Result<std::result::Result<bool, String>, String>;
 }
 
 /// host-task 执行引擎接口（消费方定义，两阶段注入，PluginServices 先例）
@@ -244,7 +289,8 @@ pub struct WasmHostContext {
     pub storage: Arc<PluginStorage>,
     /// 密钥托管读缓存（v15 host-auth）：read-through（get 命中直接返回，
     /// set/delete 失效对应键）；真源为主库 plugin_secrets 表（重启后一致）
-    pub(crate) secrets_cache: Arc<std::sync::RwLock<std::collections::HashMap<(String, String), String>>>,
+    pub(crate) secrets_cache:
+        Arc<std::sync::RwLock<std::collections::HashMap<(String, String), String>>>,
     /// Tauri AppHandle（无头/测试上下文为 None，emit/路径类宿主能力降级）
     ///
     /// `pub`：移动宿主 adapter（`plugin/host_domains/{http,mdns,db,event,platform}.rs`）
@@ -304,11 +350,18 @@ pub struct WasmHostContext {
     /// 多实例并行），各有各的权限与总线；全局只有一格 ⇒ 能力域会读到别的上下文的端口。
     /// 装配点：生产经 `PluginHost::new`、无头测试经 `setup_wasm_runtime`，都在持有
     /// `Arc<WasmHostContext>` 之后调 [`Self::set_domain_ports`]。
-    domain_ports: Arc<std::sync::RwLock<std::collections::HashMap<String, Arc<dyn std::any::Any + Send + Sync>>>>,
+    domain_ports: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
+    >,
     /// 对等网络上下文装配端口（整核抽出 §3.3）：lib 注入 `peer_net_cmds::peer_ctx`，
     /// 无头/测试为 `None` → `HEADLESS_UNAVAILABLE` 语义不变。两阶段注入（同
     /// [`Self::set_task_engine`]），`PluginHost::new` 构造后写入。
     peer_ctx_provider: Arc<std::sync::RwLock<Option<Arc<PeerCtxProvider>>>>,
+    /// 应用作用域共享服务注册表（宿主机制；service-leases §4.3）：桌面 / 移动
+    /// 装配后经 [`Self::set_service_registry`] 晚绑注入；无头 / 测试不注入 →
+    /// 内核的生命周期释放为 no-op（不造假账）。
+    service_registry:
+        Arc<std::sync::RwLock<Option<Arc<wasmnest_server_base::service::ServiceRegistry>>>>,
     /// 宿主引擎端口（移动装配面，票 02 B5 并入超集）：auth / egress / peer /
     /// mdns / 平台桥等「离宿主无法实现」的引擎调用唯一入口。桌面构造给
     /// [`UnimplementedPorts`] 占位（桌面引擎调用不经过端口，命中即 fail-visible）。
@@ -498,9 +551,9 @@ impl WasmHostContext {
             permission.clone(),
             fs_auth.clone(),
         )));
-        security.register(Arc::new(crate::security::framework::ApiCallAuthorizer::new(
-            api_registry.clone(),
-        )));
+        security.register(Arc::new(
+            crate::security::framework::ApiCallAuthorizer::new(api_registry.clone()),
+        ));
         Self {
             db,
             plugin_dbs,
@@ -524,15 +577,21 @@ impl WasmHostContext {
             domain_ports: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             // 对等网络上下文装配端口：两阶段注入（PluginHost::new 写入），构造时 None
             peer_ctx_provider: Arc::new(std::sync::RwLock::new(None)),
+            // 应用作用域服务注册表：两阶段注入（宿主装配写入），无头不注入
+            service_registry: Arc::new(std::sync::RwLock::new(None)),
             // 移动装配面三字段缺省（ports 命中即 fail-visible / granted 恒空 /
             // status_reporter noop）
             ports: Arc::new(UnimplementedPorts),
             // 选择器缺省 fail-visible（桌面在 `PluginHost::new` 注入宿主实现）
-            platform_picker: Arc::new(std::sync::RwLock::new(Arc::new(UnimplementedPlatformPicker))),
+            platform_picker: Arc::new(std::sync::RwLock::new(Arc::new(
+                UnimplementedPlatformPicker,
+            ))),
             // 端事实缺省：未注入即 fail-visible（`set_host_facts` 装配期覆盖）
             host_facts: Arc::new(std::sync::RwLock::new(Arc::new(UnimplementedHostFacts))),
             // 指标快照缺省：未注入即 fail-visible（装配期写 `runtime.monitor()`）
-            metrics_snapshot: Arc::new(std::sync::RwLock::new(Arc::new(UnimplementedMetricsSnapshot))),
+            metrics_snapshot: Arc::new(std::sync::RwLock::new(Arc::new(
+                UnimplementedMetricsSnapshot,
+            ))),
             status_reporter: Arc::new(|_, _| {}),
         }
     }
@@ -562,10 +621,9 @@ impl WasmHostContext {
         // 选择器从引擎端口派生（SAF 端口是选择器的移动实现）——适配器只接线，
         // 能力判断仍在端口方法内（未装配的端口推选即 fail-visible）。
         // AppHandle 在此一并捕获：`pick_files` 需要它，字段随后被移进上下文。
-        let platform_picker: Arc<dyn PlatformPickerPort> = Arc::new(EnginePortsPlatformPicker::new(
-            ports.clone(),
-            app_handle.clone(),
-        ));
+        let platform_picker: Arc<dyn PlatformPickerPort> = Arc::new(
+            EnginePortsPlatformPicker::new(ports.clone(), app_handle.clone()),
+        );
         // 统一授权框架：**必须注册仲裁器**——`Framework::authorize` 对未注册资源
         // 直接 `Deny`（fail-closed），未注册即有 fs 原语全被拒的静默断链（
         // `host_api::fs` 的每条原语都经 `authorize_fs` 走本框架）。本构造器是
@@ -579,9 +637,9 @@ impl WasmHostContext {
             permission.clone(),
             fs_auth.clone(),
         )));
-        security.register(Arc::new(crate::security::framework::ApiCallAuthorizer::new(
-            api_registry.clone(),
-        )));
+        security.register(Arc::new(
+            crate::security::framework::ApiCallAuthorizer::new(api_registry.clone()),
+        ));
         Self {
             db,
             plugin_dbs: Arc::new(Mutex::new(HashMap::new())),
@@ -601,12 +659,15 @@ impl WasmHostContext {
             capabilities: Arc::new(NoopCapabilityProvider),
             domain_ports: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             peer_ctx_provider: Arc::new(std::sync::RwLock::new(None)),
+            service_registry: Arc::new(std::sync::RwLock::new(None)),
             ports,
             platform_picker: Arc::new(std::sync::RwLock::new(platform_picker)),
             // 端事实缺省：移动/桌面宿主装配后经 `set_host_facts` 注入本端实现
             host_facts: Arc::new(std::sync::RwLock::new(Arc::new(UnimplementedHostFacts))),
             // 指标快照缺省：移动装配点随后写 `runtime.monitor()`（同 `host_facts` 两阶段）
-            metrics_snapshot: Arc::new(std::sync::RwLock::new(Arc::new(UnimplementedMetricsSnapshot))),
+            metrics_snapshot: Arc::new(std::sync::RwLock::new(Arc::new(
+                UnimplementedMetricsSnapshot,
+            ))),
             status_reporter,
         }
     }
@@ -621,7 +682,15 @@ impl WasmHostContext {
         message_bus: Arc<crate::bus::MessageBus>,
         status_reporter: Arc<dyn Fn(&str, &str) + Send + Sync>,
     ) -> Self {
-        Self::new_with_ports(db, storage, app_handle, fs_auth, message_bus, status_reporter, Arc::new(UnimplementedPorts))
+        Self::new_with_ports(
+            db,
+            storage,
+            app_handle,
+            fs_auth,
+            message_bus,
+            status_reporter,
+            Arc::new(UnimplementedPorts),
+        )
     }
 
     /// 为某能力域装配**实例级**端口（生产与无头测试共用此入口）
@@ -643,7 +712,10 @@ impl WasmHostContext {
     /// 注入临时根目录以获得真实私有库——认证记录下沉（v24）后配对/历史真源
     /// 在插件私有库，无私有库的无头上下文无法驱动认证链路。
     pub fn set_plugin_db_root(&self, root: Option<PathBuf>) {
-        *self.plugin_db_root.write().unwrap_or_else(|e| e.into_inner()) = root;
+        *self
+            .plugin_db_root
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = root;
     }
 
     /// 为插件授予权限（宿主激活路径入口；与桌面 `PluginHost::activate_plugin`
@@ -742,7 +814,10 @@ impl WasmHostContext {
     /// 激活**之前**写入——插件激活期的选择器调用（如果有）也必须拿到宿主实现，
     /// 不能只在运行期可用。宿主实现住 `plugin/platform_picker.rs`。
     pub fn set_platform_picker(&self, picker: Arc<dyn PlatformPickerPort>) {
-        *self.platform_picker.write().unwrap_or_else(|e| e.into_inner()) = picker;
+        *self
+            .platform_picker
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = picker;
     }
 
     /// 装配期注入宿主端事实（平台标识 / 入站服务器端口）
@@ -835,12 +910,37 @@ impl WasmHostContext {
     /// （整核抽出 §3.3 唯一端口）。无头/测试传 `None` → `HEADLESS_UNAVAILABLE`
     /// 语义不变；重复写入覆盖（无头测试可在用例内替换提供者）。
     pub fn set_peer_ctx_provider(&self, provider: Option<Arc<PeerCtxProvider>>) {
-        *self.peer_ctx_provider.write().unwrap_or_else(|e| e.into_inner()) = provider;
+        *self
+            .peer_ctx_provider
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = provider;
     }
 
     /// 取对等网络上下文装配端口（注入完成前返回 None）
     pub fn peer_ctx_provider(&self) -> Option<Arc<PeerCtxProvider>> {
         self.peer_ctx_provider
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// 两阶段注入：应用作用域共享服务注册表
+    ///
+    /// 桌面 / 移动宿主在 `PluginHost::new` 返回后、任何应用激活之前写入；无头 /
+    /// 测试不注入 → 内核在停用 / 激活失败 / Error 三条路径上的释放为 no-op。
+    pub fn set_service_registry(
+        &self,
+        registry: Option<Arc<wasmnest_server_base::service::ServiceRegistry>>,
+    ) {
+        *self
+            .service_registry
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = registry;
+    }
+
+    /// 取应用作用域共享服务注册表（注入完成前返回 None）
+    pub fn service_registry(&self) -> Option<Arc<wasmnest_server_base::service::ServiceRegistry>> {
+        self.service_registry
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
@@ -903,7 +1003,12 @@ impl WasmHostContext {
     /// 仅从连接池移除（不删库文件）：删除插件目录前须先释放文件句柄，
     /// 否则在部分平台（Windows）会因文件仍被占用而删不掉
     pub async fn drop_plugin_db(&self, plugin_id: &str) {
-        let dropped = self.plugin_dbs.lock().expect("plugin dbs lock poisoned").remove(plugin_id).is_some();
+        let dropped = self
+            .plugin_dbs
+            .lock()
+            .expect("plugin dbs lock poisoned")
+            .remove(plugin_id)
+            .is_some();
         if dropped {
             tracing::debug!(plugin_id = %plugin_id, "Plugin database connection dropped");
         }
@@ -928,7 +1033,10 @@ impl WasmHostContext {
     ///
     /// 首次调用时创建目录 + 打开/创建 plugin.db + 缓存连接
     /// 后续调用直接返回缓存的连接
-    pub async fn get_or_create_plugin_db(&self, plugin_id: &str) -> crate::Result<Arc<Mutex<Database>>> {
+    pub async fn get_or_create_plugin_db(
+        &self,
+        plugin_id: &str,
+    ) -> crate::Result<Arc<Mutex<Database>>> {
         // 快速路径：已缓存
         {
             let dbs = self.plugin_dbs.lock().expect("plugin dbs lock poisoned");
@@ -943,10 +1051,9 @@ impl WasmHostContext {
         //   AppHandle，故无头上下文必须显式给根目录才能测插件私有库）
         let plugin_dir = match (&self.app_handle, self.plugin_db_root_opt()) {
             (Some(app_handle), _) => {
-                let app_data_dir = app_handle
-                    .path()
-                    .app_data_dir()
-                    .map_err(|e| crate::AppError::Plugin(format!("Failed to get app data dir: {}", e)))?;
+                let app_data_dir = app_handle.path().app_data_dir().map_err(|e| {
+                    crate::AppError::Plugin(format!("Failed to get app data dir: {}", e))
+                })?;
                 app_data_dir.join("plugins").join(plugin_id)
             }
             (None, Some(root)) => root.join(plugin_id),
@@ -1107,8 +1214,9 @@ pub trait ServicesScope: Send + Sync {
         &'a self,
     ) -> Pin<
         Box<
-            dyn std::future::Future<Output = Option<Arc<dyn crate::host_api::context::PluginServices>>>
-                + Send
+            dyn std::future::Future<
+                    Output = Option<Arc<dyn crate::host_api::context::PluginServices>>,
+                > + Send
                 + 'a,
         >,
     >;
@@ -1141,7 +1249,9 @@ pub trait CapabilityScope: Send + Sync {
 /// 密钥托管读缓存视图（v15 host-auth；set/delete 失效对应键）
 pub trait SecretsScope: Send + Sync {
     /// read-through 缓存（真源为主库 plugin_secrets 表）
-    fn secrets_cache(&self) -> &Arc<std::sync::RwLock<std::collections::HashMap<(String, String), String>>>;
+    fn secrets_cache(
+        &self,
+    ) -> &Arc<std::sync::RwLock<std::collections::HashMap<(String, String), String>>>;
 }
 
 // ==================== WasmHostContext 角色接口实现 ====================
@@ -1156,7 +1266,8 @@ impl DbScope for WasmHostContext {
     fn get_or_create_plugin_db<'a>(
         &'a self,
         plugin_id: &'a str,
-    ) -> Pin<Box<dyn std::future::Future<Output = crate::Result<Arc<Mutex<Database>>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn std::future::Future<Output = crate::Result<Arc<Mutex<Database>>>> + Send + 'a>>
+    {
         Box::pin(self.get_or_create_plugin_db(plugin_id))
     }
 }
@@ -1202,8 +1313,9 @@ impl ServicesScope for WasmHostContext {
         &'a self,
     ) -> Pin<
         Box<
-            dyn std::future::Future<Output = Option<Arc<dyn crate::host_api::context::PluginServices>>>
-                + Send
+            dyn std::future::Future<
+                    Output = Option<Arc<dyn crate::host_api::context::PluginServices>>,
+                > + Send
                 + 'a,
         >,
     > {
@@ -1236,7 +1348,9 @@ impl CapabilityScope for WasmHostContext {
 }
 
 impl SecretsScope for WasmHostContext {
-    fn secrets_cache(&self) -> &Arc<std::sync::RwLock<std::collections::HashMap<(String, String), String>>> {
+    fn secrets_cache(
+        &self,
+    ) -> &Arc<std::sync::RwLock<std::collections::HashMap<(String, String), String>>> {
         &self.secrets_cache
     }
 }

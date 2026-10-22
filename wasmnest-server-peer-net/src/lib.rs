@@ -22,13 +22,13 @@
 //! - **节点身份**：NodeIdentity 与设备身份（auth 域 DeviceIdentity）刻意分离——
 //!   首启纯随机生成、重装即新身份，不做设备标识派生（决策 D2）；由 crate 持久
 //!   化，宿主只注入数据目录（决策 D3），目录与 DB 同源解析自 app_data_dir。
-//! - **生命周期**：节点 + mDNS 发现守护随 file-transfer 插件启用状态运行（幂等
-//!   装配）；命令面仅剩五条 Tauri 命令——`start_peer_node` / `stop_peer_node` /
-//!   `respond_peer_consent` / `list_trusted_peers` / `revoke_trusted_peer`。
+//! - **生命周期**：节点是应用作用域共享服务（`net.peer-node`）——由插件经
+//!   `host-peer.start-node` 按引用记账，首个引用拉起、最后一个释放关停；宿主
+//!   命令面不再直接起停节点。见 [`service::PeerNodeService`]。
 //! - **插件绑定层**：`plugin_binding`（wasm-core-lib-split 票 05）是 `host-peer`
 //!   19 条原语的宿主实现（句柄表 / 属主仲裁 / 自动重拨 / 载荷校验），经
-//!   [`plugin_binding::ports::PeerPorts`] 向宿主要权限门、引擎上下文与异步桥；
-//!   本 crate 对宿主组装面（`AppHandle` 与 managed state）的引用为 **0**。
+//!   [`plugin_binding::ports::PeerPorts`] 向宿主要权限门、引擎上下文、异步桥与
+//!   服务注册表；本 crate 对宿主组装面（`AppHandle` 与 managed state）的引用为 **0**。
 //! - **引擎接入**：`peer_engine_transfer` / `peer_engine_receive` /
 //!   `peer_engine_remote` 是对 host-peer 原语（dial / send / cancel / pause /
 //!   resume / respond / set-policy / set-download-dir / set-shared-roots / browse /
@@ -45,6 +45,8 @@ pub mod peer_engine_transfer;
 /// host-peer 能力域的插件绑定层（wasm-core-lib-split 票 05：自宿主 host_api 域的
 /// peer 适配器迁入，并把其对宿主组装面的 20 处反向耦合换成端口）
 pub mod plugin_binding;
+/// `net.peer-node` 应用作用域服务（节点生命周期的租约适配）
+pub mod service;
 pub mod source_collect;
 /// wire 契约词汇自持副本（能力域脱绑 P4：权限位判据字符串，
 /// 与桌面 SDK 原版逐字一致由平台仓漂移锁 `cross-end-tests/tests/wire_drift_locks.rs` 钉死）
@@ -90,13 +92,13 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::AsyncReadExt;
 
+use serde::Serialize;
 use wasmnest_peer_net::{
     Connection, ConnectionHandler, DiscoveredPeerRecord, DiscoveryCache, DiscoveryConfig, DiscoveryDaemon, FileMeta,
     HandlerFuture, NodeId, NodeIdentity, PeerNetError, PeerNetNode, PeerNetNodeConfig, RunningNode, SharedDirEntry,
     SharedDirHandler, SharedDirStore, StaticPeerRecord, TerminalState, TransferConfig, TransferEvent, TrustEvent,
     TrustStore, TrustedPeerEntry, CAP_FILE_TRANSFER,
 };
-use serde::Serialize;
 
 // ==================== 身份初始化（issue 01）====================
 
@@ -177,14 +179,12 @@ pub struct PeerNetState {
     /// 入站连接关停句柄（node_id → conn id → 内层 handler AbortHandle）：
     /// disconnect_peer / stop_locked 据此中止 handler，连接随任务 drop 关闭
     inbound_conns: std::sync::Mutex<HashMap<String, HashMap<u64, tokio::task::AbortHandle>>>,
-    /// 生命周期闸门（start/stop 装配串行化）：activate 外壳与 boot 对账可能
-    /// 并发触发 start/stop，先前「幂等检查在锁内、装配在锁外」构成 TOCTOU——
-    /// 双装配时次者 bind 回退 :0 随机端口、首个 runtime 泄漏。不持 runtime
-    /// 锁跨 await（与全仓短持锁风格一致），闸门只串行化装配本身
+    /// 生命周期闸门（start/stop 装配串行化）：服务租约模板保证同 key 串行，
+    /// 但引擎入口仍可能被无租约装配（无头 / 测试）并发调用——先前「幂等检查
+    /// 在锁内、装配在锁外」构成 TOCTOU，双装配时次者 bind 回退 :0 随机端口、
+    /// 首个 runtime 泄漏。不持 runtime 锁跨 await（与全仓短持锁风格一致），
+    /// 闸门只串行化装配本身
     lifecycle_gate: tokio::sync::Semaphore,
-    /// 节点属主（审计票 12）：起节点的插件 id，停即清空。
-    /// 见 [`node_owner`] / [`start_node_owned`] / [`release_node_for`]
-    node_owner: std::sync::Mutex<Option<String>>,
 }
 
 impl Default for PeerNetState {
@@ -198,7 +198,6 @@ impl Default for PeerNetState {
             inbound_peers: std::sync::Mutex::new(HashMap::new()),
             inbound_conns: std::sync::Mutex::new(HashMap::new()),
             lifecycle_gate: tokio::sync::Semaphore::new(1),
-            node_owner: std::sync::Mutex::new(None),
         }
     }
 }
@@ -691,77 +690,6 @@ pub async fn collect_outgoing_for_plugin(paths: Vec<String>) -> Result<String> {
     self::peer_engine_transfer::collect_outgoing_for_plugin(paths).await
 }
 
-/// 节点属主记账（审计票 12）：把节点从「未跑」带到「跑」的那个**调用方插件 id**。
-///
-/// 取代旧的两处按硬编码产品 id 分支（`activation.rs` 的激活/停用外壳）与 boot 末尾
-/// 按 id 对账的 `sync_node_with_plugin_state`：内核不再认得任何产品，只按
-/// 「谁起谁停」这条与产品无关的规则记账。`None` = 节点未跑，或跑着但无插件属主
-/// （只可能来自宿主命令面 `start_peer_node`——它不是插件，不认领属主）。
-pub fn node_owner(ctx: &PeerCtx) -> Option<String> {
-    let state = &ctx.state;
-    let owner = state.node_owner.lock().expect("node owner lock poisoned").clone();
-    owner
-}
-
-/// 插件按需启动本机节点（引擎级生命周期原语，审计票 12；幂等）
-///
-/// 返回 `true` = 本次调用把节点从「未跑」带到「跑」。属主规则：
-/// 无主时可被认领（含宿主命令面先起的情况）；同主重复调用幂等；
-/// **他主拒绝接管**，错误文案不回带对方 id（与 `host-peer` 句柄属主门同口径，票 05）。
-pub async fn start_node_owned(ctx: Arc<PeerCtx>, caller: &str) -> Result<bool> {
-    {
-        let guard = ctx.state.node_owner.lock().expect("node owner lock poisoned");
-        if let Some(owner) = guard.as_ref() {
-            if owner != caller {
-                return Err(AppError::Plugin(
-                    "peer node is already owned by another plugin".to_string(),
-                ));
-            }
-        }
-    }
-    let was_running = { ctx.state.runtime.lock().await.is_some() };
-    let data_dir = app_data_dir(&ctx)?;
-    let device_name = resolve_device_name(&ctx);
-    start_locked(ctx.clone(), &data_dir, device_name).await?;
-    // 认领放在装配成功之后：起不来的插件不该把节点锁在自己名下
-    {
-        let mut guard = ctx.state.node_owner.lock().expect("node owner lock poisoned");
-        if guard.is_none() {
-            *guard = Some(caller.to_string());
-        }
-    }
-    Ok(!was_running)
-}
-
-/// 属主插件让节点下线（引擎级原语，审计票 12；节点未跑为 no-op）
-///
-/// 非属主一律拒绝（文案不回带属主 id）。关停与清账同处——`stop_locked` 里清属主，
-/// 所以本函数不需要在关停失败时补偿
-pub async fn stop_node_owned(ctx: Arc<PeerCtx>, caller: &str) -> Result<bool> {
-    let state = &ctx.state;
-    let owned = state.node_owner.lock().expect("node owner lock poisoned").as_deref() == Some(caller);
-    if !owned {
-        return Err(AppError::Plugin("not owner of peer node".to_string()));
-    }
-    stop_locked(ctx).await?;
-    Ok(true)
-}
-
-/// 内核侧按属主清理节点（审计票 12）：插件停用或激活失败时调用
-///
-/// 属主匹配才关停；不匹配（含无主）一律 no-op 且**不报错**——这条是任意插件的
-/// 生命周期都能安全挂上的通用钩子，替代旧的两个 `plugin_id == FILE_TRANSFER_PLUGIN_ID`
-/// 分支。返回是否真的关停了节点
-pub async fn release_node_for(ctx: Arc<PeerCtx>, former_owner: &str) -> Result<bool> {
-    let state = &ctx.state;
-    let owned = state.node_owner.lock().expect("node owner lock poisoned").as_deref() == Some(former_owner);
-    if !owned {
-        return Ok(false);
-    }
-    stop_locked(ctx).await?;
-    Ok(true)
-}
-
 // ==================== 内部装配 ====================
 
 /// 入站连接生命周期桥：进入 handler 前发 `peer-connected`、结束后发
@@ -885,9 +813,9 @@ impl ConnectionHandler for InboundConnectionBridge {
 
 /// 持锁装配路径：start 命令与自动启动共用（调用方已持有状态互斥锁）
 async fn start_locked(ctx: Arc<PeerCtx>, data_dir: &Path, device_name: String) -> Result<PeerNodeStatus> {
-    // 生命周期闸门：全程持 permit 串行化并发装配/关停（activate 外壳
-    // ensure_node_started 与 boot 对账 sync_node_with_plugin_state 可能并发
-    // 触发）。修复 TOCTOU：先前幂等检查在锁内、装配在锁外，双装配时次者
+    // 生命周期闸门：全程持 permit 串行化并发装配/关停（服务租约模板已串行
+    // 同 key 的 acquire/release，但无租约装配的引擎入口仍可能并发触发）。
+    // 修复 TOCTOU：先前幂等检查在锁内、装配在锁外，双装配时次者
     // bind 回退 :0 随机端口、首个 runtime 泄漏
     let _gate = ctx
         .state
@@ -1094,9 +1022,6 @@ async fn stop_locked(ctx: Arc<PeerCtx>) -> Result<()> {
         .acquire()
         .await
         .expect("lifecycle gate never closed");
-    // 关停与清账同处（审计票 12）：不管走哪条路径停下来（属主原语 / 内核属主清理 /
-    // 宿主命令面人工停 / 退出排水），节点一旦下线就不再属于任何插件
-    *ctx.state.node_owner.lock().expect("node owner lock poisoned") = None;
     // 主动拨号的存活连接随关停一并终结：通知活性泵关闭（drop 连接 → 对端经
     // EOF 感知本机下线），并逐个通知前端摘除已连接徽标——连接表随节点生命
     // 周期走，重启后从空表开始
@@ -1660,8 +1585,8 @@ mod peer_net_tests {
     use super::*;
     // `SharedDirRoot` 只被本组用例用到（生产面走 `SharedDirEntry` 的 serde 反序列化）：
     // 从 crate 顶部 import 列表移到这里，避免非 test 构建报 unused import
-    use wasmnest_peer_net::{SharedDirRoot, TrustedPeerEntry};
     use chrono::Utc;
+    use wasmnest_peer_net::{SharedDirRoot, TrustedPeerEntry};
 
     /// 64 位小写 hex 节点 ID（格式校验通过的最小形态）
     fn node_id(suffix: u8) -> NodeId {

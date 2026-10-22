@@ -25,14 +25,15 @@ wit_bindgen::generate!({
     path: ["../../wit", "wit"],
     world: "wasmnest:fixture-wasip3/wasip3-fixture",
     with: {
-        "wasmnest:plugin/host-storage@0.0.1": generate,
-        "wasmnest:plugin/host-events@0.0.1": generate,
-        "wasmnest:plugin/host-bus@0.0.1": generate,
-        "wasmnest:plugin/host-platform@0.0.1": generate,
-        "wasmnest:plugin/host-fs@0.0.1": generate,
-        "wasmnest:plugin/host-log@0.0.1": generate,
-        "wasmnest:plugin/host-config@0.0.1": generate,
-        "wasmnest:plugin/host-plugin-database@0.0.1": generate,
+        "wasmnest:plugin/host-storage@0.0.2": generate,
+        "wasmnest:plugin/host-events@0.0.2": generate,
+        "wasmnest:plugin/host-bus@0.0.2": generate,
+        "wasmnest:plugin/host-platform@0.0.2": generate,
+        "wasmnest:plugin/host-fs@0.0.2": generate,
+        "wasmnest:plugin/host-log@0.0.2": generate,
+        "wasmnest:plugin/host-config@0.0.2": generate,
+        "wasmnest:plugin/host-plugin-database@0.0.2": generate,
+        "wasmnest:plugin/host-metrics@0.0.2": generate,
     },
 });
 

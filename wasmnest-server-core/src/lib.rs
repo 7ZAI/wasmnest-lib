@@ -21,6 +21,8 @@ pub mod app;
 pub mod filter;
 pub mod link_crypto;
 pub mod metrics;
+/// `net.transport` 应用作用域服务（supervisor 生命周期的租约适配）
+pub mod service;
 pub mod supervisor;
 
 pub use app::{serve, TransportFace};

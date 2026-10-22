@@ -150,9 +150,22 @@ pub trait PowerPort: Send + Sync {
 /// `AdvertiseConfig` 装配；txt 记录由宿主壳转成
 /// `wasmnest_discovery_engine::types::AdvertiseConfig`——自播面真源在
 /// wasmnest-discovery-engine，宿主侧零 mDNS 代码）
+///
+/// **async 是确定性要求**（service-leases §4.5）：`start` 返回时广播必须已登记、
+/// `stop` 返回时广播必须已注销；实现不得 fire-and-forget。
+#[async_trait]
 pub trait MdnsAdvertiserPort: Send + Sync {
-    fn advertise(&self, service_name: String, port: u16, txt_records: std::collections::HashMap<String, String>);
-    fn stop(&self);
+    /// 登记广播；失败（无上下文 / 守护拒绝）必须显性返回错误，由 supervisor
+    /// 回滚已启动的 server（fail-visible，不允许「服务器起了但设备不可见」）
+    async fn advertise(
+        &self,
+        service_name: String,
+        port: u16,
+        txt_records: std::collections::HashMap<String, String>,
+    ) -> std::result::Result<(), String>;
+
+    /// 注销广播（幂等；失败只记录不上抛）
+    async fn stop(&self);
 }
 
 // ==================== ServerLifecyclePort（服务器生命周期桥） ====================

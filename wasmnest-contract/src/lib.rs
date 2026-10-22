@@ -48,10 +48,10 @@
 pub const PACKAGE_NAME: &str = "wasmnest:plugin";
 
 /// 契约包版本（三段 semver）
-pub const PACKAGE_VERSION: &str = "0.0.1";
+pub const PACKAGE_VERSION: &str = "0.0.2";
 
 /// 契约包全名（`namespace:name@version`）——组件**导出实例**的键形态
-pub const PACKAGE: &str = "wasmnest:plugin@0.0.1";
+pub const PACKAGE: &str = "wasmnest:plugin@0.0.2";
 
 #[cfg(test)]
 mod tests {

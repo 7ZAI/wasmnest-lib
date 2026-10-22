@@ -10,6 +10,28 @@ use super::*;
 /// `PluginStorage::get(plugin_id, "preauth_paths")` 读取。
 pub type PreauthProvider = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
 
+/// 服务型 wasm 免权限拦截判据（issue #6 D4）
+///
+/// **两条同时成立才豁免**：
+/// 1. 来源非 [`PluginSource::UserInstalled`]（随包 / FileScan / 静态注册 = 构建期
+///    信任域）；
+/// 2. manifest `type` 属**角色驱动**（L1 基础服务 / L2 内部业务，
+///    [`PluginKind::is_role_driven`]）。
+///
+/// 判据服务的面是**路径预授权**（[`PluginHost::preauthorize_plugin`] 不再弹目录授权
+/// 框，声明路径直接落账）。审批门（`activation.rs::approval_gate`）不引用本函数：
+/// 它早已对**一切**非 `UserInstalled` 来源返回 `Ok(None)`，口径比本判据更宽；若把
+/// 它收窄成「仍要角色驱动」，随包 L3 应用会因为「没有批准记录」被判 `NeedsApproval`
+/// ——那是一次与 D4 无关的全量回归。
+///
+/// **硬红线**：`UserInstalled` 来源永不豁免——`type` 是插件自报字段，只允许在
+/// 「来源已可信」的前提下参与判定，否则用户 zip 自报 `internal-business` 就是一条
+/// 提权通道（免掉审批门与目录授权弹窗）。反例用例见
+/// `tests/approval_test.rs::user_installed_cannot_claim_service_exemption`。
+pub(crate) fn is_exempt_service(source: &PluginSource, kind: PluginKind) -> bool {
+    *source != PluginSource::UserInstalled && kind.is_role_driven()
+}
+
 /// 预授权 storage key（宿主只按这个 key 读插件私有 storage，**不认得是谁写的**：
 /// 写入方是插件自己的挂载配置面，经 `host-storage` 用同名 key 追加/去重）。
 /// 需要「启用前先拿到目录授权」的插件也可由 provider 动态提供；
@@ -43,6 +65,17 @@ pub(crate) async fn collect_preauth_paths(plugin_id: &str) -> Vec<String> {
 }
 
 impl PluginHost {
+    /// 该插件是否享受「服务型 wasm 免权限拦截」（判据见 [`is_exempt_service`]）
+    ///
+    /// 读一次 `plugins` 表即释放（不跨 await 持锁）。
+    async fn is_exempt_service_plugin(&self, plugin_id: &str) -> bool {
+        let plugins = self.plugins.read().await;
+        plugins
+            .get(plugin_id)
+            .map(|loaded| is_exempt_service(&loaded.source, loaded.manifest.kind))
+            .unwrap_or(false)
+    }
+
     /// 激活插件
     ///
     /// 预授权(启用前置):收集插件需授权路径 → 调 `fs_auth::check_batch`
@@ -59,6 +92,9 @@ impl PluginHost {
     /// 路径为空 → 直接放行(启用先行:file-transfer 首次启用/全部目录移除后
     /// 均可空目录激活,共享目录配置由插件设置面板引导;硬拒绝会造成
     /// 「配置需激活 → 激活需先配置」死锁)。
+    ///
+    /// **服务型 wasm 免弹窗**(issue #6 D4):来源非 `UserInstalled` **且** 角色驱动
+    /// (L1/L2) 的随包插件,其声明路径直接落账放行(来源标 `service`),不弹目录授权框。
     pub async fn preauthorize_plugin(&self, plugin_id: &str) -> crate::Result<()> {
         // 1. 收集路径(注册 provider 优先,否则 storage 数组)
         let mut paths = collect_preauth_paths(plugin_id).await;
@@ -93,6 +129,29 @@ impl PluginHost {
         }
 
         if paths.is_empty() {
+            return Ok(());
+        }
+
+        // 2.5 服务型 wasm 免询问放行（issue #6 D4）：随包 L1/L2 插件直接落账其声明
+        // 路径，不弹目录授权框——它属构建期信任域，弹窗只是噪声（且服务型插件可能
+        // 在无 UI 场景下激活，弹窗没有人应答 = 30s 超时后拒绝，服务起不来）。
+        // 判据 `is_exempt_service` 里 `UserInstalled` 永不豁免：自报 `type` 不能提权。
+        if self.is_exempt_service_plugin(plugin_id).await {
+            let stored = self
+                .wasm_runtime
+                .fs_auth()
+                .grant_service_paths(
+                    plugin_id,
+                    &paths,
+                    crate::security::fs_auth::FsOps::READ_WRITE,
+                )
+                .await;
+            tracing::info!(
+                plugin_id = %plugin_id,
+                requested = paths.len(),
+                stored,
+                "[PluginHost] 随包服务型插件免目录授权弹窗（声明路径直接放行）"
+            );
             return Ok(());
         }
 

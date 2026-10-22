@@ -12,7 +12,7 @@
 //! - 组件**导出实例**的键 = `ns:pkg/iface@version`（**版本在末尾**）；
 //! - 实例**内部**函数名的键 = **平名**（`on-message`），故 `ItemName` 的两段查找
 //!   （顶层按接口实例 → 实例内按平名）是唯一可用机制；
-//! - `ItemName` 字面量的版本**只能写在末尾**：`wasmnest:plugin@0.0.1/events.on-message`
+//! - `ItemName` 字面量的版本**只能写在末尾**：`wasmnest:plugin@0.0.2/events.on-message`
 //!   解析失败（wit-parser 在 `ns:pkg` 后强制要求 `/`），
 //!   `wasmnest:plugin/events.on-message@0.0.1` 才合法且命中。
 //!

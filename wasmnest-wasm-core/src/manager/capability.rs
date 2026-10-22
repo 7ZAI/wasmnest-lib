@@ -38,7 +38,7 @@ use crate::host_api::context::CapabilityTarget;
 
 // ==================== 能力名与导出探测表 ====================
 
-/// host-storage 能力（WIT `wasmnest:plugin@0.0.1/host-storage`，装配框架首条路由能力）
+/// host-storage 能力（WIT `wasmnest:plugin@0.0.2/host-storage`，装配框架首条路由能力）
 ///
 /// 内建可路由行（见 [`routable_capabilities`] 与 [`storage_exports`]）：它的端口与真源都在内核/宿主内
 /// （`host_api/sqlite_ports.rs`），故词汇由内核自持。**能力域侧的能力一律自报**

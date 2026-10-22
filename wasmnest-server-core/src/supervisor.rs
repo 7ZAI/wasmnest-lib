@@ -3,7 +3,11 @@
 //! 管理服务器生命周期：启动、停止、重启
 //! Actix Web 在主进程内运行，通过 WebSocketManager 委托启动
 //! 指标采集直接调用 MetricsCollector + sysinfo，无需 IPC
-//! 服务器启动时自动启动 mDNS 广播，停止时自动停止
+//! 服务器启动时登记 mDNS 广播，停止时注销（`await` 保证时序确定性）
+//!
+//! 本结构只回答「怎么起、怎么停」，不自启、不猜何时该跑：生产宿主经
+//! `wasmnest_server_base::service::ServiceRegistry` 按应用引用计数调用
+//! [`ServerSupervisor::start`] / [`ServerSupervisor::stop`]（见 `service` 模块）。
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -48,7 +52,6 @@ pub struct TimestampedMetrics {
 pub struct ServerStatusInfo {
     pub status: ServerStatus,
     pub port: u16,
-    pub auto_start: bool,
     pub local_ips: Vec<String>,
     pub uptime_secs: Option<u64>,
 }
@@ -59,7 +62,6 @@ struct SupervisorInner {
     metrics: ServerMetrics,
     metrics_history: VecDeque<TimestampedMetrics>,
     port: u16,
-    auto_start: bool,
     /// 服务器启动时间，用于 uptime 计算
     start_time: Option<std::time::Instant>,
     /// sysinfo 采集器，用于 CPU/内存指标
@@ -70,17 +72,9 @@ struct SupervisorInner {
 
 /// 服务器管理器（全局单例）
 ///
-/// 委托 WebSocketManager 启动/停止 Actix Web，直接采集指标
-///
-/// # 产品决策：服务器永久自启动
-///
-/// 桌面端本地功能（终端背景图 `/static/terminal-bg`、插件 HTTP 端点等）依赖本服务，
-/// 用户关闭服务会导致这些功能静默失效，因此自启动**永久开启且不再可配置**
-/// （见 [`ServerSupervisor::init_config`]；配置文件中遗留的 `network.auto_start`
-/// 字段不再生效）。管理页面入口已从 UI 移除，调试者可直访 `/server` 预览。
-///
-/// 未来规划：可能通过 CLI 开发工具提供服务重启能力（复用现有
-/// [`ServerSupervisor::start`] / [`stop`](Self::stop) / [`restart`](Self::restart)）。
+/// 委托 WebSocketManager 启动/停止 Actix Web，直接采集指标。
+/// 是否该运行由宿主的应用作用域服务租约决定（`service::TRANSPORT_SERVICE_KEY`）；
+/// 本类型不自启、不持有「自启动」偏好。
 pub struct ServerSupervisor {
     inner: Arc<RwLock<SupervisorInner>>,
 }
@@ -103,7 +97,6 @@ impl ServerSupervisor {
                 metrics: ServerMetrics::default(),
                 metrics_history: VecDeque::with_capacity(METRICS_HISTORY_CAPACITY),
                 port: DEFAULT_SERVER_PORT,
-                auto_start: true,
                 start_time: None,
                 sys: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
                 metrics_task_cancel: Arc::new(AtomicBool::new(false)),
@@ -117,25 +110,28 @@ impl ServerSupervisor {
         &INSTANCE
     }
 
-    /// 初始化配置
-    ///
-    /// `auto_start` 参数保留仅为 API 兼容：产品决策为服务器永久自启动，
-    /// 无论配置如何，启动阶段一律自动开启（`network.auto_start` 配置项废弃）。
-    /// 未来 CLI 开发工具可调用 [`start`](Self::start) 重启服务。
-    pub async fn init_config(&self, port: u16, auto_start: bool) {
+    /// 初始化配置（只记录端口；启停由服务租约决定）
+    pub async fn init_config(&self, port: u16) {
         let mut inner = self.inner.write().await;
         inner.port = port;
-        // 忽略传入值，恒为开启：用户不可关闭服务器（关闭会导致本地功能静默失效）
-        inner.auto_start = true;
-        let _ = auto_start;
     }
 
-    /// 启动服务器（主进程内 Actix Web）
+    /// 共享同一底层状态的句柄（服务实现持有；状态仍单一）
+    pub fn handle(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    /// 启动服务器（主进程内 Actix Web；已运行 → 幂等 `Ok`）
     pub async fn start(&self, port: u16) -> Result<()> {
         {
             let inner = self.inner.read().await;
-            if inner.status == ServerStatus::Running || inner.status == ServerStatus::Starting {
-                return Err(AppError::WebSocket("Server already running or starting".to_string()));
+            if inner.status == ServerStatus::Running {
+                return Ok(());
+            }
+            if inner.status == ServerStatus::Starting {
+                return Err(AppError::WebSocket("Server already starting".to_string()));
             }
         }
 
@@ -227,8 +223,22 @@ impl ServerSupervisor {
                 // 服务器启动后自动阻止系统休眠
                 ports.power.enable();
 
-                // 服务器启动后自动启动 mDNS 广播
-                start_mdns_advertisement(port);
+                // 广播登记必须成功：失败 → 回滚 server（不留「起了但对外不可见」的空壳）
+                if let Err(error) = start_mdns_advertisement(port).await {
+                    tracing::error!(port, error = %error, "mDNS advertisement failed; rolling back server start");
+                    {
+                        let inner = self.inner.read().await;
+                        inner.metrics_task_cancel.store(true, Ordering::Relaxed);
+                    }
+                    if let Err(stop_error) = ports.lifecycle.stop_server().await {
+                        tracing::error!(error = %stop_error, "server rollback after mDNS failure failed");
+                    }
+                    ports.power.disable();
+                    let mut inner = self.inner.write().await;
+                    inner.status = ServerStatus::Stopped;
+                    inner.start_time = None;
+                    return Err(error);
+                }
 
                 Ok(())
             }
@@ -241,12 +251,16 @@ impl ServerSupervisor {
         }
     }
 
-    /// 停止服务器
+    /// 停止服务器（未运行 → 幂等 `Ok`）
     pub async fn stop(&self) -> Result<()> {
         {
             let inner = self.inner.read().await;
             if inner.status != ServerStatus::Running && inner.status != ServerStatus::Starting {
-                return Err(AppError::WebSocket("Server not running".to_string()));
+                // 幂等清理：崩溃监控可能已把状态置 Stopped 但广播仍登记——
+                // stop 的契约是「返回时未广播」，不只是改状态
+                drop(inner);
+                stop_mdns_advertisement().await;
+                return Ok(());
             }
         }
 
@@ -287,8 +301,8 @@ impl ServerSupervisor {
             ports.power.disable();
         }
 
-        // 服务器停止时自动停止 mDNS 广播
-        stop_mdns_advertisement();
+        // 服务器停止时自动注销 mDNS 广播（await：返回即已注销）
+        stop_mdns_advertisement().await;
 
         tracing::info!("Server stopped");
         Ok(())
@@ -317,7 +331,6 @@ impl ServerSupervisor {
         ServerStatusInfo {
             status: inner.status.clone(),
             port: inner.port,
-            auto_start: inner.auto_start,
             local_ips,
             uptime_secs,
         }
@@ -343,15 +356,6 @@ impl ServerSupervisor {
         let mut inner = self.inner.write().await;
         inner.port = port;
         Ok(())
-    }
-
-    /// 更新自启动配置
-    ///
-    /// 产品决策：自启动永久开启，本方法为 no-op（保留接口供旧命令调用，
-    /// 实际值恒为 true，见 [`init_config`](Self::init_config)）
-    pub async fn update_auto_start(&self, _auto_start: bool) {
-        let mut inner = self.inner.write().await;
-        inner.auto_start = true;
     }
 }
 
@@ -428,10 +432,12 @@ async fn metrics_sampling_task(inner: Arc<RwLock<SupervisorInner>>, cancel: Arc<
     }
 }
 
-/// 启动 mDNS 广播（经宿主壳注入的 MdnsAdvertiserPort）
-fn start_mdns_advertisement(port: u16) {
+/// 登记 mDNS 广播（经宿主壳注入的 MdnsAdvertiserPort；await = 登记完成）
+async fn start_mdns_advertisement(port: u16) -> Result<()> {
     let Some(ports) = wasmnest_server_base::ports::get() else {
-        return;
+        return Err(AppError::WebSocket(
+            "mdns advertiser port unavailable (no runtime context)".to_string(),
+        ));
     };
     // 设备名取自系统信息端口（宿主壳代理 SystemInfo：用户设置的电脑名），
     // 与 mDNS 实例名保持一致；版本号走端口（拆 lib 后 core 内 CARGO_PKG_VERSION
@@ -444,12 +450,55 @@ fn start_mdns_advertisement(port: u16) {
     txt_records.insert(TXT_KEY_PLATFORM.to_string(), TXT_VALUE_PLATFORM.to_string());
     txt_records.insert(TXT_KEY_DEVICE_NAME.to_string(), service_name.clone());
     txt_records.insert(TXT_KEY_VERSION.to_string(), app_version);
-    ports.mdns_advertiser.advertise(service_name, port, txt_records);
+    ports
+        .mdns_advertiser
+        .advertise(service_name, port, txt_records)
+        .await
+        .map_err(|e| AppError::Internal(format!("mdns advertise failed: {e}")))
 }
 
-/// 停止 mDNS 广播
-fn stop_mdns_advertisement() {
+/// 注销 mDNS 广播（await = 注销完成；失败只记录，不上抛）
+async fn stop_mdns_advertisement() {
     if let Some(ports) = wasmnest_server_base::ports::get() {
-        ports.mdns_advertiser.stop();
+        ports.mdns_advertiser.stop().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn start_is_idempotent_when_already_running() {
+        let supervisor = ServerSupervisor::new();
+        supervisor.inner.write().await.status = ServerStatus::Running;
+        supervisor
+            .start(12345)
+            .await
+            .expect("已在 running 的 start 必须幂等成功");
+    }
+
+    #[tokio::test]
+    async fn stop_is_idempotent_when_not_running() {
+        let supervisor = ServerSupervisor::new();
+        supervisor.stop().await.expect("未运行时的 stop 必须幂等成功");
+    }
+
+    #[tokio::test]
+    async fn start_failure_leaves_status_stopped() {
+        let supervisor = ServerSupervisor::new();
+        let error = supervisor
+            .start(12345)
+            .await
+            .expect_err("无端口装配时 start 必须显性失败");
+        assert!(
+            error.to_string().contains("server lifecycle port unavailable"),
+            "错误必须点名缺少端口，实际: {error}"
+        );
+        assert_eq!(
+            supervisor.get_status_info().await.status,
+            ServerStatus::Stopped,
+            "start 失败不得残留 Starting/Running 状态"
+        );
     }
 }

@@ -4,19 +4,19 @@
 //! 协调 loader、permission、registry、storage、wasm_runtime 五个子系统
 //! 支持静态注册（Rust 插件 via inventory）、文件扫描（TS-only 插件）和 WASM 模块（Rust+TS 插件）
 
-use crate::db::Database;
-use crate::system::constants::{
-    LIFECYCLE_SHUTDOWN, LIFECYCLE_STARTUP, PLUGIN_CALLBACK_TIMEOUT_SECS, PLUGIN_MANIFEST_FILE,
-};
 use crate::config::CallModel;
+use crate::db::Database;
 use crate::host_api::context::CapabilityTarget;
 use crate::manager::loader::PluginLoader;
 use crate::manager::registry::PluginRegistry;
 use crate::manager::runtime::{InstanceMeta, LoadedWasmPlugin, WasmHostContext, WasmRuntime};
 use crate::manager::types::{HostPluginInfo, LoadedPlugin, PluginSource};
+use crate::manifest::{PluginKind, PluginState};
 use crate::permission::PermissionManager;
 use crate::storage::PluginStorage;
-use crate::manifest::{PluginKind, PluginState};
+use crate::system::constants::{
+    LIFECYCLE_SHUTDOWN, LIFECYCLE_STARTUP, PLUGIN_CALLBACK_TIMEOUT_SECS, PLUGIN_MANIFEST_FILE,
+};
 use chrono::Utc;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -84,13 +84,21 @@ impl WasmInstanceEntry {
     ///
     /// `event-loop` 分支把整个 `LoadedWasmPlugin`（Store + Instance）移进属主任务：
     /// 宿主侧此后只剩 [`InstanceMeta`] 副本与属主句柄（I1 by construction）。
-    pub(crate) fn new(plugin: LoadedWasmPlugin, call_model: CallModel, sink: Arc<dyn OwnerFailureSink>) -> Self {
+    pub(crate) fn new(
+        plugin: LoadedWasmPlugin,
+        call_model: CallModel,
+        sink: Arc<dyn OwnerFailureSink>,
+    ) -> Self {
         let meta = plugin.meta().clone();
         let slot = match call_model {
             CallModel::Mutex => InstanceSlot::Mutex(Arc::new(Mutex::new(plugin))),
             CallModel::EventLoop => InstanceSlot::Owner(spawn_owner(plugin, sink)),
         };
-        Self { meta, call_model, slot }
+        Self {
+            meta,
+            call_model,
+            slot,
+        }
     }
 
     /// 实例元数据（宿主侧只读投影，不进实例）
@@ -114,7 +122,10 @@ impl WasmInstanceEntry {
     }
 
     /// 调用一次 guest 导出（**不含**宿主级失败恢复——那是 `PluginHost` 门面的职责）
-    pub async fn call_guest(&self, op: GuestOp) -> std::result::Result<GuestReply, GuestCallFailure> {
+    pub async fn call_guest(
+        &self,
+        op: GuestOp,
+    ) -> std::result::Result<GuestReply, GuestCallFailure> {
         match &self.slot {
             InstanceSlot::Mutex(instance) => {
                 call_mutex_blocking(self.meta.plugin_id.clone(), instance.clone(), op).await
@@ -167,59 +178,100 @@ impl WasmInstanceEntry {
 /// `mutex` / `event-loop` 两模型同构：转发方不需要知道调用模型——差异全在
 /// [`WasmInstanceEntry::call_guest`] 内部。
 impl CapabilityTarget for WasmInstanceEntry {
-    fn storage_get(&self, key: &str) -> std::result::Result<std::result::Result<Option<String>, String>, String> {
-        match self.call_op_with_timeout(GuestOp::CapStorageGet { key: key.to_string() }) {
+    fn storage_get(
+        &self,
+        key: &str,
+    ) -> std::result::Result<std::result::Result<Option<String>, String>, String> {
+        match self.call_op_with_timeout(GuestOp::CapStorageGet {
+            key: key.to_string(),
+        }) {
             Ok(GuestReply::GuestOptional(inner)) => Ok(inner),
-            Ok(other) => Err(format!("capability provider returned unexpected reply: {:?}", other)),
+            Ok(other) => Err(format!(
+                "capability provider returned unexpected reply: {:?}",
+                other
+            )),
             Err(e) => Err(e),
         }
     }
 
-    fn storage_set(&self, key: &str, value: &str) -> std::result::Result<std::result::Result<(), String>, String> {
+    fn storage_set(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> std::result::Result<std::result::Result<(), String>, String> {
         match self.call_op_with_timeout(GuestOp::CapStorageSet {
             key: key.to_string(),
             value: value.to_string(),
         }) {
             Ok(GuestReply::GuestUnit(inner)) => Ok(inner),
-            Ok(other) => Err(format!("capability provider returned unexpected reply: {:?}", other)),
+            Ok(other) => Err(format!(
+                "capability provider returned unexpected reply: {:?}",
+                other
+            )),
             Err(e) => Err(e),
         }
     }
 
-    fn storage_delete(&self, key: &str) -> std::result::Result<std::result::Result<(), String>, String> {
-        match self.call_op_with_timeout(GuestOp::CapStorageDelete { key: key.to_string() }) {
+    fn storage_delete(
+        &self,
+        key: &str,
+    ) -> std::result::Result<std::result::Result<(), String>, String> {
+        match self.call_op_with_timeout(GuestOp::CapStorageDelete {
+            key: key.to_string(),
+        }) {
             Ok(GuestReply::GuestUnit(inner)) => Ok(inner),
-            Ok(other) => Err(format!("capability provider returned unexpected reply: {:?}", other)),
+            Ok(other) => Err(format!(
+                "capability provider returned unexpected reply: {:?}",
+                other
+            )),
             Err(e) => Err(e),
         }
     }
 
-    fn mdns_browse(&self, service_type: &str) -> std::result::Result<std::result::Result<String, String>, String> {
+    fn mdns_browse(
+        &self,
+        service_type: &str,
+    ) -> std::result::Result<std::result::Result<String, String>, String> {
         match self.call_op_with_timeout(GuestOp::CapMdnsBrowse {
             service_type: service_type.to_string(),
         }) {
             Ok(GuestReply::GuestStr(inner)) => Ok(inner),
-            Ok(other) => Err(format!("capability provider returned unexpected reply: {:?}", other)),
+            Ok(other) => Err(format!(
+                "capability provider returned unexpected reply: {:?}",
+                other
+            )),
             Err(e) => Err(e),
         }
     }
 
-    fn mdns_stop_browse(&self, browser_id: &str) -> std::result::Result<std::result::Result<bool, String>, String> {
+    fn mdns_stop_browse(
+        &self,
+        browser_id: &str,
+    ) -> std::result::Result<std::result::Result<bool, String>, String> {
         match self.call_op_with_timeout(GuestOp::CapMdnsStopBrowse {
             browser_id: browser_id.to_string(),
         }) {
             Ok(GuestReply::GuestBool(inner)) => Ok(inner),
-            Ok(other) => Err(format!("capability provider returned unexpected reply: {:?}", other)),
+            Ok(other) => Err(format!(
+                "capability provider returned unexpected reply: {:?}",
+                other
+            )),
             Err(e) => Err(e),
         }
     }
 
-    fn mdns_advertise(&self, config_json: &str) -> std::result::Result<std::result::Result<String, String>, String> {
+    fn mdns_advertise(
+        &self,
+        config_json: &str,
+    ) -> std::result::Result<std::result::Result<String, String>, String> {
         match self.call_op_with_timeout(GuestOp::CapMdnsAdvertise {
             config_json: config_json.to_string(),
         }) {
             Ok(GuestReply::GuestStr(inner)) => Ok(inner),
-            Ok(other) => Err(format!("capability provider returned unexpected reply: {:?}", other)),
+            Ok(other) => Err(format!(
+                "capability provider returned unexpected reply: {:?}",
+                other
+            )),
             Err(e) => Err(e),
         }
     }
@@ -232,7 +284,10 @@ impl CapabilityTarget for WasmInstanceEntry {
             advertise_id: advertise_id.to_string(),
         }) {
             Ok(GuestReply::GuestBool(inner)) => Ok(inner),
-            Ok(other) => Err(format!("capability provider returned unexpected reply: {:?}", other)),
+            Ok(other) => Err(format!(
+                "capability provider returned unexpected reply: {:?}",
+                other
+            )),
             Err(e) => Err(e),
         }
     }
@@ -245,7 +300,10 @@ impl CapabilityTarget for WasmInstanceEntry {
             advertise_id: advertise_id.to_string(),
         }) {
             Ok(GuestReply::GuestBool(inner)) => Ok(inner),
-            Ok(other) => Err(format!("capability provider returned unexpected reply: {:?}", other)),
+            Ok(other) => Err(format!(
+                "capability provider returned unexpected reply: {:?}",
+                other
+            )),
             Err(e) => Err(e),
         }
     }
@@ -268,7 +326,9 @@ async fn call_mutex_blocking(
         // 阻塞线程无 tokio handle：符合 wasi 同步绑定（in_tokio）要求；锁在
         // catch_unwind 后由 drop 释放（panic 不跨线程传播）
         let mut guard = crate::runtime_util::block_on_ambient(instance.lock());
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch_mutex_op(&mut guard, op)))
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_mutex_op(&mut guard, op)
+        }))
     })
     .await;
 
@@ -303,13 +363,17 @@ pub(crate) struct HostOwnerFailureSink {
 
 impl HostOwnerFailureSink {
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self { host: OnceLock::new() })
+        Arc::new(Self {
+            host: OnceLock::new(),
+        })
     }
 
     /// 宿主装配完成后注入弱引用（`PluginHost::new` 中，先于任何实例化）
     fn bind(&self, host: &Arc<PluginHost>) {
         if self.host.set(Arc::downgrade(host)).is_err() {
-            tracing::warn!("[PluginHost] owner failure sink bound twice; keeping the first binding");
+            tracing::warn!(
+                "[PluginHost] owner failure sink bound twice; keeping the first binding"
+            );
         }
     }
 }
@@ -331,7 +395,8 @@ impl OwnerFailureSink for HostOwnerFailureSink {
                 return;
             };
             // 与 mutex 模型同口径：统一异常通道通知前端（节流合并）+ 限频调度重载
-            host.notify_plugin_runtime_error(plugin_id, kind, detail).await;
+            host.notify_plugin_runtime_error(plugin_id, kind, detail)
+                .await;
             host.schedule_plugin_reload_after_trap(plugin_id);
         })
     }
@@ -443,8 +508,16 @@ impl PluginHost {
         host_facts: Arc<dyn crate::host_api::ports::HostFactsPort>,
         // 平台选择器（同上：端差异实现住宿主；None = 未装配，插件调用点 fail-visible）
         platform_picker: Option<Arc<dyn crate::host_api::ports::PlatformPickerPort>>,
+        // 应用作用域共享服务注册表（宿主机制；service-leases §4.3）：必须在
+        // `new` 内**任何激活之前**写入——L1/L2 角色驱动组件在 `new` 内激活，
+        // 激活期可能已注册端点并 acquire 传输面（例如 BedCode 的 activate 注册
+        // HTTP 路由）。无头 / 测试传 None → 内核释放路径为 no-op。
+        service_registry: Option<Arc<wasmnest_server_base::service::ServiceRegistry>>,
     ) -> Arc<Self> {
-        tracing::info!("[PluginHost] Initializing with plugins_dir: {:?}", plugins_dir);
+        tracing::info!(
+            "[PluginHost] Initializing with plugins_dir: {:?}",
+            plugins_dir
+        );
 
         let permission = Arc::new(PermissionManager::new());
         let registry = Arc::new(PluginRegistry::new());
@@ -486,6 +559,9 @@ impl PluginHost {
         if let Some(picker) = platform_picker {
             wasm_host_ctx.set_platform_picker(picker);
         }
+        // 服务租约注册表：必须早于 `activate_role_driven_components`（L1/L2 在
+        // `new` 内激活；激活期的端点注册会 acquire 传输面）
+        wasm_host_ctx.set_service_registry(service_registry);
         wasm_host_ctx.security().set_monitor(wasm_runtime.monitor());
         // 授权记录容量丢弃计数（spec §8.2）：同一处两阶段注入（计数在落账点）
         wasm_runtime.fs_auth().set_monitor(wasm_runtime.monitor());
@@ -511,8 +587,14 @@ impl PluginHost {
         // 随包插件随即被降级为 UserInstalled 而卡在审批门禁（拒绝激活）
         let (file_plugins, user_plugins) =
             PluginLoader::load_builtin_and_user(plugins_dir, user_plugins_dir, &permission);
-        tracing::info!("[PluginHost] Found {} file-based plugin(s)", file_plugins.len());
-        tracing::info!("[PluginHost] Found {} user-installed plugin(s)", user_plugins.len());
+        tracing::info!(
+            "[PluginHost] Found {} file-based plugin(s)",
+            file_plugins.len()
+        );
+        tracing::info!(
+            "[PluginHost] Found {} user-installed plugin(s)",
+            user_plugins.len()
+        );
 
         // 3. 合并所有插件
         let mut all_plugins: HashMap<String, LoadedPlugin> = HashMap::new();
@@ -575,7 +657,9 @@ impl PluginHost {
             runtime_error_notify_throttle: Arc::new(std::sync::Mutex::new(HashMap::new())),
             shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             user_plugins_dir: user_plugins_dir.to_path_buf(),
-            frontend_channel: Arc::new(crate::security::frontend_channel::FrontendChannelRegistry::new()),
+            frontend_channel: Arc::new(
+                crate::security::frontend_channel::FrontendChannelRegistry::new(),
+            ),
         });
 
         // 属主失败回报端口绑定：必须早于任何实例化（属主任务在 trap 时回用它）
@@ -706,7 +790,8 @@ impl PluginHost {
                         Some(msg) => ("panic", msg.clone()),
                         None => ("trap", failure.error.to_string()),
                     };
-                    self.notify_plugin_runtime_error(plugin_id, kind_str, &detail).await;
+                    self.notify_plugin_runtime_error(plugin_id, kind_str, &detail)
+                        .await;
                     self.schedule_plugin_reload_after_trap(plugin_id);
                 }
                 Err(failure)
@@ -749,7 +834,8 @@ impl PluginHost {
 
     /// 停机兜底：停止全部残留属主（I6：进程退出前不留孤儿任务 / 持锁线程）
     pub(crate) async fn shutdown_all_owners(&self) {
-        let entries: Vec<Arc<WasmInstanceEntry>> = self.wasm_plugins.read().await.values().cloned().collect();
+        let entries: Vec<Arc<WasmInstanceEntry>> =
+            self.wasm_plugins.read().await.values().cloned().collect();
         for entry in entries {
             if let Some(report) = entry.shutdown().await {
                 if report.forced_abort || report.abandoned_requests > 0 {
@@ -795,7 +881,12 @@ impl PluginHost {
             )));
         };
         let capability = crate::manager::capability::CAP_AUTH_POLICY;
-        if !entry.meta().exported_capabilities.iter().any(|c| c == capability) {
+        if !entry
+            .meta()
+            .exported_capabilities
+            .iter()
+            .any(|c| c == capability)
+        {
             return Err(crate::AppError::Plugin(format!(
                 "plugin '{}' does not export capability '{}'",
                 plugin_id, capability
@@ -848,7 +939,9 @@ impl PluginHost {
     }
 
     /// 前端插件通道身份注册表（loader 会话密钥 / 插件令牌）
-    pub fn frontend_channel(&self) -> &Arc<crate::security::frontend_channel::FrontendChannelRegistry> {
+    pub fn frontend_channel(
+        &self,
+    ) -> &Arc<crate::security::frontend_channel::FrontendChannelRegistry> {
         &self.frontend_channel
     }
 
@@ -886,7 +979,9 @@ impl PluginHost {
         self.message_bus.set_dispatcher(dispatcher).await;
         // v11：注入 core-monitor 注册表（订阅者队列满丢弃 / 格式不匹配拒绝计数）。
         // 必须在首次订阅（插件激活）之前完成——激活流程在 PluginHost::new 之后
-        self.message_bus.set_monitor(self.wasm_runtime.monitor()).await;
+        self.message_bus
+            .set_monitor(self.wasm_runtime.monitor())
+            .await;
         tracing::info!("[PluginHost] MessageBus dispatcher initialized");
     }
 
@@ -896,7 +991,10 @@ impl PluginHost {
     pub async fn list_plugins(&self) -> Vec<HostPluginInfo> {
         let plugins = self.plugins.read().await;
         let list: Vec<HostPluginInfo> = plugins.values().map(HostPluginInfo::from).collect();
-        tracing::debug!("[PluginHost] list_plugins() returning {} plugin(s)", list.len());
+        tracing::debug!(
+            "[PluginHost] list_plugins() returning {} plugin(s)",
+            list.len()
+        );
         for info in &list {
             tracing::debug!(
                 "[PluginHost]   - {} (state={:?}, type={:?})",
@@ -938,21 +1036,23 @@ mod wasm;
 // preauth 域（P2 拆分后 re-export 保持 host:: 路径兼容）
 pub use preauth::register_preauth_provider;
 #[allow(unused_imports)] // 兼容 host:: 路径（测试经 super:: 引用；preauth.rs 内部自用）
-pub(crate) use preauth::{collect_preauth_paths, preauth_providers, PreauthProvider, PREAUTH_PATHS_STORAGE_KEY};
+pub(crate) use preauth::{
+    collect_preauth_paths, preauth_providers, PreauthProvider, PREAUTH_PATHS_STORAGE_KEY,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::config::AppConfig;
     use crate::bus::{MessageBus, MessageDispatcher};
     use crate::manager::runtime::PluginServices;
     use crate::manifest::{PluginContributes, PluginManifest, PluginType};
-    use wasmnest_plugin_api::{PluginCommand, RustPluginContext, TerminalHandler};
+    use crate::system::config::AppConfig;
     use serde_json::json;
     use std::future::Future;
     use std::path::PathBuf;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use wasmnest_plugin_api::{PluginCommand, RustPluginContext, TerminalHandler};
 
     /// 测试用插件 ID（非 WASM 插件）
     const TEST_PLUGIN_ID: &str = "com.wasmnest.test";
