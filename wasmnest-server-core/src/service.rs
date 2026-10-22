@@ -33,7 +33,7 @@ impl TransportService {
     }
 
     /// 注册到给定注册表（宿主装配点唯一）
-    pub fn register_global(registry: &ServiceRegistry) -> Result<(), ServiceError> {
+    pub fn register(registry: &ServiceRegistry) -> Result<(), ServiceError> {
         registry.register(Arc::new(Self::from_global()))
     }
 }

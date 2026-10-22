@@ -357,9 +357,9 @@ pub struct WasmHostContext {
     /// 无头/测试为 `None` → `HEADLESS_UNAVAILABLE` 语义不变。两阶段注入（同
     /// [`Self::set_task_engine`]），`PluginHost::new` 构造后写入。
     peer_ctx_provider: Arc<std::sync::RwLock<Option<Arc<PeerCtxProvider>>>>,
-    /// 应用作用域共享服务注册表（宿主机制；service-leases §4.3）：桌面 / 移动
-    /// 装配后经 [`Self::set_service_registry`] 晚绑注入；无头 / 测试不注入 →
-    /// 内核的生命周期释放为 no-op（不造假账）。
+    /// 应用作用域共享服务注册表（宿主机制；service-leases §4.3）：由宿主在
+    /// [`crate::manager::host::PluginHost::new`] 构造参数注入（在任何激活之前写入）；
+    /// 无头 / 测试不注入 → 内核的生命周期释放为 no-op（不造假账）。
     service_registry:
         Arc<std::sync::RwLock<Option<Arc<wasmnest_server_base::service::ServiceRegistry>>>>,
     /// 宿主引擎端口（移动装配面，票 02 B5 并入超集）：auth / egress / peer /
@@ -924,10 +924,11 @@ impl WasmHostContext {
             .clone()
     }
 
-    /// 两阶段注入：应用作用域共享服务注册表
+    /// 注入应用作用域共享服务注册表
     ///
-    /// 桌面 / 移动宿主在 `PluginHost::new` 返回后、任何应用激活之前写入；无头 /
-    /// 测试不注入 → 内核在停用 / 激活失败 / Error 三条路径上的释放为 no-op。
+    /// 生产路径经 `PluginHost::new` 构造参数在**任何激活之前**写入（L1/L2 角色组件
+    /// 可能在构造内激活并注册端点）；无头 / 测试不注入 → 内核在停用 / 激活失败 /
+    /// Error 三条路径上的释放为 no-op。也可在宿主装配后覆盖（幂等）。
     pub fn set_service_registry(
         &self,
         registry: Option<Arc<wasmnest_server_base::service::ServiceRegistry>>,

@@ -539,7 +539,10 @@ pub fn peer_start_node(ports: &Arc<dyn PeerPorts>, plugin_id: &str) -> Result<bo
     }
     warn_no_lease_assembly("host_peer_start_node");
     let ctx = ports.peer_ctx()?;
-    sync_result(block_on(ports, crate::start_peer_node(ctx))).map(|_| true)
+    sync_result(block_on(ports, async move {
+        let was_running = crate::is_node_running(&ctx).await;
+        crate::start_peer_node(ctx).await.map(|_| !was_running)
+    }))
 }
 
 /// 释放本机节点引用（`host-peer.stop-node`）：最后一个引用释放才真正关停

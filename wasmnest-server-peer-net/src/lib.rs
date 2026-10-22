@@ -263,6 +263,11 @@ pub struct DialPeerResultDto {
     pub device_name: Option<String>,
 }
 
+/// 节点当前是否在跑（无头兼容路径的「本次是否真正拉起」判据）
+pub(crate) async fn is_node_running(ctx: &PeerCtx) -> bool {
+    ctx.state.runtime.lock().await.is_some()
+}
+
 /// 启动对等网络节点（幂等：已启动直接返回现状）
 ///
 /// 命令壳在宿主 `peer_net_cmds`；本函数为引擎实现（`ctx` 由宿主壳装配）

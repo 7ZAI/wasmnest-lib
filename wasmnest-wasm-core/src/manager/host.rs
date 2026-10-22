@@ -510,8 +510,9 @@ impl PluginHost {
         platform_picker: Option<Arc<dyn crate::host_api::ports::PlatformPickerPort>>,
         // 应用作用域共享服务注册表（宿主机制；service-leases §4.3）：必须在
         // `new` 内**任何激活之前**写入——L1/L2 角色驱动组件在 `new` 内激活，
-        // 激活期可能已注册端点并 acquire 传输面（例如 BedCode 的 activate 注册
-        // HTTP 路由）。无头 / 测试传 None → 内核释放路径为 no-op。
+        // 激活期可能请求 peer 节点服务（acquire），内核生命周期回收也经它。
+        // 传输面的端点注册只预登记路由，不 acquire（启动信号 = 应用界面打开）。
+        // 无头 / 测试传 None → 内核释放路径为 no-op。
         service_registry: Option<Arc<wasmnest_server_base::service::ServiceRegistry>>,
     ) -> Arc<Self> {
         tracing::info!(

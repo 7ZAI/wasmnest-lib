@@ -1,4 +1,4 @@
-//! 应用作用域共享服务的租约模板（spec：`.scratch/2026-10-22-app-scoped-service-leases`）
+//! 应用作用域共享服务的租约模板（service-leases）
 //!
 //! 依赖服务（传输面、对等网络节点等）不再由宿主常驻：由**插件 id** 按引用记账，
 //! 首个引用拉起、最后一个引用关停。记账 / 幂等 / 回滚 / 串行化 / 顺序 / 日志全部
@@ -83,7 +83,7 @@ pub enum ServiceError {
     /// 拉起失败；holder 未被记录，下次 acquire 可重试
     #[error("service `{key}` failed to start: {error}")]
     StartFailed { key: String, error: String },
-    /// 关停失败；槽位保留 `running = true`（不假装已停），后续 release / shutdown 重试
+    /// 关停失败；槽位保留 `running = true`（不假装已停），重新取得引用后的 release / shutdown_all 重试
     #[error("service `{key}` failed to stop: {error}")]
     StopFailed { key: String, error: String },
 }
@@ -240,7 +240,8 @@ impl ServiceRegistry {
                 Ok(ReleaseOutcome::Stopped)
             }
             Err(error) => {
-                // 不撒谎：服务可能仍在跑，保留 running，后续 release / shutdown 重试
+                // 不撒谎：服务可能仍在跑，保留 running；重新取得引用后的 release /
+                // shutdown_all 会重试 stop（失败那次已移除 holder，单独重放 release 不触发）
                 tracing::error!(
                     service_key = key,
                     holder,
