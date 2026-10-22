@@ -20,10 +20,13 @@ use wasmnest_server_base::ports::{
     BusMessageHandler, BusPort, EventSink, MdnsPort, MdnsTypeSubscription, PathsPort, SystemInfoPort,
 };
 
-use crate::engine_ports::PeerEnginePorts;
+use std::sync::LazyLock;
+
+use crate::engine_ports::{PeerEnginePorts, PeerPlatformSeam};
 use crate::peer_engine_receive::PeerReceiveState;
 use crate::peer_engine_remote::PeerRemoteState;
 use crate::peer_engine_transfer::PeerTransferState;
+use crate::base::{FileLanding, SharedSafAccess};
 use crate::{PeerCtx, PeerNetState};
 
 /// 构造一份无头引擎上下文：节点未启动、四张会话表全空、无 handler
@@ -42,6 +45,69 @@ pub(crate) fn headless_ctx() -> Arc<PeerCtx> {
         receive: Arc::new(PeerReceiveState::default()),
         remote: Arc::new(PeerRemoteState::default()),
     })
+}
+
+/// 带平台默认共享目录的上下文变体（2026-10-22 peer-net-dissolve：验证平台目录
+/// 不被插件 `set-shared-roots` 全量推送清掉；decorate 兜底回归用例用）
+pub(crate) fn headless_ctx_with_platform_dir() -> Arc<PeerCtx> {
+    // 固定临时目录一次创建（多用例共享同一路径 → decorate 同根去重跳过，幂等）
+    static PLATFORM_DIR: LazyLock<std::path::PathBuf> = LazyLock::new(|| {
+        let dir = std::env::temp_dir()
+            .join(format!("wasmnest-peer-platform-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create platform dir fixture");
+        dir
+    });
+    let seam: Arc<dyn PeerPlatformSeam> = Arc::new(PlatformDirSeam(PLATFORM_DIR.clone()));
+    Arc::new(PeerCtx {
+        ports: Arc::new(PeerEnginePorts {
+            bus: Arc::new(NullBus),
+            event_sink: Arc::new(NullEventSink),
+            // 共享注册表需要真实可落盘的数据目录（FixedPaths 的 `/nonexistent` 占位
+            // 在 set_shared_roots 全量推送路径会 create_dir_all 失败）
+            paths: Arc::new(TempPaths),
+            system_info: Arc::new(FixedSystemInfo),
+            mdns: Arc::new(UnreachableMdns),
+            platform: Some(seam),
+        }),
+        state: Arc::new(PeerNetState::default()),
+        transfer: Arc::new(PeerTransferState::default()),
+        receive: Arc::new(PeerReceiveState::default()),
+        remote: Arc::new(PeerRemoteState::default()),
+    })
+}
+
+/// 真实临时数据目录 paths（注册表落盘用例用；LazyLock 单例，多用例共享）
+struct TempPaths;
+
+impl PathsPort for TempPaths {
+    fn app_data_dir(&self) -> wasmnest_server_base::error::Result<std::path::PathBuf> {
+        Ok(std::path::PathBuf::from(
+            std::env::temp_dir().join(format!("wasmnest-peer-appdata-{}", std::process::id())),
+        ))
+    }
+
+    fn download_dir(&self) -> wasmnest_server_base::error::Result<std::path::PathBuf> {
+        Ok(std::path::PathBuf::from(
+            std::env::temp_dir().join(format!("wasmnest-peer-downloads-{}", std::process::id())),
+        ))
+    }
+}
+
+/// 平台默认目录 seam 替身：`default_shared_dirs` 返回固定目录
+struct PlatformDirSeam(std::path::PathBuf);
+
+impl PeerPlatformSeam for PlatformDirSeam {
+    fn shared_saf_access(&self) -> Option<Arc<dyn SharedSafAccess>> {
+        None
+    }
+
+    fn file_landing(&self) -> Option<Arc<dyn FileLanding>> {
+        None
+    }
+
+    fn default_shared_dirs(&self) -> Vec<(String, std::path::PathBuf)> {
+        vec![("下载".to_string(), self.0.clone())]
+    }
 }
 
 /// 总线替身：暂停/恢复路由不经总线（事件直推在会话驱动侧），被调即显式失败

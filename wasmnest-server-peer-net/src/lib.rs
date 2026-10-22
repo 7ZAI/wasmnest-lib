@@ -621,7 +621,14 @@ pub async fn revoke_trusted_peer(ctx: Arc<PeerCtx>, node_id: String) -> Result<b
 /// 条目 id/name/root 由调用方构造（桌面 Fs / 移动 Saf 根形态均支持）。
 pub async fn set_shared_roots(ctx: Arc<PeerCtx>, entries: Vec<SharedDirEntry>) -> Result<()> {
     let store = shared_handle(&ctx).await?;
-    store.replace_all(&entries).map_err(map_peer_net_error)
+    store.replace_all(&entries).map_err(map_peer_net_error)?;
+    // 插件全量推送覆盖用户条目后，平台默认共享目录（移动端 app 私有下载目录，
+    // 由平台缝注册为普通条目）可能被清掉——这里按平台缝重新注册，保证对端
+    // 始终可浏览平台目录（机制性兜底：同根去重跳过已存在的，不存在则补回）。
+    // 2026-10-22 peer-net-dissolve：无「内置/免授权」特殊语义，平台目录与用户
+    // 条目同为普通条目，仅保证不被全量推送误清。
+    crate::engine_ports::decorate_shared_store(&store, ctx.ports.platform.as_ref());
+    Ok(())
 }
 
 // ==================== File-transfer engine bridge ====================
@@ -1907,5 +1914,28 @@ mod peer_net_tests {
         assert_eq!(store.list().len(), 2);
         assert_eq!(store.list()[0].id, "a");
         assert_eq!(store.list()[1].id, "b");
+    }
+
+    /// 平台默认共享目录（平台缝注入）不被插件 `set-shared-roots` 全量推送误清
+    ///（2026-10-22 peer-net-dissolve：普通条目 + decorate 兜底）
+    #[tokio::test]
+    async fn platform_shared_dir_survives_replace_all_push() {
+        let ctx = crate::test_ctx::headless_ctx_with_platform_dir();
+
+        // 装配期：平台目录经 decorate 注册（set_shared_roots 全量推送路径含兜底）
+        crate::set_shared_roots(ctx.clone(), Vec::new())
+            .await
+            .expect("first push seeds platform dir");
+        let store = crate::shared_handle(&ctx).await.expect("store handle");
+        assert_eq!(store.list().len(), 1, "platform dir seeded");
+        let platform_id = store.list()[0].id.clone();
+
+        // 插件再次全量推送（空表 = 覆盖用户面）：平台目录仍在，id 不变（幂等）
+        crate::set_shared_roots(ctx.clone(), Vec::new())
+            .await
+            .expect("replace push keeps platform dir");
+        let store = crate::shared_handle(&ctx).await.expect("store handle");
+        assert_eq!(store.list().len(), 1, "platform dir survives replace_all");
+        assert_eq!(store.list()[0].id, platform_id);
     }
 }

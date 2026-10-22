@@ -412,11 +412,13 @@ impl SharedDirStore {
 ///
 /// crate 无 uuid 依赖；sha2/hex 已在依赖树中（identity 同源）。纳秒时钟保证
 /// 同名同根的「删除后重加」也得到不同 ID（旧浏览会话不会误命中新条目）。
+/// 条目 id = SHA256(name ‖ 0 ‖ root) 前 8 字节（确定性——同 name/root 必同 id）。
+///
+/// 2026-10-22 peer-net-dissolve：原实现混入时间戳 nanos，导致「平台默认目录被
+/// 插件全量推送清掉后重注册」得到**新 id**，对端缓存的 dir_id 失效（浏览 404）。
+/// 注册表已对同 root 去重，条目集合极小（个位数），去掉随机分量后 id 稳定幂等、
+/// 无实际碰撞窗口；remove 后重 add 同 root 也得到原 id（对端缓存继续有效）。
 fn generate_entry_id(name: &str, root: &SharedDirRoot) -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
     let mut hasher = Sha256::new();
     hasher.update(name.as_bytes());
     hasher.update([0]);
@@ -424,7 +426,6 @@ fn generate_entry_id(name: &str, root: &SharedDirRoot) -> String {
         SharedDirRoot::Fs { path } => hasher.update(path.to_string_lossy().as_bytes()),
         SharedDirRoot::Saf { tree_uri } => hasher.update(tree_uri.as_bytes()),
     }
-    hasher.update(nanos.to_le_bytes());
     let digest = hasher.finalize();
     hex::encode(&digest[..8])
 }
