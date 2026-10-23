@@ -29,7 +29,7 @@
 - **文档字面 ≠ 事实**：引用任何路径 / 命令 / 锁名 / 版本前先用 `ls` / `rg` / `cargo metadata` 核对；与实际不符先修文档再继续。
 - **最小改动**：只改任务必要文件；禁止顺手重构相邻代码、擅自升级依赖、批量重排格式；设计取舍不猜，先问用户。
 - **项目阶段（内部研发起步期）**：版本线自 `0.0.1` 重开，无对外 ABI 兼容义务——破坏性变更可直接进行，但跨仓契约按**精确 tag** 钉住（§2.2 / §5「发版钉平台指针」）；退役面必须 **fail-visible**（点名缺失 + 给出路），禁止静默降级成「查不到就返回空」。
-- **本仓无独立 CI、无文档面**：唯一人读文档是本文件（`.md` 白名单之外不新增文档，除非用户明确要求）；验证 = 本地命令实跑 + 平台仓 / 测试仓相关锁（§7）。
+- **本仓 CI = `.github/workflows/ci.yml`**（2026-10-24 票 7 落地：PR / dev 推送触发，fmt --check + 按 crate 遍历 `cargo test`；`wasmnest-wasm-core` 的 test 因未发布 SDK 版本依赖登记为例外，经平台仓宿主装配测试，见 workflow 注释）、无文档面：唯一人读文档是本文件（`.md` 白名单之外不新增文档，除非用户明确要求）；验证 = 本地命令实跑 + CI + 平台仓 / 测试仓相关锁（§7）。
 - **四仓通用规范（git 提交 / 注释命名 / 测试与验证 / 版本号管理 / issue 管理）真源在 `../wasmnest`/`docs/public/`**（`git.md` / `commenting.md` / `testing.md` / `versioning.md` / `issues.md`），与本文件硬约束同级；通用内容不在此复制，本文件只留仓特有增量（§6.4 / §6.5）。
 
 ---
@@ -211,7 +211,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 
 ## 4. 命令
 
-> **心智模型**：无根 workspace。`cargo check/test/fmt/clippy` 在**目标 crate 目录**执行；本仓没有「仓级测试」。CI 重建明确不立项（当前无 CI），验证 = 本地实跑 + 平台/测试仓锁。
+> **心智模型**：无根 workspace。`cargo check/test/fmt/clippy` 在**目标 crate 目录**执行；本仓没有「仓级测试」。CI（`.github/workflows/ci.yml`）同样按 crate 遍历（fmt --check 全量 / cargo test 除登记例外），验证 = 本地实跑 + CI + 平台/测试仓锁。
 
 ### 4.1 单 crate（默认可用）
 
@@ -383,7 +383,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 4. **（已收口 2026-10-20）`target-dir` 落点漂移**：10 个 crate 已统一改为 `../target/<bucket>`，独立克隆落本仓根；旧落点 `${WASMNEST}/target/{host-kits,server-libs}` 为漂移产物（无活引用，可整删），本仓 `target/host-kits` 的历史残留即当前活跃桶。核查方法见 §4.4。
 5. **（已收口 2026-10-21）平台治理锁滞后于拆分**：平台仓 `capability_crates_no_product_ids` 的 `crate_dir()` 已对 `wasmnest-componentize` 单独解析 `tools/componentize`（目录存在，不会 panic）；`capability_crates_unit_tests_only` 的 `CRATE_TEST_DIR_EXCEPTIONS` 已登记 `wasmnest-wasm-core/tests/platform_reference_registry_lock.rs`。两把锁在平台仓实测全绿：`cargo test --offline --test capability_crates_no_product_ids --test capability_crates_unit_tests_only` → 6 + 5 passed。
 6. **wasm-core 两处产品 id 泄漏**：`security/fs_auth.rs` 的 `FIRST_PARTY_TRUSTED_DIRS`、`manager/host/activation.rs` 的 `LEGACY_API_PLUGIN_ALIASES`——由独立票据处置；平台语义锁因此暂不扫 `wasm-core`。
-7. **本仓无 CI**（CI 重建明确不立项）；验证靠本地命令与跨仓锁。
+7. （已收口 2026-10-24，票 7）**本仓 CI 落地**：`.github/workflows/ci.yml`（fmt --check + 按 crate cargo test）；`wasmnest-wasm-core` 的 test 为登记例外（未发布 SDK 版本依赖无法独立克隆解析，AGENTS §4.2），经平台仓宿主装配测试。验证 = 本地命令 + CI + 跨仓锁。
 8. 平台仓桌面 SDK 的 `README.md` / `template/` 仍与 ADR 0057 挂载包形态不一致（dev-shell 已于 2026-10-21 对齐；属平台仓侧漂移，本仓不代改；跟踪 `7ZAI/wasmnest#1`）。
 
 ---
