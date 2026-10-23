@@ -114,9 +114,8 @@ pub fn setup_wasm_runtime_with_setup(setup: EngineSetup) -> (WasmRuntime, Arc<Wa
         // fail-visible，不静默丢消息）——需要 `events` 导出投递的宿主集成测试自行
         // 注入 `DesktopGuestEvents`（见桌面 `tests/support/mod.rs` 的 setup_wasm_runtime）。
         // 注入 AOT 缓存目录（生产由 app_handle 派生，测试无头上下文手动注入）
-        wasm_runtime.aot_cache_dir = Some(
-            std::env::temp_dir().join(format!("wasmnest_aot_{}", std::process::id())),
-        );
+        wasm_runtime.aot_cache_dir =
+            Some(std::env::temp_dir().join(format!("wasmnest_aot_{}", std::process::id())));
 
         let host_ctx = WasmHostContext::new(
             db,
@@ -386,7 +385,10 @@ pub fn owner_queue_cap() -> usize {
 
 /// 直接启动属主任务（等价内核 `spawn_owner`）：把实例整块交给属主，不经装配表
 /// ——宿主测试要观察的是属主模型自身的不变式，不是装配表门面
-pub fn spawn_test_owner(plugin: LoadedWasmPlugin, sink: Arc<dyn OwnerFailureSink>) -> Arc<TestOwnerHandle> {
+pub fn spawn_test_owner(
+    plugin: LoadedWasmPlugin,
+    sink: Arc<dyn OwnerFailureSink>,
+) -> Arc<TestOwnerHandle> {
     Arc::new(TestOwnerHandle {
         inner: crate::manager::host::owner::spawn_owner(plugin, sink),
     })
@@ -399,7 +401,9 @@ pub fn instance_call_model(entry: &crate::manager::host::WasmInstanceEntry) -> C
 
 /// 停止装配条目上的属主（`mutex` 模型 no-op 返回 `None`）——宿主测试的
 /// 「trap 后恢复路径 / store 随属主停止释放」断言用
-pub async fn instance_shutdown(entry: &crate::manager::host::WasmInstanceEntry) -> Option<ShutdownReport> {
+pub async fn instance_shutdown(
+    entry: &crate::manager::host::WasmInstanceEntry,
+) -> Option<ShutdownReport> {
     entry.shutdown().await
 }
 
@@ -480,7 +484,9 @@ pub(crate) mod kernel_test_domain_ports {
         );
         wasmnest_server_websocket::plugin_binding::install_ports(ws);
 
-        let http: Arc<dyn HttpPorts> = Arc::new(TestHttpPorts { ctx: host_ctx.clone() });
+        let http: Arc<dyn HttpPorts> = Arc::new(TestHttpPorts {
+            ctx: host_ctx.clone(),
+        });
         host_ctx.set_domain_ports(
             wasmnest_server_http::plugin_binding::DOMAIN,
             Arc::new(Arc::clone(&http)) as Arc<dyn Any + Send + Sync>,
@@ -496,7 +502,10 @@ pub(crate) mod kernel_test_domain_ports {
 
     impl TestWsPorts {
         fn new(ctx: Arc<WasmHostContext>) -> Self {
-            Self { bus: ctx.message_bus().clone(), ctx }
+            Self {
+                bus: ctx.message_bus().clone(),
+                ctx,
+            }
         }
     }
 
@@ -540,14 +549,15 @@ pub(crate) mod kernel_test_domain_ports {
                     kind: kind.to_string(),
                     payload,
                 },
-                WsFrameTarget::EndpointClient { endpoint_id, client_id } => {
-                    WsFrameDispatch::EndpointClient {
-                        endpoint_id: endpoint_id.to_string(),
-                        client_id: client_id.to_string(),
-                        kind: kind.to_string(),
-                        payload,
-                    }
-                }
+                WsFrameTarget::EndpointClient {
+                    endpoint_id,
+                    client_id,
+                } => WsFrameDispatch::EndpointClient {
+                    endpoint_id: endpoint_id.to_string(),
+                    client_id: client_id.to_string(),
+                    kind: kind.to_string(),
+                    payload,
+                },
             };
             match dispatcher.dispatch_ws_frame(plugin_id, &frame) {
                 Ok(true) => FrameDispatch::Delivered,
@@ -608,4 +618,3 @@ pub(crate) mod kernel_test_domain_ports {
         }
     }
 }
-

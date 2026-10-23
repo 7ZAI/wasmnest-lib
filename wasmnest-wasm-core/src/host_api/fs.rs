@@ -45,9 +45,8 @@ impl UnitExecutor for FsUnitExecutor {
             "fs.read" => {
                 let path = params.get("path").and_then(|v| v.as_str());
                 match path {
-                    Some(p) => {
-                        fs_read(host_ctx.as_ref(), owner, p).map(|v| v.map(|c| serde_json::json!(c).to_string()))
-                    }
+                    Some(p) => fs_read(host_ctx.as_ref(), owner, p)
+                        .map(|v| v.map(|c| serde_json::json!(c).to_string())),
                     None => Err("fs.read: missing path".to_string()),
                 }
             }
@@ -68,7 +67,8 @@ impl UnitExecutor for FsUnitExecutor {
             "fs.exists" => {
                 let path = params.get("path").and_then(|v| v.as_str());
                 match path {
-                    Some(p) => fs_exists(host_ctx.as_ref(), owner, p).map(|b| Some(serde_json::json!(b).to_string())),
+                    Some(p) => fs_exists(host_ctx.as_ref(), owner, p)
+                        .map(|b| Some(serde_json::json!(b).to_string())),
                     None => Err("fs.exists: missing path".to_string()),
                 }
             }
@@ -76,7 +76,9 @@ impl UnitExecutor for FsUnitExecutor {
                 let path = params.get("path").and_then(|v| v.as_str());
                 let data = params.get("data").and_then(|v| v.as_str());
                 match (path, data) {
-                    (Some(p), Some(d)) => fs_write(host_ctx.as_ref(), owner, p, d).map(|_| Some("null".to_string())),
+                    (Some(p), Some(d)) => {
+                        fs_write(host_ctx.as_ref(), owner, p, d).map(|_| Some("null".to_string()))
+                    }
                     (Some(_), None) => Err("fs.write: missing data".to_string()),
                     _ => Err("fs.write: missing path".to_string()),
                 }
@@ -117,11 +119,14 @@ fn ensure_unit_path_granted(
     };
     // 所需能力按单元种类取（票 02 操作拆分）：写单元要写授权，其余要读授权——
     // 不带操作集的话「授权读」的目录能跑写单元，池线程这条无弹窗通道就成了绕过口
-    let needed = if needs_write { FsOps::WRITE } else { FsOps::READ };
+    let needed = if needs_write {
+        FsOps::WRITE
+    } else {
+        FsOps::READ
+    };
     // 票 02 B5：`is_granted` 是 FsAuthChecker 具体机制方法（不在窄 FsAuthGate trait
     // 上）——经下转型访问器取回（桌面装配形态恒 Some）
-    let checker = host_ctx
-        .fs_auth_checker();
+    let checker = host_ctx.fs_auth_checker();
     if block_on_async(checker.is_granted(owner, path, needed)) {
         return Ok(());
     }
@@ -206,13 +211,12 @@ pub(crate) fn fs_request_auth(
     if !super::check_permission(perm, plugin_id, PERMISSION_FS_READ, "host_fs_request_auth") {
         return Err("permission denied".to_string());
     }
-    let paths: Vec<String> =
-        serde_json::from_str(paths_json).map_err(|e| format!("fs error: invalid paths json: {}", e))?;
+    let paths: Vec<String> = serde_json::from_str(paths_json)
+        .map_err(|e| format!("fs error: invalid paths json: {}", e))?;
     if paths.is_empty() {
         return Ok(true);
     }
-    let fs_auth = fs_auth
-        .fs_auth_checker();
+    let fs_auth = fs_auth.fs_auth_checker();
     // 操作集 = 读 + 写：`request-auth` 的 WIT 签名没有操作维度，插件的用途（fs 单元
     // 可读可写）决定这里要申请两种能力——与改造前「无操作维度 = 读写等价」逐字一致
     // （票 02 只做拆分与落账，不动这条原语的契约；将来要收窄需 WIT 加参）
@@ -335,7 +339,8 @@ pub(crate) fn fs_exists(
     authorize_fs(sec, plugin_id, path, "read")?;
     // 支持 WSL UNC 路径
     if let Some((distro, wsl_path)) = wsl_fs::parse_wsl_unc_path(path) {
-        return wsl_fs::exists_via_wsl(&distro, &wsl_path).map_err(|e| format!("fs error: WSL check failed: {}", e));
+        return wsl_fs::exists_via_wsl(&distro, &wsl_path)
+            .map_err(|e| format!("fs error: WSL check failed: {}", e));
     }
     Ok(std::path::Path::new(path).exists())
 }
@@ -362,7 +367,8 @@ pub fn fs_read_dir(
     path: &str,
 ) -> Result<String, String> {
     authorize_fs(sec, plugin_id, path, "read")?;
-    let read_dir = std::fs::read_dir(path).map_err(|e| format!("fs error: read dir '{}' failed: {}", path, e))?;
+    let read_dir = std::fs::read_dir(path)
+        .map_err(|e| format!("fs error: read dir '{}' failed: {}", path, e))?;
     let mut entries = Vec::new();
     for entry in read_dir {
         let entry = entry.map_err(|e| format!("fs error: read dir entry failed: {}", e))?;
@@ -379,7 +385,8 @@ pub fn fs_read_dir(
         };
         entries.push(serde_json::json!({ "name": name, "nodeType": node_type }));
     }
-    serde_json::to_string(&entries).map_err(|e| format!("fs error: read dir serialize failed: {}", e))
+    serde_json::to_string(&entries)
+        .map_err(|e| format!("fs error: read dir serialize failed: {}", e))
 }
 
 /// canonicalize 绝对路径（v19 追加）；路径不存在返回 `Ok(None)`
@@ -432,8 +439,8 @@ pub fn fs_stat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_api::tests::build_host_ctx;
     use crate::host_api::grant_permissions;
+    use crate::host_api::tests::build_host_ctx;
     use crate::monitor::MetricsRegistry;
     use crate::permission::PERMISSION_FS_WRITE;
     use std::sync::Arc;
@@ -471,8 +478,7 @@ mod tests {
         assert!(err.contains("request-auth"), "错误文案须给出出路: {err}");
 
         // ③ 预置持久化授权（= 用户在弹窗里点过「记住」）→ 放行并真实执行成功
-        let checker = ctx
-            .fs_auth_checker();
+        let checker = ctx.fs_auth_checker();
         block_on_async(checker.seed_legacy_granted_path("test-plugin", &path)).expect("seed grant");
         executor
             .execute(&ctx, "test-plugin", "fs.read", &read_params)
@@ -492,17 +498,28 @@ mod tests {
         );
         ctx.permission().grant_permissions(
             "test-plugin",
-            &[PERMISSION_FS_READ.to_string(), PERMISSION_FS_WRITE.to_string()],
+            &[
+                PERMISSION_FS_READ.to_string(),
+                PERMISSION_FS_WRITE.to_string(),
+            ],
         );
         executor
             .execute(&ctx, "test-plugin", "fs.write", &write_params)
             .expect("声明 fs:write 后写单元须过预检");
 
         // ⑤ 非 fs 单元不属于本执行器；缺 path 的 fs 单元由 kind 分支报错，预检不插手
-        assert!(!executor.matches("process.run-sync"), "process 单元不属于 fs 执行器");
+        assert!(
+            !executor.matches("process.run-sync"),
+            "process 单元不属于 fs 执行器"
+        );
         let nopath = serde_json::json!({});
-        let err = executor.execute(&ctx, "test-plugin", "fs.read", &nopath).unwrap_err();
-        assert!(err.contains("missing path"), "缺 path 由 kind 契约报错: {err}");
+        let err = executor
+            .execute(&ctx, "test-plugin", "fs.read", &nopath)
+            .unwrap_err();
+        assert!(
+            err.contains("missing path"),
+            "缺 path 由 kind 契约报错: {err}"
+        );
     }
 
     /// 每个测试独立的临时目录根（纯文件辅助函数用，不经 fs_auth）
@@ -518,10 +535,12 @@ mod tests {
     /// 旧做法把目录塞进 `.claude` 段借路径白名单免检——那条白名单对**任何**插件都
     /// 放行，已随票 07 退役。这里改走生产同款通道：用户在弹窗里勾选「记住」后落的
     /// `fs_granted_paths` 前缀记录，测的仍然是 fs 原语本身而不是授权豁免的后门。
-    fn granted_temp_root(name: &str, ctx: &WasmHostContext) -> (tempfile::TempDir, std::path::PathBuf) {
+    fn granted_temp_root(
+        name: &str,
+        ctx: &WasmHostContext,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
         let (dir, root) = bare_temp_root(name);
-        let checker = ctx
-            .fs_auth_checker();
+        let checker = ctx.fs_auth_checker();
         block_on_async(checker.seed_legacy_granted_path(PLUGIN, &root.to_string_lossy()))
             .expect("seed persisted grant");
         (dir, root)
@@ -535,7 +554,10 @@ mod tests {
         let (_dir, root) = bare_temp_root("roundtrip");
         let path = root.join("a/b/c/roundtrip.txt");
         write_text_file(path.to_str().unwrap(), "hello").expect("write ok");
-        assert_eq!(read_text_file(path.to_str().unwrap()).expect("read ok"), "hello");
+        assert_eq!(
+            read_text_file(path.to_str().unwrap()).expect("read ok"),
+            "hello"
+        );
     }
 
     /// read_text_file 不存在的文件返回 NotFound（与 std 语义一致，供上层翻译为 None）
@@ -731,7 +753,13 @@ mod tests {
         let src = root.join("copy-src.txt");
         let dst = root.join("nested/copy-dst.txt");
         fs_write(ctx.as_ref(), PLUGIN, src.to_str().unwrap(), "payload").unwrap();
-        fs_copy(ctx.as_ref(), PLUGIN, src.to_str().unwrap(), dst.to_str().unwrap()).expect("copy ok");
+        fs_copy(
+            ctx.as_ref(),
+            PLUGIN,
+            src.to_str().unwrap(),
+            dst.to_str().unwrap(),
+        )
+        .expect("copy ok");
         let content = fs_read(ctx.as_ref(), PLUGIN, dst.to_str().unwrap())
             .expect("read ok")
             .expect("value");
@@ -802,7 +830,13 @@ mod tests {
         let dst = root.join("b.txt");
 
         assert_eq!(
-            fs_copy(ctx.as_ref(), PLUGIN, src.to_str().unwrap(), dst.to_str().unwrap()).unwrap_err(),
+            fs_copy(
+                ctx.as_ref(),
+                PLUGIN,
+                src.to_str().unwrap(),
+                dst.to_str().unwrap()
+            )
+            .unwrap_err(),
             "permission denied",
             "copy 须同时具备源读与目标写授权"
         );

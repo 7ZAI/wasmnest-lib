@@ -65,7 +65,9 @@ pub fn export_item(interface: &str, func: &str) -> &'static str {
 /// 用于按接口整体探测（而非逐函数）；与 [`export_item`] 同池，重复派生返回同一指针。
 pub fn interface_path(interface: &str) -> &'static str {
     let key = format!("iface:{interface}");
-    derive(key, || format!("{PACKAGE_NAME}/{interface}@{PACKAGE_VERSION}"))
+    derive(key, || {
+        format!("{PACKAGE_NAME}/{interface}@{PACKAGE_VERSION}")
+    })
 }
 
 #[cfg(test)]
@@ -134,7 +136,8 @@ mod tests {
 
         for flat in ["events#on-message", "wasmnest:plugin/events#on-message"] {
             assert!(
-                flat.parse::<wasmtime::component::wit_parser::ItemName>().is_err(),
+                flat.parse::<wasmtime::component::wit_parser::ItemName>()
+                    .is_err(),
                 "{flat} 应连 ItemName 语法都不合法（`#` 是非法字符）——若哪天合法了，说明 \
                  wasmtime 改了语法，本仓的路径形态需重新核对"
             );
@@ -160,8 +163,6 @@ mod tests {
         assert_eq!(PACKAGE, format!("{PACKAGE_NAME}@{PACKAGE_VERSION}"));
         let parts: Vec<&str> = PACKAGE_VERSION.split('.').collect();
         assert_eq!(parts.len(), 3, "版本须三段 semver：{PACKAGE_VERSION}");
-        assert!(parts
-            .iter()
-            .all(|p| p.bytes().all(|b| b.is_ascii_digit())));
+        assert!(parts.iter().all(|p| p.bytes().all(|b| b.is_ascii_digit())));
     }
 }

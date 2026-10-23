@@ -1,12 +1,12 @@
 //! 运行期错误通知节流 + 事件信封形状 + fs 预授权（preauth）用例。
 
-use crate::manifest::WasiPreopenDir;
 use super::super::errors::{
     runtime_error_code, runtime_error_envelope, self_check_envelope, PLUGIN_RECOVERY_FAILED_CODE,
     PLUGIN_SELF_CHECK_FAILED_CODE, PLUGIN_TRAP_CODE,
 };
 use super::scaffold::*;
 use super::*;
+use crate::manifest::WasiPreopenDir;
 
 /// 被测插件 id（本文件的测试夹具，不是内核常量）
 ///
@@ -23,7 +23,8 @@ async fn notify_plugin_runtime_error_throttle_and_no_app_context() {
     // 2. 同一插件窗口内二次通知被节流（不重复提示），节流表只记录一次
     let host = setup_host().await;
 
-    host.notify_plugin_runtime_error(TEST_PLUGIN_ID, "panic", "boom").await;
+    host.notify_plugin_runtime_error(TEST_PLUGIN_ID, "panic", "boom")
+        .await;
     host.notify_plugin_runtime_error(TEST_PLUGIN_ID, "trap", "boom again")
         .await;
 
@@ -33,7 +34,11 @@ async fn notify_plugin_runtime_error_throttle_and_no_app_context() {
         "first call must record throttle entry"
     );
     // 窗口内二次调用不新增/刷新条目（被节流）
-    assert_eq!(throttle.len(), 1, "second call within window must be throttled");
+    assert_eq!(
+        throttle.len(),
+        1,
+        "second call within window must be throttled"
+    );
 }
 
 // ==================== 运行时异常事件信封（ADR 0030 决定 7） ====================
@@ -47,13 +52,19 @@ async fn notify_plugin_runtime_error_throttle_and_no_app_context() {
 fn runtime_error_kind_maps_to_stable_semantic_code() {
     assert_eq!(runtime_error_code("panic"), PLUGIN_TRAP_CODE);
     assert_eq!(runtime_error_code("trap"), PLUGIN_TRAP_CODE);
-    assert_eq!(runtime_error_code("recovery_failed"), PLUGIN_RECOVERY_FAILED_CODE);
+    assert_eq!(
+        runtime_error_code("recovery_failed"),
+        PLUGIN_RECOVERY_FAILED_CODE
+    );
     // 未知 kind 不臆造语义：落通用兜底（前端显示「操作未完成，请稍后重试」）
     assert_eq!(
         runtime_error_code("brand-new-kind"),
         crate::system::error::DEFAULT_ERROR_CODE
     );
-    assert_eq!(runtime_error_code(""), crate::system::error::DEFAULT_ERROR_CODE);
+    assert_eq!(
+        runtime_error_code(""),
+        crate::system::error::DEFAULT_ERROR_CODE
+    );
 }
 
 /// 运行时异常载荷：字段白名单 + 具名参数 + 无详情
@@ -65,9 +76,22 @@ fn runtime_error_payload_is_envelope_with_app_name_only() {
         ("recovery_failed", PLUGIN_RECOVERY_FAILED_CODE),
     ] {
         let payload = runtime_error_envelope("AI Chatbox", kind).payload();
-        assert_eq!(payload["code"], json!(expect_code), "kind={kind} 码必须稳定");
-        assert_eq!(payload["params"], json!({ "name": "AI Chatbox" }), "只带应用显示名");
-        let keys: Vec<&str> = payload.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        assert_eq!(
+            payload["code"],
+            json!(expect_code),
+            "kind={kind} 码必须稳定"
+        );
+        assert_eq!(
+            payload["params"],
+            json!({ "name": "AI Chatbox" }),
+            "只带应用显示名"
+        );
+        let keys: Vec<&str> = payload
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
         for key in &keys {
             assert!(
                 matches!(*key, "code" | "request_id" | "params"),
@@ -100,7 +124,10 @@ fn self_check_payload_uses_self_check_code_and_plugin_param() {
 #[tokio::test]
 async fn display_name_falls_back_to_plugin_id() {
     let host = setup_host().await;
-    assert_eq!(host.display_name("com.wasmnest.unknown").await, "com.wasmnest.unknown");
+    assert_eq!(
+        host.display_name("com.wasmnest.unknown").await,
+        "com.wasmnest.unknown"
+    );
 }
 
 // ==================== preauthorize_plugin 预授权钩子 ====================
@@ -116,7 +143,11 @@ async fn display_name_falls_back_to_plugin_id() {
 async fn preauthorize_empty_paths_passes() {
     let host = setup_host().await;
     let result = host.preauthorize_plugin(TEST_PLUGIN_ID).await;
-    assert!(result.is_ok(), "empty preauth paths must pass, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "empty preauth paths must pass, got: {:?}",
+        result.err()
+    );
 }
 
 /// file-transfer 共享目录未配置:放行(启用先行)。
@@ -187,8 +218,9 @@ async fn packaged_service_grants_declared_paths_without_dialog() {
         let mut plugins = host.plugins.write().await;
         let plugin = plugins.get_mut(TEST_PLUGIN_ID).expect("test plugin in map");
         plugin.manifest.kind = PluginKind::InternalBusiness;
-        plugin.manifest.wasi_preopen_dirs =
-            vec![WasiPreopenDir::writable("${home}/.wasmnest-service-preauth-probe")];
+        plugin.manifest.wasi_preopen_dirs = vec![WasiPreopenDir::writable(
+            "${home}/.wasmnest-service-preauth-probe",
+        )];
     }
 
     host.preauthorize_plugin(TEST_PLUGIN_ID)
@@ -239,8 +271,9 @@ async fn packaged_business_app_still_requires_dialog() {
         let mut plugins = host.plugins.write().await;
         let plugin = plugins.get_mut(TEST_PLUGIN_ID).expect("test plugin in map");
         plugin.manifest.kind = PluginKind::BusinessApp;
-        plugin.manifest.wasi_preopen_dirs =
-            vec![WasiPreopenDir::writable("${home}/.wasmnest-service-preauth-probe")];
+        plugin.manifest.wasi_preopen_dirs = vec![WasiPreopenDir::writable(
+            "${home}/.wasmnest-service-preauth-probe",
+        )];
     }
 
     let err = host

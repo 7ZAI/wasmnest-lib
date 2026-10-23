@@ -60,7 +60,10 @@ pub fn build_host_ctx() -> std::sync::Arc<crate::host_api::WasmHostContext> {
 pub fn setup_headless_runtime(
     aot_cache_dir: Option<std::path::PathBuf>,
 ) -> crate::Result<crate::manager::runtime::WasmRuntime> {
-    setup_headless_runtime_with_abi(aot_cache_dir, crate::manager::runtime::AbiPolicy::UNCONSTRAINED)
+    setup_headless_runtime_with_abi(
+        aot_cache_dir,
+        crate::manager::runtime::AbiPolicy::UNCONSTRAINED,
+    )
 }
 
 /// 同 [`setup_headless_runtime`]，但显式注入形态规格（端事实）
@@ -108,7 +111,10 @@ pub fn setup_headless_runtime_with_config(
 /// 逐实例 `granted_permissions` 副本（2026-10-14 桌面同构收口）；
 /// `host` 槽是 host-kit state 的 `Arc<dyn HostPorts>`。
 /// StoreSpec 取默认资源上限 + 关燃料（测试不设限、不注入燃料预算）。
-pub fn build_component_state(plugin_id: &str, granted: &[&str]) -> crate::manager::runtime::WasmPluginState {
+pub fn build_component_state(
+    plugin_id: &str,
+    granted: &[&str],
+) -> crate::manager::runtime::WasmPluginState {
     let ctx = build_host_ctx();
     let requested: Vec<String> = granted.iter().map(|p| p.to_string()).collect();
     ctx.grant_permissions(plugin_id, &requested);

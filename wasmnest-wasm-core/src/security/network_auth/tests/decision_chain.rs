@@ -10,7 +10,10 @@ async fn allow_record_releases_without_prompt() {
     seed_allow(&checker, "com.wasmnest.test", "https://api.x.com:443").await;
 
     let verdict = checker
-        .authorize_outbound("com.wasmnest.test", "https://api.x.com:443/v1/models?token=x")
+        .authorize_outbound(
+            "com.wasmnest.test",
+            "https://api.x.com:443/v1/models?token=x",
+        )
         .await
         .expect("authorize");
     assert_eq!(
@@ -47,14 +50,21 @@ async fn deny_record_wins_over_allow_and_skips_the_prompt() {
 async fn private_target_gets_no_authorization_free_pass() {
     let (checker, log) = promptable(IMMEDIATE, TINY).await;
     let verdict = checker
-        .authorize_outbound("com.wasmnest.test", "http://169.254.169.254/latest/meta-data")
+        .authorize_outbound(
+            "com.wasmnest.test",
+            "http://169.254.169.254/latest/meta-data",
+        )
         .await
         .expect("authorize");
     assert!(
         !verdict.is_allowed(),
         "私网/链路本地目标不得被授权层自动放行: {verdict:?}"
     );
-    assert_eq!(log.len(), 1, "私网目标与公网目标走同一条询问路径（无内网免询问旁路）");
+    assert_eq!(
+        log.len(),
+        1,
+        "私网目标与公网目标走同一条询问路径（无内网免询问旁路）"
+    );
 }
 /// 异常：URL 不可归一化 ⇒ 显性报错，错误串不含原始 url（token 不外泄）
 #[tokio::test]

@@ -6,13 +6,13 @@
 
 use std::time::Duration;
 
-use crate::system::constants::{PLUGIN_DB_QUERY_MAX_BYTES, PLUGIN_DB_QUERY_MAX_ROWS};
 use crate::host_api::database::{
     plugin_db_execute, plugin_db_execute_params, plugin_db_query, plugin_db_query_params,
     query_to_json, with_statement_timeout,
 };
 use crate::host_api::sqlite_scaffold::*;
 use crate::permission::PERMISSION_STORAGE;
+use crate::system::constants::{PLUGIN_DB_QUERY_MAX_BYTES, PLUGIN_DB_QUERY_MAX_ROWS};
 
 // ==================== 执行护栏（票据 05）：超时 / 行数上限 / 字节上限 ====================
 
@@ -77,7 +77,8 @@ fn statement_within_timeout_and_limits_passes() {
 #[test]
 fn query_exceeding_row_limit_rejected() {
     let conn = mem_conn_with_rows(PLUGIN_DB_QUERY_MAX_ROWS + 1);
-    let err = query_to_json("p1", &conn, "SELECT x FROM t").expect_err("result over row limit must be rejected");
+    let err = query_to_json("p1", &conn, "SELECT x FROM t")
+        .expect_err("result over row limit must be rejected");
     assert!(
         err.contains("rows limit") && err.contains("LIMIT"),
         "error should state row limit and guidance, got: {}",
@@ -91,9 +92,13 @@ fn query_exceeding_byte_limit_rejected() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("CREATE TABLE t (x TEXT)").unwrap();
     let big = "a".repeat(PLUGIN_DB_QUERY_MAX_BYTES + 1);
-    conn.execute("INSERT INTO t (x) VALUES (?1)", rusqlite::params![big.as_str()])
-        .unwrap();
-    let err = query_to_json("p1", &conn, "SELECT x FROM t").expect_err("oversized row must be rejected by byte guard");
+    conn.execute(
+        "INSERT INTO t (x) VALUES (?1)",
+        rusqlite::params![big.as_str()],
+    )
+    .unwrap();
+    let err = query_to_json("p1", &conn, "SELECT x FROM t")
+        .expect_err("oversized row must be rejected by byte guard");
     assert!(
         err.contains("bytes limit"),
         "error should state byte limit, got: {}",
@@ -112,14 +117,20 @@ fn plugin_db_entry_execute_and_query_with_guards() {
     plugin_db_execute(ports, "p1", "CREATE TABLE t (x INTEGER)").expect("create table");
     for i in 0..3i64 {
         let params = format!("[{}]", i);
-        plugin_db_execute_params(ports, "p1", "INSERT INTO t (x) VALUES (?1)", &params).expect("insert with params");
+        plugin_db_execute_params(ports, "p1", "INSERT INTO t (x) VALUES (?1)", &params)
+            .expect("insert with params");
     }
     let out = plugin_db_query(ports, "p1", "SELECT x FROM t ORDER BY x")
         .expect("query")
         .expect("query result json");
     assert_eq!(out, "[{\"x\":0},{\"x\":1},{\"x\":2}]");
-    let out_params = plugin_db_query_params(ports, "p1", "SELECT x FROM t WHERE x >= ?1 ORDER BY x", "[1]")
-        .expect("query params")
-        .expect("query params json");
+    let out_params = plugin_db_query_params(
+        ports,
+        "p1",
+        "SELECT x FROM t WHERE x >= ?1 ORDER BY x",
+        "[1]",
+    )
+    .expect("query params")
+    .expect("query params json");
     assert_eq!(out_params, "[{\"x\":1},{\"x\":2}]");
 }

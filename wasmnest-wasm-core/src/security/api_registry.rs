@@ -134,8 +134,11 @@ mod tests {
     fn contains_after_register() {
         let reg = ApiRegistry::new();
         assert!(!reg.contains("com.wasmnest.scheduler.add"));
-        reg.register("com.wasmnest.scheduler", &["com.wasmnest.scheduler.add".to_string()])
-            .unwrap();
+        reg.register(
+            "com.wasmnest.scheduler",
+            &["com.wasmnest.scheduler.add".to_string()],
+        )
+        .unwrap();
         assert!(reg.contains("com.wasmnest.scheduler.add"));
         assert!(!reg.contains("com.wasmnest.scheduler.none"));
     }
@@ -152,8 +155,11 @@ mod tests {
             ],
         )
         .unwrap();
-        reg.register("com.wasmnest.other", &["com.wasmnest.other.ping".to_string()])
-            .unwrap();
+        reg.register(
+            "com.wasmnest.other",
+            &["com.wasmnest.other.ping".to_string()],
+        )
+        .unwrap();
         reg.unregister("com.wasmnest.scheduler");
         assert!(!reg.contains("com.wasmnest.scheduler.add"));
         // 其他插件的 api 不受影响
@@ -181,7 +187,11 @@ mod tests {
             "错误须点名冲突 api 与原属主: {err}"
         );
         assert!(reg.contains("a.x"));
-        assert_eq!(reg.owner_of("a.x").as_deref(), Some("p1"), "原属主登记不得被覆盖");
+        assert_eq!(
+            reg.owner_of("a.x").as_deref(),
+            Some("p1"),
+            "原属主登记不得被覆盖"
+        );
 
         reg.unregister("p1");
         assert!(!reg.contains("a.x"));
@@ -225,7 +235,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            reg.owner_of("com.wasmnest.terminal-session.pair").as_deref(),
+            reg.owner_of("com.wasmnest.terminal-session.pair")
+                .as_deref(),
             Some("com.wasmnest.terminal-session")
         );
         assert_eq!(reg.owner_of("com.wasmnest.terminal-session.nope"), None);

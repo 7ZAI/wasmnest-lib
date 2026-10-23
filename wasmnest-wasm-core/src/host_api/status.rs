@@ -17,7 +17,9 @@ pub(crate) fn mark_plugin_error(
     block_on_async(async move {
         match svc.services().await {
             Some(services) => services.mark_plugin_error(plugin_id, error),
-            None => tracing::error!("[PluginHost] mark_plugin_error: plugin services not initialized"),
+            None => {
+                tracing::error!("[PluginHost] mark_plugin_error: plugin services not initialized")
+            }
         }
     });
 }

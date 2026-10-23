@@ -53,7 +53,8 @@
 //! 未授权直接 fail-visible 拒绝（见宿主侧 task 域实现）。
 
 use crate::security::auth_policy::{
-    AuthPolicyStore, AuthRecordSource, AuthResource, AuthStrategy, GrantOutcome, AUTH_EFFECT_ALLOW, AUTH_EFFECT_DENY,
+    AuthPolicyStore, AuthRecordSource, AuthResource, AuthStrategy, GrantOutcome, AUTH_EFFECT_ALLOW,
+    AUTH_EFFECT_DENY,
 };
 use crate::security::strategy::{self, StrategyStep, Tier};
 use crate::storage::PluginStorage;
@@ -109,7 +110,6 @@ pub enum TrustedDir {
     /// `contains(".claude/")` 子串，相邻名字也能命中。
     ProjectSegment(&'static str),
 }
-
 
 /// 第一方免弹窗项的**只读投影**（授权管理界面的读模型用，spec §9.3 / 票 08）
 ///
@@ -517,7 +517,12 @@ impl FsAuthChecker {
     /// 三条入口（`check` / `check_batch` / `is_granted`）必须拿到**逐字相同**的结论，
     /// 否则「无弹窗面」（WASI 预打开 / 任务单元）与「弹窗面」会给出两套答案
     /// （同一目录一边可写一边被拒）。`needed` 是本次要用的能力集：记录必须覆盖它。
-    async fn decide_without_dialog(&self, plugin_id: &str, canonical: &Path, needed: FsOps) -> NoDialogDecision {
+    async fn decide_without_dialog(
+        &self,
+        plugin_id: &str,
+        canonical: &Path,
+        needed: FsOps,
+    ) -> NoDialogDecision {
         let signals = self.record_signals(plugin_id, canonical).await;
         // 0. 硬拒绝记录优先于一切放行路径（含第一方免询问目录与策略档位）：
         //    「总是询问」跳过的**只是** allow 记录，用户已说过的「以后都拒绝」
@@ -565,7 +570,10 @@ impl FsAuthChecker {
             Tier::AutoAllow => {
                 // 审计义务随档位携带（S-11）：类型上防止「match 后什么都不做」——
                 // 删除落账会让本断言（debug 测试构建）与行为测试同时转红
-                debug_assert!(step.must_land_auto_allow(), "AutoAllow 档位字段丢失审计义务（S-11）");
+                debug_assert!(
+                    step.must_land_auto_allow(),
+                    "AutoAllow 档位字段丢失审计义务（S-11）"
+                );
                 self.land_auto_allow(plugin_id, canonical, needed).await;
                 return NoDialogDecision::Allowed(FsGrantLayer::AlwaysAllow);
             }
@@ -594,7 +602,11 @@ impl FsAuthChecker {
     /// 真源读失败**不降级放行**：按「未命中」处理并显性记错（拍成放行会把安全闸门变成
     /// 「数据库一坏就全放行」）。
     async fn record_signals(&self, plugin_id: &str, canonical: &Path) -> RecordSignals {
-        let rows = match self.auth_records.records_for_match(plugin_id, AuthResource::Fs).await {
+        let rows = match self
+            .auth_records
+            .records_for_match(plugin_id, AuthResource::Fs)
+            .await
+        {
             Ok(rows) => rows,
             Err(e) => {
                 tracing::error!(
@@ -772,7 +784,12 @@ impl FsAuthChecker {
     /// （安全方向不变，只是回到未豁免前的噪声），比「服务起不来」可接受。
     ///
     /// @returns 成功落账的路径条数（日志 / 测试用）
-    pub async fn grant_service_paths(&self, plugin_id: &str, paths: &[String], ops: FsOps) -> usize {
+    pub async fn grant_service_paths(
+        &self,
+        plugin_id: &str,
+        paths: &[String],
+        ops: FsOps,
+    ) -> usize {
         let mut stored = 0usize;
         for path in paths {
             let Some(target) = Self::grant_target(path, GrantScope::Exact) else {
@@ -1020,7 +1037,8 @@ impl FsAuthChecker {
             return false;
         };
         matches!(
-            self.decide_without_dialog(plugin_id, &canonical, needed).await,
+            self.decide_without_dialog(plugin_id, &canonical, needed)
+                .await,
             NoDialogDecision::Allowed(_)
         )
     }
@@ -1145,7 +1163,13 @@ impl FsAuthChecker {
     }
 
     /// 弹窗请求用户授权（单路径：操作集就是本次操作；`strategy` 语义同批量入口）
-    async fn request_user_auth(&self, plugin_id: &str, path: &str, ops: FsOps, strategy: AuthStrategy) -> bool {
+    async fn request_user_auth(
+        &self,
+        plugin_id: &str,
+        path: &str,
+        ops: FsOps,
+        strategy: AuthStrategy,
+    ) -> bool {
         let request_id = uuid::Uuid::new_v4().to_string();
 
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -1230,13 +1254,18 @@ impl FsAuthChecker {
     /// **常编译 pub（wasm-core 纯净性收口票 05b）**：原 `#[cfg(test)]`（wasm-core
     /// 内部测试可见）；lib 集成测试（session_e2e，独立测试二进制）看不到 cfg(test)
     /// 项，提为常编译 pub 供 `wasmnest_wasm_core::…` 消费。
-    pub async fn seed_legacy_granted_path(&self, plugin_id: &str, path: &str) -> anyhow::Result<()> {
+    pub async fn seed_legacy_granted_path(
+        &self,
+        plugin_id: &str,
+        path: &str,
+    ) -> anyhow::Result<()> {
         let storage_key = "fs_granted_paths".to_string();
 
-        let mut granted: Vec<serde_json::Value> = match self.storage.get(plugin_id, &storage_key).await {
-            Ok(Some(serde_json::Value::Array(arr))) => arr,
-            _ => Vec::new(),
-        };
+        let mut granted: Vec<serde_json::Value> =
+            match self.storage.get(plugin_id, &storage_key).await {
+                Ok(Some(serde_json::Value::Array(arr))) => arr,
+                _ => Vec::new(),
+            };
 
         // 授权粒度精确化：目录 → 目录本身；已存在文件 → 文件本身；不存在路径
         // （将写入/创建）→ 父目录。不再无条件提取父目录——预授权 home 直子目录
@@ -1452,7 +1481,8 @@ mod tests {
             Ok(())
         });
         (
-            FsAuthChecker::with_emitter(checker_storage(), Some(emit), Vec::new()).with_prompt_timeout(timeout),
+            FsAuthChecker::with_emitter(checker_storage(), Some(emit), Vec::new())
+                .with_prompt_timeout(timeout),
             log,
         )
     }
@@ -1460,7 +1490,12 @@ mod tests {
     /// 等弹窗 payload 出现（真实链路：判定 → emit → 待应答）
     async fn wait_for_prompt(log: &EmittedLog) -> serde_json::Value {
         for _ in 0..400 {
-            if let Some(payload) = log.lock().expect("emit log poisoned").last().map(|(_, p)| p.clone()) {
+            if let Some(payload) = log
+                .lock()
+                .expect("emit log poisoned")
+                .last()
+                .map(|(_, p)| p.clone())
+            {
                 return payload;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1538,7 +1573,9 @@ mod tests {
             .to_string();
         for plugin in ["test.terminal-session", "test.agent-hub"] {
             assert!(
-                !checker.check_batch(plugin, &[outside.clone()], FsOps::READ).await,
+                !checker
+                    .check_batch(plugin, &[outside.clone()], FsOps::READ)
+                    .await,
                 "{plugin} 读清单外路径必须走授权，不得免弹窗"
             );
         }
@@ -1557,7 +1594,11 @@ mod tests {
         let checker = headless_checker().await;
         // 未授权路径 + 无头上下文：保守拒绝，且不残留 pending 条目（泄漏回归）
         let path = std::env::temp_dir().to_string_lossy().to_string();
-        assert!(!checker.check_batch("com.wasmnest.test", &[path], FsOps::READ).await);
+        assert!(
+            !checker
+                .check_batch("com.wasmnest.test", &[path], FsOps::READ)
+                .await
+        );
         assert!(checker.pending_requests.lock().await.is_empty());
     }
 
@@ -1659,74 +1700,111 @@ mod tests {
         );
         // 自身数据根下的输出目录（判据 ②）：runs 子树任一层放行，
         // 但仅限 runs/——统计库（同数据根下非 runs）不走豁免
-        assert!(first_party_dir_matches_with_home(&table, 
+        assert!(first_party_dir_matches_with_home(
+            &table,
             "test.agent-hub",
             &p("/home/u/.wasmnest/agent-hub/runs/skills-scan-3.log"),
             Some(home)
         ));
-        assert!(first_party_dir_matches_with_home(&table, 
+        assert!(first_party_dir_matches_with_home(
+            &table,
             "test.agent-hub",
             &p("/home/u/.wasmnest/agent-hub/runs/a/b/c.log"),
             Some(home)
         ));
         assert!(
-            !first_party_dir_matches_with_home(&table, 
+            !first_party_dir_matches_with_home(
+                &table,
                 "test.agent-hub",
                 &p("/home/u/.wasmnest/agent-hub/stats.db"),
                 Some(home)
             ),
             "豁免只到 runs/ 子目录，同一数据根下的其他文件不放开"
         );
-        assert!(!first_party_dir_matches_with_home(&table, 
+        assert!(!first_party_dir_matches_with_home(
+            &table,
             "test.agent-hub",
             &p("/home/u/.wasmnest/agent-hubx/runs/x.log"),
             Some(home)
         ));
-        assert!(!first_party_dir_matches_with_home(&table, 
+        assert!(!first_party_dir_matches_with_home(
+            &table,
             "test.agent-hub",
             &p("/home/other/.agents/x"),
             Some(home)
         ));
         assert!(
-            !first_party_dir_matches_with_home(&table, "test.agent-hub", &p("/home/u/.agentsx/y"), Some(home)),
+            !first_party_dir_matches_with_home(
+                &table,
+                "test.agent-hub",
+                &p("/home/u/.agentsx/y"),
+                Some(home)
+            ),
             "组件边界：前缀不得吃掉相邻目录名"
         );
         // 取不到 home → Home 形态不放开（绝不退化成「任意位置的 .agents 段」）
-        assert!(!first_party_dir_matches_with_home(&table, 
+        assert!(!first_party_dir_matches_with_home(
+            &table,
             "test.agent-hub",
             &p("/home/u/.agents/skills/x"),
             None
         ));
 
         // ProjectSegment 形态：段名全等，非子串
-        assert!(first_party_dir_matches_with_home(&table, 
+        assert!(first_party_dir_matches_with_home(
+            &table,
             "test.terminal-session",
             &p("/srv/proj/.claude/hooks/x.py"),
             None
         ));
         assert!(
-            first_party_dir_matches_with_home(&table, "test.terminal-session", &p("/srv/proj/.claude"), None),
+            first_party_dir_matches_with_home(
+                &table,
+                "test.terminal-session",
+                &p("/srv/proj/.claude"),
+                None
+            ),
             "集成目录本身（read_dir / 建目录）也要覆盖"
         );
         assert!(
-            !first_party_dir_matches_with_home(&table, "test.terminal-session", &p("/srv/proj/.claudex/a"), None),
+            !first_party_dir_matches_with_home(
+                &table,
+                "test.terminal-session",
+                &p("/srv/proj/.claudex/a"),
+                None
+            ),
             "子串不得放过相邻段名"
         );
-        assert!(!first_party_dir_matches_with_home(&table, 
+        assert!(!first_party_dir_matches_with_home(
+            &table,
             "test.terminal-session",
             &p("/srv/proj/x.claude/a"),
             None
         ));
         // 收紧的本体：会话项目根本身**不在**清单里（今天它免弹窗 = 全盘可读）
         assert!(
-            !first_party_dir_matches_with_home(&table, "test.terminal-session", &p("/srv/proj/src/main.rs"), None),
+            !first_party_dir_matches_with_home(
+                &table,
+                "test.terminal-session",
+                &p("/srv/proj/src/main.rs"),
+                None
+            ),
             "项目根文件浏览须走弹窗 + 记住，不再有任意路径特权"
         );
 
         // 未列入清单的插件：一律不放开
-        for id in ["com.wasmnest.test", "com.wasmnest.ai-chatbox", "com.example.third"] {
+        for id in [
+            "com.wasmnest.test",
+            "com.wasmnest.ai-chatbox",
+            "com.example.third",
+        ] {
             assert!(
-                !first_party_dir_matches_with_home(&table, id, &p("/home/u/.claude/settings.json"), Some(home)),
+                !first_party_dir_matches_with_home(
+                    &table,
+                    id,
+                    &p("/home/u/.claude/settings.json"),
+                    Some(home)
+                ),
                 "{id} 不在第一方清单里"
             );
         }
@@ -1769,7 +1847,11 @@ mod tests {
     #[tokio::test]
     async fn check_batch_empty_paths_returns_true() {
         let checker = headless_checker().await;
-        assert!(checker.check_batch("com.wasmnest.test", &[], FsOps::READ).await);
+        assert!(
+            checker
+                .check_batch("com.wasmnest.test", &[], FsOps::READ)
+                .await
+        );
         assert!(checker.pending_requests.lock().await.is_empty());
     }
 
@@ -1811,11 +1893,19 @@ mod tests {
 
         // 前缀内、尚不存在的子目录 + 混合分隔符 → 放行（回归首次写新目录场景）
         let inside = format!("{}/conversations/new.jsonl", granted);
-        assert!(checker.check_batch("com.wasmnest.test", &[inside], FsOps::WRITE).await);
+        assert!(
+            checker
+                .check_batch("com.wasmnest.test", &[inside], FsOps::WRITE)
+                .await
+        );
 
         // 相邻目录（前缀后紧跟非分隔符）不放行
         let adjacent = format!("{}2/file.jsonl", granted);
-        assert!(!checker.check_batch("com.wasmnest.test", &[adjacent], FsOps::WRITE).await);
+        assert!(
+            !checker
+                .check_batch("com.wasmnest.test", &[adjacent], FsOps::WRITE)
+                .await
+        );
 
         std::fs::remove_dir_all(&granted_dir).unwrap();
     }
@@ -1843,7 +1933,9 @@ mod tests {
 
         // 前置：未授权时同一条路径必须被拒（否则本测试恒真）
         assert!(
-            !checker.authorize_picked("com.wasmnest.test", &[file.clone()]).await,
+            !checker
+                .authorize_picked("com.wasmnest.test", &[file.clone()])
+                .await,
             "未授权的选择结果在无弹窗通道下必须拒绝"
         );
 
@@ -1917,7 +2009,10 @@ mod tests {
         std::fs::write(&file, b"s").expect("write fixture");
 
         checker
-            .seed_legacy_granted_path("com.wasmnest.test", &directory_scope_target(&granted.to_string_lossy()))
+            .seed_legacy_granted_path(
+                "com.wasmnest.test",
+                &directory_scope_target(&granted.to_string_lossy()),
+            )
             .await
             .unwrap();
         assert!(
@@ -2116,7 +2211,9 @@ mod tests {
             .await;
             checker.respond(id, decision).await;
             assert!(
-                !checker.is_granted("com.wasmnest.test", &a, FsOps::READ_WRITE).await,
+                !checker
+                    .is_granted("com.wasmnest.test", &a, FsOps::READ_WRITE)
+                    .await,
                 "{id}（decision={}）不得落授权",
                 decision.as_str()
             );
@@ -2144,9 +2241,14 @@ mod tests {
     async fn is_granted_covers_first_party_dirs_and_persisted_grants_only() {
         let checker = first_party_checker().await;
         // 第三方 + 任意位置的 .claude 段 → 不放开（旧实现在这里返回 true）
-        let third_party = std::env::temp_dir().join(".claude").to_string_lossy().to_string();
+        let third_party = std::env::temp_dir()
+            .join(".claude")
+            .to_string_lossy()
+            .to_string();
         assert!(
-            !checker.is_granted("com.wasmnest.test", &third_party, FsOps::READ).await,
+            !checker
+                .is_granted("com.wasmnest.test", &third_party, FsOps::READ)
+                .await,
             "第三方插件不得经 is_granted 静默拿到 .claude 目录"
         );
         // 第一方清单内 → 放开（且不经弹窗）
@@ -2176,17 +2278,31 @@ mod tests {
         let dir = canonical_temp_dir().join("fs-auth-isgranted");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.to_string_lossy().to_string();
-        assert!(!checker.is_granted("com.wasmnest.test", &path, FsOps::READ).await);
+        assert!(
+            !checker
+                .is_granted("com.wasmnest.test", &path, FsOps::READ)
+                .await
+        );
         checker
             .seed_legacy_granted_path("com.wasmnest.test", &path)
             .await
             .unwrap();
-        assert!(checker.is_granted("com.wasmnest.test", &path, FsOps::READ).await);
         assert!(
-            checker.is_granted("com.wasmnest.test", &path, FsOps::READ_WRITE).await,
+            checker
+                .is_granted("com.wasmnest.test", &path, FsOps::READ)
+                .await
+        );
+        assert!(
+            checker
+                .is_granted("com.wasmnest.test", &path, FsOps::READ_WRITE)
+                .await,
             "旧记录视作读写都授权（存量用户零感知）"
         );
-        assert!(!checker.is_granted("com.wasmnest.other", &path, FsOps::READ).await);
+        assert!(
+            !checker
+                .is_granted("com.wasmnest.other", &path, FsOps::READ)
+                .await
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2270,7 +2386,9 @@ mod tests {
 
         // 读：命中记录层 → 静默放行（无头上下文能返回 true 只可能是免弹窗层命中）
         assert!(
-            checker.check("com.wasmnest.test", &file_s, FsOp::Read).await,
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await,
             "授权读之后读必须静默放行"
         );
         assert_eq!(
@@ -2281,7 +2399,9 @@ mod tests {
         );
         // 写：记录不含写 → 免弹窗层未命中 → 弹窗（无头 → 拒）
         assert!(
-            !checker.check("com.wasmnest.test", &file_s, FsOp::Write).await,
+            !checker
+                .check("com.wasmnest.test", &file_s, FsOp::Write)
+                .await,
             "授权读之后写必须再问一次，不得静默放行"
         );
         assert_eq!(
@@ -2335,9 +2455,15 @@ mod tests {
         assert_eq!(rows.len(), 1, "同一目标只留一行记录（操作集并集）");
         assert_eq!(rows[0].ops, vec!["read".to_string(), "write".to_string()]);
 
-        assert!(checker.check("com.wasmnest.test", &file_s, FsOp::Read).await);
         assert!(
-            checker.check("com.wasmnest.test", &file_s, FsOp::Write).await,
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await
+        );
+        assert!(
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Write)
+                .await,
             "读写都授权过之后写不再问"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -2363,7 +2489,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            checker.check("com.wasmnest.test", &file_s, FsOp::Write).await,
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Write)
+                .await,
             "前置：只有旧记录时写是可放行的（否则本用例恒真）"
         );
 
@@ -2380,11 +2508,15 @@ mod tests {
         .await;
 
         assert!(
-            checker.check("com.wasmnest.test", &file_s, FsOp::Read).await,
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await,
             "记录覆盖读 → 读静默放行"
         );
         assert!(
-            !checker.check("com.wasmnest.test", &file_s, FsOp::Write).await,
+            !checker
+                .check("com.wasmnest.test", &file_s, FsOp::Write)
+                .await,
             "记录命中且不含写时不得回退旧记录（旧记录对该子树作废）"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -2404,9 +2536,15 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(checker.check("com.wasmnest.test", &file_s, FsOp::Read).await);
         assert!(
-            checker.check("com.wasmnest.test", &file_s, FsOp::Write).await,
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await
+        );
+        assert!(
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Write)
+                .await,
             "旧记录没有操作维度 → 视作读写都授权"
         );
         assert_eq!(
@@ -2448,7 +2586,10 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].target,
-            std::fs::canonicalize(&dir).unwrap().to_string_lossy().to_string(),
+            std::fs::canonicalize(&dir)
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
             "记录目标 = 规范化后的目录（文件选择器按所在目录落账）"
         );
         assert_eq!(rows[0].ops, vec!["read".to_string(), "write".to_string()]);
@@ -2509,7 +2650,11 @@ mod tests {
         let sibling = claude.join("hooks/x.py");
         assert!(
             !checker
-                .check("test.terminal-session", &sibling.to_string_lossy(), FsOp::Read)
+                .check(
+                    "test.terminal-session",
+                    &sibling.to_string_lossy(),
+                    FsOp::Read
+                )
                 .await,
             "deny 覆盖子树"
         );
@@ -2561,7 +2706,10 @@ mod tests {
             .remove_deny("test.terminal-session", AuthResource::Fs, &dir_s)
             .await
             .expect("remove deny");
-        assert_eq!(removed, 1, "移除出口必须真删一行（0 = 界面上按钮点了没反应）");
+        assert_eq!(
+            removed, 1,
+            "移除出口必须真删一行（0 = 界面上按钮点了没反应）"
+        );
         assert_eq!(
             checker
                 .decide_without_dialog("test.terminal-session", &target, FsOps::READ)
@@ -2602,19 +2750,31 @@ mod tests {
 
         assert!(
             checker
-                .check_batch("com.wasmnest.test", std::slice::from_ref(&file_s), FsOps::READ)
+                .check_batch(
+                    "com.wasmnest.test",
+                    std::slice::from_ref(&file_s),
+                    FsOps::READ
+                )
                 .await,
             "记录覆盖读 → 读批次静默放行"
         );
         assert!(
             !checker
-                .check_batch("com.wasmnest.test", std::slice::from_ref(&file_s), FsOps::WRITE)
+                .check_batch(
+                    "com.wasmnest.test",
+                    std::slice::from_ref(&file_s),
+                    FsOps::WRITE
+                )
                 .await,
             "只授读的目录不得放行写批次"
         );
         assert!(
             !checker
-                .check_batch("com.wasmnest.test", std::slice::from_ref(&file_s), FsOps::READ_WRITE)
+                .check_batch(
+                    "com.wasmnest.test",
+                    std::slice::from_ref(&file_s),
+                    FsOps::READ_WRITE
+                )
                 .await,
             "读写批次要求记录同时覆盖两种能力（覆盖关系不是「有交集即放行」）"
         );
@@ -2651,7 +2811,10 @@ mod tests {
                 .await,
             "被硬拒绝的路径不得靠批量入口放行"
         );
-        assert!(checker.pending_requests.lock().await.is_empty(), "硬拒绝路径不参与弹窗");
+        assert!(
+            checker.pending_requests.lock().await.is_empty(),
+            "硬拒绝路径不参与弹窗"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2689,7 +2852,9 @@ mod tests {
         )
         .await;
         assert!(
-            checker.check("com.wasmnest.test", &file_s, FsOp::Read).await,
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await,
             "前置：默认档下记录命中即静默放行（否则本用例恒真）"
         );
 
@@ -2702,11 +2867,15 @@ mod tests {
             "总是询问档必须跳过 allow 记录（记录命中也不再免弹窗）"
         );
         assert!(
-            !checker.check("com.wasmnest.test", &file_s, FsOp::Read).await,
+            !checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await,
             "已授权目录在总是询问档下仍要问（无头上下文 → 拒）"
         );
         assert!(
-            !checker.is_granted("com.wasmnest.test", &file_s, FsOps::READ).await,
+            !checker
+                .is_granted("com.wasmnest.test", &file_s, FsOps::READ)
+                .await,
             "无弹窗面（WASI 预打开 / 任务单元）同判据：跳过记录 = 不再是 granted"
         );
         assert!(
@@ -2717,7 +2886,9 @@ mod tests {
         // 实时读取（spec §8.1）：改回默认档，同一个目录立刻恢复「记录命中即静默」
         set_fs_strategy(&checker, "com.wasmnest.test", AuthStrategy::Default).await;
         assert!(
-            checker.check("com.wasmnest.test", &file_s, FsOp::Read).await,
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await,
             "改回默认档后记录重新生效——档位判定时实时读取，不做激活期快照"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -2737,7 +2908,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            checker.check("com.wasmnest.test", &file_s, FsOp::Write).await,
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Write)
+                .await,
             "前置：只有旧记录时写可放行"
         );
 
@@ -2749,7 +2922,11 @@ mod tests {
             NoDialogDecision::Ask(AuthStrategy::AlwaysAsk),
             "旧记录也是 allow 记录的一种形态，总是询问档不得读它"
         );
-        assert!(!checker.check("com.wasmnest.test", &file_s, FsOp::Read).await);
+        assert!(
+            !checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2786,10 +2963,18 @@ mod tests {
             NoDialogDecision::Denied,
             "deny 记录优先于策略档位：总是询问档下仍是硬拒绝"
         );
-        assert!(!checker.check("com.wasmnest.test", &file_s, FsOp::Read).await);
         assert!(
             !checker
-                .check_batch("com.wasmnest.test", std::slice::from_ref(&file_s), FsOps::READ)
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await
+        );
+        assert!(
+            !checker
+                .check_batch(
+                    "com.wasmnest.test",
+                    std::slice::from_ref(&file_s),
+                    FsOps::READ
+                )
                 .await,
             "批量入口同判据（三条入口不得给出两套答案）"
         );
@@ -2823,7 +3008,11 @@ mod tests {
         );
         assert!(
             checker
-                .check("test.terminal-session", &target.to_string_lossy(), FsOp::Write)
+                .check(
+                    "test.terminal-session",
+                    &target.to_string_lossy(),
+                    FsOp::Write
+                )
                 .await
         );
         std::fs::remove_dir_all(&project).ok();
@@ -2858,7 +3047,9 @@ mod tests {
 
         // 前置：默认档下同一路径在无头上下文被拒（否则本用例恒真）
         assert!(
-            !checker.check("com.wasmnest.test", &file_s, FsOp::Read).await,
+            !checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await,
             "前置：默认档未覆盖目标必须走询问（无头 → 拒）"
         );
 
@@ -2872,7 +3063,9 @@ mod tests {
         );
         // 无头上下文没有弹窗通道：返回 true 只可能是免弹窗层命中
         assert!(
-            checker.check("com.wasmnest.test", &file_s, FsOp::Read).await,
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await,
             "始终允许档不得再弹窗（不问）"
         );
         assert!(
@@ -2882,13 +3075,20 @@ mod tests {
 
         // 留痕（spec §4.3：免询问也必须落账，否则界面出现不可见空洞）
         let rows = fs_records(&checker, "com.wasmnest.test").await;
-        assert_eq!(rows.len(), 1, "免询问放行必须以 always_allow 来源落一条记录: {rows:?}");
+        assert_eq!(
+            rows.len(),
+            1,
+            "免询问放行必须以 always_allow 来源落一条记录: {rows:?}"
+        );
         assert_eq!(
             rows[0].target, file_s,
             "落账目标是本次请求的路径本身（上溯父目录等于替用户扩大授权）"
         );
         assert_eq!(rows[0].ops, vec!["read".to_string()], "操作集 = 本次请求");
-        assert_eq!(rows[0].source, "always_allow", "来源标记是界面「未经确认」判据");
+        assert_eq!(
+            rows[0].source, "always_allow",
+            "来源标记是界面「未经确认」判据"
+        );
         assert_eq!(rows[0].effect, "allow");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2906,9 +3106,15 @@ mod tests {
         let file_s = file.to_string_lossy().to_string();
 
         set_fs_strategy(&checker, "com.wasmnest.test", AuthStrategy::AlwaysAllow).await;
-        assert!(checker.check("com.wasmnest.test", &file_s, FsOp::Read).await);
         assert!(
-            checker.check("com.wasmnest.test", &file_s, FsOp::Write).await,
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await
+        );
+        assert!(
+            checker
+                .check("com.wasmnest.test", &file_s, FsOp::Write)
+                .await,
             "写目标是另一个未覆盖判定，同样免询问放行"
         );
 
@@ -2962,7 +3168,11 @@ mod tests {
             NoDialogDecision::Denied,
             "用户说过的「以后都拒绝」优先于免询问放行"
         );
-        assert!(!checker.check("com.wasmnest.test", &file_s, FsOp::Read).await);
+        assert!(
+            !checker
+                .check("com.wasmnest.test", &file_s, FsOp::Read)
+                .await
+        );
         assert!(
             fs_records(&checker, "com.wasmnest.test")
                 .await
@@ -2994,16 +3204,24 @@ mod tests {
 
         set_fs_strategy(&checker, "com.wasmnest.test", AuthStrategy::AlwaysAllow).await;
         assert!(
-            !checker.check("com.wasmnest.test", &broken, FsOp::Read).await,
+            !checker
+                .check("com.wasmnest.test", &broken, FsOp::Read)
+                .await,
             "路径规范化失败即拒：任何档位都放行不了（spec §4.2）"
         );
         assert!(
-            !checker.is_granted("com.wasmnest.test", &broken, FsOps::READ).await,
+            !checker
+                .is_granted("com.wasmnest.test", &broken, FsOps::READ)
+                .await,
             "无弹窗面同判据"
         );
         assert!(
             !checker
-                .check_batch("com.wasmnest.test", std::slice::from_ref(&broken), FsOps::READ)
+                .check_batch(
+                    "com.wasmnest.test",
+                    std::slice::from_ref(&broken),
+                    FsOps::READ
+                )
                 .await,
             "批量入口同判据"
         );
@@ -3027,16 +3245,19 @@ mod tests {
         let file_s = file.to_string_lossy().to_string();
 
         set_fs_strategy(&checker, "com.wasmnest.test", AuthStrategy::AlwaysAsk).await;
-        let (allowed, ()) = tokio::join!(checker.check("com.wasmnest.test", &file_s, FsOp::Read), async {
-            let prompt = wait_for_prompt(&log).await;
-            assert_eq!(
-                prompt["strategy"], "always_ask",
-                "弹窗必须自报弹出时的档位（前端据此渲染决定集）"
-            );
-            assert_eq!(prompt["operation"], "read");
-            let request_id = prompt["requestId"].as_str().expect("requestId").to_string();
-            checker.respond(&request_id, FsDecision::AllowOnce).await;
-        });
+        let (allowed, ()) = tokio::join!(
+            checker.check("com.wasmnest.test", &file_s, FsOp::Read),
+            async {
+                let prompt = wait_for_prompt(&log).await;
+                assert_eq!(
+                    prompt["strategy"], "always_ask",
+                    "弹窗必须自报弹出时的档位（前端据此渲染决定集）"
+                );
+                assert_eq!(prompt["operation"], "read");
+                let request_id = prompt["requestId"].as_str().expect("requestId").to_string();
+                checker.respond(&request_id, FsDecision::AllowOnce).await;
+            }
+        );
         assert!(allowed, "「允许本次」必须放行");
         assert!(
             checker
@@ -3082,7 +3303,9 @@ mod tests {
         )
         .await;
         set_fs_strategy(&checker, "com.wasmnest.test", AuthStrategy::AlwaysAsk).await;
-        checker.respond("req-frozen-default", FsDecision::AllowRemember).await;
+        checker
+            .respond("req-frozen-default", FsDecision::AllowRemember)
+            .await;
         assert_eq!(
             checker
                 .auth_records()
@@ -3112,8 +3335,13 @@ mod tests {
         )
         .await;
         set_fs_strategy(&checker, "com.wasmnest.test", AuthStrategy::Default).await;
-        checker.respond("req-frozen-ask", FsDecision::AllowRemember).await;
-        assert!(rx.await.expect("reply"), "降级方向仍是放行（用户点的是允许）");
+        checker
+            .respond("req-frozen-ask", FsDecision::AllowRemember)
+            .await;
+        assert!(
+            rx.await.expect("reply"),
+            "降级方向仍是放行（用户点的是允许）"
+        );
         assert!(
             checker
                 .auth_records()
@@ -3149,7 +3377,9 @@ mod tests {
             AuthStrategy::Default,
         )
         .await;
-        checker.respond("req-deny-always", FsDecision::DenyAlways).await;
+        checker
+            .respond("req-deny-always", FsDecision::DenyAlways)
+            .await;
 
         assert!(!rx.await.expect("reply"), "「以后都拒绝」当次也是拒绝");
         let rows = checker
@@ -3263,7 +3493,12 @@ mod tests {
 
 #[async_trait::async_trait]
 impl crate::host_api::ports::FsAuthGate for FsAuthChecker {
-    async fn check(&self, plugin_id: &str, path: &str, op: crate::host_api::ports::FsAuthOp) -> bool {
+    async fn check(
+        &self,
+        plugin_id: &str,
+        path: &str,
+        op: crate::host_api::ports::FsAuthOp,
+    ) -> bool {
         let mapped = match op {
             crate::host_api::ports::FsAuthOp::Read => FsOp::Read,
             crate::host_api::ports::FsAuthOp::Write => FsOp::Write,
@@ -3271,7 +3506,12 @@ impl crate::host_api::ports::FsAuthGate for FsAuthChecker {
         self.check(plugin_id, path, mapped).await
     }
 
-    async fn check_batch(&self, plugin_id: &str, paths: &[String], op: crate::host_api::ports::FsAuthOp) -> bool {
+    async fn check_batch(
+        &self,
+        plugin_id: &str,
+        paths: &[String],
+        op: crate::host_api::ports::FsAuthOp,
+    ) -> bool {
         let mapped = match op {
             crate::host_api::ports::FsAuthOp::Read => FsOps::single(FsOp::Read),
             crate::host_api::ports::FsAuthOp::Write => FsOps::single(FsOp::Write),

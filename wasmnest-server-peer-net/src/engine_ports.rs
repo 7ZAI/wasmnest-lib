@@ -96,10 +96,7 @@ impl PeerPlatformSeam for NoPlatformSeam {
 /// 重复装配（节点多次 start）时同根去重已存在 → `add` Err 跳过，不阻断启动
 /// （与旧「内置条目不落盘、每次装配重新注入」相比，持久化后环境不变的机器
 /// 重启暴露面保留，行为更一致）。
-pub(crate) fn decorate_shared_store(
-    store: &SharedDirStore,
-    seam: Option<&Arc<dyn PeerPlatformSeam>>,
-) {
+pub(crate) fn decorate_shared_store(store: &SharedDirStore, seam: Option<&Arc<dyn PeerPlatformSeam>>) {
     if let Some(seam) = seam {
         for (name, dir) in seam.default_shared_dirs() {
             if let Err(e) = store.add(name, SharedDirRoot::Fs { path: dir }) {

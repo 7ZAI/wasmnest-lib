@@ -190,10 +190,7 @@ pub(crate) fn encode_txt_properties(
     capabilities: u64,
 ) -> HashMap<String, String> {
     HashMap::from([
-        (
-            TXT_KEY_ID.to_string(),
-            node_id.as_str().to_string(),
-        ),
+        (TXT_KEY_ID.to_string(), node_id.as_str().to_string()),
         (
             TXT_KEY_NAME.to_string(),
             truncate_utf8(device_name, DEVICE_NAME_MAX_BYTES),
@@ -448,9 +445,7 @@ impl DiscoveryDaemon {
                     Ok(status) => {
                         tracing::debug!(status = ?status, "peer mDNS service unregistered")
                     }
-                    Err(e) => tracing::warn!(
-                        "unregister status channel closed before reply: {e}"
-                    ),
+                    Err(e) => tracing::warn!("unregister status channel closed before reply: {e}"),
                 },
                 Err(source) => {
                     first_err.get_or_insert(PeerNetError::MdnsUnregister { source });
@@ -587,24 +582,12 @@ pub fn spawn_peer_mdns_daemon(
         .map_err(|source| PeerNetError::MdnsRegister { source })?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let event_task = tokio::spawn(run_discovery_loop(
-        receiver,
-        cache,
-        own_node_id,
-        shutdown_rx.clone(),
-    ));
+    let event_task = tokio::spawn(run_discovery_loop(receiver, cache, own_node_id, shutdown_rx.clone()));
     // 周期 re-announce：mdns-sd 注册后不主动周期广播，须手动续期（见常量注释）
-    let reannounce_task = tokio::spawn(run_reannounce_loop(
-        daemon.clone(),
-        service_info,
-        shutdown_rx.clone(),
-    ));
+    let reannounce_task = tokio::spawn(run_reannounce_loop(daemon.clone(), service_info, shutdown_rx.clone()));
     // 周期主动重查：被动 announce 真机环境不可靠，查询→应答是唯一稳定刷新路径；
     // 重查本身由中枢统一执行，本任务只按节奏转调闭包（同一个闭包即时刷新也用）
-    let requery_task = tokio::spawn(run_requery_loop(
-        Arc::clone(&request_requery),
-        shutdown_rx,
-    ));
+    let requery_task = tokio::spawn(run_requery_loop(Arc::clone(&request_requery), shutdown_rx));
     tracing::info!(
         service = %fullname,
         port = listen_port,
@@ -629,11 +612,7 @@ pub fn spawn_peer_mdns_daemon(
 /// announce（RFC 6762 §8.3 自动补发第二条），不 probe、不发 goodbye——对端
 /// 不会误判离线，又能持续收到续期广播，规避 browse 查询指数退避（上限 1 小时）
 /// 超过缓存 TTL 导致的「启动互见、随后互不可见」。
-async fn run_reannounce_loop(
-    daemon: ServiceDaemon,
-    service_info: ServiceInfo,
-    mut shutdown_rx: watch::Receiver<bool>,
-) {
+async fn run_reannounce_loop(daemon: ServiceDaemon, service_info: ServiceInfo, mut shutdown_rx: watch::Receiver<bool>) {
     let mut interval = tokio::time::interval(REANNOUNCE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // 首个 tick 立即到期：跳过（调用方启动时已 register 过一次）
@@ -727,10 +706,7 @@ async fn run_discovery_loop(
 /// fan-out）全在类型中枢，本任务只负责节奏——业务节奏属消费方，机制归中枢。
 /// 宿主可经 [`DiscoveryDaemon::request_requery`] 发起即时重查（设备列表手动刷新），
 /// 与周期路径转调同一闭包，突发由中枢的合并窗吞并。
-async fn run_requery_loop(
-    request_requery: Arc<dyn Fn() + Send + Sync>,
-    mut shutdown_rx: watch::Receiver<bool>,
-) {
+async fn run_requery_loop(request_requery: Arc<dyn Fn() + Send + Sync>, mut shutdown_rx: watch::Receiver<bool>) {
     let mut interval = tokio::time::interval(REQUERY_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // 首个 tick 立即到期：跳过（订阅建立时中枢已 browse 并触发缓存重放，
@@ -766,11 +742,7 @@ fn sweep_and_log(cache: &DiscoveryCache) {
 
 /// 处理单个浏览事件：found/resolved 进缓存（含自播过滤）、removed 即时移除。
 /// 返回供宿主桥接插件总线的 wire 事件（自播/无地址/无 id 等被过滤场景返回 None）。
-fn handle_browse_event(
-    cache: &DiscoveryCache,
-    own_node_id: &NodeId,
-    event: ServiceEvent,
-) {
+fn handle_browse_event(cache: &DiscoveryCache, own_node_id: &NodeId, event: ServiceEvent) {
     match event {
         ServiceEvent::SearchStarted(ty) => {
             tracing::debug!(service_type = %ty, "peer mDNS search started");
@@ -873,8 +845,7 @@ mod tests {
         let addr: SocketAddr = "192.168.1.10:47613".parse().expect("valid addr");
 
         let decoded =
-            decode_txt_properties("wasmnest-peer-deadbeef", addr, &properties)
-                .expect("round-trip must decode");
+            decode_txt_properties("wasmnest-peer-deadbeef", addr, &properties).expect("round-trip must decode");
 
         assert_eq!(decoded.node_id, node_id);
         assert_eq!(decoded.addr, addr);
@@ -890,8 +861,8 @@ mod tests {
 
         // 缺 name → 回退实例名；缺 ver/cap → 0
         let minimal = HashMap::from([(TXT_KEY_ID.to_string(), node_id.as_str().to_string())]);
-        let decoded = decode_txt_properties("wasmnest-peer-feedface", addr, &minimal)
-            .expect("minimal payload still decodes");
+        let decoded =
+            decode_txt_properties("wasmnest-peer-feedface", addr, &minimal).expect("minimal payload still decodes");
         assert_eq!(decoded.device_name, "wasmnest-peer-feedface");
         assert_eq!(decoded.protocol_version, 0);
         assert_eq!(decoded.capabilities, 0);
@@ -902,8 +873,8 @@ mod tests {
             (TXT_KEY_VER.to_string(), "not-a-number".to_string()),
             (TXT_KEY_CAP.to_string(), "zzz".to_string()),
         ]);
-        let decoded = decode_txt_properties("wasmnest-peer-feedface", addr, &broken)
-            .expect("broken ver/cap degrade to zero");
+        let decoded =
+            decode_txt_properties("wasmnest-peer-feedface", addr, &broken).expect("broken ver/cap degrade to zero");
         assert_eq!(decoded.protocol_version, 0);
         assert_eq!(decoded.capabilities, 0);
 
@@ -987,7 +958,9 @@ mod tests {
         // fresh 走公开 observe（盖章 now）；stale 回填「TTL+1s 前」的过去时间戳
         let now = Instant::now();
         cache.observe(fresh.clone());
-        let past = now.checked_sub(PEER_DISCOVERY_TTL + Duration::from_secs(1)).expect("backwards instant");
+        let past = now
+            .checked_sub(PEER_DISCOVERY_TTL + Duration::from_secs(1))
+            .expect("backwards instant");
         cache.insert_with_last_seen(stale.clone(), past);
 
         let removed = cache.sweep_expired_at(now);
@@ -1020,7 +993,10 @@ mod tests {
         cache.observe(record.clone());
         let short = record.node_id.short_fingerprint();
         assert!(cache.remove_by_fingerprint(short).is_some());
-        assert!(cache.remove_by_fingerprint(short).is_none(), "second goodbye idempotent");
+        assert!(
+            cache.remove_by_fingerprint(short).is_none(),
+            "second goodbye idempotent"
+        );
     }
 
     #[test]
@@ -1059,12 +1035,7 @@ mod tests {
     /// `ServiceResolved` 内为 ResolvedService）
     fn synthetic_resolved_event(node_id: &NodeId, ip: &str, port: u16) -> ServiceEvent {
         let instance = format!("{INSTANCE_PREFIX}{}", node_id.short_fingerprint());
-        let properties = encode_txt_properties(
-            node_id,
-            "对端设备",
-            DISCOVERY_PROTOCOL_VERSION,
-            CAP_FILE_TRANSFER,
-        );
+        let properties = encode_txt_properties(node_id, "对端设备", DISCOVERY_PROTOCOL_VERSION, CAP_FILE_TRANSFER);
         let info = ServiceInfo::new(
             SERVICE_TYPE,
             &instance,
@@ -1110,8 +1081,7 @@ mod tests {
 
     impl Drop for SubscriptionProbe {
         fn drop(&mut self) {
-            self.releases
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.releases.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -1154,12 +1124,7 @@ mod tests {
         let (tx, rx) = flume::bounded::<ServiceEvent>(8);
         // 停机通道全程存活（Sender 一旦 drop，事件循环会视为停机立即退出）
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let loop_task = tokio::spawn(run_discovery_loop(
-            rx,
-            Arc::clone(&cache),
-            own.clone(),
-            shutdown_rx,
-        ));
+        let loop_task = tokio::spawn(run_discovery_loop(rx, Arc::clone(&cache), own.clone(), shutdown_rx));
 
         // ① 自播回显与对端事件同走一条 FIFO 通道：等到对端记录出现，即可断定
         //    自播那条已被处理并过滤（无需 sleep）
@@ -1177,8 +1142,7 @@ mod tests {
         );
 
         // ② goodbye：经同一 fan-out 通道抵达 → 缓存即时移除（不等 TTL 清扫）
-        tx.send(synthetic_removed_event(&peer))
-            .expect("send goodbye event");
+        tx.send(synthetic_removed_event(&peer)).expect("send goodbye event");
         wait_for("peer record removed", || cache.list().is_empty()).await;
 
         // ③ 通道断开（守卫释放 / 中枢停机）⇒ 事件循环退出，无需停机标志
@@ -1196,12 +1160,7 @@ mod tests {
         let cache = Arc::new(DiscoveryCache::new());
         let (_tx, rx) = flume::bounded::<ServiceEvent>(4);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let loop_task = tokio::spawn(run_discovery_loop(
-            rx,
-            cache,
-            test_node_id(0x11),
-            shutdown_rx,
-        ));
+        let loop_task = tokio::spawn(run_discovery_loop(rx, cache, test_node_id(0x11), shutdown_rx));
 
         shutdown_tx.send(true).expect("receiver alive");
         // 4s < SWEEP_INTERVAL(5s)：正确实现立即（微秒级）退出，而「丢掉停机分支」
@@ -1222,12 +1181,7 @@ mod tests {
         // 探针：本测试另持一个发送端克隆，事件循环退出（receiver 释放）后即断连
         let probe_tx = tx.clone();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let event_task = tokio::spawn(run_discovery_loop(
-            rx,
-            cache,
-            test_node_id(0x30),
-            shutdown_rx,
-        ));
+        let event_task = tokio::spawn(run_discovery_loop(rx, cache, test_node_id(0x30), shutdown_rx));
 
         let mut daemon = daemon_fixture();
         daemon.browse_guard = Some(Box::new(SubscriptionProbe {

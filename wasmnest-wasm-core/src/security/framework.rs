@@ -116,7 +116,10 @@ impl SecurityFramework {
 
     /// 注入监控句柄（决策计数埋点；两阶段初始化）
     pub fn set_monitor(&self, monitor: Arc<MetricsRegistry>) {
-        *self.monitor.write().expect("security monitor lock poisoned") = Some(monitor);
+        *self
+            .monitor
+            .write()
+            .expect("security monitor lock poisoned") = Some(monitor);
     }
 
     /// 注册资源仲裁器（同类型后注册覆盖）
@@ -153,7 +156,12 @@ impl SecurityFramework {
                 }
             }
         };
-        if let Some(m) = self.monitor.read().expect("security monitor lock poisoned").as_ref() {
+        if let Some(m) = self
+            .monitor
+            .read()
+            .expect("security monitor lock poisoned")
+            .as_ref()
+        {
             m.plugin(req.plugin_id)
                 .record_authz_decision(AuthzDecisionKind::from(&decision));
         }
@@ -183,7 +191,10 @@ pub struct FsAuthorizer {
 
 impl FsAuthorizer {
     pub fn new(permission: Arc<PermissionManager>, fs_auth: Arc<FsAuthChecker>) -> Self {
-        Self { permission, fs_auth }
+        Self {
+            permission,
+            fs_auth,
+        }
     }
 }
 
@@ -240,7 +251,8 @@ impl ResourceAuthorizer for FsAuthorizer {
         let Some(op) = fs_op_of(req.operation) else {
             return AuthDecision::Deny(format!("未知 fs 操作 '{}'", req.operation));
         };
-        let allowed = crate::runtime_util::block_on_async(self.fs_auth.check(req.plugin_id, req.target, op));
+        let allowed =
+            crate::runtime_util::block_on_async(self.fs_auth.check(req.plugin_id, req.target, op));
         if allowed {
             AuthDecision::Allow
         } else {
@@ -281,7 +293,10 @@ impl ResourceAuthorizer for ApiCallAuthorizer {
         if self.registry.gate(req.target).is_some() {
             AuthDecision::Allow
         } else {
-            AuthDecision::Deny(format!("api '{}' 未由任何已激活插件声明（互调门）", req.target))
+            AuthDecision::Deny(format!(
+                "api '{}' 未由任何已激活插件声明（互调门）",
+                req.target
+            ))
         }
     }
 }
@@ -309,7 +324,9 @@ impl SecurityFramework {
         };
         let merged = crate::config::apply_store_overrides(config, req);
         // 双重天花板：不得突破运维配置值（配置覆盖有效），也不得突破编译期硬上限
-        let granted = merged.clamped_within(config).clamped_within(&StoreLimits::default());
+        let granted = merged
+            .clamped_within(config)
+            .clamped_within(&StoreLimits::default());
         if granted != merged {
             tracing::warn!(
                 plugin_id = %plugin_id,
@@ -381,9 +398,16 @@ mod tests {
 
     #[test]
     fn pipeline_runs_three_stages_in_order() {
-        let (a, fw) = fake(AuthDecision::Allow, AuthDecision::Allow, AuthDecision::Allow);
+        let (a, fw) = fake(
+            AuthDecision::Allow,
+            AuthDecision::Allow,
+            AuthDecision::Allow,
+        );
         assert_eq!(fw.authorize(&req()), AuthDecision::Allow);
-        assert_eq!(*a.calls.lock().unwrap(), vec!["declared", "approved", "enforce"]);
+        assert_eq!(
+            *a.calls.lock().unwrap(),
+            vec!["declared", "approved", "enforce"]
+        );
     }
 
     #[test]
@@ -414,9 +438,16 @@ mod tests {
 
     #[test]
     fn require_approval_proceeds_to_enforce() {
-        let (a, fw) = fake(AuthDecision::Allow, AuthDecision::RequireApproval, AuthDecision::Allow);
+        let (a, fw) = fake(
+            AuthDecision::Allow,
+            AuthDecision::RequireApproval,
+            AuthDecision::Allow,
+        );
         assert_eq!(fw.authorize(&req()), AuthDecision::Allow);
-        assert_eq!(*a.calls.lock().unwrap(), vec!["declared", "approved", "enforce"]);
+        assert_eq!(
+            *a.calls.lock().unwrap(),
+            vec!["declared", "approved", "enforce"]
+        );
     }
 
     /// 决策矩阵：阶段 3 拒绝是最终仲裁——允许×允许×拒绝 → 拒绝，
@@ -476,7 +507,9 @@ mod tests {
         fw.authorize(&req());
         let snap = monitor.snapshot();
         assert_eq!(
-            snap["plugins"]["com.wasmnest.test"]["authz"]["deny"].as_u64().unwrap(),
+            snap["plugins"]["com.wasmnest.test"]["authz"]["deny"]
+                .as_u64()
+                .unwrap(),
             2
         );
     }
@@ -510,7 +543,9 @@ mod tests {
             None,
             vec![(
                 FIRST_PARTY_PLUGIN,
-                vec![crate::security::fs_auth::TrustedDir::ProjectSegment(".claude")],
+                vec![crate::security::fs_auth::TrustedDir::ProjectSegment(
+                    ".claude",
+                )],
             )],
         ));
         let authorizer = Arc::new(FsAuthorizer::new(permission.clone(), fs_auth));
@@ -574,12 +609,21 @@ mod tests {
         permission.grant_permissions("com.test.p", &[PERMISSION_FS_READ.to_string()]);
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let target = tmp.path().join("proj").join(".claude").join("sub").join("f.txt");
+        let target = tmp
+            .path()
+            .join("proj")
+            .join(".claude")
+            .join("sub")
+            .join("f.txt");
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(&target, "x").unwrap();
 
         assert_eq!(
-            fw.authorize(&fs_req(FIRST_PARTY_PLUGIN, "read", target.to_str().unwrap())),
+            fw.authorize(&fs_req(
+                FIRST_PARTY_PLUGIN,
+                "read",
+                target.to_str().unwrap()
+            )),
             AuthDecision::Allow,
             "第一方在其具名集成目录段内须免弹窗放行"
         );
@@ -605,7 +649,11 @@ mod tests {
 
         assert!(
             matches!(
-                fw.authorize(&fs_req(FIRST_PARTY_PLUGIN, "read", target.to_str().unwrap())),
+                fw.authorize(&fs_req(
+                    FIRST_PARTY_PLUGIN,
+                    "read",
+                    target.to_str().unwrap()
+                )),
                 AuthDecision::Deny(_)
             ),
             "未声明 fs:read 时目录预授权也不得越过声明闸门"
@@ -714,7 +762,11 @@ mod tests {
             "声明补齐后未覆盖目标免询问放行"
         );
         let overview = store.overview("com.test.p", "T", Vec::new()).await.unwrap();
-        assert_eq!(overview.records.len(), 1, "免询问放行必须留痕: {overview:?}");
+        assert_eq!(
+            overview.records.len(),
+            1,
+            "免询问放行必须留痕: {overview:?}"
+        );
         assert_eq!(overview.records[0].source, "always_allow");
         assert_eq!(overview.records[0].ops, vec!["read".to_string()]);
     }
@@ -743,7 +795,10 @@ mod tests {
             ..ResourceOverrides::default()
         };
         let granted = fw.resolve_store_limits("com.wasmnest.heavy", &cfg, Some(&relaxed));
-        assert_eq!(granted.max_memory_bytes, cfg.max_memory_bytes, "放宽请求须被钳回");
+        assert_eq!(
+            granted.max_memory_bytes, cfg.max_memory_bytes,
+            "放宽请求须被钳回"
+        );
         assert_eq!(granted.fuel_per_call, cfg.fuel_per_call);
 
         // 收紧：请求值低于内核配置 → 保留（自我约束）
@@ -782,7 +837,10 @@ mod tests {
     fn api_call_gate_via_framework() {
         let registry = Arc::new(ApiRegistry::new());
         registry
-            .register("com.wasmnest.target", &["com.wasmnest.target.run".to_string()])
+            .register(
+                "com.wasmnest.target",
+                &["com.wasmnest.target.run".to_string()],
+            )
             .unwrap();
         let fw = SecurityFramework::new();
         fw.register(Arc::new(ApiCallAuthorizer::new(registry)));

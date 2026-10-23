@@ -23,15 +23,29 @@ async fn test_plugin_timer_register_replace_abort() {
     let host = setup_host().await;
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
     );
 
     // 注册定时器（3600s 间隔：测试期间不会触发 tick 回调）
-    PluginServices::register_plugin_timer(&host, TEST_PLUGIN_ID.to_string(), 3600, "tick".to_string());
+    PluginServices::register_plugin_timer(
+        &host,
+        TEST_PLUGIN_ID.to_string(),
+        3600,
+        "tick".to_string(),
+    );
     assert_eq!(host.plugin_timers.lock().unwrap().len(), 1);
 
     // 重复注册替换旧句柄（v6 ADR 0003：同一插件仅保留一个定时器）
-    PluginServices::register_plugin_timer(&host, TEST_PLUGIN_ID.to_string(), 3600, "tick".to_string());
+    PluginServices::register_plugin_timer(
+        &host,
+        TEST_PLUGIN_ID.to_string(),
+        3600,
+        "tick".to_string(),
+    );
     assert_eq!(host.plugin_timers.lock().unwrap().len(), 1);
 
     // 停用中止定时器（不再到点回调）
@@ -80,7 +94,9 @@ fn collect_retired_domain_rs_files() -> Vec<(std::path::PathBuf, String)> {
     let mut out = Vec::new();
     let mut stack = retired_domain_scan_roots();
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -307,7 +323,9 @@ fn retired_auth_center_discovery_is_not_reintroduced() {
 
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {

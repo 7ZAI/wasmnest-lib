@@ -24,9 +24,9 @@
 //! 连接生命周期（心跳 / 认证超时 / 帧级过滤链 / 注册表）全部由骨架
 //! [`crate::conn`] 承担，本文件只实现通道协议。
 
+use crate::wire::{owned_topic, WS_CLIENT_CONNECT, WS_CLIENT_DISCONNECT};
 use actix::prelude::*;
 use actix_web_actors::ws::{CloseCode, CloseReason};
-use crate::wire::{owned_topic, WS_CLIENT_CONNECT, WS_CLIENT_DISCONNECT};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 

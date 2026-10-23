@@ -134,8 +134,8 @@ where
 
     let mut payload = vec![0u8; payload_len];
     stream.read_exact(&mut payload).await?;
-    let frame: TrustStatusFrame = serde_json::from_slice(&payload)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let frame: TrustStatusFrame =
+        serde_json::from_slice(&payload).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     if frame.protocol_version > PROTOCOL_VERSION {
         return Err(std::io::Error::new(
@@ -170,8 +170,7 @@ mod tests {
             TrustStatusFrame::denied(&sample_node_id(0x03)),
         ] {
             let mut buf = Vec::new();
-            futures_block_on(write_frame(&mut buf, &status))
-                .expect("encode into memory buffer");
+            futures_block_on(write_frame(&mut buf, &status)).expect("encode into memory buffer");
             let mut reader: &[u8] = &buf;
             let decoded = futures_block_on(read_frame(&mut reader));
 
@@ -183,11 +182,7 @@ mod tests {
     #[test]
     fn truncated_stream_is_reported_not_hang() {
         let mut buf = Vec::new();
-        futures_block_on(write_frame(
-            &mut buf,
-            &TrustStatusFrame::denied(&sample_node_id(0x04)),
-        ))
-        .expect("encode");
+        futures_block_on(write_frame(&mut buf, &TrustStatusFrame::denied(&sample_node_id(0x04)))).expect("encode");
 
         // 截掉尾部若干字节：read_exact 必须报 UnexpectedEof 而非挂起/误解析
         let truncated = &buf[..buf.len() - 5];
@@ -236,8 +231,7 @@ mod tests {
                 noop_raw_waker()
             }
             fn noop(_: *const ()) {}
-            static VTABLE: RawWakerVTable =
-                RawWakerVTable::new(clone, noop, noop, noop);
+            static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
             RawWaker::new(std::ptr::null::<()>(), &VTABLE)
         }
 

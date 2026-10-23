@@ -19,10 +19,10 @@
 //! 注意：并集意味着「某端插件可读到另一端的键」，这是词汇可用性的放宽而非
 //! 数据泄露面（各端键取的都是本端事实，缺失键按端口缺省 fail-visible）。
 
-use crate::host_api::ports::{HostEnginePorts, HostFactsPort};
-use crate::runtime_util::block_on_async;
 #[cfg(test)]
 use crate::host_api::context::WasmHostContext;
+use crate::host_api::ports::{HostEnginePorts, HostFactsPort};
+use crate::runtime_util::block_on_async;
 
 /// 配置项白名单（双端并集词汇，内核自持）
 ///
@@ -119,7 +119,9 @@ pub(crate) fn config_get(
         ConfigKey::PairingCodeTtl => {
             return auth_setting_seconds(db, "pairing_code_ttl", DEFAULT_PAIRING_CODE_TTL_SECS)
         }
-        ConfigKey::QrTokenTtl => return auth_setting_seconds(db, "qr_token_ttl", DEFAULT_QR_TOKEN_TTL_SECS),
+        ConfigKey::QrTokenTtl => {
+            return auth_setting_seconds(db, "qr_token_ttl", DEFAULT_QR_TOKEN_TTL_SECS)
+        }
         // 下载目录是**移动宿主**的 SAF 路径事实（Android 外部私有目录），桌面无
         // 对应物；未注入即 fail-visible。
         ConfigKey::AppDownloadsDir => {
@@ -149,7 +151,9 @@ fn auth_setting_seconds(
         db.get_setting(&setting_key)
             .map_err(|e| format!("database error: {}", e))
     })?;
-    let seconds = stored.and_then(|v| v.parse::<u64>().ok()).unwrap_or(default);
+    let seconds = stored
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default);
     Ok(Some(seconds.to_string()))
 }
 
@@ -180,7 +184,13 @@ mod tests {
 
     /// 以 `test-plugin` 读配置（端事实取上下文当前注值；用例按需先 `set_host_facts`）
     fn read(ctx: &WasmHostContext, key: &str) -> Result<Option<String>, String> {
-        config_get(ctx, ctx.ports().as_ref(), ctx.host_facts().as_ref(), "test-plugin", key)
+        config_get(
+            ctx,
+            ctx.ports().as_ref(),
+            ctx.host_facts().as_ref(),
+            "test-plugin",
+            key,
+        )
     }
 
     /// 白名单外 key：在触达任何全局单例前被拒绝（纯校验路径）
@@ -211,7 +221,12 @@ mod tests {
             .expect("time key ok")
             .expect("some value");
         let parsed: u128 = value.parse().expect("parse ms");
-        assert!(parsed >= before_ms, "got {} before now {}", parsed, before_ms);
+        assert!(
+            parsed >= before_ms,
+            "got {} before now {}",
+            parsed,
+            before_ms
+        );
     }
 
     /// home_dir：返回非空主目录路径
@@ -247,14 +262,19 @@ mod tests {
     fn config_get_network_port_ok_and_fail_visible() {
         let ctx = host_ctx();
         ctx.set_host_facts(Arc::new(StubFacts));
-        let value = read(ctx.as_ref(), "network.port").expect("port key ok").expect("some value");
+        let value = read(ctx.as_ref(), "network.port")
+            .expect("port key ok")
+            .expect("some value");
         assert_eq!(value, "8765");
 
         // 未注入端事实：fail-visible（不回落默认端口；错误点名 plugin 便于定位）
         let bare = host_ctx();
         let err = read(bare.as_ref(), "network.port").unwrap_err();
         assert!(err.contains("no inbound server"), "got: {err}");
-        assert!(err.contains("test-plugin"), "错误必须点名 plugin，got: {err}");
+        assert!(
+            err.contains("test-plugin"),
+            "错误必须点名 plugin，got: {err}"
+        );
     }
 
     /// 票 14：认证域两项有效期的读侧契约——

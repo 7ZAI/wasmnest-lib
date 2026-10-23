@@ -4,10 +4,10 @@
 //! 验证必填字段和权限合法性，返回已加载的插件列表
 //! 仅处理文件扫描加载，Rust+TS WASM 插件由 PluginHost 通过 WasmRuntime 加载
 
-use crate::system::constants::PLUGIN_DOWNLOAD_TEMP_DIR;
 use crate::manager::types::{LoadedPlugin, PluginSource};
 use crate::manager::validation::{validate_dir_binding, validate_plugin_id};
 use crate::permission::PermissionManager;
+use crate::system::constants::PLUGIN_DOWNLOAD_TEMP_DIR;
 // 中性词汇（票 02 M4）：清单/状态/类型统一取自 crate::manifest
 use crate::manifest::{PluginManifest, PluginState, PluginType};
 use std::collections::{HashMap, HashSet};
@@ -70,10 +70,16 @@ impl PluginLoader {
         source: Option<PluginSource>,
         seen_ids: &mut HashSet<String>,
     ) -> HashMap<String, LoadedPlugin> {
-        tracing::info!("[PluginLoader] Scanning plugin directory: {:?}", plugins_dir);
+        tracing::info!(
+            "[PluginLoader] Scanning plugin directory: {:?}",
+            plugins_dir
+        );
 
         if !plugins_dir.exists() {
-            tracing::warn!("[PluginLoader] Plugin directory does not exist: {:?}", plugins_dir);
+            tracing::warn!(
+                "[PluginLoader] Plugin directory does not exist: {:?}",
+                plugins_dir
+            );
 
             return HashMap::new();
         }
@@ -121,7 +127,10 @@ impl PluginLoader {
                 let temp_container = PLUGIN_DOWNLOAD_TEMP_DIR.split('/').next().unwrap_or("");
 
                 if path.file_name().and_then(|n| n.to_str()) == Some(temp_container) {
-                    tracing::debug!("[PluginLoader] Skipping download temp container: {:?}", path);
+                    tracing::debug!(
+                        "[PluginLoader] Skipping download temp container: {:?}",
+                        path
+                    );
                 } else {
                     // 票 16：孤儿目录（历史安装遗留 / 插件 id 改名后的空壳）**不影响内置
                     // 插件加载**（内置插件来自 resources 目录，与本扫描路径无关），
@@ -143,7 +152,11 @@ impl PluginLoader {
 
             match Self::load_manifest(&manifest_path) {
                 Ok(manifest) => {
-                    let dir_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let dir_name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
 
                     let plugin_id = manifest.id.clone();
 
@@ -294,7 +307,11 @@ impl PluginLoader {
                 Err(e) => {
                     let dir_name = path.file_name().unwrap_or_default().to_string_lossy();
 
-                    tracing::error!("[PluginLoader] Failed to load plugin from {}: {}", dir_name, e);
+                    tracing::error!(
+                        "[PluginLoader] Failed to load plugin from {}: {}",
+                        dir_name,
+                        e
+                    );
                 }
             }
         }
@@ -366,7 +383,11 @@ mod tests {
         });
 
         let manifest_path = plugin_dir.join("plugin.json");
-        fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap()).unwrap();
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest_json).unwrap(),
+        )
+        .unwrap();
 
         let manifest = PluginLoader::load_manifest(&manifest_path).unwrap();
         assert_eq!(manifest.id, "com.test.plugin");
@@ -388,7 +409,11 @@ mod tests {
         });
 
         let manifest_path = plugin_dir.join("plugin.json");
-        fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap()).unwrap();
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest_json).unwrap(),
+        )
+        .unwrap();
 
         let result = PluginLoader::load_manifest(&manifest_path);
         assert!(result.is_err());
@@ -412,7 +437,11 @@ mod tests {
         });
 
         let manifest_path = plugin_dir.join("plugin.json");
-        fs::write(&manifest_path, serde_json::to_string_pretty(&manifest_json).unwrap()).unwrap();
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest_json).unwrap(),
+        )
+        .unwrap();
 
         let manifest = PluginLoader::load_manifest(&manifest_path).expect("退役字段不得阻塞加载");
         assert_eq!(manifest.id, "com.test.legacy-sandbox");
@@ -452,7 +481,8 @@ mod tests {
         write_minimal_plugin(user_dir.path(), shared_id);
 
         let permission = PermissionManager::new();
-        let (builtin, user) = PluginLoader::load_builtin_and_user(builtin_dir.path(), user_dir.path(), &permission);
+        let (builtin, user) =
+            PluginLoader::load_builtin_and_user(builtin_dir.path(), user_dir.path(), &permission);
 
         assert!(
             builtin.contains_key(shared_id),
@@ -465,8 +495,15 @@ mod tests {
             user.keys().collect::<Vec<_>>()
         );
         assert_eq!(
-            builtin.get(shared_id).expect("builtin entry").extension_path,
-            builtin_dir.path().join(shared_id).to_string_lossy().to_string(),
+            builtin
+                .get(shared_id)
+                .expect("builtin entry")
+                .extension_path,
+            builtin_dir
+                .path()
+                .join(shared_id)
+                .to_string_lossy()
+                .to_string(),
             "胜出条目的扩展路径必须指向内置目录（用户副本不得顶替）"
         );
     }
@@ -480,7 +517,8 @@ mod tests {
         write_minimal_plugin(user_dir.path(), "com.test.user-only");
 
         let permission = PermissionManager::new();
-        let (builtin, user) = PluginLoader::load_builtin_and_user(builtin_dir.path(), user_dir.path(), &permission);
+        let (builtin, user) =
+            PluginLoader::load_builtin_and_user(builtin_dir.path(), user_dir.path(), &permission);
 
         assert_eq!(
             builtin.keys().collect::<Vec<_>>(),
@@ -507,7 +545,8 @@ mod tests {
         let missing_user_dir = tempfile::TempDir::new().unwrap().path().join("not-created");
 
         let permission = PermissionManager::new();
-        let (builtin, user) = PluginLoader::load_builtin_and_user(builtin_dir.path(), &missing_user_dir, &permission);
+        let (builtin, user) =
+            PluginLoader::load_builtin_and_user(builtin_dir.path(), &missing_user_dir, &permission);
 
         assert!(user.is_empty(), "缺失目录不得凭空产出插件");
         assert!(

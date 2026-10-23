@@ -33,14 +33,13 @@ use crate::manager::runtime::wasi;
 // guest 事件派发契约面（票 03 / ADR 0022）：`events` 导出双端词汇不同、且带
 // `result` 返回（原生 TypedFunc 表达不了），调用契约由宿主实现并注入，本壳只转发。
 use crate::manager::runtime::guest_events::GuestEventDispatcher;
+use crate::manifest::WasiPreopenDir;
 use crate::monitor::LifecycleEvent;
 use crate::runtime_util::block_on_async;
 use crate::AppError;
-use crate::manifest::WasiPreopenDir;
 use std::sync::Arc;
 use wasmtime::component::{Component, Instance, Linker};
 use wasmtime::Store;
-
 
 // v27（票 10 删除的 `impl wasmnest::plugin::host_terminal::Host`）：
 // `host-terminal.send` 是「宿主替插件往交互终端注入按键」的最后一处业务面入口，
@@ -62,7 +61,6 @@ use wasmtime::Store;
 // `src-tauri/src/plugin/{process,app,timer}.rs` 路径 B：宿主自带 bindgen + `Host` impl +
 // 域函数同处；`ProcessUnitExecutor` 随域走宿主并经 `submit_unit_executor!` 自报注册）。
 
-
 // host-api-call（互调，ADR-0017）的 **WIT impl** 已迁宿主（票 02 批次 05，
 // `src-tauri/src/plugin/api_call.rs` 路径 B 薄转发：无权限门，互调门禁在注册表）。
 // 回复道编排（`api_call` + `ReplyHandler` + 属主校验）**留内核** `host_api/api.rs`
@@ -73,7 +71,6 @@ use wasmtime::Store;
 //
 // host-mdns / host-peer 两个 interface 已随 wasm-core-lib-split 票 03 / 05 迁为
 // 能力域（经 `inventory` 自报装配，见下节），本节只剩留 core 的 POSIX / 机制面。
-
 
 // v36：`host-platform` 的桌面扩展函数（wsl-distros / local-ipv4-addresses /
 // reveal-in-dir）拆入 `host-platform-desktop`（桌面独有交集切片），WIT impl 已迁
@@ -112,9 +109,9 @@ pub fn host_module_whitelist() -> Vec<&'static str> {
 // 不自报（用自有 `host_domains/{http,ws,peer,mdns}` 实现）。
 // （`wasmnest-discovery-engine` 的强制引用行随端口 adapter 迁宿主
 //  `src-tauri/src/plugin/mdns.rs`；本 crate 不依赖该 crate。）
-use wasmnest_server_websocket as _;
-use wasmnest_server_peer_net as _;
 use wasmnest_server_http as _;
+use wasmnest_server_peer_net as _;
+use wasmnest_server_websocket as _;
 
 /// 收集已自报的能力模块并与白名单双向比对
 fn host_module_registry() -> crate::Result<wasmnest_host_kit::ModuleRegistry> {
@@ -126,11 +123,15 @@ fn host_module_registry() -> crate::Result<wasmnest_host_kit::ModuleRegistry> {
 /// **为什么多这一层**：失败路径本身必须可测。“能力模块没链上”唯一的信号就是这
 /// 条错误，而它只会在真实错配时才出现（平时恒绿）——若只能经 `add_to_linker`
 /// 的固定白名单触发，就永远没有用例能证明它真的会红、而且报得可读。
-fn verify_host_module_registry(whitelist: &[&str]) -> crate::Result<wasmnest_host_kit::ModuleRegistry> {
+fn verify_host_module_registry(
+    whitelist: &[&str],
+) -> crate::Result<wasmnest_host_kit::ModuleRegistry> {
     let registry = wasmnest_host_kit::ModuleRegistry::collected();
-    registry
-        .verify_whitelist(whitelist)
-        .map_err(|e| AppError::Plugin(format!("host capability module whitelist check failed: {e}")))?;
+    registry.verify_whitelist(whitelist).map_err(|e| {
+        AppError::Plugin(format!(
+            "host capability module whitelist check failed: {e}"
+        ))
+    })?;
     Ok(registry)
 }
 
@@ -207,9 +208,11 @@ pub(crate) struct InstanceMeta {
 #[cfg_attr(not(feature = "desktop-assembly"), allow(dead_code))]
 #[derive(Clone, Copy)]
 pub(crate) struct OptionalExports {
-    pub(crate) on_message_binary: Option<wasmtime::component::TypedFunc<(String, String, Vec<u8>), ()>>,
+    pub(crate) on_message_binary:
+        Option<wasmtime::component::TypedFunc<(String, String, Vec<u8>), ()>>,
     pub(crate) on_ws_message: Option<wasmtime::component::TypedFunc<(String, String, Vec<u8>), ()>>,
-    pub(crate) on_ws_client_message: Option<wasmtime::component::TypedFunc<(String, String, String, Vec<u8>), ()>>,
+    pub(crate) on_ws_client_message:
+        Option<wasmtime::component::TypedFunc<(String, String, String, Vec<u8>), ()>>,
     pub(crate) on_task_event: Option<wasmtime::component::TypedFunc<(String,), ()>>,
 }
 
@@ -285,19 +288,19 @@ impl LoadedWasmPlugin {
             engine::InstantiateMode::Async,
         )
         .map_err(|e| {
-                // v27（票 10）：**旧 SDK 产物的失败形态必须可诊断**。ABI 破坏性变更
-                // （删 `host-session` / `host-terminal` 两个 import、删 `terminal-hooks`
-                // 导出）后，旧产物在**实例化**阶段就会失败（找不到 import 的实现），
-                // 早于 `verify_abi` 的版本协商——wasmtime 的报错本身点名了缺失的
-                // interface，这里补一句「按哪个版本重建」，避免运维把它当成 trap 或
-                // 插件损坏。
-                AppError::Plugin(format!(
-                    "Failed to instantiate WASM component for plugin '{}': {}{}",
-                    plugin_id,
-                    e,
-                    Self::stale_artifact_rebuild_hint(&e.to_string())
-                ))
-            })?;
+            // v27（票 10）：**旧 SDK 产物的失败形态必须可诊断**。ABI 破坏性变更
+            // （删 `host-session` / `host-terminal` 两个 import、删 `terminal-hooks`
+            // 导出）后，旧产物在**实例化**阶段就会失败（找不到 import 的实现），
+            // 早于 `verify_abi` 的版本协商——wasmtime 的报错本身点名了缺失的
+            // interface，这里补一句「按哪个版本重建」，避免运维把它当成 trap 或
+            // 插件损坏。
+            AppError::Plugin(format!(
+                "Failed to instantiate WASM component for plugin '{}': {}{}",
+                plugin_id,
+                e,
+                Self::stale_artifact_rebuild_hint(&e.to_string())
+            ))
+        })?;
 
         Self::verify_abi(&mut store, &instance, abi)?;
 
@@ -517,7 +520,11 @@ impl LoadedWasmPlugin {
         let on_task_event = crate::contract::export_item("events-task", "on-task-event")
             .parse::<wasmtime::component::wit_parser::ItemName>()
             .ok()
-            .and_then(|item| instance.get_typed_func::<(String,), ()>(&mut *store, &item).ok());
+            .and_then(|item| {
+                instance
+                    .get_typed_func::<(String,), ()>(&mut *store, &item)
+                    .ok()
+            });
         store.data_mut().on_task_event = on_task_event;
         Ok(())
     }
@@ -536,7 +543,9 @@ impl LoadedWasmPlugin {
     /// 不重复实例化、互不影响。
     ///
     /// 燃料续费语义与 [`Self::exports`] 同（单次调用预算，宿主阻塞期不消耗）。
-    fn core_exports(&mut self) -> crate::Result<crate::manager::runtime::core_binding::CoreExports> {
+    fn core_exports(
+        &mut self,
+    ) -> crate::Result<crate::manager::runtime::core_binding::CoreExports> {
         self.refill_call_fuel()?;
         crate::manager::runtime::core_binding::exports(&mut self.store, &self.instance)
     }
@@ -561,19 +570,29 @@ impl LoadedWasmPlugin {
         Params: wasmtime::component::ComponentNamedList + wasmtime::component::Lower + Send,
         // async 调用经 block_on_async 驱动：未来输出（Results）需 'static + Send，
         // Params 移入未来需 Send（能力转发代调用方均为 'static 元组，见 capability.rs）
-        Results: wasmtime::component::ComponentNamedList + wasmtime::component::Lift + Send + 'static,
+        Results:
+            wasmtime::component::ComponentNamedList + wasmtime::component::Lift + Send + 'static,
     {
         let _timer = self.track_call();
         self.refill_call_fuel()?;
-        let item: wasmtime::component::wit_parser::ItemName = export_name
-            .parse()
-            .map_err(|e| AppError::Plugin(format!("invalid capability export name: {} ({})", export_name, e)))?;
+        let item: wasmtime::component::wit_parser::ItemName = export_name.parse().map_err(|e| {
+            AppError::Plugin(format!(
+                "invalid capability export name: {} ({})",
+                export_name, e
+            ))
+        })?;
         let func = self
             .instance
             .get_typed_func::<Params, Results>(&mut self.store, &item)
-            .map_err(|e| AppError::Plugin(format!("capability export not found: {} ({})", export_name, e)))?;
-        block_on_async(async { func.call_async(&mut self.store, params).await })
-            .map_err(|e| AppError::Plugin(format!("capability call failed: {} ({})", export_name, e)))
+            .map_err(|e| {
+                AppError::Plugin(format!(
+                    "capability export not found: {} ({})",
+                    export_name, e
+                ))
+            })?;
+        block_on_async(async { func.call_async(&mut self.store, params).await }).map_err(|e| {
+            AppError::Plugin(format!("capability call failed: {} ({})", export_name, e))
+        })
     }
 
     /// 实例化时探测到的可路由能力接口导出（core-plugin-manager）；
@@ -606,15 +625,24 @@ impl LoadedWasmPlugin {
             let lifecycle = exports.wasmnest_plugin_lifecycle();
             match block_on_async(async { lifecycle.call_activate(&mut self.store).await }) {
                 Ok(Ok(())) => {
-                    self.store.data().metrics.record_lifecycle(LifecycleEvent::ActivateOk);
+                    self.store
+                        .data()
+                        .metrics
+                        .record_lifecycle(LifecycleEvent::ActivateOk);
                     Ok(0)
                 }
                 Ok(Err(msg)) => {
-                    self.store.data().metrics.record_lifecycle(LifecycleEvent::ActivateFail);
+                    self.store
+                        .data()
+                        .metrics
+                        .record_lifecycle(LifecycleEvent::ActivateFail);
                     Err(AppError::Plugin(format!("WASM activate() failed: {}", msg)))
                 }
                 Err(e) => {
-                    self.store.data().metrics.record_lifecycle(LifecycleEvent::ActivateFail);
+                    self.store
+                        .data()
+                        .metrics
+                        .record_lifecycle(LifecycleEvent::ActivateFail);
                     Err(engine::trapped(&self.store, "activate", e))
                 }
             }
@@ -634,13 +662,17 @@ impl LoadedWasmPlugin {
         let lifecycle = exports.wasmnest_plugin_lifecycle();
         match block_on_async(async { lifecycle.call_deactivate(&mut self.store).await }) {
             Ok(Ok(())) => {
-                self.store.data().metrics.record_lifecycle(LifecycleEvent::Deactivate);
+                self.store
+                    .data()
+                    .metrics
+                    .record_lifecycle(LifecycleEvent::Deactivate);
                 Ok(0)
             }
-            Ok(Err(msg)) => Err(AppError::Plugin(format!("WASM deactivate() failed: {}", msg))),
-            Err(e) => {
-                Err(engine::trapped(&self.store, "deactivate", e))
-            }
+            Ok(Err(msg)) => Err(AppError::Plugin(format!(
+                "WASM deactivate() failed: {}",
+                msg
+            ))),
+            Err(e) => Err(engine::trapped(&self.store, "deactivate", e)),
         }
     }
 
@@ -650,11 +682,12 @@ impl LoadedWasmPlugin {
         let _timer = self.track_call();
         let exports = self.core_exports()?;
         let cmd = exports.wasmnest_plugin_command();
-        match block_on_async(async { cmd.call_invoke(&mut self.store, command_name, args_json).await }) {
+        match block_on_async(async {
+            cmd.call_invoke(&mut self.store, command_name, args_json)
+                .await
+        }) {
             Ok(v) => Ok(v),
-            Err(e) => {
-                Err(engine::trapped(&self.store, "invoke_command", e))
-            }
+            Err(e) => Err(engine::trapped(&self.store, "invoke_command", e)),
         }
     }
 
@@ -674,9 +707,7 @@ impl LoadedWasmPlugin {
         let lifecycle = exports.wasmnest_plugin_lifecycle();
         match block_on_async(async { lifecycle.call_on_startup(&mut self.store).await }) {
             Ok(v) => Ok(v),
-            Err(e) => {
-                Err(engine::trapped(&self.store, "on_startup", e))
-            }
+            Err(e) => Err(engine::trapped(&self.store, "on_startup", e)),
         }
     }
 
@@ -690,9 +721,7 @@ impl LoadedWasmPlugin {
         let lifecycle = exports.wasmnest_plugin_lifecycle();
         match block_on_async(async { lifecycle.call_on_shutdown(&mut self.store).await }) {
             Ok(v) => Ok(v),
-            Err(e) => {
-                Err(engine::trapped(&self.store, "on_shutdown", e))
-            }
+            Err(e) => Err(engine::trapped(&self.store, "on_shutdown", e)),
         }
     }
 
@@ -711,7 +740,12 @@ impl LoadedWasmPlugin {
 
     /// 派发委托给宿主注入的 [`GuestEventDispatcher`]（票 03 / ADR 0022）：本壳不
     /// 持有 `events` 绑定。调用计时与燃料续费仍留机制侧。
-    pub fn on_message(&mut self, topic: &str, sender: &str, payload: &serde_json::Value) -> crate::Result<()> {
+    pub fn on_message(
+        &mut self,
+        topic: &str,
+        sender: &str,
+        payload: &serde_json::Value,
+    ) -> crate::Result<()> {
         let _timer = self.track_call();
         let payload_str = serde_json::to_string(payload).unwrap_or_default();
         self.refill_call_fuel()?;
@@ -725,7 +759,12 @@ impl LoadedWasmPlugin {
     /// 仅当实例在实例化时探测到 `events-binary#on-message-binary` 导出才可调用；
     /// 总线侧已按订阅者格式偏好过滤，正常不会对无导出的实例发起本调用，
     /// 此处防御性拒绝（旧插件二进制 → 格式不匹配拒绝的语义由总线保证）
-    pub fn on_message_binary(&mut self, topic: &str, sender: &str, payload: &[u8]) -> crate::Result<()> {
+    pub fn on_message_binary(
+        &mut self,
+        topic: &str,
+        sender: &str,
+        payload: &[u8],
+    ) -> crate::Result<()> {
         let _timer = self.track_call();
         // 燃料续费：本方法不经 `exports()`（直接持探测句柄调用），必须自带
         // 续费，否则本回调的燃料跨调用累积耗尽 → trap → Store 中毒 → 自动重载
@@ -744,9 +783,7 @@ impl LoadedWasmPlugin {
             )
             .await
         })
-        .map_err(|e| {
-            engine::trapped(&self.store, "on_message_binary", e)
-        })
+        .map_err(|e| engine::trapped(&self.store, "on_message_binary", e))
     }
 
     /// 调用插件的 WS 帧接收导出（v14，可选导出动态探测）
@@ -760,18 +797,23 @@ impl LoadedWasmPlugin {
         // 燃料续费：同 on_message_binary——不经 exports()，须自带续费
         self.refill_call_fuel()?;
         match frame {
-            WsFrameDispatch::Client { handle, kind, payload } => {
+            WsFrameDispatch::Client {
+                handle,
+                kind,
+                payload,
+            } => {
                 // TypedFunc 先 clone 再调用，避免与 &mut self.store 的借用冲突
                 let Some(func) = self.store.data().on_ws_message.clone() else {
                     return Ok(false);
                 };
                 block_on_async(async {
-                    func.call_async(&mut self.store, (handle.clone(), kind.clone(), payload.clone()))
-                        .await
+                    func.call_async(
+                        &mut self.store,
+                        (handle.clone(), kind.clone(), payload.clone()),
+                    )
+                    .await
                 })
-                .map_err(|e| {
-                    engine::trapped(&self.store, "on_ws_message", e)
-                })?;
+                .map_err(|e| engine::trapped(&self.store, "on_ws_message", e))?;
                 Ok(true)
             }
             WsFrameDispatch::EndpointClient {
@@ -786,13 +828,16 @@ impl LoadedWasmPlugin {
                 block_on_async(async {
                     func.call_async(
                         &mut self.store,
-                        (endpoint_id.clone(), client_id.clone(), kind.clone(), payload.clone()),
+                        (
+                            endpoint_id.clone(),
+                            client_id.clone(),
+                            kind.clone(),
+                            payload.clone(),
+                        ),
                     )
                     .await
                 })
-                .map_err(|e| {
-                    engine::trapped(&self.store, "on_ws_client_message", e)
-                })?;
+                .map_err(|e| engine::trapped(&self.store, "on_ws_client_message", e))?;
                 Ok(true)
             }
         }
@@ -816,9 +861,11 @@ impl LoadedWasmPlugin {
         let Some(func) = self.store.data().on_task_event.clone() else {
             return Ok(false);
         };
-        block_on_async(async { func.call_async(&mut self.store, (event_json.to_string(),)).await }).map_err(|e| {
-            engine::trapped(&self.store, "on_task_event", e)
-        })?;
+        block_on_async(async {
+            func.call_async(&mut self.store, (event_json.to_string(),))
+                .await
+        })
+        .map_err(|e| engine::trapped(&self.store, "on_task_event", e))?;
         Ok(true)
     }
 
@@ -852,20 +899,12 @@ impl LoadedWasmPlugin {
         // 事件导出同样消耗 guest 燃料：派发前续费（与 on_bus_message 同款；
         // AppStartup/AppShutdown 走 lifecycle 导出，其续费在 exports() 内）
         match event {
-            PluginLifecycleEvent::AppStartup => self
-                .on_startup()
-                .and_then(|inner| {
-                    inner.map_err(|msg| {
-                        AppError::Plugin(format!("WASM on_startup() failed: {}", msg))
-                    })
-                }),
-            PluginLifecycleEvent::AppShutdown => self
-                .on_shutdown()
-                .and_then(|inner| {
-                    inner.map_err(|msg| {
-                        AppError::Plugin(format!("WASM on_shutdown() failed: {}", msg))
-                    })
-                }),
+            PluginLifecycleEvent::AppStartup => self.on_startup().and_then(|inner| {
+                inner.map_err(|msg| AppError::Plugin(format!("WASM on_startup() failed: {}", msg)))
+            }),
+            PluginLifecycleEvent::AppShutdown => self.on_shutdown().and_then(|inner| {
+                inner.map_err(|msg| AppError::Plugin(format!("WASM on_shutdown() failed: {}", msg)))
+            }),
             PluginLifecycleEvent::AuthSuccess => {
                 self.refill_call_fuel()?;
                 let instance = self.instance;
@@ -902,9 +941,7 @@ impl LoadedWasmPlugin {
         let manifest = exports.wasmnest_plugin_manifest();
         match block_on_async(async { manifest.call_get(&mut self.store).await }) {
             Ok(v) => Ok(v),
-            Err(e) => {
-                Err(engine::trapped(&self.store, "manifest", e))
-            }
+            Err(e) => Err(engine::trapped(&self.store, "manifest", e)),
         }
     }
 
@@ -931,8 +968,8 @@ mod tests {
 
     use super::*;
     // 复用 host_api 测试基建（`crate::host_api::tests` 为 pub(super)，同子树可访问）
-    use crate::host_api::tests::build_host_ctx;
     use crate::host_api::grant_permissions;
+    use crate::host_api::tests::build_host_ctx;
 
     /// 造一个**已装配 sqlite 域端口**的无头上下文
     ///
@@ -961,8 +998,8 @@ mod tests {
     // - preopen.rs：WASI 预打开目录解析与 build_ctx 装配（实现真源已在核心
     //   `manager/runtime/wasi.rs`；文件留此处仅为复用本模块脚手架）
     // - stale_hint.rs：旧 SDK 产物实例化失败的 ABI 版本重建指引判据
-    mod whitelist;
     mod linker;
     mod preopen;
     mod stale_hint;
+    mod whitelist;
 }

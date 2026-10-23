@@ -45,7 +45,13 @@ fn wasi_disabled_config_blocks_wasip2_plugin() {
         .expect("compile wasi test component");
     // 不用 `expect_err`：成功值 `LoadedWasmPlugin` 未实现 Debug（也没必要为一个
     // 测试断言给它加 Debug 面）
-    let err = match wasm_runtime.instantiate_component(&component, "com.wasmnest.wasi-test", host_ctx, &[], None) {
+    let err = match wasm_runtime.instantiate_component(
+        &component,
+        "com.wasmnest.wasi-test",
+        host_ctx,
+        &[],
+        None,
+    ) {
         Ok(_) => panic!("关闭 WASI 面后 import WASI 的插件必须实例化失败"),
         Err(e) => e,
     };
@@ -76,12 +82,19 @@ fn wasi_p2_disabled_blocks_wasip2_plugin_while_p3_stays_on() {
     let component = wasm_runtime
         .compile_component(&build_wasi_test_component())
         .expect("compile wasi test component");
-    let err = match wasm_runtime.instantiate_component(&component, "com.wasmnest.wasi-test", host_ctx, &[], None) {
+    let err = match wasm_runtime.instantiate_component(
+        &component,
+        "com.wasmnest.wasi-test",
+        host_ctx,
+        &[],
+        None,
+    ) {
         Ok(_) => panic!("关掉 p2 后 wasip2 插件必须实例化失败"),
         Err(e) => e,
     };
     assert!(
-        err.to_string().contains("Failed to instantiate WASM component"),
+        err.to_string()
+            .contains("Failed to instantiate WASM component"),
         "失败必须来自实例化阶段（缺 p2 import），实际: {err}"
     );
 }

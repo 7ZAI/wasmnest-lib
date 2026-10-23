@@ -90,7 +90,10 @@ pub fn unregister_inner(state: &mut Option<AuthCenterEntry>, owner: &str) -> Res
             *state = None;
             Ok(())
         }
-        Some(entry) => Err(format!("not owner of auth center (registered by '{}')", entry.owner)),
+        Some(entry) => Err(format!(
+            "not owner of auth center (registered by '{}')",
+            entry.owner
+        )),
         None => Ok(()),
     }
 }
@@ -162,7 +165,10 @@ pub fn purge_for_plugin(plugin_id: &str) {
         Err(_) => return,
     };
     if guard.as_ref().is_some_and(|e| e.owner == plugin_id) {
-        let center_id = guard.as_ref().map(|e| e.center_id.clone()).unwrap_or_default();
+        let center_id = guard
+            .as_ref()
+            .map(|e| e.center_id.clone())
+            .unwrap_or_default();
         tracing::info!(
             center_id = %center_id,
             center_owner = %plugin_id,
@@ -256,8 +262,8 @@ pub fn invoke_auth_method(
     }
     // params 是调用方给的 JSON 串：解析成 Value 只是为了装进 JSON-RPC 信封，
     // 语义上仍是"原样透传"（宿主不解释字段）。
-    let params_value: serde_json::Value =
-        serde_json::from_str(params).map_err(|e| format!("auth method invoke params must be valid JSON: {e}"))?;
+    let params_value: serde_json::Value = serde_json::from_str(params)
+        .map_err(|e| format!("auth method invoke params must be valid JSON: {e}"))?;
     let api = format!("{}.auth-grant", entry.owner);
     let request_topic = format!("wasmnest.api.{api}");
     let method_short = api.rsplit_once('.').map(|(_, m)| m).unwrap_or(&api);
@@ -269,10 +275,14 @@ pub fn invoke_auth_method(
         "params": { "method": method, "params": params_value },
     });
     let reply_json = host_ctx
-        .call_plugin_api_host(&request_topic, &payload.to_string(), crate::intercall::AUTH_CENTER_TIMEOUT_MS)
+        .call_plugin_api_host(
+            &request_topic,
+            &payload.to_string(),
+            crate::intercall::AUTH_CENTER_TIMEOUT_MS,
+        )
         .map_err(|e| format!("auth center unavailable: {e}"))?;
-    let reply: serde_json::Value =
-        serde_json::from_str(&reply_json).map_err(|e| format!("auth center unavailable (invalid reply): {e}"))?;
+    let reply: serde_json::Value = serde_json::from_str(&reply_json)
+        .map_err(|e| format!("auth center unavailable (invalid reply): {e}"))?;
     if let Some(err) = reply.get("error") {
         // 中心返回错误信封：业务拒绝原样透传（ADR 0030 错误码由中心自持）
         let message = err
@@ -310,7 +320,10 @@ mod tests {
         let mut state = local_state();
         let id = register_inner(&mut state, "com.wasmnest.terminal-session", methods4()).unwrap();
         assert!(id.starts_with("authc-"), "句柄形态 authc-<uuid>: {id}");
-        assert_eq!(state.as_ref().unwrap().owner, "com.wasmnest.terminal-session");
+        assert_eq!(
+            state.as_ref().unwrap().owner,
+            "com.wasmnest.terminal-session"
+        );
         assert_eq!(state.as_ref().unwrap().center_id, id);
     }
 
@@ -320,10 +333,16 @@ mod tests {
         register_inner(
             &mut state,
             "com.wasmnest.terminal-session",
-            ["qr", "biometric", "qr", "jwt"].iter().map(|s| s.to_string()).collect(),
+            ["qr", "biometric", "qr", "jwt"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         )
         .unwrap();
-        assert_eq!(state.as_ref().unwrap().methods, vec!["biometric", "jwt", "qr"]);
+        assert_eq!(
+            state.as_ref().unwrap().methods,
+            vec!["biometric", "jwt", "qr"]
+        );
     }
 
     /// K4 单中心：重复注册显式拒绝且点名在册属主（不猜、不覆盖、不回退）
@@ -331,14 +350,25 @@ mod tests {
     fn test_duplicate_register_rejected_with_owner_named() {
         let mut state = local_state();
         register_inner(&mut state, "com.wasmnest.terminal-session", methods4()).unwrap();
-        let err = register_inner(&mut state, "com.wasmnest.agent-hub", vec!["jwt".to_string()]).unwrap_err();
+        let err = register_inner(
+            &mut state,
+            "com.wasmnest.agent-hub",
+            vec!["jwt".to_string()],
+        )
+        .unwrap_err();
         assert!(
             err.contains("com.wasmnest.terminal-session"),
             "重复注册必须点名在册属主, got: {err}"
         );
-        assert!(err.contains("authc-"), "重复注册必须点名在册句柄, got: {err}");
+        assert!(
+            err.contains("authc-"),
+            "重复注册必须点名在册句柄, got: {err}"
+        );
         // 原中心不受影响
-        assert_eq!(state.as_ref().unwrap().owner, "com.wasmnest.terminal-session");
+        assert_eq!(
+            state.as_ref().unwrap().owner,
+            "com.wasmnest.terminal-session"
+        );
     }
 
     /// 空 methods 拒绝（半就绪中心是静默不可用源）
@@ -373,7 +403,10 @@ mod tests {
         register_inner(&mut state, "com.wasmnest.terminal-session", methods4()).unwrap();
         // 非属主 purge：不回收（只碰本人）
         purge_inner(&mut state, "com.wasmnest.agent-hub");
-        assert_eq!(state.as_ref().unwrap().owner, "com.wasmnest.terminal-session");
+        assert_eq!(
+            state.as_ref().unwrap().owner,
+            "com.wasmnest.terminal-session"
+        );
         // 属主 purge：回收
         purge_inner(&mut state, "com.wasmnest.terminal-session");
         assert!(state.is_none());

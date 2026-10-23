@@ -37,9 +37,8 @@ fn stale_artifact_instantiation_hint_is_selective() {
     );
 
     // 形态 3：被删的 export interface（宿主按必选导出实例化，缺导出同样失败）
-    let hint_export = LoadedWasmPlugin::stale_artifact_rebuild_hint(
-        "component does not export terminal-hooks",
-    );
+    let hint_export =
+        LoadedWasmPlugin::stale_artifact_rebuild_hint("component does not export terminal-hooks");
     assert!(
         hint_export.contains("重建插件产物"),
         "缺失必选导出必须给重建指引: {hint_export}"

@@ -104,15 +104,16 @@ use serde::Serialize;
 // `base::Result`（PeerNetError 别名）刻意不在此 re-export：lib 顶层 Result 是
 // server-base AppError 别名，两义共存时冲突；消费方需要底座错误时用全限定 `base::Result`。
 pub use crate::base::{
-    CancelOrigin, CancelToken, CAP_FILE_TRANSFER, CONFIRM_TIMEOUT, CertDer, Connection, ConnectionHandler, DirEntry,
-    DISCOVERY_PROTOCOL_VERSION, DiscoveryCache, DiscoveryConfig, DiscoveryDaemon, DiscoveredPeerRecord, FileLanding,
-    FileMeta, HandlerFuture, IncomingFrame, MAX_PENDING_CONFIRMATIONS, NodeId, NodeIdentity, OutgoingFile, PauseCmd,
-    PauseSlot, PeerMdnsBrowse, PeerNetError, PeerNetNode, PeerNetNodeConfig, PEER_DISCOVERY_TTL, ReceivePolicy,
-    RejectReason, RunningNode, SERVICE_TYPE, SeqReader, SharedDirEntry, SharedDirHandler, SharedDirRoot,
-    SharedDirStore, SharedRootMeta, SharedSafAccess, StaticPeerRecord, SWEEP_INTERVAL, TerminalState, TransferConfig,
-    TransferEvent, TransferFrame, TransferReceiveHandler, TrustedPeerEntry, TrustEvent, TrustStatus, TrustStatusFrame,
-    TrustStore, browse_shared_dir, generate_self_signed_cert, list_shared_roots, pull_shared_file, resolve_rel_path,
-    saf_not_found, send_batch, sort_entries, spawn_peer_mdns_daemon, verify_cert_matches_node_id, BrowseListing,
+    browse_shared_dir, generate_self_signed_cert, list_shared_roots, pull_shared_file, resolve_rel_path, saf_not_found,
+    send_batch, sort_entries, spawn_peer_mdns_daemon, verify_cert_matches_node_id, BrowseListing, CancelOrigin,
+    CancelToken, CertDer, Connection, ConnectionHandler, DirEntry, DiscoveredPeerRecord, DiscoveryCache,
+    DiscoveryConfig, DiscoveryDaemon, FileLanding, FileMeta, HandlerFuture, IncomingFrame, NodeId, NodeIdentity,
+    OutgoingFile, PauseCmd, PauseSlot, PeerMdnsBrowse, PeerNetError, PeerNetNode, PeerNetNodeConfig, ReceivePolicy,
+    RejectReason, RunningNode, SeqReader, SharedDirEntry, SharedDirHandler, SharedDirRoot, SharedDirStore,
+    SharedRootMeta, SharedSafAccess, StaticPeerRecord, TerminalState, TransferConfig, TransferEvent, TransferFrame,
+    TransferReceiveHandler, TrustEvent, TrustStatus, TrustStatusFrame, TrustStore, TrustedPeerEntry, CAP_FILE_TRANSFER,
+    CONFIRM_TIMEOUT, DISCOVERY_PROTOCOL_VERSION, MAX_PENDING_CONFIRMATIONS, PEER_DISCOVERY_TTL, SERVICE_TYPE,
+    SWEEP_INTERVAL,
 };
 // 底座子模块（`transfer` / `shared` 等）对消费方保持模块路径可用：旧 `wasmnest_peer_net::transfer`
 // 形态 → `wasmnest_server_peer_net::transfer`（测试仓集成场景沿用该路径）
@@ -1612,8 +1613,8 @@ mod peer_net_tests {
     use super::*;
     // `SharedDirRoot` 只被本组用例用到（生产面走 `SharedDirEntry` 的 serde 反序列化）：
     // 从 crate 顶部 import 列表移到这里，避免非 test 构建报 unused import
-    use chrono::Utc;
     use crate::base::{SharedDirRoot, TrustedPeerEntry};
+    use chrono::Utc;
 
     /// 64 位小写 hex 节点 ID（格式校验通过的最小形态）
     fn node_id(suffix: u8) -> NodeId {

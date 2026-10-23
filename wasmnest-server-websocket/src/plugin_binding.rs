@@ -43,16 +43,7 @@
 
 // 绑定层专属依赖（`HostModule` 装配 + wasmtime `Linker`）：只随 `common-host`
 // feature 进编译图——无 feature 的宿主（移动端 / 无头）拿纯引擎，不装配 WIT 绑定层。
-#[cfg(feature = "common-host")]
-use wasmnest_host_kit::{HostModule, HostModuleDesc, ModuleEntry, WasmPluginState};
-use crate::wire::{
-    owned_topic, PERMISSION_WS_CLIENT, PERMISSION_WS_SERVER, WS_CLOSE, WS_ERROR, WS_OPEN,
-};
-use wasmnest_server_base::constants::{
-    PLUGIN_WS_CONNECT_TIMEOUT_SECS, PLUGIN_WS_ENDPOINT_PATH_MAX_LEN, PLUGIN_WS_MAX_CONNS_PER_PLUGIN,
-    PLUGIN_WS_MAX_MESSAGE_BYTES, PLUGIN_WS_SEND_QUEUE_CAPACITY,
-};
-use wasmnest_server_base::error_boundary::spawn_with_error_boundary;
+use crate::wire::{owned_topic, PERMISSION_WS_CLIENT, PERMISSION_WS_SERVER, WS_CLOSE, WS_ERROR, WS_OPEN};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -64,6 +55,13 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message;
+#[cfg(feature = "common-host")]
+use wasmnest_host_kit::{HostModule, HostModuleDesc, ModuleEntry, WasmPluginState};
+use wasmnest_server_base::constants::{
+    PLUGIN_WS_CONNECT_TIMEOUT_SECS, PLUGIN_WS_ENDPOINT_PATH_MAX_LEN, PLUGIN_WS_MAX_CONNS_PER_PLUGIN,
+    PLUGIN_WS_MAX_MESSAGE_BYTES, PLUGIN_WS_SEND_QUEUE_CAPACITY,
+};
+use wasmnest_server_base::error_boundary::spawn_with_error_boundary;
 #[cfg(feature = "common-host")]
 use wasmtime::component::{bindgen, Linker};
 

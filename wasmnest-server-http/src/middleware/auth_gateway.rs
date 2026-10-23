@@ -257,6 +257,6 @@ mod tests {
             .insert_header(("Authorization", format!("Bearer {}", token)))
             .to_srv_request()
     }
-    mod host_public_paths_are_only;
     mod adr_0033;
+    mod host_public_paths_are_only;
 }

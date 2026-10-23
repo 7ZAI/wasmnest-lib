@@ -34,7 +34,6 @@ const SHARED_DIRS_FILE: &str = "shared_dirs.json";
 /// 文件格式版本：演进只允许追加字段，加载端拒绝更大版本
 const SHARED_DIRS_FORMAT_VERSION: u32 = 1;
 
-
 // ==================== 数据模型 ====================
 
 /// 共享目录根形态（wire internally tagged，`type` 字段即线上契约）
@@ -271,18 +270,12 @@ impl SharedDirStore {
                 SharedDirRoot::Fs { path } => {
                     let meta = std::fs::metadata(path).map_err(|e| PeerNetError::TransferSession {
                         role: "registry",
-                        detail: format!(
-                            "shared dir root '{}' inaccessible: {e}",
-                            path.display()
-                        ),
+                        detail: format!("shared dir root '{}' inaccessible: {e}", path.display()),
                     })?;
                     if !meta.is_dir() {
                         return Err(PeerNetError::TransferSession {
                             role: "registry",
-                            detail: format!(
-                                "shared dir root '{}' is not a directory",
-                                path.display()
-                            ),
+                            detail: format!("shared dir root '{}' is not a directory", path.display()),
                         });
                     }
                 }
@@ -290,9 +283,7 @@ impl SharedDirStore {
                     if !tree_uri.starts_with("content://") {
                         return Err(PeerNetError::TransferSession {
                             role: "registry",
-                            detail: format!(
-                                "shared dir saf root is not a content uri: {tree_uri}"
-                            ),
+                            detail: format!("shared dir saf root is not a content uri: {tree_uri}"),
                         });
                     }
                 }
@@ -314,7 +305,10 @@ impl SharedDirStore {
         // 规范化名称（trim 后回写）再整体换入；持久化失败回滚旧表
         let normalized: Vec<SharedDirEntry> = entries
             .iter()
-            .map(|e| SharedDirEntry { name: e.name.trim().to_string(), ..e.clone() })
+            .map(|e| SharedDirEntry {
+                name: e.name.trim().to_string(),
+                ..e.clone()
+            })
             .collect();
         let mut dirs = self.dirs.write().expect("dirs lock poisoned");
         let previous = std::mem::replace(&mut *dirs, normalized);
@@ -349,11 +343,10 @@ impl SharedDirStore {
             path: path.to_path_buf(),
             source,
         })?;
-        let value: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|source| PeerNetError::SharedDirsParse {
-                path: path.to_path_buf(),
-                source,
-            })?;
+        let value: serde_json::Value = serde_json::from_str(&raw).map_err(|source| PeerNetError::SharedDirsParse {
+            path: path.to_path_buf(),
+            source,
+        })?;
         let version = value.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
         if version > SHARED_DIRS_FORMAT_VERSION as u64 {
             // 更新格式：终局拒绝（静默降级读会丢字段，语义回退不可接受）
@@ -364,11 +357,10 @@ impl SharedDirStore {
                 ),
             });
         }
-        let file: SharedDirsFile =
-            serde_json::from_value(value).map_err(|source| PeerNetError::SharedDirsParse {
-                path: path.to_path_buf(),
-                source,
-            })?;
+        let file: SharedDirsFile = serde_json::from_value(value).map_err(|source| PeerNetError::SharedDirsParse {
+            path: path.to_path_buf(),
+            source,
+        })?;
         Ok(file.dirs)
     }
 
@@ -391,9 +383,7 @@ impl SharedDirStore {
         let Some(path) = self.path.as_ref() else {
             return Ok(());
         };
-        let payload = serde_json::to_vec_pretty(file).map_err(|source| {
-            PeerNetError::SharedDirsSerialize { source }
-        })?;
+        let payload = serde_json::to_vec_pretty(file).map_err(|source| PeerNetError::SharedDirsSerialize { source })?;
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, payload).map_err(|source| PeerNetError::SharedDirsWriteTemp {
             path: tmp.clone(),
@@ -466,7 +456,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = SharedDirStore::load_or_create(dir.path()).expect("create store");
         let entry = store
-            .add("Movies", SharedDirRoot::Fs { path: dir.path().to_path_buf() })
+            .add(
+                "Movies",
+                SharedDirRoot::Fs {
+                    path: dir.path().to_path_buf(),
+                },
+            )
             .expect("add fs dir");
         assert!(!entry.id.is_empty());
 
@@ -487,38 +482,61 @@ mod tests {
         let store = SharedDirStore::in_memory();
 
         // 空名拒绝
-        assert!(store.add("  ", SharedDirRoot::Fs { path: dir.path().to_path_buf() }).is_err());
+        assert!(store
+            .add(
+                "  ",
+                SharedDirRoot::Fs {
+                    path: dir.path().to_path_buf()
+                }
+            )
+            .is_err());
 
         // 不存在的路径拒绝
-        assert!(
-            store
-                .add("ghost", SharedDirRoot::Fs { path: dir.path().join("nope") })
-                .is_err()
-        );
+        assert!(store
+            .add(
+                "ghost",
+                SharedDirRoot::Fs {
+                    path: dir.path().join("nope")
+                }
+            )
+            .is_err());
 
         // 非 content:// 的 SAF 根拒绝
-        assert!(
-            store
-                .add("bad-saf", SharedDirRoot::Saf { tree_uri: "/storage/emulated/0".into() })
-                .is_err()
-        );
+        assert!(store
+            .add(
+                "bad-saf",
+                SharedDirRoot::Saf {
+                    tree_uri: "/storage/emulated/0".into()
+                }
+            )
+            .is_err());
 
         // 合法新增 + 同根去重
         store
-            .add("docs", SharedDirRoot::Fs { path: dir.path().to_path_buf() })
+            .add(
+                "docs",
+                SharedDirRoot::Fs {
+                    path: dir.path().to_path_buf(),
+                },
+            )
             .expect("first add");
-        assert!(
-            store
-                .add("docs-again", SharedDirRoot::Fs { path: dir.path().to_path_buf() })
-                .is_err()
-        );
+        assert!(store
+            .add(
+                "docs-again",
+                SharedDirRoot::Fs {
+                    path: dir.path().to_path_buf()
+                }
+            )
+            .is_err());
     }
 
     fn fs_entry(id: &str, name: &str, path: &Path) -> SharedDirEntry {
         SharedDirEntry {
             id: id.to_string(),
             name: name.to_string(),
-            root: SharedDirRoot::Fs { path: path.to_path_buf() },
+            root: SharedDirRoot::Fs {
+                path: path.to_path_buf(),
+            },
         }
     }
 
@@ -527,7 +545,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = SharedDirStore::load_or_create(dir.path()).expect("create store");
         let old = store
-            .add("old", SharedDirRoot::Fs { path: dir.path().to_path_buf() })
+            .add(
+                "old",
+                SharedDirRoot::Fs {
+                    path: dir.path().to_path_buf(),
+                },
+            )
             .expect("seed old entry");
 
         // 全量替换：旧条目消失，新条目（插件持有 ID）生效

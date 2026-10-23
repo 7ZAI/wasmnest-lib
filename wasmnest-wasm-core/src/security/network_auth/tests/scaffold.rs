@@ -63,7 +63,10 @@ pub(super) async fn promptable_with_db(
     let db = Arc::new(Mutex::new(
         Database::new(Path::new(":memory:")).expect("open in-memory db"),
     ));
-    db.lock().expect("db lock").init_schema().expect("init schema");
+    db.lock()
+        .expect("db lock")
+        .init_schema()
+        .expect("init schema");
     let log = EmittedLog::default();
     let sink = log.0.clone();
     let mut checker = NetworkAuthChecker::with_emitter(
@@ -108,7 +111,13 @@ pub(super) fn match_row(target: &str, effect: &str, prefix_match: bool) -> AuthR
 pub(super) async fn seed_allow(checker: &NetworkAuthChecker, plugin: &str, target: &str) {
     checker
         .store
-        .grant(plugin, AuthResource::Network, target, &[], AuthRecordSource::User)
+        .grant(
+            plugin,
+            AuthResource::Network,
+            target,
+            &[],
+            AuthRecordSource::User,
+        )
         .await
         .expect("seed allow");
 }
@@ -116,7 +125,12 @@ pub(super) async fn seed_allow(checker: &NetworkAuthChecker, plugin: &str, targe
 pub(super) async fn seed_deny(checker: &NetworkAuthChecker, plugin: &str, target: &str) {
     checker
         .store
-        .deny(plugin, AuthResource::Network, target, AuthRecordSource::UserDeny)
+        .deny(
+            plugin,
+            AuthResource::Network,
+            target,
+            AuthRecordSource::UserDeny,
+        )
         .await
         .expect("seed deny");
 }
@@ -131,7 +145,11 @@ pub(super) async fn set_strategy(checker: &NetworkAuthChecker, plugin: &str, tie
 }
 
 /// 某应用某 target 的 allow 记录的 `source`（经读模型读，不自己拼 SQL）
-pub(super) async fn source_of(checker: &NetworkAuthChecker, plugin: &str, target: &str) -> Option<String> {
+pub(super) async fn source_of(
+    checker: &NetworkAuthChecker,
+    plugin: &str,
+    target: &str,
+) -> Option<String> {
     checker
         .store
         .overview(plugin, "T", Vec::new())
@@ -147,7 +165,11 @@ pub(super) async fn source_of(checker: &NetworkAuthChecker, plugin: &str, target
 ///
 /// 仅供「读模型不可用」的用例（读模型 `overview` 也要读策略表，而那些用例
 /// 故意把策略表弄没了）；其余用例走 [`source_of`]，避免测试自建第二套口径。
-pub(super) async fn source_via_raw_sql(db: &Arc<Mutex<Database>>, plugin: &str, target: &str) -> Option<String> {
+pub(super) async fn source_via_raw_sql(
+    db: &Arc<Mutex<Database>>,
+    plugin: &str,
+    target: &str,
+) -> Option<String> {
     db.lock()
         .expect("db lock")
         .conn()

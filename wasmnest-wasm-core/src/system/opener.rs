@@ -28,8 +28,13 @@ pub fn reveal_existing_in_dir(path: &str) -> crate::Result<()> {
             path.display()
         )));
     }
-    reveal_in_dir(&path)
-        .map_err(|e| crate::AppError::Internal(format!("reveal: failed to open '{}': {}", path.display(), e)))
+    reveal_in_dir(&path).map_err(|e| {
+        crate::AppError::Internal(format!(
+            "reveal: failed to open '{}': {}",
+            path.display(),
+            e
+        ))
+    })
 }
 
 /// 剥离 Windows `\\?\` verbatim 前缀（非 Windows 路径原样返回）
@@ -54,7 +59,10 @@ pub fn reveal_in_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(not(target_os = "windows"))]
     {
         let (program, args) = unix_reveal_command(std::env::consts::OS, path);
-        std::process::Command::new(program).args(args).spawn().map(|_| ())
+        std::process::Command::new(program)
+            .args(args)
+            .spawn()
+            .map(|_| ())
     }
 }
 
@@ -89,7 +97,9 @@ const EXTERNAL_URL_ALLOWED_SCHEMES: [&str; 2] = ["http", "https"];
 /// 拒绝：空串 / 无 `:` / scheme 非法字符（非 `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`）
 /// / scheme 不在白名单 / 冒号后为空 / 含 ASCII 控制字符（防走私）。
 pub fn validate_external_url(url: &str) -> crate::Result<&str> {
-    let err = |reason: &str| crate::AppError::InvalidInput(format!("open_external_url: {reason}: {url:?}"));
+    let err = |reason: &str| {
+        crate::AppError::InvalidInput(format!("open_external_url: {reason}: {url:?}"))
+    };
 
     if url.is_empty() {
         return Err(err("empty url"));
@@ -224,7 +234,10 @@ fn shell_execute_explore(dir: &Path) -> std::io::Result<()> {
 #[cfg(target_os = "windows")]
 fn to_wide(p: &Path) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
-    p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+    p.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 // ==================== Tests ====================
@@ -236,8 +249,14 @@ mod tests {
     /// 契约：verbatim 前缀只在**开头**时剥离（历史 wasm 产物的 `\\?\D:\x/y` 形态）
     #[test]
     fn strip_verbatim_prefix_only_at_start() {
-        assert_eq!(strip_verbatim_prefix(r"\\?\D:\下载\file.mkv"), r"D:\下载\file.mkv");
-        assert_eq!(strip_verbatim_prefix(r"\\?\D:\下载/file.mkv"), r"D:\下载/file.mkv");
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\D:\下载\file.mkv"),
+            r"D:\下载\file.mkv"
+        );
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\D:\下载/file.mkv"),
+            r"D:\下载/file.mkv"
+        );
         assert_eq!(strip_verbatim_prefix("/tmp/a/b.txt"), "/tmp/a/b.txt");
         assert_eq!(
             strip_verbatim_prefix(r"D:\\?\nested.txt"),
@@ -250,7 +269,8 @@ mod tests {
     /// （不会 spawn 任何进程——测试无副作用）
     #[test]
     fn reveal_existing_in_dir_reports_missing_path() {
-        let err = reveal_existing_in_dir("/definitely/not/here/xyz.txt").expect_err("missing path must fail loudly");
+        let err = reveal_existing_in_dir("/definitely/not/here/xyz.txt")
+            .expect_err("missing path must fail loudly");
         let msg = err.to_string();
         assert!(
             matches!(err, crate::AppError::NotFound(_)),
@@ -303,7 +323,11 @@ mod external_url_tests {
             "HTTPS://EXAMPLE.COM/Path",
             "HtTp://localhost:1420/x?y=1#z",
         ] {
-            assert_eq!(validate_external_url(url).ok(), Some(url), "http/https 必须放行：{url}");
+            assert_eq!(
+                validate_external_url(url).ok(),
+                Some(url),
+                "http/https 必须放行：{url}"
+            );
         }
     }
 
@@ -325,7 +349,10 @@ mod external_url_tests {
             let err = validate_external_url(url)
                 .expect_err("白名单外 scheme 必须拒绝")
                 .to_string();
-            assert!(err.contains("open_external_url"), "错误必须带操作上下文，got: {err}");
+            assert!(
+                err.contains("open_external_url"),
+                "错误必须带操作上下文，got: {err}"
+            );
         }
     }
 
@@ -343,7 +370,10 @@ mod external_url_tests {
             "http:",               // 冒号后为空
             "://example.com",      // scheme 为空
         ] {
-            assert!(validate_external_url(url).is_err(), "非法 URL 必须拒绝：{url:?}");
+            assert!(
+                validate_external_url(url).is_err(),
+                "非法 URL 必须拒绝：{url:?}"
+            );
         }
     }
 

@@ -80,8 +80,12 @@ impl PluginHost {
             return;
         };
         let m = &loaded.manifest;
-        self.registry.register_commands(&m.id, &m.contributes.commands).await;
-        self.registry.register_views(&m.id, &m.contributes.views).await;
+        self.registry
+            .register_commands(&m.id, &m.contributes.commands)
+            .await;
+        self.registry
+            .register_views(&m.id, &m.contributes.views)
+            .await;
         if let Some(ref term) = m.contributes.terminal {
             self.registry
                 .register_terminal_handlers(&m.id, &term.input_handlers, &term.output_parsers)
@@ -110,10 +114,10 @@ impl PluginHost {
         plugin_id: &str,
         endpoints: &[crate::manifest::WsEndpointContribution],
     ) {
-        if !self
-            .permission
-            .check(plugin_id, wasmnest_plugin_api::permission::PERMISSION_WS_SERVER)
-        {
+        if !self.permission.check(
+            plugin_id,
+            wasmnest_plugin_api::permission::PERMISSION_WS_SERVER,
+        ) {
             tracing::warn!(
                 plugin_id = %plugin_id,
                 "manifest declared ws endpoints skipped: missing ws:server permission"

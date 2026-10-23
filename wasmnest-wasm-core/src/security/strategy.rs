@@ -153,7 +153,11 @@ pub const PIPELINE_STAGES: [&str; 6] = [
 ///
 /// 授权路径上的读取失败必须**带上下文**（S-13）：没指明 plugin/resource 的错误
 /// 在故障时根本没法定位是哪一侧的哪一家策略坏了。
-pub async fn evaluate(store: &AuthPolicyStore, plugin_id: &str, resource: AuthResource) -> crate::Result<StrategyStep> {
+pub async fn evaluate(
+    store: &AuthPolicyStore,
+    plugin_id: &str,
+    resource: AuthResource,
+) -> crate::Result<StrategyStep> {
     store
         .strategy(plugin_id, resource)
         .await
@@ -187,9 +191,18 @@ mod tests {
     /// 本条与 fs_auth 侧的行为用例一起转红。
     #[test]
     fn strategy_step_maps_every_tier() {
-        assert_eq!(StrategyStep::of(AuthStrategy::AlwaysAsk), StrategyStep::ask());
-        assert_eq!(StrategyStep::of(AuthStrategy::Default), StrategyStep::consult_records());
-        assert_eq!(StrategyStep::of(AuthStrategy::AlwaysAllow), StrategyStep::auto_allow());
+        assert_eq!(
+            StrategyStep::of(AuthStrategy::AlwaysAsk),
+            StrategyStep::ask()
+        );
+        assert_eq!(
+            StrategyStep::of(AuthStrategy::Default),
+            StrategyStep::consult_records()
+        );
+        assert_eq!(
+            StrategyStep::of(AuthStrategy::AlwaysAllow),
+            StrategyStep::auto_allow()
+        );
 
         assert!(
             !StrategyStep::ask().reads_allow_records(),
@@ -232,9 +245,18 @@ mod tests {
     /// 相对顺序的语义解释见 [`PIPELINE_STAGES`]。
     #[test]
     fn pipeline_stages_are_ordered_deny_before_strategy_before_records() {
-        let deny = PIPELINE_STAGES.iter().position(|s| *s == "deny-record").unwrap();
-        let strategy = PIPELINE_STAGES.iter().position(|s| *s == "strategy").unwrap();
-        let records = PIPELINE_STAGES.iter().position(|s| *s == "allow-record").unwrap();
+        let deny = PIPELINE_STAGES
+            .iter()
+            .position(|s| *s == "deny-record")
+            .unwrap();
+        let strategy = PIPELINE_STAGES
+            .iter()
+            .position(|s| *s == "strategy")
+            .unwrap();
+        let records = PIPELINE_STAGES
+            .iter()
+            .position(|s| *s == "allow-record")
+            .unwrap();
         let prompt = PIPELINE_STAGES.iter().position(|s| *s == "prompt").unwrap();
         // 硬拒绝先于一切放行路径；策略档位先于记录读取（AlwaysAsk 跳记录的
         // 语义依赖此顺序）；记录命中先于询问

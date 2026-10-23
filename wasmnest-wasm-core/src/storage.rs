@@ -70,12 +70,19 @@ impl PluginStorage {
     }
 
     /// 获取插件存储值
-    pub async fn get(&self, plugin_id: &str, key: &str) -> crate::Result<Option<serde_json::Value>> {
+    pub async fn get(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> crate::Result<Option<serde_json::Value>> {
         let db = self.db.lock().expect("plugin storage db lock poisoned");
         let conn = db.conn();
-        let mut stmt = conn.prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")?;
+        let mut stmt =
+            conn.prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")?;
 
-        let result = stmt.query_row(rusqlite::params![plugin_id, key], |row| row.get::<_, String>(0));
+        let result = stmt.query_row(rusqlite::params![plugin_id, key], |row| {
+            row.get::<_, String>(0)
+        });
 
         match result {
             Ok(json_str) => {
@@ -88,7 +95,12 @@ impl PluginStorage {
     }
 
     /// 设置插件存储值
-    pub async fn set(&self, plugin_id: &str, key: &str, value: serde_json::Value) -> crate::Result<()> {
+    pub async fn set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> crate::Result<()> {
         let db = self.db.lock().expect("plugin storage db lock poisoned");
         let json_str = serde_json::to_string(&value)?;
         let now = Utc::now().to_rfc3339();
@@ -129,8 +141,11 @@ impl PluginStorage {
         let db = self.db.lock().expect("plugin storage db lock poisoned");
         let conn = db.conn();
         let previous = {
-            let mut stmt = conn.prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")?;
-            match stmt.query_row(rusqlite::params![plugin_id, key], |row| row.get::<_, String>(0)) {
+            let mut stmt =
+                conn.prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")?;
+            match stmt.query_row(rusqlite::params![plugin_id, key], |row| {
+                row.get::<_, String>(0)
+            }) {
                 Ok(json_str) => Some(serde_json::from_str::<serde_json::Value>(&json_str)?),
                 Err(rusqlite::Error::QueryReturnedNoRows) => None,
                 Err(e) => return Err(crate::AppError::Database(e)),
@@ -163,9 +178,13 @@ impl PluginStorage {
     /// 保存插件激活状态映射（plugin_id → is_activated）
     ///
     /// 使用系统级 plugin_id `__system__` 隔离，不与任何插件数据冲突
-    pub async fn save_activated_plugins(&self, activated: &HashMap<String, bool>) -> crate::Result<()> {
+    pub async fn save_activated_plugins(
+        &self,
+        activated: &HashMap<String, bool>,
+    ) -> crate::Result<()> {
         let value = serde_json::to_value(activated)?;
-        self.set(SYSTEM_PLUGIN_ID, ACTIVATION_STATE_KEY, value).await
+        self.set(SYSTEM_PLUGIN_ID, ACTIVATION_STATE_KEY, value)
+            .await
     }
 
     /// 加载插件激活状态映射
@@ -180,7 +199,9 @@ impl PluginStorage {
                 Ok(map) => Ok(map),
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to parse activation state, resetting");
-                    if let Err(clear_err) = self.delete(SYSTEM_PLUGIN_ID, ACTIVATION_STATE_KEY).await {
+                    if let Err(clear_err) =
+                        self.delete(SYSTEM_PLUGIN_ID, ACTIVATION_STATE_KEY).await
+                    {
                         tracing::warn!(error = %clear_err, "Failed to clear corrupted activation state");
                     }
                     Ok(HashMap::new())
@@ -189,10 +210,10 @@ impl PluginStorage {
             None => Ok(HashMap::new()),
         }
     }
-// ==================== 旧 JSON 文件存储迁移（移动装配面，fork 迁入，票 06 批次 03） ====================
-//
-// 常编译（单形态票 02 M1）：移动宿主 lib.rs 启动迁移仍在消费（旧 JSON 文件存储
-// 存量数据 → 主库）；桌面宿主永不调用。绑定归位（T-05）时随移动宿主收口或退役。
+    // ==================== 旧 JSON 文件存储迁移（移动装配面，fork 迁入，票 06 批次 03） ====================
+    //
+    // 常编译（单形态票 02 M1）：移动宿主 lib.rs 启动迁移仍在消费（旧 JSON 文件存储
+    // 存量数据 → 主库）；桌面宿主永不调用。绑定归位（T-05）时随移动宿主收口或退役。
 
     /// 旧版 JSON 文件存储 → 主库一次性迁移（批次 2b 自宿主 plugin/storage.rs 迁入；
     /// 旧 `app_data_dir/plugins/{plugin_id}.json` 导入 `plugin_storage` 表后删除，
@@ -236,13 +257,14 @@ impl PluginStorage {
                     continue;
                 }
             };
-            let map: std::collections::HashMap<String, serde_json::Value> = match serde_json::from_str(&content) {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!(plugin_id = %plugin_id, error = %e, "legacy storage file parse skipped");
-                    continue;
-                }
-            };
+            let map: std::collections::HashMap<String, serde_json::Value> =
+                match serde_json::from_str(&content) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!(plugin_id = %plugin_id, error = %e, "legacy storage file parse skipped");
+                        continue;
+                    }
+                };
             if map.is_empty() {
                 continue;
             }
@@ -305,8 +327,14 @@ mod tests {
         let db = test_db().await;
         let storage = PluginStorage::new(db);
 
-        storage.set("plugin-a", "key1", serde_json::json!("a")).await.unwrap();
-        storage.set("plugin-b", "key1", serde_json::json!("b")).await.unwrap();
+        storage
+            .set("plugin-a", "key1", serde_json::json!("a"))
+            .await
+            .unwrap();
+        storage
+            .set("plugin-b", "key1", serde_json::json!("b"))
+            .await
+            .unwrap();
 
         assert_eq!(
             storage.get("plugin-a", "key1").await.unwrap(),

@@ -18,9 +18,9 @@
 //! [`PLUGIN_HTTP_MAX_ENDPOINTS_PER_PLUGIN`]）。
 
 use crate::wire::EndpointAuth;
-use wasmnest_server_base::constants::PLUGIN_HTTP_MAX_ENDPOINTS_PER_PLUGIN;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
+use wasmnest_server_base::constants::PLUGIN_HTTP_MAX_ENDPOINTS_PER_PLUGIN;
 
 /// 端点句柄前缀（`http-<uuid>`；与 WS 端点 `wse-<uuid>` 形态对称）
 pub const ENDPOINT_HANDLE_PREFIX: &str = "http-";

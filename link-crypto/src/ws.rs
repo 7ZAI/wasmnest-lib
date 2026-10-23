@@ -101,7 +101,11 @@ pub fn derive_server_handshake(
     let c2s = derive_direction_cipher(&salt, &ikm, WS_INFO_CLIENT_TO_SERVER)?;
     let s2c = derive_direction_cipher(&salt, &ikm, WS_INFO_SERVER_TO_CLIENT)?;
 
-    Ok(ServerHandshake { server_ek_b64, client_to_server: c2s, server_to_client: s2c })
+    Ok(ServerHandshake {
+        server_ek_b64,
+        client_to_server: c2s,
+        server_to_client: s2c,
+    })
 }
 
 /// 内部小包装：从已有原始私钥借用构造公钥（避免公开 StaticSecret 语义）
@@ -170,7 +174,12 @@ impl ClientWsCrypto {
         let c2s = derive_direction_cipher(&salt, &ikm, WS_INFO_CLIENT_TO_SERVER)?;
         let s2c = derive_direction_cipher(&salt, &ikm, WS_INFO_SERVER_TO_CLIENT)?;
 
-        Ok(ClientWsCrypto { c2s, s2c, send_seq: 0, recv_seq: 0 })
+        Ok(ClientWsCrypto {
+            c2s,
+            s2c,
+            send_seq: 0,
+            recv_seq: 0,
+        })
     }
 
     /// 加密一条出站文本帧 → 信封 JSON 字符串（推进发送序号）
@@ -179,7 +188,9 @@ impl ClientWsCrypto {
         let aad = ws_aad(channel_str, Direction::Inbound, crate::ORIGIN_TEXT);
         let nonce = ws_nonce(&self.c2s.nonce_prefix, seq);
         let ciphertext = aes_gcm_encrypt(&self.c2s.key, &nonce, text.as_bytes(), Some(&aad))?;
-        self.send_seq = seq.checked_add(1).ok_or_else(|| crate::LinkCryptoError("ws seq overflow".into()))?;
+        self.send_seq = seq
+            .checked_add(1)
+            .ok_or_else(|| crate::LinkCryptoError("ws seq overflow".into()))?;
         let envelope = WsTextEnvelope {
             v: WS_FRAME_VERSION,
             seq,
@@ -198,9 +209,9 @@ impl ClientWsCrypto {
             return err(format!("unsupported ws frame version {}", envelope.v));
         }
         let nonce_v = b64_decode(&envelope.n)?;
-        let nonce: [u8; 12] = nonce_v
-            .try_into()
-            .map_err(|v: Vec<u8>| crate::LinkCryptoError(format!("nonce length mismatch: {}", v.len())))?;
+        let nonce: [u8; 12] = nonce_v.try_into().map_err(|v: Vec<u8>| {
+            crate::LinkCryptoError(format!("nonce length mismatch: {}", v.len()))
+        })?;
         if envelope.seq != self.recv_seq {
             return err(format!(
                 "ws seq mismatch: expected {}, got {}",
@@ -212,10 +223,15 @@ impl ClientWsCrypto {
             &self.s2c.key,
             &nonce,
             &ciphertext,
-            Some(&ws_aad(channel_str, Direction::Outbound, crate::ORIGIN_TEXT)),
+            Some(&ws_aad(
+                channel_str,
+                Direction::Outbound,
+                crate::ORIGIN_TEXT,
+            )),
         )?;
         self.recv_seq += 1;
-        String::from_utf8(plain).map_err(|e| crate::LinkCryptoError(format!("decrypted text not utf-8: {e}")))
+        String::from_utf8(plain)
+            .map_err(|e| crate::LinkCryptoError(format!("decrypted text not utf-8: {e}")))
     }
 
     /// 加密一条出站二进制帧（ver+seq+ct，推进发送序号）
@@ -224,7 +240,9 @@ impl ClientWsCrypto {
         let aad = ws_aad(channel_str, Direction::Inbound, crate::ORIGIN_BINARY);
         let nonce = ws_nonce(&self.c2s.nonce_prefix, seq);
         let ciphertext = aes_gcm_encrypt(&self.c2s.key, &nonce, frame, Some(&aad))?;
-        self.send_seq = seq.checked_add(1).ok_or_else(|| crate::LinkCryptoError("ws seq overflow".into()))?;
+        self.send_seq = seq
+            .checked_add(1)
+            .ok_or_else(|| crate::LinkCryptoError("ws seq overflow".into()))?;
         let mut out = Vec::with_capacity(crate::WS_BINARY_HEADER_LEN + ciphertext.len());
         out.push(WS_FRAME_VERSION);
         out.extend_from_slice(&seq.to_be_bytes());
@@ -242,14 +260,21 @@ impl ClientWsCrypto {
         }
         let seq = u64::from_be_bytes(data[1..9].try_into().expect("seq slice is 8 bytes"));
         if seq != self.recv_seq {
-            return err(format!("ws seq mismatch: expected {}, got {}", self.recv_seq, seq));
+            return err(format!(
+                "ws seq mismatch: expected {}, got {}",
+                self.recv_seq, seq
+            ));
         }
         let nonce = ws_nonce(&self.s2c.nonce_prefix, seq);
         let plain = aes_gcm_decrypt(
             &self.s2c.key,
             &nonce,
             &data[crate::WS_BINARY_HEADER_LEN..],
-            Some(&ws_aad(channel_str, Direction::Outbound, crate::ORIGIN_BINARY)),
+            Some(&ws_aad(
+                channel_str,
+                Direction::Outbound,
+                crate::ORIGIN_BINARY,
+            )),
         )?;
         self.recv_seq += 1;
         Ok(plain)
@@ -276,7 +301,11 @@ mod tests {
     }
     impl TestServerCrypto {
         fn new(hs: ServerHandshake) -> Self {
-            Self { hs, send_seq: 0, recv_seq: 0 }
+            Self {
+                hs,
+                send_seq: 0,
+                recv_seq: 0,
+            }
         }
 
         fn seal_text(&mut self, channel: &str, text: &str) -> Result<String> {
@@ -302,7 +331,10 @@ mod tests {
             let env: WsTextEnvelope =
                 serde_json::from_str(body).map_err(|e| crate::LinkCryptoError(e.to_string()))?;
             if env.seq != self.recv_seq {
-                return err(format!("seq mismatch: expected {}, got {}", self.recv_seq, env.seq));
+                return err(format!(
+                    "seq mismatch: expected {}, got {}",
+                    self.recv_seq, env.seq
+                ));
             }
             let plain = aes_gcm_decrypt(
                 &self.hs.client_to_server.key,

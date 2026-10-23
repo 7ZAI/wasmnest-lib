@@ -79,7 +79,9 @@ pub fn b64_encode(data: &[u8]) -> String {
 /// base64 std 解码（非法输入报错，不静默截断）
 pub fn b64_decode(text: &str) -> Result<Vec<u8>> {
     use base64::engine::general_purpose::STANDARD;
-    STANDARD.decode(text).map_err(|e| LinkCryptoError(format!("base64 decode failed: {e}")))
+    STANDARD
+        .decode(text)
+        .map_err(|e| LinkCryptoError(format!("base64 decode failed: {e}")))
 }
 
 /// 指纹：SHA-256(公钥) 前 16 hex 小写（设置页展示 + 移动端 pin 比对锚点）
@@ -185,16 +187,22 @@ pub(crate) fn aes_gcm_encrypt(
 ) -> Result<Vec<u8>> {
     use aes_gcm::aead::{Aead, KeyInit, Payload};
     use aes_gcm::Aes256Gcm;
-    let key_arr: [u8; AES_KEY_LEN] =
-        key.try_into().map_err(|_| LinkCryptoError("aes key length mismatch".to_string()))?;
+    let key_arr: [u8; AES_KEY_LEN] = key
+        .try_into()
+        .map_err(|_| LinkCryptoError("aes key length mismatch".to_string()))?;
     let nonce_arr: [u8; AES_NONCE_LEN] = nonce
         .try_into()
         .map_err(|_| LinkCryptoError("aes nonce length mismatch".to_string()))?;
     let cipher = Aes256Gcm::new((&key_arr).into());
-    let payload = aad.map(|a| Payload { msg: plaintext, aad: a }).unwrap_or(Payload {
-        msg: plaintext,
-        aad: b"",
-    });
+    let payload = aad
+        .map(|a| Payload {
+            msg: plaintext,
+            aad: a,
+        })
+        .unwrap_or(Payload {
+            msg: plaintext,
+            aad: b"",
+        });
     cipher
         .encrypt((&nonce_arr).into(), payload)
         .map_err(|_| LinkCryptoError("AES-256-GCM 加密失败".to_string()))
@@ -209,16 +217,22 @@ pub(crate) fn aes_gcm_decrypt(
 ) -> Result<Vec<u8>> {
     use aes_gcm::aead::{Aead, KeyInit, Payload};
     use aes_gcm::Aes256Gcm;
-    let key_arr: [u8; AES_KEY_LEN] =
-        key.try_into().map_err(|_| LinkCryptoError("aes key length mismatch".to_string()))?;
+    let key_arr: [u8; AES_KEY_LEN] = key
+        .try_into()
+        .map_err(|_| LinkCryptoError("aes key length mismatch".to_string()))?;
     let nonce_arr: [u8; AES_NONCE_LEN] = nonce
         .try_into()
         .map_err(|_| LinkCryptoError("aes nonce length mismatch".to_string()))?;
     let cipher = Aes256Gcm::new((&key_arr).into());
-    let payload = aad.map(|a| Payload { msg: ciphertext, aad: a }).unwrap_or(Payload {
-        msg: ciphertext,
-        aad: b"",
-    });
+    let payload = aad
+        .map(|a| Payload {
+            msg: ciphertext,
+            aad: a,
+        })
+        .unwrap_or(Payload {
+            msg: ciphertext,
+            aad: b"",
+        });
     cipher
         .decrypt((&nonce_arr).into(), payload)
         .map_err(|_| LinkCryptoError("AES-256-GCM 解密失败: aead::Error".to_string()))
@@ -272,7 +286,10 @@ pub fn derive_http_keys(
     request_key.copy_from_slice(&request);
     let mut response_key = [0u8; X25519_KEY_LEN];
     response_key.copy_from_slice(&response);
-    Ok(HttpTrafficKeys { request: request_key, response: response_key })
+    Ok(HttpTrafficKeys {
+        request: request_key,
+        response: response_key,
+    })
 }
 
 /// 明文 → 信封 JSON 字节（随机 nonce；HTTP 密钥每次请求全新，无 nonce 复用风险）
@@ -285,7 +302,8 @@ pub fn encrypt_http_body(key: &[u8; 32], plaintext: &[u8], aad: &[u8]) -> Result
         n: b64_encode(&nonce_bytes),
         ct: b64_encode(&ciphertext),
     };
-    serde_json::to_vec(&envelope).map_err(|e| LinkCryptoError(format!("serialize envelope failed: {e}")))
+    serde_json::to_vec(&envelope)
+        .map_err(|e| LinkCryptoError(format!("serialize envelope failed: {e}")))
 }
 
 /// 信封 JSON 字节 → 明文（fail-closed：格式/版本/nonce 长度/GCM 校验任一失败即错）
@@ -296,9 +314,12 @@ pub fn decrypt_http_body(key: &[u8; 32], body: &[u8], aad: &[u8]) -> Result<Vec<
         return err(format!("unsupported envelope version {}", envelope.v));
     }
     let nonce_v = b64_decode(&envelope.n)?;
-    let nonce: [u8; AES_NONCE_LEN] = nonce_v
-        .try_into()
-        .map_err(|v: Vec<u8>| LinkCryptoError(format!("nonce length mismatch: expected 12, got {}", v.len())))?;
+    let nonce: [u8; AES_NONCE_LEN] = nonce_v.try_into().map_err(|v: Vec<u8>| {
+        LinkCryptoError(format!(
+            "nonce length mismatch: expected 12, got {}",
+            v.len()
+        ))
+    })?;
     let ciphertext = b64_decode(&envelope.ct)?;
     aes_gcm_decrypt(key, &nonce, &ciphertext, Some(aad))
 }
@@ -356,7 +377,9 @@ mod tests {
     fn fingerprint_is_16_lowercase_hex() {
         let fp = fingerprint_of(&[0xABu8; 32]);
         assert_eq!(fp.len(), 16);
-        assert!(fp.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(fp
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     /// derive_http_keys 金样：固定向量来自真实前端 linkCrypto.ts（@noble

@@ -40,12 +40,12 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use tokio::sync::mpsc as tmpsc;
 
-use crate::system::constants as C;
 use crate::host_api::context::TaskEngine;
 use crate::host_api::unit_executor::UnitExecutor;
 use crate::manager::runtime::WasmHostContext;
 use crate::monitor::{MetricsRegistry, MetricsSource};
 use crate::runtime_util::ambient_handle;
+use crate::system::constants as C;
 
 /// execute-batch 超时后等待在途单元落盘的结果宽限期（M-02）
 ///
@@ -162,7 +162,11 @@ pub(crate) struct JobHandle {
 
 impl JobHandle {
     fn owner(&self) -> String {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).owner.clone()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .owner
+            .clone()
     }
 
     fn phase(&self) -> JobPhase {
@@ -217,7 +221,11 @@ static TASK_METRICS: LazyLock<TaskMetrics> = LazyLock::new(|| TaskMetrics {
 /// JSON 惯例）：jobs submitted/active/rejected + units completed + 并发高水位
 /// + 回调丢弃 + 池线程数常量
 pub(crate) fn task_metrics_snapshot() -> serde_json::Value {
-    let active = REGISTRY.jobs.lock().unwrap_or_else(|e| e.into_inner()).len();
+    let active = REGISTRY
+        .jobs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .len();
     serde_json::json!({
         "jobsSubmittedTotal": TASK_METRICS.jobs_submitted_total.load(Ordering::Relaxed),
         "jobsActive": active,
@@ -320,8 +328,13 @@ fn pool_loop(rx: &Arc<Mutex<mpsc::Receiver<QueuedUnit>>>) {
 
 /// 单元执行开始：并发计数 + 高水位（与完成时 fetch_sub 成对）
 fn unit_started() {
-    let cur = TASK_METRICS.concurrent_units_current.fetch_add(1, Ordering::Relaxed) + 1;
-    TASK_METRICS.concurrent_units_peak.fetch_max(cur, Ordering::Relaxed);
+    let cur = TASK_METRICS
+        .concurrent_units_current
+        .fetch_add(1, Ordering::Relaxed)
+        + 1;
+    TASK_METRICS
+        .concurrent_units_peak
+        .fetch_max(cur, Ordering::Relaxed);
 }
 
 // ==================== 单元执行 ====================
@@ -336,7 +349,8 @@ struct RegisteredExecutor {
 
 /// 进程级执行器注册表（组合根/测试装配经 [`Self::register_unit_executor`] 注入；
 /// 本模块零 host_api 具体域函数引用）
-static UNIT_EXECUTORS: LazyLock<Mutex<Vec<RegisteredExecutor>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+static UNIT_EXECUTORS: LazyLock<Mutex<Vec<RegisteredExecutor>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// 注册单元执行器（幂等：同具体类型只注册一次）
 pub(crate) fn register_unit_executor(executor: Arc<dyn UnitExecutor>) {
@@ -356,8 +370,13 @@ fn execute_unit(host_ctx: &Arc<WasmHostContext>, owner: &str, unit: &PlanUnit) -
     let started = Instant::now();
     let result: Result<Option<String>, String> = {
         let executors = UNIT_EXECUTORS.lock().unwrap_or_else(|e| e.into_inner());
-        match executors.iter().find(|re| re.executor.matches(unit.kind.as_str())) {
-            Some(re) => re.executor.execute(host_ctx, owner, unit.kind.as_str(), &unit.params),
+        match executors
+            .iter()
+            .find(|re| re.executor.matches(unit.kind.as_str()))
+        {
+            Some(re) => re
+                .executor
+                .execute(host_ctx, owner, unit.kind.as_str(), &unit.params),
             None => Err(format!("task: unknown unit kind '{}'", unit.kind)),
         }
     };
@@ -384,7 +403,10 @@ fn execute_unit(host_ctx: &Arc<WasmHostContext>, owner: &str, unit: &PlanUnit) -
 /// 单元结果按字节上限截断（JSON 文本长度；保护回调载荷与插件线性内存）
 fn truncate_json(v: String) -> (String, bool) {
     if v.len() > C::PLUGIN_TASK_UNIT_RESULT_MAX_BYTES {
-        let cut: String = v.chars().take(C::PLUGIN_TASK_UNIT_RESULT_MAX_BYTES / 4).collect();
+        let cut: String = v
+            .chars()
+            .take(C::PLUGIN_TASK_UNIT_RESULT_MAX_BYTES / 4)
+            .collect();
         (format!("{}…[truncated]", cut), true)
     } else {
         (v, false)
@@ -434,7 +456,11 @@ impl TaskEngine for CoreTaskEngine {
 // ==================== 对外 API（宿主侧 task 域实现入口） ====================
 
 /// 登记任务并立即返回 `task-<hex>`（`submit`）：started 事件 + 池执行 + 回调
-pub(crate) fn submit(host_ctx: Arc<WasmHostContext>, owner: &str, plan_json: &str) -> Result<String, String> {
+pub(crate) fn submit(
+    host_ctx: Arc<WasmHostContext>,
+    owner: &str,
+    plan_json: &str,
+) -> Result<String, String> {
     let plan = parse_plan(plan_json)?;
     // started 事件在 register_job 内、池分派**之前**投出（M-03）：快单单元作业
     // 若先投 started 再分派，单单元可在 started 入队前完成 → 插件观察到终态先于
@@ -445,7 +471,11 @@ pub(crate) fn submit(host_ctx: Arc<WasmHostContext>, owner: &str, plan_json: &st
 
 /// 同步批：登记 → 并发执行 → join 返回全量结果（`execute-batch`）。
 /// 阻塞调用线程至全部单元终态（或墙钟超时）——同 `run-sync` 语义，不投回调。
-pub(crate) fn execute_batch(host_ctx: Arc<WasmHostContext>, owner: &str, plan_json: &str) -> Result<String, String> {
+pub(crate) fn execute_batch(
+    host_ctx: Arc<WasmHostContext>,
+    owner: &str,
+    plan_json: &str,
+) -> Result<String, String> {
     let plan = parse_plan(plan_json)?;
     let units_len = plan.units.len();
     let job_id = register_job(host_ctx, owner, plan, false)?;
@@ -495,7 +525,11 @@ pub(crate) fn execute_batch(host_ctx: Arc<WasmHostContext>, owner: &str, plan_js
     }
 
     // 同步批不留痕（避免占每插件 MAX_JOBS 配额）
-    REGISTRY.jobs.lock().unwrap_or_else(|e| e.into_inner()).remove(&job_id);
+    REGISTRY
+        .jobs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&job_id);
 
     Ok(result_json(&job_id, &job).to_string())
 }
@@ -593,7 +627,8 @@ pub(crate) fn purge_for_plugin(plugin_id: &str) -> usize {
 // ==================== 登记与调度 ====================
 
 fn parse_plan(plan_json: &str) -> Result<Plan, String> {
-    let plan: Plan = serde_json::from_str(plan_json).map_err(|e| format!("task: invalid plan JSON: {}", e))?;
+    let plan: Plan =
+        serde_json::from_str(plan_json).map_err(|e| format!("task: invalid plan JSON: {}", e))?;
     if plan.units.is_empty() {
         return Err("task: plan has no units".to_string());
     }
@@ -611,7 +646,12 @@ fn parse_plan(plan_json: &str) -> Result<Plan, String> {
 }
 
 /// 配额检查 + 登记 + 提交初始并发窗口
-fn register_job(host_ctx: Arc<WasmHostContext>, owner: &str, plan: Plan, emit_events: bool) -> Result<String, String> {
+fn register_job(
+    host_ctx: Arc<WasmHostContext>,
+    owner: &str,
+    plan: Plan,
+    emit_events: bool,
+) -> Result<String, String> {
     // 每插件在册任务上限（含 running + queued；execute-batch 瞬时登记同算）
     {
         let mut jobs = REGISTRY.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -621,13 +661,17 @@ fn register_job(host_ctx: Arc<WasmHostContext>, owner: &str, plan: Plan, emit_ev
         jobs.retain(|_, h| h.owner() != owner || h.phase() == JobPhase::Running);
         let count = jobs.values().filter(|h| h.owner() == owner).count();
         if count >= C::PLUGIN_TASK_MAX_JOBS_PER_PLUGIN {
-            TASK_METRICS.jobs_rejected_total.fetch_add(1, Ordering::Relaxed);
+            TASK_METRICS
+                .jobs_rejected_total
+                .fetch_add(1, Ordering::Relaxed);
             return Err(format!(
                 "task: too many jobs for plugin (limit {})",
                 C::PLUGIN_TASK_MAX_JOBS_PER_PLUGIN
             ));
         }
-        TASK_METRICS.jobs_submitted_total.fetch_add(1, Ordering::Relaxed);
+        TASK_METRICS
+            .jobs_submitted_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     let units_len = plan.units.len();
@@ -721,14 +765,21 @@ fn run_unit(item: &QueuedUnit, job: &Arc<JobHandle>) {
     unit_started();
     let done = execute_unit(&job.host_ctx, &owner, &unit);
     // 单元完成：累计 + 并发归位（开始计数在 execute_unit 前成对）
-    TASK_METRICS.units_completed_total.fetch_add(1, Ordering::Relaxed);
-    TASK_METRICS.concurrent_units_current.fetch_sub(1, Ordering::Relaxed);
+    TASK_METRICS
+        .units_completed_total
+        .fetch_add(1, Ordering::Relaxed);
+    TASK_METRICS
+        .concurrent_units_current
+        .fetch_sub(1, Ordering::Relaxed);
 
     let mut inner = job.inner.lock().unwrap_or_else(|e| e.into_inner());
     // cancel 竞态下结果照记（spec：运行中单元跑完）
     inner.results[item.index] = Some(done);
     inner.remaining = inner.remaining.saturating_sub(1);
-    let ok = inner.results[item.index].as_ref().map(|d| d.ok).unwrap_or(false);
+    let ok = inner.results[item.index]
+        .as_ref()
+        .map(|d| d.ok)
+        .unwrap_or(false);
     inner.done += 1;
     if !ok {
         inner.failed += 1;
@@ -795,7 +846,10 @@ fn run_unit(item: &QueuedUnit, job: &Arc<JobHandle>) {
 /// 但只有首个 Running→terminal 转移者投递事件；重复到达只唤醒 condvar 不再
 /// 排终态事件（插件侧不会收到两条终态）。
 fn notify_terminal(job: &Arc<JobHandle>, job_id: &str, owner: &str) {
-    if job.terminal_notified.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    if job
+        .terminal_notified
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
         return;
     }
     if job.emit_events {
@@ -967,7 +1021,12 @@ fn may_open_callback_channel(owner: &str) -> bool {
 ///
 /// 属主已从注册表摘除（purge / 从未登记任务）时直接丢弃，不重建 channel——见
 /// [`may_open_callback_channel`]。
-fn enqueue_event(host_ctx: &Arc<WasmHostContext>, owner: &str, event: serde_json::Value, terminal: bool) {
+fn enqueue_event(
+    host_ctx: &Arc<WasmHostContext>,
+    owner: &str,
+    event: serde_json::Value,
+    terminal: bool,
+) {
     // purge 后到达的事件不得重建回调 channel（审计票 09）：插件已停用、其任务已从注册表
     // 摘除，此处若新建 channel + consumer 会永久残留（停用后不会再有人 purge 它）并把
     // 事件派发给已停用的插件。快路径判据 = 注册表里已无该属主的在册任务；真正创建前的
@@ -1012,7 +1071,9 @@ fn enqueue_event(host_ctx: &Arc<WasmHostContext>, owner: &str, event: serde_json
     match tx.try_send(entry) {
         Ok(()) => {}
         Err(tmpsc::error::TrySendError::Full(failed_entry)) => {
-            TASK_METRICS.events_dropped_total.fetch_add(1, Ordering::Relaxed);
+            TASK_METRICS
+                .events_dropped_total
+                .fetch_add(1, Ordering::Relaxed);
             if terminal {
                 tracing::error!(
                     plugin_id = %owner,
@@ -1214,17 +1275,37 @@ mod tests {
         );
         // 直接走计数语义：给 B 记一笔
         let b = job_for_drop_counting("drop-probe", &ev).unwrap();
-        b.inner.lock().unwrap_or_else(|e| e.into_inner()).dropped_events += 1;
+        b.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .dropped_events += 1;
         assert_eq!(
-            job_a.inner.lock().unwrap_or_else(|e| e.into_inner()).dropped_events,
+            job_a
+                .inner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .dropped_events,
             0,
             "A 不得被错记"
         );
-        assert_eq!(job_b.inner.lock().unwrap_or_else(|e| e.into_inner()).dropped_events, 1);
+        assert_eq!(
+            job_b
+                .inner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .dropped_events,
+            1
+        );
 
         // 未知 jobId / 无 jobId / 非属主 → None（不归账）
-        assert!(job_for_drop_counting("drop-probe", &serde_json::json!({ "jobId": "task-zzz" })).is_none());
-        assert!(job_for_drop_counting("drop-probe", &serde_json::json!({ "phase": "progress" })).is_none());
+        assert!(
+            job_for_drop_counting("drop-probe", &serde_json::json!({ "jobId": "task-zzz" }))
+                .is_none()
+        );
+        assert!(
+            job_for_drop_counting("drop-probe", &serde_json::json!({ "phase": "progress" }))
+                .is_none()
+        );
         assert!(job_for_drop_counting("other-owner", &ev).is_none());
         purge_for_plugin("drop-probe");
     }
@@ -1252,7 +1333,10 @@ mod tests {
 
     #[test]
     fn parse_plan_rejects_zero_max_concurrency() {
-        let e = parse_plan(r#"{"units":[{"id":"u1","kind":"fs.stat","params":{}}],"maxConcurrency":0}"#).unwrap_err();
+        let e = parse_plan(
+            r#"{"units":[{"id":"u1","kind":"fs.stat","params":{}}],"maxConcurrency":0}"#,
+        )
+        .unwrap_err();
         assert!(e.contains("maxConcurrency"));
     }
 
@@ -1271,20 +1355,32 @@ mod tests {
         ] {
             assert!(snap.get(key).is_some(), "task 指标缺 {key}");
         }
-        assert_eq!(snap["poolThreads"], C::PLUGIN_TASK_POOL_THREADS, "池线程数与常量一致");
+        assert_eq!(
+            snap["poolThreads"],
+            C::PLUGIN_TASK_POOL_THREADS,
+            "池线程数与常量一致"
+        );
     }
 
     #[test]
     fn unit_metrics_peak_monotonic_and_rebalanced() {
         // 并发计数成对：started 后 current=1、peak≥1；完成（fetch_sub）归位后
         // 不影响累计指标（unitsCompletedTotal 单调增）
-        TASK_METRICS.units_completed_total.store(0, Ordering::Relaxed);
+        TASK_METRICS
+            .units_completed_total
+            .store(0, Ordering::Relaxed);
         unit_started();
-        let after_start = TASK_METRICS.concurrent_units_current.load(Ordering::Relaxed);
+        let after_start = TASK_METRICS
+            .concurrent_units_current
+            .load(Ordering::Relaxed);
         assert_eq!(after_start, 1, "开始后当前并发 = 1");
-        TASK_METRICS.concurrent_units_current.fetch_sub(1, Ordering::Relaxed);
+        TASK_METRICS
+            .concurrent_units_current
+            .fetch_sub(1, Ordering::Relaxed);
         assert_eq!(
-            TASK_METRICS.concurrent_units_current.load(Ordering::Relaxed),
+            TASK_METRICS
+                .concurrent_units_current
+                .load(Ordering::Relaxed),
             0,
             "完成归位"
         );

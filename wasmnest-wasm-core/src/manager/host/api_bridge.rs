@@ -28,7 +28,9 @@ pub async fn plugin_frontend_loader_session(
     webview: tauri::Webview,
     plugin_host: State<'_, Arc<PluginHost>>,
 ) -> crate::Result<String> {
-    let session = plugin_host.frontend_channel().issue_loader_session(webview.label())?;
+    let session = plugin_host
+        .frontend_channel()
+        .issue_loader_session(webview.label())?;
     tracing::info!(webview = %webview.label(), "[API] plugin_frontend_loader_session: 宿主面凭证已签发");
     Ok(session)
 }
@@ -64,9 +66,10 @@ pub async fn plugin_channel_token(
             plugin_id
         )));
     }
-    let token = plugin_host
-        .frontend_channel()
-        .issue_token(webview.label(), &loader_session, &plugin_id)?;
+    let token =
+        plugin_host
+            .frontend_channel()
+            .issue_token(webview.label(), &loader_session, &plugin_id)?;
     tracing::info!(
         webview = %webview.label(),
         plugin_id = %plugin_id,
@@ -88,7 +91,11 @@ fn require_host_surface(
     denial: &str,
 ) -> crate::Result<()> {
     use crate::security::frontend_channel::ChannelIdentity;
-    if plugin_host.frontend_channel().resolve(webview_label, credential) != Some(ChannelIdentity::Host) {
+    if plugin_host
+        .frontend_channel()
+        .resolve(webview_label, credential)
+        != Some(ChannelIdentity::Host)
+    {
         tracing::warn!(
             webview = %webview_label,
             command = %command,
@@ -115,10 +122,15 @@ fn authorize_plugin_call(
 
 /// 获取所有已加载插件列表
 #[tauri::command]
-pub async fn plugin_list_loaded(plugin_host: State<'_, Arc<PluginHost>>) -> crate::Result<Vec<HostPluginInfo>> {
+pub async fn plugin_list_loaded(
+    plugin_host: State<'_, Arc<PluginHost>>,
+) -> crate::Result<Vec<HostPluginInfo>> {
     tracing::debug!("[API] plugin_list_loaded called");
     let result = plugin_host.list_plugins().await;
-    tracing::debug!("[API] plugin_list_loaded returning {} plugin(s)", result.len());
+    tracing::debug!(
+        "[API] plugin_list_loaded returning {} plugin(s)",
+        result.len()
+    );
     Ok(result)
 }
 
@@ -139,7 +151,10 @@ pub async fn plugin_get_info(
 /// 不进入激活流程。`plugin_activate` 内部的 preauthorize 保留为兜底
 /// （启动 auto-activate 无头场景 + 已授权路径短路无二次弹窗）。
 #[tauri::command]
-pub async fn plugin_preauthorize(plugin_id: String, plugin_host: State<'_, Arc<PluginHost>>) -> crate::Result<()> {
+pub async fn plugin_preauthorize(
+    plugin_id: String,
+    plugin_host: State<'_, Arc<PluginHost>>,
+) -> crate::Result<()> {
     tracing::info!(plugin_id = %plugin_id, "[API] plugin_preauthorize");
     let result = plugin_host.preauthorize_plugin(&plugin_id).await;
     if let Err(ref e) = result {
@@ -150,7 +165,10 @@ pub async fn plugin_preauthorize(plugin_id: String, plugin_host: State<'_, Arc<P
 
 /// 激活插件（用户操作，持久化状态）
 #[tauri::command]
-pub async fn plugin_activate(plugin_id: String, plugin_host: State<'_, Arc<PluginHost>>) -> crate::Result<()> {
+pub async fn plugin_activate(
+    plugin_id: String,
+    plugin_host: State<'_, Arc<PluginHost>>,
+) -> crate::Result<()> {
     tracing::info!(plugin_id = %plugin_id, "[API] plugin_activate");
     let result = plugin_host.activate_plugin(&plugin_id, true).await;
     if let Err(ref e) = result {
@@ -161,7 +179,10 @@ pub async fn plugin_activate(plugin_id: String, plugin_host: State<'_, Arc<Plugi
 
 /// 停用插件（用户操作，持久化状态）
 #[tauri::command]
-pub async fn plugin_deactivate(plugin_id: String, plugin_host: State<'_, Arc<PluginHost>>) -> crate::Result<()> {
+pub async fn plugin_deactivate(
+    plugin_id: String,
+    plugin_host: State<'_, Arc<PluginHost>>,
+) -> crate::Result<()> {
     tracing::info!(plugin_id = %plugin_id, "[API] plugin_deactivate");
     let result = plugin_host.deactivate_plugin(&plugin_id, true).await;
     if let Err(ref e) = result {
@@ -175,7 +196,10 @@ pub async fn plugin_deactivate(plugin_id: String, plugin_host: State<'_, Arc<Plu
 /// 生效权限 = 批准 ∩ manifest 请求；批准与插件目录内容哈希绑定，
 /// 目录内容在批准后变化 → 批准自动撤销并回到 NeedsApproval。
 #[tauri::command]
-pub async fn plugin_approve(plugin_id: String, plugin_host: State<'_, Arc<PluginHost>>) -> crate::Result<Vec<String>> {
+pub async fn plugin_approve(
+    plugin_id: String,
+    plugin_host: State<'_, Arc<PluginHost>>,
+) -> crate::Result<Vec<String>> {
     tracing::info!(plugin_id = %plugin_id, "[API] plugin_approve");
     let result = plugin_host.approve_plugin(&plugin_id).await;
     if let Err(ref e) = result {
@@ -374,7 +398,9 @@ pub async fn plugin_invoke(
     plugin_host: State<'_, Arc<PluginHost>>,
 ) -> crate::Result<serde_json::Value> {
     authorize_plugin_call(&plugin_host, webview.label(), &plugin_id, &credential)?;
-    plugin_host.invoke_rust_command(&plugin_id, &command, args).await
+    plugin_host
+        .invoke_rust_command(&plugin_id, &command, args)
+        .await
 }
 
 /// 获取所有 Rust 插件的 command 列表
@@ -392,7 +418,10 @@ pub async fn plugin_list_rust_commands(
 /// 执行完整的卸载-重载-激活循环，用于开发期间快速迭代。
 /// 生产构建中调用此命令返回错误
 #[tauri::command]
-pub async fn plugin_dev_reload(plugin_id: String, plugin_host: State<'_, Arc<PluginHost>>) -> crate::Result<()> {
+pub async fn plugin_dev_reload(
+    plugin_id: String,
+    plugin_host: State<'_, Arc<PluginHost>>,
+) -> crate::Result<()> {
     #[cfg(debug_assertions)]
     {
         plugin_host.reload_wasm_plugin(&plugin_id).await
@@ -476,11 +505,12 @@ pub async fn plugin_network_auth_respond(
         &credential,
         "network authorization must be answered by the host frontend",
     )?;
-    let decision = crate::security::network_auth::NetworkDecision::parse(&decision).ok_or_else(|| {
-        crate::AppError::InvalidInput(format!(
-            "未知网络授权决定 '{decision}'（允许 allow_once / deny / deny_always）"
-        ))
-    })?;
+    let decision =
+        crate::security::network_auth::NetworkDecision::parse(&decision).ok_or_else(|| {
+            crate::AppError::InvalidInput(format!(
+                "未知网络授权决定 '{decision}'（允许 allow_once / deny / deny_always）"
+            ))
+        })?;
     tracing::info!(
         "[API] plugin_network_auth_respond: request_id={}, decision={}",
         request_id,
@@ -575,8 +605,9 @@ pub async fn plugin_auth_set_strategy(
         &credential,
         "authorization strategy must be set by the host frontend",
     )?;
-    let resource = AuthResource::parse(&resource)
-        .ok_or_else(|| crate::AppError::InvalidInput(format!("未知授权资源 '{resource}'（允许 fs / network）")))?;
+    let resource = AuthResource::parse(&resource).ok_or_else(|| {
+        crate::AppError::InvalidInput(format!("未知授权资源 '{resource}'（允许 fs / network）"))
+    })?;
     let strategy = AuthStrategy::parse_wire(&strategy).ok_or_else(|| {
         crate::AppError::InvalidInput(format!(
             "未知授权档位 '{strategy}'（允许 always_ask / default / always_allow）"
@@ -617,8 +648,9 @@ pub async fn plugin_auth_revoke(
         &credential,
         "authorization revoke must be requested by the host frontend",
     )?;
-    let resource = AuthResource::parse(&resource)
-        .ok_or_else(|| crate::AppError::InvalidInput(format!("未知授权资源 '{resource}'（允许 fs / network）")))?;
+    let resource = AuthResource::parse(&resource).ok_or_else(|| {
+        crate::AppError::InvalidInput(format!("未知授权资源 '{resource}'（允许 fs / network）"))
+    })?;
 
     let removed = AuthPolicyStore::new(db.inner().clone())
         .revoke(&plugin_id, resource, &target)
@@ -654,8 +686,9 @@ pub async fn plugin_auth_remove_record(
         &credential,
         "authorization record removal must be requested by the host frontend",
     )?;
-    let resource = AuthResource::parse(&resource)
-        .ok_or_else(|| crate::AppError::InvalidInput(format!("未知授权资源 '{resource}'（允许 fs / network）")))?;
+    let resource = AuthResource::parse(&resource).ok_or_else(|| {
+        crate::AppError::InvalidInput(format!("未知授权资源 '{resource}'（允许 fs / network）"))
+    })?;
 
     let removed = AuthPolicyStore::new(db.inner().clone())
         .remove_deny(&plugin_id, resource, &target)
@@ -676,7 +709,10 @@ pub async fn plugin_auth_remove_record(
 ///
 /// 仅接收已下载的本地文件路径：解压与身份/路径校验在 Rust 端完成
 #[tauri::command]
-pub async fn plugin_install_from_file(path: String, plugin_host: State<'_, Arc<PluginHost>>) -> crate::Result<String> {
+pub async fn plugin_install_from_file(
+    path: String,
+    plugin_host: State<'_, Arc<PluginHost>>,
+) -> crate::Result<String> {
     tracing::info!("[API] plugin_install_from_file: {}", path);
     let result = plugin_host.install_from_zip(&path).await;
     if let Err(ref e) = result {
@@ -687,7 +723,10 @@ pub async fn plugin_install_from_file(path: String, plugin_host: State<'_, Arc<P
 
 /// 卸载插件（所有来源；要求插件未启用，dev 合入）
 #[tauri::command]
-pub async fn plugin_uninstall(plugin_id: String, plugin_host: State<'_, Arc<PluginHost>>) -> crate::Result<()> {
+pub async fn plugin_uninstall(
+    plugin_id: String,
+    plugin_host: State<'_, Arc<PluginHost>>,
+) -> crate::Result<()> {
     tracing::info!(plugin_id = %plugin_id, "[API] plugin_uninstall");
     let result = plugin_host.uninstall_plugin(&plugin_id).await;
     if let Err(ref e) = result {
@@ -733,8 +772,13 @@ mod tests {
     /// 诊断上报命令：ok/error 两条路径都只写 tracing，恒返回 Ok（issue 04）
     #[tokio::test]
     async fn frontend_load_report_always_ok() {
-        let ok_report =
-            super::plugin_frontend_load_report("com.wasmnest.demo".into(), "import".into(), true, None).await;
+        let ok_report = super::plugin_frontend_load_report(
+            "com.wasmnest.demo".into(),
+            "import".into(),
+            true,
+            None,
+        )
+        .await;
         let fail_report = super::plugin_frontend_load_report(
             "com.wasmnest.demo".into(),
             "activate".into(),

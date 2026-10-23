@@ -32,10 +32,7 @@ impl HttpPorts for JwtPorts {
     fn event_sink(&self) -> Option<Arc<dyn HttpEventSink>> {
         self.inner.event_sink()
     }
-    fn block_on_any(
-        &self,
-        fut: crate::plugin_binding::ports::BoxedBlocked,
-    ) -> Box<dyn std::any::Any + Send> {
+    fn block_on_any(&self, fut: crate::plugin_binding::ports::BoxedBlocked) -> Box<dyn std::any::Any + Send> {
         self.inner.block_on_any(fut)
     }
     fn jwt_auth_token(&self, _plugin_id: &str) -> Result<Option<String>, String> {
@@ -54,7 +51,11 @@ async fn spawn_echo_server() -> SocketAddr {
                 let mut buf = [0u8; 4096];
                 let n = sock.read(&mut buf).await.unwrap_or(0);
                 let head = String::from_utf8_lossy(&buf[..n]).to_string();
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", head.len(), head);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    head.len(),
+                    head
+                );
                 let _ = sock.write_all(response.as_bytes()).await;
                 let _ = sock.flush().await;
             });

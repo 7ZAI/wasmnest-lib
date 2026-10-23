@@ -6,8 +6,8 @@
 //! 使用 HKDF 而非直接截断 IKM，可避免同源不同用途密钥之间的相关性，
 //! 并支持通过 `info` 绑定用途上下文。
 
-use wasmnest_server_base::error::{AppError, Result};
 use sha2::Sha256;
+use wasmnest_server_base::error::{AppError, Result};
 
 /// AES-256-GCM / ChaCha20-Poly1305 派生密钥长度（32 字节）
 pub const AES_KEY_LEN: usize = 32;

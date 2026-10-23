@@ -39,6 +39,9 @@ mod tests {
     #[test]
     fn invalid_payload_rejected() {
         let err = parse_event_payload("not-json").unwrap_err();
-        assert!(err.contains("not valid JSON"), "错误须点名 JSON 解析失败: {err}");
+        assert!(
+            err.contains("not valid JSON"),
+            "错误须点名 JSON 解析失败: {err}"
+        );
     }
 }

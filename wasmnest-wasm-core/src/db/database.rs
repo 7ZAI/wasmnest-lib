@@ -35,9 +35,8 @@ enum AuthRecordsShape {
 ///
 /// `table` 直接拼进 PRAGMA 语句：调用点只传本模块的常量表名，不接外部输入。
 fn explicit_indexes(conn: &Connection, table: &str) -> crate::Result<Vec<String>> {
-    let list_err = |e: rusqlite::Error| {
-        crate::AppError::Internal(format!("list indexes of {table}: {e}"))
-    };
+    let list_err =
+        |e: rusqlite::Error| crate::AppError::Internal(format!("list indexes of {table}: {e}"));
     let mut stmt = conn
         .prepare(&format!("PRAGMA index_list({table})"))
         .map_err(list_err)?;
@@ -227,7 +226,10 @@ impl Database {
         // 其它任何行（含密钥环 `jwt.key` / `jwt.keyring`）。
         let bio_purged = self
             .conn
-            .execute("DELETE FROM plugin_secrets WHERE key LIKE 'biometric:%'", [])
+            .execute(
+                "DELETE FROM plugin_secrets WHERE key LIKE 'biometric:%'",
+                [],
+            )
             .map_err(|e| crate::AppError::Internal(format!("purge retired biometric rows: {e}")))?;
         if bio_purged > 0 {
             tracing::info!(
@@ -310,13 +312,19 @@ mod tests {
         );
         let policies: i64 = db
             .conn()
-            .query_row("SELECT COUNT(*) FROM plugin_auth_policies", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM plugin_auth_policies", [], |r| {
+                r.get(0)
+            })
             .expect("count policies");
         let records: i64 = db
             .conn()
             .query_row("SELECT COUNT(*) FROM plugin_auth_records", [], |r| r.get(0))
             .expect("count records");
-        assert_eq!((policies, records), (1, 1), "重复初始化不得清掉已有授权数据");
+        assert_eq!(
+            (policies, records),
+            (1, 1),
+            "重复初始化不得清掉已有授权数据"
+        );
     }
 
     /// C13 反例：旧库（有 `fs_granted_paths`、无授权两表）跑一次生产初始化
@@ -530,7 +538,10 @@ CREATE TABLE plugin_auth_records (\n    plugin_id   TEXT NOT NULL,\n    target  
                 |r| r.get(0),
             )
             .expect("index column count");
-        assert_eq!(indexed_cols, 3, "索引必须建在 (plugin_id, resource, target)");
+        assert_eq!(
+            indexed_cols, 3,
+            "索引必须建在 (plugin_id, resource, target)"
+        );
         assert_eq!(master_count(&db, "table", LEGACY_AUTH_RECORDS_TABLE), 0);
     }
 

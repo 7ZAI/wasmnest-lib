@@ -13,10 +13,11 @@
 //! 已自 `plugin/downloader.rs` 迁到 `plugin/manager/`，引用路径同步为
 //! `crate::manager::downloader`。
 
-use crate::system::constants::{
-    PLUGIN_DOWNLOAD_TEMP_DIR, PLUGIN_MANIFEST_FILE, PLUGIN_SOURCE_MARKER, SOURCE_FILE_INSTALL, WASM_FILE_EXT,
-};
 use crate::manager::validation::validate_plugin_id;
+use crate::system::constants::{
+    PLUGIN_DOWNLOAD_TEMP_DIR, PLUGIN_MANIFEST_FILE, PLUGIN_SOURCE_MARKER, SOURCE_FILE_INSTALL,
+    WASM_FILE_EXT,
+};
 use crate::Result;
 use sha2::{Digest, Sha256};
 use std::io::Read;
@@ -74,8 +75,9 @@ impl PluginDownloader {
     /// zip 解压安装（本地文件）
     fn install_zip(zip_path: &Path, user_plugins_dir: &Path) -> Result<String> {
         // 1. 打开 zip
-        let file = std::fs::File::open(zip_path)
-            .map_err(|e| crate::AppError::Plugin(format!("Failed to open plugin package: {}", e)))?;
+        let file = std::fs::File::open(zip_path).map_err(|e| {
+            crate::AppError::Plugin(format!("Failed to open plugin package: {}", e))
+        })?;
         let mut archive = zip::ZipArchive::new(file)
             .map_err(|e| crate::AppError::Plugin(format!("Invalid plugin package: {}", e)))?;
 
@@ -83,7 +85,9 @@ impl PluginDownloader {
         let mut manifest_str = String::new();
         archive
             .by_name(PLUGIN_MANIFEST_FILE)
-            .map_err(|e| crate::AppError::Plugin(format!("Plugin package missing plugin.json: {}", e)))?
+            .map_err(|e| {
+                crate::AppError::Plugin(format!("Plugin package missing plugin.json: {}", e))
+            })?
             .read_to_string(&mut manifest_str)
             .map_err(|e| crate::AppError::Plugin(format!("Failed to read plugin.json: {}", e)))?;
         // 解析与必填字段校验走唯一真源（票 11 第 6 项）
@@ -102,7 +106,9 @@ impl PluginDownloader {
         }
 
         let plugin_id = manifest.id.clone();
-        let temp_dir = user_plugins_dir.join(PLUGIN_DOWNLOAD_TEMP_DIR).join(&plugin_id);
+        let temp_dir = user_plugins_dir
+            .join(PLUGIN_DOWNLOAD_TEMP_DIR)
+            .join(&plugin_id);
 
         // 3. 解压到临时目录
         if temp_dir.exists() {
@@ -153,8 +159,9 @@ impl PluginDownloader {
 
         // 5. 写来源标记（供 dev 副本刷新/未来磁盘审计区分安装来源）
         let marker = temp_dir.join(PLUGIN_SOURCE_MARKER);
-        std::fs::write(&marker, SOURCE_FILE_INSTALL)
-            .map_err(|e| crate::AppError::Plugin(format!("Failed to write source marker: {}", e)))?;
+        std::fs::write(&marker, SOURCE_FILE_INSTALL).map_err(|e| {
+            crate::AppError::Plugin(format!("Failed to write source marker: {}", e))
+        })?;
 
         // 6. 移动到最终目录
         //
@@ -181,11 +188,16 @@ impl PluginDownloader {
                 "[PluginDownloader] Removing orphan residue dir (no plugin.json) before install"
             );
             std::fs::remove_dir_all(&final_dir).map_err(|e| {
-                crate::AppError::Plugin(format!("Failed to remove orphan dir '{}': {}", final_dir.display(), e))
+                crate::AppError::Plugin(format!(
+                    "Failed to remove orphan dir '{}': {}",
+                    final_dir.display(),
+                    e
+                ))
             })?;
         }
-        std::fs::rename(&temp_dir, &final_dir)
-            .map_err(|e| crate::AppError::Plugin(format!("Failed to move plugin into place: {}", e)))?;
+        std::fs::rename(&temp_dir, &final_dir).map_err(|e| {
+            crate::AppError::Plugin(format!("Failed to move plugin into place: {}", e))
+        })?;
 
         tracing::info!(
             "[PluginDownloader] Plugin '{}' installed to {:?} (source: {})",
@@ -231,9 +243,9 @@ impl PluginDownloader {
 
         let mut total_bytes: u64 = 0;
         for i in 0..archive.len() {
-            let mut entry = archive
-                .by_index(i)
-                .map_err(|e| crate::AppError::Plugin(format!("Failed to read plugin package entry: {}", e)))?;
+            let mut entry = archive.by_index(i).map_err(|e| {
+                crate::AppError::Plugin(format!("Failed to read plugin package entry: {}", e))
+            })?;
             let name = entry.name().to_string();
             if entry.is_dir() {
                 continue;
@@ -246,16 +258,19 @@ impl PluginDownloader {
             }
             let dest = temp_dir.join(&name);
             if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| crate::AppError::Plugin(format!("Failed to create '{}': {}", name, e)))?;
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    crate::AppError::Plugin(format!("Failed to create '{}': {}", name, e))
+                })?;
             }
-            let mut out = std::fs::File::create(&dest)
-                .map_err(|e| crate::AppError::Plugin(format!("Failed to create '{}': {}", name, e)))?;
+            let mut out = std::fs::File::create(&dest).map_err(|e| {
+                crate::AppError::Plugin(format!("Failed to create '{}': {}", name, e))
+            })?;
             let written = {
                 // 多读 1 字节以识别「刚好越界」；上限取 u64::MAX 时饱和，避免探测值溢出
                 let mut limited = (&mut entry).take(limits.max_single_file_bytes.saturating_add(1));
-                std::io::copy(&mut limited, &mut out)
-                    .map_err(|e| crate::AppError::Plugin(format!("Failed to extract '{}': {}", name, e)))?
+                std::io::copy(&mut limited, &mut out).map_err(|e| {
+                    crate::AppError::Plugin(format!("Failed to extract '{}': {}", name, e))
+                })?
             };
             if written > limits.max_single_file_bytes {
                 return Err(crate::AppError::Plugin(format!(
@@ -289,8 +304,13 @@ impl PluginDownloader {
 
     /// 计算文件 SHA-256（小写十六进制）
     fn sha256_file(path: &Path) -> Result<String> {
-        let content = std::fs::read(path)
-            .map_err(|e| crate::AppError::Plugin(format!("Failed to read '{}' for digest: {}", path.display(), e)))?;
+        let content = std::fs::read(path).map_err(|e| {
+            crate::AppError::Plugin(format!(
+                "Failed to read '{}' for digest: {}",
+                path.display(),
+                e
+            ))
+        })?;
         let mut hasher = Sha256::new();
         hasher.update(&content);
         Ok(format!("{:x}", hasher.finalize()))
@@ -305,7 +325,12 @@ mod tests {
 
     /// 构造一个合法插件 zip：plugin.json + index.js + 可选 wasm 文件
     /// `declares_wasm` 控制 manifest 是否声明 rust_library；`includes_wasm_file` 控制 zip 是否含该文件
-    fn build_plugin_zip(dir: &Path, id: &str, declares_wasm: bool, includes_wasm_file: bool) -> PathBuf {
+    fn build_plugin_zip(
+        dir: &Path,
+        id: &str,
+        declares_wasm: bool,
+        includes_wasm_file: bool,
+    ) -> PathBuf {
         build_plugin_zip_with_platform(dir, id, declares_wasm, includes_wasm_file, "both")
     }
 
@@ -335,7 +360,10 @@ mod tests {
         })
         .to_string();
         writer
-            .start_file(PLUGIN_MANIFEST_FILE, zip::write::SimpleFileOptions::default())
+            .start_file(
+                PLUGIN_MANIFEST_FILE,
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer.write_all(manifest.as_bytes()).unwrap();
         writer
@@ -344,7 +372,10 @@ mod tests {
         writer.write_all(b"console.log('test')").unwrap();
         if includes_wasm_file {
             writer
-                .start_file(format!("{}.wasm", wasm_name), zip::write::SimpleFileOptions::default())
+                .start_file(
+                    format!("{}.wasm", wasm_name),
+                    zip::write::SimpleFileOptions::default(),
+                )
                 .unwrap();
             writer.write_all(&[0u8; 8]).unwrap();
         }
@@ -358,7 +389,8 @@ mod tests {
         let plugins_dir = tmp.path().join("plugins");
         let zip_path = build_plugin_zip(tmp.path(), "com.test.install-ok", false, false);
 
-        let id = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
+        let id =
+            PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
         assert_eq!(id, "com.test.install-ok");
 
         let final_dir = plugins_dir.join(&id);
@@ -370,7 +402,10 @@ mod tests {
             SOURCE_FILE_INSTALL
         );
         // 临时目录已清理（rename 而非残留）
-        assert!(!plugins_dir.join(PLUGIN_DOWNLOAD_TEMP_DIR).join(&id).exists());
+        assert!(!plugins_dir
+            .join(PLUGIN_DOWNLOAD_TEMP_DIR)
+            .join(&id)
+            .exists());
     }
 
     #[test]
@@ -380,7 +415,8 @@ mod tests {
         // 声明了 rust_library 但 zip 缺失 wasm 文件 → 拒绝安装
         let zip_path = build_plugin_zip(tmp.path(), "com.test.missing-wasm", true, false);
 
-        let err = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap_err();
+        let err = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir)
+            .unwrap_err();
         assert!(err.to_string().contains("missing WASM"));
         assert!(!plugins_dir.join("com.test.missing-wasm").exists());
     }
@@ -391,12 +427,15 @@ mod tests {
         let plugins_dir = tmp.path().join("plugins");
         let zip_path = build_plugin_zip(tmp.path(), "com.test.with-wasm", true, true);
 
-        let id = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
+        let id =
+            PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
         assert_eq!(id, "com.test.with-wasm");
         let installed = std::fs::read_dir(plugins_dir.join(&id)).unwrap();
-        assert!(installed
-            .into_iter()
-            .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".wasm")));
+        assert!(installed.into_iter().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".wasm")));
     }
 
     #[test]
@@ -406,7 +445,8 @@ mod tests {
         let zip_path = build_plugin_zip(tmp.path(), "com.test.dup", false, false);
 
         PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
-        let err = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap_err();
+        let err = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir)
+            .unwrap_err();
         assert!(err.to_string().contains("already installed"));
     }
 
@@ -424,7 +464,8 @@ mod tests {
         std::fs::write(orphan_dir.join("plugin.db"), b"orphan db").unwrap();
 
         let zip_path = build_plugin_zip(tmp.path(), id, false, false);
-        let installed = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
+        let installed =
+            PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
         assert_eq!(installed, id);
 
         // 孤儿残留被清除：plugin.db 消失，新插件文件就位
@@ -444,15 +485,23 @@ mod tests {
         // 预置含 plugin.json 的同 id 安装目录（模拟已安装的旧版本）
         let existing = plugins_dir.join(id);
         std::fs::create_dir_all(&existing).unwrap();
-        std::fs::write(existing.join("plugin.json"), "{\"id\":\"com.test.valid-exists\"}").unwrap();
+        std::fs::write(
+            existing.join("plugin.json"),
+            "{\"id\":\"com.test.valid-exists\"}",
+        )
+        .unwrap();
         std::fs::write(existing.join("index.js"), "old").unwrap();
 
         let zip_path = build_plugin_zip(tmp.path(), id, false, false);
-        let err = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap_err();
+        let err = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir)
+            .unwrap_err();
         assert!(err.to_string().contains("already installed"));
 
         // 原安装目录保持原样，未被替换；临时目录已清理
-        assert_eq!(std::fs::read_to_string(existing.join("index.js")).unwrap(), "old");
+        assert_eq!(
+            std::fs::read_to_string(existing.join("index.js")).unwrap(),
+            "old"
+        );
         assert!(!plugins_dir.join(PLUGIN_DOWNLOAD_TEMP_DIR).join(id).exists());
     }
 
@@ -480,7 +529,8 @@ mod tests {
         writer.write_all(b"x").unwrap();
         writer.finish().unwrap();
 
-        let err = PluginDownloader::install_from_file(bad_zip.to_str().unwrap(), &plugins_dir).unwrap_err();
+        let err = PluginDownloader::install_from_file(bad_zip.to_str().unwrap(), &plugins_dir)
+            .unwrap_err();
         assert!(err.to_string().contains("missing plugin.json"));
     }
 
@@ -537,7 +587,10 @@ mod tests {
         })
         .to_string();
         writer
-            .start_file(PLUGIN_MANIFEST_FILE, zip::write::SimpleFileOptions::default())
+            .start_file(
+                PLUGIN_MANIFEST_FILE,
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer.write_all(manifest.as_bytes()).unwrap();
         writer
@@ -545,7 +598,10 @@ mod tests {
             .unwrap();
         writer.write_all(b"console.log('test')").unwrap();
         writer
-            .start_file(format!("{}.wasm", wasm_name), zip::write::SimpleFileOptions::default())
+            .start_file(
+                format!("{}.wasm", wasm_name),
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer.write_all(wasm_bytes).unwrap();
         writer.finish().unwrap();
@@ -587,7 +643,8 @@ mod tests {
         let wasm_bytes = b"REAL-WASM-BYTES";
 
         let zip_path = build_wasm_zip(tmp.path(), id, wasm_bytes, &sha256_hex(b"TAMPERED-BYTES"));
-        let err = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap_err();
+        let err = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir)
+            .unwrap_err();
         assert!(
             err.to_string().contains("WASM content mismatch"),
             "错误必须点明是内容摘要不符，实际: {err}"
@@ -609,7 +666,8 @@ mod tests {
 
         let declared = sha256_hex(wasm_bytes).to_uppercase();
         let zip_path = build_wasm_zip(tmp.path(), id, wasm_bytes, &declared);
-        let installed = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
+        let installed =
+            PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
         assert_eq!(installed, id);
         assert!(plugins_dir.join(id).join("plugin.json").exists());
     }
@@ -622,7 +680,8 @@ mod tests {
         let id = "com.test.hash-absent";
 
         let zip_path = build_wasm_zip(tmp.path(), id, b"ANY-WASM", "");
-        let installed = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
+        let installed =
+            PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
         assert_eq!(installed, id);
     }
 
@@ -633,7 +692,8 @@ mod tests {
     #[test]
     fn producer_and_host_share_the_same_digest_vector() {
         const VECTOR_BYTES: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
-        const VECTOR_SHA256: &str = "93a44bbb96c751218e4c00d479e4c14358122a389acca16205b1e4d0dc5f9476";
+        const VECTOR_SHA256: &str =
+            "93a44bbb96c751218e4c00d479e4c14358122a389acca16205b1e4d0dc5f9476";
 
         // 取文件规则同源：JS 侧 `${rustLibrary}.wasm` 用的字面量必须等于本常量
         assert_eq!(
@@ -652,8 +712,14 @@ mod tests {
 
         // 生产者产出的清单值确实被宿主接受（小写 64 位十六进制、trim 后比对）
         let plugins_dir = tmp.path().join("plugins");
-        let zip_path = build_wasm_zip(tmp.path(), "com.test.vector-pin", VECTOR_BYTES, VECTOR_SHA256);
-        let installed = PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
+        let zip_path = build_wasm_zip(
+            tmp.path(),
+            "com.test.vector-pin",
+            VECTOR_BYTES,
+            VECTOR_SHA256,
+        );
+        let installed =
+            PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
         assert_eq!(installed, "com.test.vector-pin");
 
         // 反例：同一批字节但摘要被换成另一条合法形态的向量 → 拒装
@@ -663,7 +729,8 @@ mod tests {
             VECTOR_BYTES,
             "3f499bf4c9e7483e804244d5e485b3537b2135690a7ce7b3fd7cb2544217d729",
         );
-        let err = PluginDownloader::install_from_file(bad_zip.to_str().unwrap(), &plugins_dir).unwrap_err();
+        let err = PluginDownloader::install_from_file(bad_zip.to_str().unwrap(), &plugins_dir)
+            .unwrap_err();
         assert!(
             err.to_string().contains("WASM content mismatch"),
             "摘要漂移必须被拒装，实际: {err}"
@@ -686,7 +753,8 @@ mod tests {
             max_entries: 2,
             ..Default::default()
         };
-        let err = PluginDownloader::extract_entries(&mut open_archive(&zip_path), &out, &over).unwrap_err();
+        let err = PluginDownloader::extract_entries(&mut open_archive(&zip_path), &out, &over)
+            .unwrap_err();
         assert!(err.to_string().contains("too many entries"), "实际: {err}");
 
         let within = ZipLimits {
@@ -710,8 +778,12 @@ mod tests {
             max_single_file_bytes: 8,
             ..Default::default()
         };
-        let err = PluginDownloader::extract_entries(&mut open_archive(&zip_path), &out, &limits).unwrap_err();
-        assert!(err.to_string().contains("exceeds size limit"), "实际: {err}");
+        let err = PluginDownloader::extract_entries(&mut open_archive(&zip_path), &out, &limits)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds size limit"),
+            "实际: {err}"
+        );
 
         // 上限放到 16 → 放行
         let limits_ok = ZipLimits {
@@ -729,7 +801,11 @@ mod tests {
         let zip_path = build_files_zip(
             tmp.path(),
             "total.zip",
-            &[("a.bin", &[0u8; 10]), ("b.bin", &[0u8; 10]), ("c.bin", &[0u8; 10])],
+            &[
+                ("a.bin", &[0u8; 10]),
+                ("b.bin", &[0u8; 10]),
+                ("c.bin", &[0u8; 10]),
+            ],
         );
         let out = tmp.path().join("out");
         std::fs::create_dir_all(&out).unwrap();
@@ -739,7 +815,8 @@ mod tests {
             max_single_file_bytes: u64::MAX,
             ..Default::default()
         };
-        let err = PluginDownloader::extract_entries(&mut open_archive(&zip_path), &out, &limits).unwrap_err();
+        let err = PluginDownloader::extract_entries(&mut open_archive(&zip_path), &out, &limits)
+            .unwrap_err();
         assert!(err.to_string().contains("total size limit"), "实际: {err}");
 
         let limits_ok = ZipLimits {

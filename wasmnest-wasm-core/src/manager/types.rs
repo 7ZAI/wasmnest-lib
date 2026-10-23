@@ -228,7 +228,10 @@ mod tests {
         let info = HostPluginInfo::from(&plugin);
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["source"], "scanned");
-        assert_eq!(json["pluginType"], "rust-ts", "PluginType 序列化为 kebab-case");
+        assert_eq!(
+            json["pluginType"], "rust-ts",
+            "PluginType 序列化为 kebab-case"
+        );
         assert!(json.get("icon").is_none(), "icon=None 时应省略字段");
         assert!(json.get("installedAt").is_none());
     }

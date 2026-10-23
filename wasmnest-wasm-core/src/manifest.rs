@@ -83,7 +83,11 @@ pub struct PluginManifest {
     pub wasi_preopen_dirs: Vec<WasiPreopenDir>,
     /// 装配角色：`basic-service`（L1）/ `internal-business`（L2）/ `business-app`（L3，
     /// 缺省）。历史拼写兼容（反序列化别名）：`application` = L3、`system` = L1。
-    #[serde(rename = "type", default, skip_serializing_if = "PluginKind::is_business_app")]
+    #[serde(
+        rename = "type",
+        default,
+        skip_serializing_if = "PluginKind::is_business_app"
+    )]
     pub kind: PluginKind,
     /// 能力依赖声明（应用插件消费的能力名，WIT host-* 接口名）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -207,7 +211,10 @@ impl PluginKind {
 
     /// 是否**角色驱动**（L1 / L2）：启动由角色而非用户状态决定
     pub fn is_role_driven(&self) -> bool {
-        matches!(self, PluginKind::BasicService | PluginKind::InternalBusiness)
+        matches!(
+            self,
+            PluginKind::BasicService | PluginKind::InternalBusiness
+        )
     }
 
     /// 是否向能力注册表提供 host-* 同形接口能力（**仅 L1**）
@@ -340,7 +347,13 @@ impl WasiPreopenDir {
 
     /// 是否只读档
     pub fn is_readonly(&self) -> bool {
-        matches!(self, Self::Declared { readonly: Some(true), .. })
+        matches!(
+            self,
+            Self::Declared {
+                readonly: Some(true),
+                ..
+            }
+        )
     }
 
     /// 只读档查询（旧 SDK 同名方法——绑定层预打开展开调用）

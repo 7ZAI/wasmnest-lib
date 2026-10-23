@@ -47,7 +47,11 @@ pub fn next_host_request_id() -> String {
 ///
 /// 失败面全部 `Err`（不回退成「空结果」）：传输失败 / reply 非法 JSON / 错误信封
 /// / 缺 `result`——四种都在错误里点名 api 名，排障不靠猜。
-pub fn call_api(host_ctx: &WasmHostContext, api: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+pub fn call_api(
+    host_ctx: &WasmHostContext,
+    api: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
     let request_topic = format!("wasmnest.api.{api}");
     let method = api.rsplit_once('.').map(|(_, m)| m).unwrap_or(api);
     let id = next_host_request_id();
@@ -68,7 +72,9 @@ pub fn call_api(host_ctx: &WasmHostContext, api: &str, params: serde_json::Value
             .and_then(|v| v.as_str())
             .unwrap_or("rpc error")
             .to_string();
-        return Err(AppError::Plugin(format!("plugin api '{api}' error: {message}")));
+        return Err(AppError::Plugin(format!(
+            "plugin api '{api}' error: {message}"
+        )));
     }
     reply
         .get("result")
@@ -88,7 +94,10 @@ mod tests {
         assert_ne!(a, b, "id 必须唯一（否则并发调用串台）");
         for id in [&a, &b] {
             assert!(id.starts_with("host-req-"), "前缀约定: {id}");
-            assert!(id["host-req-".len()..].parse::<u64>().is_ok(), "尾部是计数: {id}");
+            assert!(
+                id["host-req-".len()..].parse::<u64>().is_ok(),
+                "尾部是计数: {id}"
+            );
         }
         // 单调
         let a_n: u64 = a["host-req-".len()..].parse().expect("n");

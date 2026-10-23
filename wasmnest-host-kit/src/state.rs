@@ -17,8 +17,8 @@
 
 use std::sync::Arc;
 
-use wasmtime::component::TypedFunc;
 use wasmtime::component::ResourceTable;
+use wasmtime::component::TypedFunc;
 
 use crate::limits::StoreLimits;
 use crate::metrics::PluginMetrics;

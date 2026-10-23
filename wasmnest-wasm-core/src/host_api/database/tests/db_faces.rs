@@ -37,5 +37,10 @@ fn plugin_db_requires_storage_permission() {
     // ③ 授予 + 注入私有库：执行成功
     fake.set_plugin_db("com.wasmnest.full");
     fake.grant("com.wasmnest.full", &[PERMISSION_STORAGE]);
-    plugin_db_execute(ports, "com.wasmnest.full", "CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)").expect("create ok");
+    plugin_db_execute(
+        ports,
+        "com.wasmnest.full",
+        "CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)",
+    )
+    .expect("create ok");
 }

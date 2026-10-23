@@ -18,7 +18,11 @@ async fn test_invoke_rust_command_gates() {
     // TS-only 插件（FileScan）→ 拒绝 Rust command
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
     );
     let err = host
         .invoke_rust_command(TEST_PLUGIN_ID, "cmd", json!({}))
@@ -32,10 +36,16 @@ async fn test_invoke_static_command_ok() {
     let host = setup_host().await;
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::StaticRegistry, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::StaticRegistry,
+            PluginState::Activated,
+        ),
     );
     // 运行时注册表直接注入 handler（等价于 register_rust_command_handlers 的产物）
-    let cmd = PluginCommand::new("hello", |args| async move { Ok(serde_json::json!({ "echo": args })) });
+    let cmd = PluginCommand::new("hello", |args| async move {
+        Ok(serde_json::json!({ "echo": args }))
+    });
     host.rust_command_handlers
         .write()
         .await
@@ -53,7 +63,11 @@ async fn test_invoke_static_command_not_found() {
     let host = setup_host().await;
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::StaticRegistry, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::StaticRegistry,
+            PluginState::Activated,
+        ),
     );
 
     let err = host
@@ -68,9 +82,15 @@ async fn test_invoke_static_command_handler_error() {
     let host = setup_host().await;
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::StaticRegistry, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::StaticRegistry,
+            PluginState::Activated,
+        ),
     );
-    let cmd = PluginCommand::new("boom", |_args| async move { Err(anyhow::anyhow!("handler exploded")) });
+    let cmd = PluginCommand::new("boom", |_args| async move {
+        Err(anyhow::anyhow!("handler exploded"))
+    });
     host.rust_command_handlers
         .write()
         .await
@@ -91,7 +111,8 @@ async fn test_list_rust_commands_parses_namespace() {
         ("com.a", "cmd2", "Two"),
         ("com.b", "cmd3", "Three"),
     ] {
-        let cmd = PluginCommand::new(cmd_name, |_args| async move { Ok(serde_json::json!(null)) }).with_title(title);
+        let cmd = PluginCommand::new(cmd_name, |_args| async move { Ok(serde_json::json!(null)) })
+            .with_title(title);
         host.rust_command_handlers
             .write()
             .await
@@ -101,7 +122,8 @@ async fn test_list_rust_commands_parses_namespace() {
     let mut entries = host.list_rust_commands().await;
     // HashMap 迭代无序：按 (plugin_id, command_name) 排序后比较
     entries.sort_by(|a, b| {
-        (a.plugin_id.clone(), a.command_name.clone()).cmp(&(b.plugin_id.clone(), b.command_name.clone()))
+        (a.plugin_id.clone(), a.command_name.clone())
+            .cmp(&(b.plugin_id.clone(), b.command_name.clone()))
     });
     let pairs: Vec<(String, String)> = entries
         .iter()
@@ -170,13 +192,21 @@ async fn test_message_dispatcher_is_activated() {
 
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
     );
     assert!(MessageDispatcher::is_activated(&host, TEST_PLUGIN_ID));
 
     host.plugins.write().await.insert(
         "com.wasmnest.d".to_string(),
-        make_plugin("com.wasmnest.d", PluginSource::FileScan, PluginState::Deactivated),
+        make_plugin(
+            "com.wasmnest.d",
+            PluginSource::FileScan,
+            PluginState::Deactivated,
+        ),
     );
     assert!(!MessageDispatcher::is_activated(&host, "com.wasmnest.d"));
 }

@@ -47,8 +47,12 @@ mod tests {
     #[test]
     fn emit_event_rejects_invalid_json() {
         let ctx = build_host_ctx();
-        let err = emit_event(ctx.as_ref(), "plugin:event", "not-json").expect_err("非法 JSON 必须拒绝");
-        assert!(err.contains("not valid JSON"), "错误须点名 JSON 解析失败: {err}");
+        let err =
+            emit_event(ctx.as_ref(), "plugin:event", "not-json").expect_err("非法 JSON 必须拒绝");
+        assert!(
+            err.contains("not valid JSON"),
+            "错误须点名 JSON 解析失败: {err}"
+        );
         // 合法 JSON 在无头上下文仍按幂等约定 Ok
         assert!(emit_event(ctx.as_ref(), "plugin:event", r#"{"ok":true}"#).is_ok());
     }

@@ -112,7 +112,10 @@ mod tests {
             .find(|route| route.capability == "host-kit-route-probe")
             .expect("自报的路由词汇应被收集到");
         assert_eq!(probe.forward_prefix, "kit_probe");
-        assert_eq!(probe.exports, &["wasmnest:plugin/host-kit-route-probe.ping@0.1.0"]);
+        assert_eq!(
+            probe.exports,
+            &["wasmnest:plugin/host-kit-route-probe.ping@0.1.0"]
+        );
     }
 
     /// 收集顺序按能力名字典序（日志 / 报错可复现）

@@ -26,7 +26,8 @@ use crate::host_api::sqlite_ports::{BoxedBlocked, PluginDbFuture, SqlitePorts};
 
 /// 私有库缺席时的错误文案（与宿主 `WasmHostContext::get_or_create_plugin_db` 无头分支
 /// 的 `AppError::Plugin(..).to_string()` 逐字一致——端口返回的就是那串文本）
-const HEADLESS_NO_PLUGIN_DB: &str = "Plugin error: plugin database unavailable in headless context (no app_handle)";
+const HEADLESS_NO_PLUGIN_DB: &str =
+    "Plugin error: plugin database unavailable in headless context (no app_handle)";
 
 /// 测试替身端口
 pub(super) struct FakePorts {
@@ -164,8 +165,17 @@ impl SqlitePorts for FakePorts {
         drive(fut)
     }
 
-    fn forward_storage_get(&self, plugin_id: &str, key: &str) -> Option<Result<Option<String>, String>> {
-        if !self.kv_forwarded.lock().expect("kv_forwarded lock").contains(plugin_id) {
+    fn forward_storage_get(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> Option<Result<Option<String>, String>> {
+        if !self
+            .kv_forwarded
+            .lock()
+            .expect("kv_forwarded lock")
+            .contains(plugin_id)
+        {
             return None;
         }
         let hit = self
@@ -177,8 +187,18 @@ impl SqlitePorts for FakePorts {
         Some(Ok(hit.map(|v| v.to_string())))
     }
 
-    fn forward_storage_set(&self, plugin_id: &str, key: &str, value: &str) -> Option<Result<(), String>> {
-        if !self.kv_forwarded.lock().expect("kv_forwarded lock").contains(plugin_id) {
+    fn forward_storage_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Option<Result<(), String>> {
+        if !self
+            .kv_forwarded
+            .lock()
+            .expect("kv_forwarded lock")
+            .contains(plugin_id)
+        {
             return None;
         }
         let parsed: serde_json::Value =
@@ -191,7 +211,12 @@ impl SqlitePorts for FakePorts {
     }
 
     fn forward_storage_delete(&self, plugin_id: &str, key: &str) -> Option<Result<(), String>> {
-        if !self.kv_forwarded.lock().expect("kv_forwarded lock").contains(plugin_id) {
+        if !self
+            .kv_forwarded
+            .lock()
+            .expect("kv_forwarded lock")
+            .contains(plugin_id)
+        {
             return None;
         }
         self.forwarded
@@ -210,7 +235,12 @@ impl SqlitePorts for FakePorts {
             .cloned())
     }
 
-    fn storage_set(&self, plugin_id: &str, key: &str, value: serde_json::Value) -> Result<(), String> {
+    fn storage_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<(), String> {
         self.kv
             .lock()
             .expect("kv lock")

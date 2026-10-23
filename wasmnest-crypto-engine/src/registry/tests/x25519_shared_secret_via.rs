@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::provider::{KEY_AGREEMENT_X25519};
+use crate::provider::KEY_AGREEMENT_X25519;
 
 #[test]
 fn x25519_shared_secret_via_registry() {

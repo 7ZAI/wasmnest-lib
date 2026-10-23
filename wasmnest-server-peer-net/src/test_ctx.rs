@@ -22,11 +22,11 @@ use wasmnest_server_base::ports::{
 
 use std::sync::LazyLock;
 
+use crate::base::{FileLanding, SharedSafAccess};
 use crate::engine_ports::{PeerEnginePorts, PeerPlatformSeam};
 use crate::peer_engine_receive::PeerReceiveState;
 use crate::peer_engine_remote::PeerRemoteState;
 use crate::peer_engine_transfer::PeerTransferState;
-use crate::base::{FileLanding, SharedSafAccess};
 use crate::{PeerCtx, PeerNetState};
 
 /// 构造一份无头引擎上下文：节点未启动、四张会话表全空、无 handler
@@ -52,8 +52,7 @@ pub(crate) fn headless_ctx() -> Arc<PeerCtx> {
 pub(crate) fn headless_ctx_with_platform_dir() -> Arc<PeerCtx> {
     // 固定临时目录一次创建（多用例共享同一路径 → decorate 同根去重跳过，幂等）
     static PLATFORM_DIR: LazyLock<std::path::PathBuf> = LazyLock::new(|| {
-        let dir = std::env::temp_dir()
-            .join(format!("wasmnest-peer-platform-dir-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("wasmnest-peer-platform-dir-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create platform dir fixture");
         dir
     });

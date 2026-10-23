@@ -21,9 +21,9 @@ use crate::base::{
     browse_shared_dir, list_shared_roots, pull_shared_file, CancelToken, NodeId, PauseCmd, PauseSlot, PeerNetError,
     TransferEvent,
 };
-use wasmnest_server_base::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use wasmnest_server_base::error::{AppError, Result};
 
 use super::{map_peer_net_error, parse_node_id, runtime_snapshot, PeerCtx};
 

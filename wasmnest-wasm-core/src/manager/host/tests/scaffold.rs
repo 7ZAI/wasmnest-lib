@@ -34,14 +34,24 @@ pub(super) async fn setup_host() -> PluginHost {
         AppConfig::init(config);
     });
 
-    let db = Arc::new(Mutex::new(Database::new(&PathBuf::from(":memory:")).unwrap()));
+    let db = Arc::new(Mutex::new(
+        Database::new(&PathBuf::from(":memory:")).unwrap(),
+    ));
     db.lock().expect("db lock").init_schema().unwrap();
     let storage = Arc::new(PluginStorage::new(db.clone()));
     let permission = Arc::new(PermissionManager::new());
     let registry = Arc::new(PluginRegistry::new());
     let message_bus = Arc::new(MessageBus::new());
 
-    let wasm_runtime = Arc::new(WasmRuntime::new(storage.clone(), None, Vec::new(), crate::manager::runtime::AbiPolicy::UNCONSTRAINED).unwrap());
+    let wasm_runtime = Arc::new(
+        WasmRuntime::new(
+            storage.clone(),
+            None,
+            Vec::new(),
+            crate::manager::runtime::AbiPolicy::UNCONSTRAINED,
+        )
+        .unwrap(),
+    );
 
     let wasm_host_ctx = Arc::new(WasmHostContext::new(
         db,
@@ -62,9 +72,10 @@ pub(super) async fn setup_host() -> PluginHost {
     // v24 认证记录下沉：认证中心（terminal-session）配对/历史真源在插件私有库。
     // 无头测试无 AppHandle，注入进程级临时根使激活建表/播种/断言可达私有库
     // （auth-policy 闭环等依赖）
-    wasm_host_ctx.set_plugin_db_root(Some(
-        std::env::temp_dir().join(format!("wasmnest-hosttest-pluginroot-{}", std::process::id())),
-    ));
+    wasm_host_ctx.set_plugin_db_root(Some(std::env::temp_dir().join(format!(
+        "wasmnest-hosttest-pluginroot-{}",
+        std::process::id()
+    ))));
 
     // 能力域端口（wasm-core-lib-split 票 03 / 04 / 05 / 06）：迁出 `wasm_core` 的能力域
     // （mdns / ws / peer-net / http）经端口取宿主能力，生产在 `PluginHost::new` 的装配链里装；
@@ -92,7 +103,9 @@ pub(super) async fn setup_host() -> PluginHost {
         runtime_error_notify_throttle: Arc::new(std::sync::Mutex::new(HashMap::new())),
         shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         user_plugins_dir: std::env::temp_dir().join("wasmnest-test-user-plugins"),
-        frontend_channel: Arc::new(crate::security::frontend_channel::FrontendChannelRegistry::new()),
+        frontend_channel: Arc::new(
+            crate::security::frontend_channel::FrontendChannelRegistry::new(),
+        ),
     }
 }
 
@@ -154,7 +167,9 @@ fn synthetic_on_shutdown() -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + 
     Box::pin(async { Ok(()) })
 }
 
-fn synthetic_noop_lifecycle(_ctx: RustPluginContext) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
+fn synthetic_noop_lifecycle(
+    _ctx: RustPluginContext,
+) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
     Box::pin(async { Ok(()) })
 }
 

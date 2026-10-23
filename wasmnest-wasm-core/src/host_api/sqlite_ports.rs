@@ -87,10 +87,19 @@ pub trait SqlitePorts: Send + Sync {
     fn block_on_any(&self, fut: BoxedBlocked<'_>) -> Box<dyn Any + Send>;
 
     /// 能力路由：`host-storage.get` 转给系统组件提供者；无提供者返回 `None`
-    fn forward_storage_get(&self, plugin_id: &str, key: &str) -> Option<Result<Option<String>, String>>;
+    fn forward_storage_get(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> Option<Result<Option<String>, String>>;
 
     /// 能力路由：`host-storage.set`（语义同 [`SqlitePorts::forward_storage_get`]）
-    fn forward_storage_set(&self, plugin_id: &str, key: &str, value: &str) -> Option<Result<(), String>>;
+    fn forward_storage_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Option<Result<(), String>>;
 
     /// 能力路由：`host-storage.delete`（语义同 [`SqlitePorts::forward_storage_get`]）
     fn forward_storage_delete(&self, plugin_id: &str, key: &str) -> Option<Result<(), String>>;
@@ -99,7 +108,12 @@ pub trait SqlitePorts: Send + Sync {
     fn storage_get(&self, plugin_id: &str, key: &str) -> Result<Option<serde_json::Value>, String>;
 
     /// 宿主键值存储写（upsert）
-    fn storage_set(&self, plugin_id: &str, key: &str, value: serde_json::Value) -> Result<(), String>;
+    fn storage_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<(), String>;
 
     /// 宿主键值存储删（幂等）
     fn storage_delete(&self, plugin_id: &str, key: &str) -> Result<(), String>;
@@ -115,8 +129,12 @@ pub trait SqlitePorts: Send + Sync {
 ///
 /// 类型不符是**装配期编程错误**（调用方传错了 future 的输出类型），直接 panic
 /// 点名，不静默返回 `None` 之类的假值。
-pub fn block_on<'a, T: Send + 'static>(ports: &'a dyn SqlitePorts, fut: impl Future<Output = T> + Send + 'a) -> T {
-    let erased: BoxedBlocked<'a> = Box::pin(async move { Box::new(fut.await) as Box<dyn Any + Send> });
+pub fn block_on<'a, T: Send + 'static>(
+    ports: &'a dyn SqlitePorts,
+    fut: impl Future<Output = T> + Send + 'a,
+) -> T {
+    let erased: BoxedBlocked<'a> =
+        Box::pin(async move { Box::new(fut.await) as Box<dyn Any + Send> });
     match ports.block_on_any(erased).downcast::<T>() {
         Ok(value) => *value,
         Err(_) => panic!(

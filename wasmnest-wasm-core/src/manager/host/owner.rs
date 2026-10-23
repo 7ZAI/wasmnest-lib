@@ -55,7 +55,6 @@ use crate::AppError;
 // 组件的接口导出是嵌套实例形态，平名字符串（`iface#func`）无法被
 // `Instance::get_typed_func` 命中（wasmtime 47 实证），必须用 `pkg:ns/iface.func` 路径。
 
-
 /// 属主请求队列容量（入队满 = 显性错误，禁止无限缓冲与静默丢弃）
 pub(crate) const OWNER_QUEUE_CAP: usize = 64;
 
@@ -196,10 +195,14 @@ impl OpKind {
             Self::OnStartup => crate::contract::export_item("lifecycle", "on-startup"),
             Self::OnShutdown => crate::contract::export_item("lifecycle", "on-shutdown"),
             Self::OnMessage => crate::contract::export_item("events", "on-message"),
-            Self::OnMessageBinary => crate::contract::export_item("events-binary", "on-message-binary"),
+            Self::OnMessageBinary => {
+                crate::contract::export_item("events-binary", "on-message-binary")
+            }
             Self::OnProcessDone => crate::contract::export_item("events", "on-process-done"),
             Self::WsClientMessage => crate::contract::export_item("events-ws", "on-message"),
-            Self::WsEndpointMessage => crate::contract::export_item("events-ws", "on-client-message"),
+            Self::WsEndpointMessage => {
+                crate::contract::export_item("events-ws", "on-client-message")
+            }
             Self::OnTaskEvent => crate::contract::export_item("events-task", "on-task-event"),
             Self::CapStorageGet => crate::contract::export_item("host-storage", "get"),
             Self::CapStorageSet => crate::contract::export_item("host-storage", "set"),
@@ -207,9 +210,15 @@ impl OpKind {
             Self::CapMdnsBrowse => crate::contract::export_item("host-mdns", "browse"),
             Self::CapMdnsStopBrowse => crate::contract::export_item("host-mdns", "stop-browse"),
             Self::CapMdnsAdvertise => crate::contract::export_item("host-mdns", "advertise"),
-            Self::CapMdnsStopAdvertise => crate::contract::export_item("host-mdns", "stop-advertise"),
-            Self::CapMdnsIsAdvertising => crate::contract::export_item("host-mdns", "is-advertising"),
-            Self::CapAuthVerifyDeviceToken => crate::contract::export_item("auth-policy", "verify-device-token"),
+            Self::CapMdnsStopAdvertise => {
+                crate::contract::export_item("host-mdns", "stop-advertise")
+            }
+            Self::CapMdnsIsAdvertising => {
+                crate::contract::export_item("host-mdns", "is-advertising")
+            }
+            Self::CapAuthVerifyDeviceToken => {
+                crate::contract::export_item("auth-policy", "verify-device-token")
+            }
         }
     }
 
@@ -259,7 +268,11 @@ impl OpKind {
     /// 传输层失败（trap / 启动期错误）→ `AppError` 文案（与 mutex 模型逐字等价）
     pub(crate) fn trap_error(self, detail: &str) -> AppError {
         if self.is_capability() {
-            AppError::Plugin(format!("capability call failed: {} ({})", self.export(), detail))
+            AppError::Plugin(format!(
+                "capability call failed: {} ({})",
+                self.export(),
+                detail
+            ))
         } else {
             AppError::Plugin(format!("WASM {}() call failed: {}", self.fn_name(), detail))
         }
@@ -294,11 +307,16 @@ impl OpKind {
 /// 直达本函数）逐字等价。`event-loop` 模型的同一批 op 由 [`start_op`]
 /// 以类型化 `start_call_concurrent` 启动，两个分支共用 [`GuestReply`] 与
 /// [`GuestCallFailure`] 出口。
-pub(crate) fn dispatch_mutex_op(plugin: &mut LoadedWasmPlugin, op: GuestOp) -> crate::Result<GuestReply> {
+pub(crate) fn dispatch_mutex_op(
+    plugin: &mut LoadedWasmPlugin,
+    op: GuestOp,
+) -> crate::Result<GuestReply> {
     use crate::bus::WsFrameDispatch;
 
     match op {
-        GuestOp::InvokeCommand { name, args_json } => plugin.invoke_command(&name, &args_json).map(GuestReply::Str),
+        GuestOp::InvokeCommand { name, args_json } => plugin
+            .invoke_command(&name, &args_json)
+            .map(GuestReply::Str),
         GuestOp::Activate => plugin.activate().map(GuestReply::Code),
         GuestOp::Deactivate => plugin.deactivate().map(GuestReply::Code),
         GuestOp::OnStartup => plugin.on_startup().map(GuestReply::Lifecycle),
@@ -310,16 +328,33 @@ pub(crate) fn dispatch_mutex_op(plugin: &mut LoadedWasmPlugin, op: GuestOp) -> c
         } => {
             // 既有 mutex 调用点直传 `serde_json::Value`（导出方法内部再序列化）；
             // op 闭集统一携带 JSON 文本，此处解析回 Value——值往返确定，等价
-            let payload: serde_json::Value = serde_json::from_str(&payload_json)
-                .map_err(|e| AppError::Plugin(format!("invalid bus message payload JSON: {}", e)))?;
-            plugin.on_message(&topic, &sender, &payload).map(|()| GuestReply::Unit)
+            let payload: serde_json::Value = serde_json::from_str(&payload_json).map_err(|e| {
+                AppError::Plugin(format!("invalid bus message payload JSON: {}", e))
+            })?;
+            plugin
+                .on_message(&topic, &sender, &payload)
+                .map(|()| GuestReply::Unit)
         }
-        GuestOp::OnMessageBinary { topic, sender, payload } => plugin
+        GuestOp::OnMessageBinary {
+            topic,
+            sender,
+            payload,
+        } => plugin
             .on_message_binary(&topic, &sender, &payload)
             .map(|()| GuestReply::Unit),
-        GuestOp::OnProcessDone { payload_json } => plugin.on_process_done(&payload_json).map(|()| GuestReply::Unit),
-        GuestOp::WsClientMessage { handle, kind, payload } => plugin
-            .on_ws_frame(&WsFrameDispatch::Client { handle, kind, payload })
+        GuestOp::OnProcessDone { payload_json } => plugin
+            .on_process_done(&payload_json)
+            .map(|()| GuestReply::Unit),
+        GuestOp::WsClientMessage {
+            handle,
+            kind,
+            payload,
+        } => plugin
+            .on_ws_frame(&WsFrameDispatch::Client {
+                handle,
+                kind,
+                payload,
+            })
             .map(GuestReply::Bool),
         GuestOp::WsEndpointMessage {
             endpoint_id,
@@ -334,33 +369,62 @@ pub(crate) fn dispatch_mutex_op(plugin: &mut LoadedWasmPlugin, op: GuestOp) -> c
                 payload,
             })
             .map(GuestReply::Bool),
-        GuestOp::OnTaskEvent { event_json } => plugin.on_task_event(&event_json).map(GuestReply::Bool),
+        GuestOp::OnTaskEvent { event_json } => {
+            plugin.on_task_event(&event_json).map(GuestReply::Bool)
+        }
         GuestOp::CapStorageGet { key } => plugin
-            .call_capability_export::<(String,), (Result<Option<String>, String>,)>(crate::contract::export_item("host-storage", "get"), (key,))
+            .call_capability_export::<(String,), (Result<Option<String>, String>,)>(
+                crate::contract::export_item("host-storage", "get"),
+                (key,),
+            )
             .map(|(r,)| GuestReply::GuestOptional(r)),
         GuestOp::CapStorageSet { key, value } => plugin
-            .call_capability_export::<(String, String), (Result<(), String>,)>(crate::contract::export_item("host-storage", "set"), (key, value))
+            .call_capability_export::<(String, String), (Result<(), String>,)>(
+                crate::contract::export_item("host-storage", "set"),
+                (key, value),
+            )
             .map(|(r,)| GuestReply::GuestUnit(r)),
         GuestOp::CapStorageDelete { key } => plugin
-            .call_capability_export::<(String,), (Result<(), String>,)>(crate::contract::export_item("host-storage", "delete"), (key,))
+            .call_capability_export::<(String,), (Result<(), String>,)>(
+                crate::contract::export_item("host-storage", "delete"),
+                (key,),
+            )
             .map(|(r,)| GuestReply::GuestUnit(r)),
         GuestOp::CapMdnsBrowse { service_type } => plugin
-            .call_capability_export::<(String,), (Result<String, String>,)>(crate::contract::export_item("host-mdns", "browse"), (service_type,))
+            .call_capability_export::<(String,), (Result<String, String>,)>(
+                crate::contract::export_item("host-mdns", "browse"),
+                (service_type,),
+            )
             .map(|(r,)| GuestReply::GuestStr(r)),
         GuestOp::CapMdnsStopBrowse { browser_id } => plugin
-            .call_capability_export::<(String,), (Result<bool, String>,)>(crate::contract::export_item("host-mdns", "stop-browse"), (browser_id,))
+            .call_capability_export::<(String,), (Result<bool, String>,)>(
+                crate::contract::export_item("host-mdns", "stop-browse"),
+                (browser_id,),
+            )
             .map(|(r,)| GuestReply::GuestBool(r)),
         GuestOp::CapMdnsAdvertise { config_json } => plugin
-            .call_capability_export::<(String,), (Result<String, String>,)>(crate::contract::export_item("host-mdns", "advertise"), (config_json,))
+            .call_capability_export::<(String,), (Result<String, String>,)>(
+                crate::contract::export_item("host-mdns", "advertise"),
+                (config_json,),
+            )
             .map(|(r,)| GuestReply::GuestStr(r)),
         GuestOp::CapMdnsStopAdvertise { advertise_id } => plugin
-            .call_capability_export::<(String,), (Result<bool, String>,)>(crate::contract::export_item("host-mdns", "stop-advertise"), (advertise_id,))
+            .call_capability_export::<(String,), (Result<bool, String>,)>(
+                crate::contract::export_item("host-mdns", "stop-advertise"),
+                (advertise_id,),
+            )
             .map(|(r,)| GuestReply::GuestBool(r)),
         GuestOp::CapMdnsIsAdvertising { advertise_id } => plugin
-            .call_capability_export::<(String,), (Result<bool, String>,)>(crate::contract::export_item("host-mdns", "is-advertising"), (advertise_id,))
+            .call_capability_export::<(String,), (Result<bool, String>,)>(
+                crate::contract::export_item("host-mdns", "is-advertising"),
+                (advertise_id,),
+            )
             .map(|(r,)| GuestReply::GuestBool(r)),
         GuestOp::CapAuthVerifyDeviceToken { token } => plugin
-            .call_capability_export::<(String,), (Result<String, String>,)>(crate::contract::export_item("auth-policy", "verify-device-token"), (token,))
+            .call_capability_export::<(String,), (Result<String, String>,)>(
+                crate::contract::export_item("auth-policy", "verify-device-token"),
+                (token,),
+            )
             .map(|(r,)| GuestReply::GuestStr(r)),
     }
 }
@@ -679,7 +743,10 @@ enum OwnerExit {
 }
 
 /// 启动属主任务（装配表在实例化期调用一次；零 WIT 改动）
-pub(crate) fn spawn_owner(plugin: LoadedWasmPlugin, sink: Arc<dyn OwnerFailureSink>) -> OwnerHandle {
+pub(crate) fn spawn_owner(
+    plugin: LoadedWasmPlugin,
+    sink: Arc<dyn OwnerFailureSink>,
+) -> OwnerHandle {
     let plugin_id = plugin.meta().plugin_id.clone();
     let (tx, rx) = mpsc::channel(OWNER_QUEUE_CAP);
     let stats = Arc::new(OwnerStats::default());
@@ -688,32 +755,35 @@ pub(crate) fn spawn_owner(plugin: LoadedWasmPlugin, sink: Arc<dyn OwnerFailureSi
     let task_stats = stats.clone();
     let task_alive = alive.clone();
     let task_plugin_id = plugin_id.clone();
-    let join = crate::system::error_boundary::spawn_with_error_boundary("plugin_instance_owner", async move {
-        // panic 兜底：宿主函数 panic 会穿透 wasmtime 调用栈（mutex 模型靠
-        // call_mutex_blocking 的 catch_unwind 捕获；属主模型必须包住整个任务体），
-        // 收敛路径与 trap 一致（实例不可用 + 显式失败在等请求）
-        let outcome = std::panic::AssertUnwindSafe(owner_body(plugin, rx, task_stats.clone()))
-            .catch_unwind()
-            .await;
-        task_alive.store(false, Ordering::SeqCst);
-        match outcome {
-            Ok(OwnerExit::Shutdown) => {
-                tracing::debug!(plugin_id = %task_plugin_id, "plugin instance owner stopped");
+    let join = crate::system::error_boundary::spawn_with_error_boundary(
+        "plugin_instance_owner",
+        async move {
+            // panic 兜底：宿主函数 panic 会穿透 wasmtime 调用栈（mutex 模型靠
+            // call_mutex_blocking 的 catch_unwind 捕获；属主模型必须包住整个任务体），
+            // 收敛路径与 trap 一致（实例不可用 + 显式失败在等请求）
+            let outcome = std::panic::AssertUnwindSafe(owner_body(plugin, rx, task_stats.clone()))
+                .catch_unwind()
+                .await;
+            task_alive.store(false, Ordering::SeqCst);
+            match outcome {
+                Ok(OwnerExit::Shutdown) => {
+                    tracing::debug!(plugin_id = %task_plugin_id, "plugin instance owner stopped");
+                }
+                Ok(OwnerExit::InstanceFailed { kind, detail }) => {
+                    sink.on_owner_failed(&task_plugin_id, kind, &detail).await;
+                }
+                Err(panic) => {
+                    let msg = crate::manager::runtime::panic_payload_to_string(&panic);
+                    tracing::error!(
+                        plugin_id = %task_plugin_id,
+                        panic = %msg,
+                        "plugin instance owner task panicked, instance is unusable"
+                    );
+                    sink.on_owner_failed(&task_plugin_id, "panic", &msg).await;
+                }
             }
-            Ok(OwnerExit::InstanceFailed { kind, detail }) => {
-                sink.on_owner_failed(&task_plugin_id, kind, &detail).await;
-            }
-            Err(panic) => {
-                let msg = crate::manager::runtime::panic_payload_to_string(&panic);
-                tracing::error!(
-                    plugin_id = %task_plugin_id,
-                    panic = %msg,
-                    "plugin instance owner task panicked, instance is unusable"
-                );
-                sink.on_owner_failed(&task_plugin_id, "panic", &msg).await;
-            }
-        }
-    });
+        },
+    );
 
     OwnerHandle {
         plugin_id,
@@ -820,9 +890,15 @@ async fn owner_body(
 
     // 在等请求逐条显式失败（I3②：不排队等重载、不静默重试）
     let fail_msg = match &exit {
-        OwnerExit::Shutdown => format!("plugin '{}' instance stopped before the call completed", plugin_id),
+        OwnerExit::Shutdown => format!(
+            "plugin '{}' instance stopped before the call completed",
+            plugin_id
+        ),
         OwnerExit::InstanceFailed { kind, detail } => {
-            format!("plugin '{}' instance failed ({}): {}", plugin_id, kind, detail)
+            format!(
+                "plugin '{}' instance failed ({}): {}",
+                plugin_id, kind, detail
+            )
         }
     };
     let abandoned = pending.len() as u64;
@@ -989,7 +1065,9 @@ fn start_op<'a>(
                 timer,
                 |res: Result<(Result<(), String>,), wasmtime::Error>| match res {
                     Ok((Ok(()),)) => OwnerOutcome::Done(GuestReply::Code(0)),
-                    Ok((Err(msg),)) => OwnerOutcome::Failed(format!("WASM activate() failed: {}", msg)),
+                    Ok((Err(msg),)) => {
+                        OwnerOutcome::Failed(format!("WASM activate() failed: {}", msg))
+                    }
                     Err(e) => trap_outcome(e),
                 },
             )?,
@@ -1002,7 +1080,9 @@ fn start_op<'a>(
                 timer,
                 |res: Result<(Result<(), String>,), wasmtime::Error>| match res {
                     Ok((Ok(()),)) => OwnerOutcome::Done(GuestReply::Code(0)),
-                    Ok((Err(msg),)) => OwnerOutcome::Failed(format!("WASM deactivate() failed: {}", msg)),
+                    Ok((Err(msg),)) => {
+                        OwnerOutcome::Failed(format!("WASM deactivate() failed: {}", msg))
+                    }
                     Err(e) => trap_outcome(e),
                 },
             )?,
@@ -1051,7 +1131,11 @@ fn start_op<'a>(
                     Err(e) => trap_outcome(e),
                 },
             )?,
-            GuestOp::OnMessageBinary { topic, sender, payload } => match optional.on_message_binary {
+            GuestOp::OnMessageBinary {
+                topic,
+                sender,
+                payload,
+            } => match optional.on_message_binary {
                 Some(func) => start_typed_with_func(
                     &mut access,
                     func,
@@ -1066,7 +1150,9 @@ fn start_op<'a>(
                 // 与 mutex 路径同文案（总线已按订阅者格式偏好过滤，正常不会到达）
                 None => ready(
                     timer,
-                    OwnerOutcome::Failed("WASM plugin has no events-binary export (v11 required)".to_string()),
+                    OwnerOutcome::Failed(
+                        "WASM plugin has no events-binary export (v11 required)".to_string(),
+                    ),
                 ),
             },
             GuestOp::OnProcessDone { payload_json } => start_typed(
@@ -1085,7 +1171,11 @@ fn start_op<'a>(
                     Err(e) => trap_outcome(e),
                 },
             )?,
-            GuestOp::WsClientMessage { handle, kind, payload } => match optional.on_ws_message {
+            GuestOp::WsClientMessage {
+                handle,
+                kind,
+                payload,
+            } => match optional.on_ws_message {
                 Some(func) => start_typed_with_func(
                     &mut access,
                     func,
@@ -1141,7 +1231,9 @@ fn start_op<'a>(
                 owned,
                 timer,
                 |res: Result<(Result<Option<String>, String>,), wasmtime::Error>| match res {
-                    Ok((guest_result,)) => OwnerOutcome::Done(GuestReply::GuestOptional(guest_result)),
+                    Ok((guest_result,)) => {
+                        OwnerOutcome::Done(GuestReply::GuestOptional(guest_result))
+                    }
                     Err(e) => trap_outcome(e),
                 },
             )?,
@@ -1284,7 +1376,9 @@ where
         .map_err(|e| AppError::Plugin(format!("WASM export '{}' not found: {}", export, e)))?;
     let call = func
         .start_call_concurrent(&mut *access, params)
-        .map_err(|e| AppError::Plugin(format!("WASM export '{}' start call failed: {}", export, e)))?;
+        .map_err(|e| {
+            AppError::Plugin(format!("WASM export '{}' start call failed: {}", export, e))
+        })?;
     Ok(Box::pin(async move {
         let _timer = timer;
         interpret(func.finish_call_concurrent(accessor, call).await)

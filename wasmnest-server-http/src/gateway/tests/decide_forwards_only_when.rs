@@ -1,7 +1,7 @@
 //! 判定 — crate 内单元测试（自 packages/wasmnest-server-http/src/gateway.rs 迁出）
 
-use super::*;
 use super::scaffold::*;
+use super::*;
 
 /// 转发条件：已验签 × 属主激活 × 档位齐备
 #[test]

@@ -16,9 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use crate::pty_status::PtySessionStatus;
 use crate::lifecycle::PtyTerminationGate;
 use crate::output_sink::PtyOutputSink;
+use crate::pty_status::PtySessionStatus;
 
 /// PTY 输出读取器
 pub struct PtyReader {
@@ -101,7 +101,9 @@ impl PtyReader {
             gate.mark_reader_closed(exit_status);
         });
 
-        Self { handle: Some(handle) }
+        Self {
+            handle: Some(handle),
+        }
     }
 
     /// 等待线程结束
@@ -120,10 +122,10 @@ impl PtyReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pty_status::PtySessionStatus;
     use crate::lifecycle::PtyTerminated;
     use crate::output_sink::test_support::CollectingSink;
     use crate::pty_ring::PtyRingSink;
+    use crate::pty_status::PtySessionStatus;
     use std::io::Read;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
@@ -174,7 +176,10 @@ mod tests {
     /// 轮询**引擎环**直至累计字节达到期望值（读线程是独立 OS 线程，投递异步）
     ///
     /// 票 11：参数从业务会话环改为引擎 `PtyRing`（`PtyRingSink::paired` 的另一半）。
-    async fn drain_engine_ring_until(ring: &Arc<std::sync::Mutex<crate::PtyRing>>, want: usize) -> Vec<u8> {
+    async fn drain_engine_ring_until(
+        ring: &Arc<std::sync::Mutex<crate::PtyRing>>,
+        want: usize,
+    ) -> Vec<u8> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             {
@@ -207,7 +212,9 @@ mod tests {
     }
 
     /// 测试用终态门（回收侧由 `mark_reaped` 手动补上，本模块只测读线程）
-    fn test_gate(session_id: &str) -> (Arc<PtyTerminationGate>, broadcast::Receiver<PtyTerminated>) {
+    fn test_gate(
+        session_id: &str,
+    ) -> (Arc<PtyTerminationGate>, broadcast::Receiver<PtyTerminated>) {
         let (tx, rx) = broadcast::channel(8);
         let gate = Arc::new(PtyTerminationGate::new(
             session_id.to_string(),
@@ -252,7 +259,9 @@ mod tests {
         );
 
         gate.mark_reaped(Some(0));
-        let terminated = lifecycle_rx.try_recv().expect("读线程关闭 + 回收齐备后应发出终态事件");
+        let terminated = lifecycle_rx
+            .try_recv()
+            .expect("读线程关闭 + 回收齐备后应发出终态事件");
         assert_eq!(terminated.status, PtySessionStatus::Stopped);
         assert_eq!(terminated.exit_code, Some(0));
     }
@@ -279,7 +288,9 @@ mod tests {
         );
 
         gate.mark_reaped(None);
-        let terminated = lifecycle_rx.try_recv().expect("lifecycle event should be sent");
+        let terminated = lifecycle_rx
+            .try_recv()
+            .expect("lifecycle event should be sent");
         assert_eq!(terminated.status, PtySessionStatus::Stopped);
         assert_eq!(terminated.exit_code, None, "无退出码时事件仍须发出且缺省");
     }
@@ -302,11 +313,21 @@ mod tests {
             let running = Arc::new(AtomicBool::new(true));
             let payload = oversized_payload();
             let (sink, ring) = PtyRingSink::paired(1024 * 1024);
-            let pty_reader = PtyReader::start(memory_reader(payload.clone()), sink, gate, sid.clone(), running, 4096);
+            let pty_reader = PtyReader::start(
+                memory_reader(payload.clone()),
+                sink,
+                gate,
+                sid.clone(),
+                running,
+                4096,
+            );
             pty_reader.wait();
 
             let collected = drain_engine_ring_until(&ring, payload.len()).await;
-            assert_eq!(collected, payload, "PTY 输出必须完整按序落入引擎环（票据 04）");
+            assert_eq!(
+                collected, payload,
+                "PTY 输出必须完整按序落入引擎环（票据 04）"
+            );
         });
     }
 
@@ -322,7 +343,14 @@ mod tests {
             let running = Arc::new(AtomicBool::new(true));
             let payload = oversized_payload();
             let sink = CollectingSink::new();
-            let pty_reader = PtyReader::start(memory_reader(payload.clone()), sink.clone(), gate, sid.clone(), running, 4096);
+            let pty_reader = PtyReader::start(
+                memory_reader(payload.clone()),
+                sink.clone(),
+                gate,
+                sid.clone(),
+                running,
+                4096,
+            );
             pty_reader.wait();
 
             let collected = drain_sink_until(&sink, payload.len()).await;
@@ -359,7 +387,9 @@ mod tests {
         pty_reader.wait();
         gate.mark_reaped(None);
 
-        let terminated = lifecycle_rx.try_recv().expect("lifecycle event should be sent");
+        let terminated = lifecycle_rx
+            .try_recv()
+            .expect("lifecycle event should be sent");
         assert_eq!(
             terminated.status,
             PtySessionStatus::Error,
@@ -390,8 +420,13 @@ mod tests {
         pty_reader.wait();
         gate.mark_reaped(Some(3));
 
-        assert!(reads.lock().unwrap().is_empty(), "running=false 时不得发生任何 read");
-        let terminated = lifecycle_rx.try_recv().expect("lifecycle event should be sent");
+        assert!(
+            reads.lock().unwrap().is_empty(),
+            "running=false 时不得发生任何 read"
+        );
+        let terminated = lifecycle_rx
+            .try_recv()
+            .expect("lifecycle event should be sent");
         assert_eq!(
             terminated.status,
             PtySessionStatus::Stopped,

@@ -5,9 +5,13 @@ use crate::Result;
 use chrono::{DateTime, Utc};
 
 /// Helper function to parse datetime from string, with proper error handling for rusqlite
-fn parse_datetime_sql(s: &str, field_name: &str) -> std::result::Result<DateTime<Utc>, rusqlite::Error> {
-    s.parse()
-        .map_err(|e| rusqlite::Error::InvalidParameterName(format!("Invalid datetime for {}: {}", field_name, e)))
+fn parse_datetime_sql(
+    s: &str,
+    field_name: &str,
+) -> std::result::Result<DateTime<Utc>, rusqlite::Error> {
+    s.parse().map_err(|e| {
+        rusqlite::Error::InvalidParameterName(format!("Invalid datetime for {}: {}", field_name, e))
+    })
 }
 
 impl Database {

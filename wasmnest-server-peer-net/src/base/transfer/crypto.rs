@@ -110,13 +110,7 @@ impl SessionCipher {
     }
 
     /// 加密一个数据块，输出 ciphertext || tag（等长于明文 + TAG_LEN）
-    pub fn encrypt_chunk(
-        &self,
-        file_index: u32,
-        offset: u64,
-        counter: u64,
-        plaintext: &[u8],
-    ) -> Vec<u8> {
+    pub fn encrypt_chunk(&self, file_index: u32, offset: u64, counter: u64, plaintext: &[u8]) -> Vec<u8> {
         let cipher = Aes256Gcm::new(&self.key);
         cipher
             .encrypt(
@@ -131,13 +125,7 @@ impl SessionCipher {
 
     /// 解密一个数据块（payload = ciphertext || tag）；认证失败即密文被篡改或
     /// 两侧计数错位，返回 InvalidData 由引擎按会话失败结算
-    pub fn decrypt_chunk(
-        &self,
-        file_index: u32,
-        offset: u64,
-        counter: u64,
-        payload: &[u8],
-    ) -> io::Result<Vec<u8>> {
+    pub fn decrypt_chunk(&self, file_index: u32, offset: u64, counter: u64, payload: &[u8]) -> io::Result<Vec<u8>> {
         let cipher = Aes256Gcm::new(&self.key);
         cipher
             .decrypt(

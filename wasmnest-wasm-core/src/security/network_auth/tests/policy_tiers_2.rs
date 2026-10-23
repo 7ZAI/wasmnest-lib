@@ -129,7 +129,11 @@ async fn strategy_read_failure_falls_back_to_asking_and_still_records() {
         }
     });
     let request_id = wait_for_request_id(&log).await;
-    assert!(checker.respond(&request_id, NetworkDecision::AllowOnce).await);
+    assert!(
+        checker
+            .respond(&request_id, NetworkDecision::AllowOnce)
+            .await
+    );
     assert!(
         task.await.expect("join").expect("authorize").is_allowed(),
         "档位读不出来时应询问而不是报错/放行"

@@ -23,7 +23,10 @@ async fn test_register_manifest_contributions() {
         }],
         ..Default::default()
     };
-    host.plugins.write().await.insert(TEST_PLUGIN_ID.to_string(), plugin);
+    host.plugins
+        .write()
+        .await
+        .insert(TEST_PLUGIN_ID.to_string(), plugin);
 
     host.register_manifest_contributions().await;
 
@@ -74,7 +77,9 @@ fn all_contributions() -> PluginContributes {
 
 /// 注册面快照（manifest contributes 的对外可见投影；ABI v29 起 HTTP 路由面
 /// 已退役出 manager 注册表——动态注册表在 `wasmnest-server-http::registry`）
-async fn contributions_snapshot(host: &PluginHost) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+async fn contributions_snapshot(
+    host: &PluginHost,
+) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
     let mut commands: Vec<String> = host
         .registry()
         .list_commands()
@@ -94,7 +99,12 @@ async fn contributions_snapshot(host: &PluginHost) -> (Vec<String>, Vec<String>,
         .list_terminal_handlers()
         .await
         .iter()
-        .map(|t| format!("{}::{:?}::{:?}", t.plugin_id, t.input_handlers, t.output_parsers))
+        .map(|t| {
+            format!(
+                "{}::{:?}::{:?}",
+                t.plugin_id, t.input_handlers, t.output_parsers
+            )
+        })
         .collect();
     let mut files: Vec<String> = host
         .registry()
@@ -175,7 +185,8 @@ async fn registered_manifest_declared_ws_endpoints() {
 
     let host = setup_host().await;
     let plugin_id = "com.test.ws-declared-positive";
-    host.permission.grant_permissions(plugin_id, &["ws:server".to_string()]);
+    host.permission
+        .grant_permissions(plugin_id, &["ws:server".to_string()]);
     let endpoints = vec![
         WsEndpointContribution::Path("echo".into()), // 缺省档 = none
         WsEndpointContribution::Declared {
@@ -187,7 +198,8 @@ async fn registered_manifest_declared_ws_endpoints() {
             auth: None,
         },
     ];
-    host.register_declared_ws_endpoints(plugin_id, &endpoints).await;
+    host.register_declared_ws_endpoints(plugin_id, &endpoints)
+        .await;
 
     use wasmnest_server_websocket::endpoint;
     // ws 域脱绑后（能力域脱绑 P3）端点认证档位为 `wire` 自持副本（与 SDK 漂移锁钉死）
@@ -211,23 +223,24 @@ async fn registered_manifest_declared_ws_endpoints() {
 async fn declared_ws_endpoints_require_ws_server_permission() {
     let host = setup_host().await;
     let plugin_id = "com.test.ws-declared-permission";
-    let endpoints = vec![crate::manifest::WsEndpointContribution::Path("guarded".into())];
-    host.register_declared_ws_endpoints(plugin_id, &endpoints).await;
-    assert!(
-        wasmnest_server_websocket::endpoint::find_by_mount(&wasmnest_server_websocket::endpoint::mount_path(
-            plugin_id, "guarded"
-        ))
-        .is_none()
-    );
+    let endpoints = vec![crate::manifest::WsEndpointContribution::Path(
+        "guarded".into(),
+    )];
+    host.register_declared_ws_endpoints(plugin_id, &endpoints)
+        .await;
+    assert!(wasmnest_server_websocket::endpoint::find_by_mount(
+        &wasmnest_server_websocket::endpoint::mount_path(plugin_id, "guarded")
+    )
+    .is_none());
 
-    host.permission.grant_permissions(plugin_id, &["ws:server".to_string()]);
-    host.register_declared_ws_endpoints(plugin_id, &endpoints).await;
-    assert!(
-        wasmnest_server_websocket::endpoint::find_by_mount(&wasmnest_server_websocket::endpoint::mount_path(
-            plugin_id, "guarded"
-        ))
-        .is_some()
-    );
+    host.permission
+        .grant_permissions(plugin_id, &["ws:server".to_string()]);
+    host.register_declared_ws_endpoints(plugin_id, &endpoints)
+        .await;
+    assert!(wasmnest_server_websocket::endpoint::find_by_mount(
+        &wasmnest_server_websocket::endpoint::mount_path(plugin_id, "guarded")
+    )
+    .is_some());
     wasmnest_server_websocket::endpoint::purge_for_plugin(plugin_id);
 }
 

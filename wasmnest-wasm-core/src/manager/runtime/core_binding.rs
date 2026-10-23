@@ -81,7 +81,12 @@ impl wasmnest::plugin::host_storage::Host for WasmPluginState {
     fn set(&mut self, key: String, value: String) -> Result<(), String> {
         let json_value: serde_json::Value =
             serde_json::from_str(&value).map_err(|e| format!("invalid JSON value: {}", e))?;
-        storage::storage_set(&sqlite::ports_for(self.host_ctx()), &self.plugin_id, &key, json_value)
+        storage::storage_set(
+            &sqlite::ports_for(self.host_ctx()),
+            &self.plugin_id,
+            &key,
+            json_value,
+        )
     }
 
     fn delete(&mut self, key: String) -> Result<(), String> {
@@ -239,7 +244,12 @@ impl wasmnest::plugin::host_fs::Host for WasmPluginState {
     }
 
     fn request_auth(&mut self, paths_json: String) -> Result<bool, String> {
-        fs::fs_request_auth(self.host_ctx(), self.host_ctx(), &self.plugin_id, &paths_json)
+        fs::fs_request_auth(
+            self.host_ctx(),
+            self.host_ctx(),
+            &self.plugin_id,
+            &paths_json,
+        )
     }
 }
 
@@ -250,12 +260,24 @@ impl wasmnest::plugin::host_fs::Host for WasmPluginState {
 
 impl wasmnest::plugin::host_bus::Host for WasmPluginState {
     fn publish(&mut self, topic: String, payload_json: String) -> Result<(), String> {
-        bus::bus_publish(self.host_ctx(), self.host_ctx(), &self.plugin_id, &topic, &payload_json)
+        bus::bus_publish(
+            self.host_ctx(),
+            self.host_ctx(),
+            &self.plugin_id,
+            &topic,
+            &payload_json,
+        )
     }
 
     /// v11：二进制载荷发布（零 JSON 编解码，可传非 UTF-8 与大载荷）
     fn publish_binary(&mut self, topic: String, payload: Vec<u8>) -> Result<(), String> {
-        bus::bus_publish_binary(self.host_ctx(), self.host_ctx(), &self.plugin_id, &topic, payload)
+        bus::bus_publish_binary(
+            self.host_ctx(),
+            self.host_ctx(),
+            &self.plugin_id,
+            &topic,
+            payload,
+        )
     }
 
     fn subscribe(&mut self, topic: String) -> Result<(), String> {
@@ -289,7 +311,12 @@ impl wasmnest::plugin::host_platform::Host for WasmPluginState {
     // / 移动 SAF，端差异实现住各端宿主，ADR 0052 D1；见 `host_api::ports`）。
     fn pick_files(&mut self) -> Result<String, String> {
         let picker = self.host_ctx().platform_picker();
-        platform::platform_pick_files(self.host_ctx(), self.host_ctx(), picker.as_ref(), &self.plugin_id)
+        platform::platform_pick_files(
+            self.host_ctx(),
+            self.host_ctx(),
+            picker.as_ref(),
+            &self.plugin_id,
+        )
     }
 
     /// `pick-folders`（2026-10-13 功能级统一，ADR 0052 D3：原
@@ -297,7 +324,12 @@ impl wasmnest::plugin::host_platform::Host for WasmPluginState {
     /// 空数组 = 用户取消 / 未选任何目录。
     fn pick_folders(&mut self) -> Result<String, String> {
         let picker = self.host_ctx().platform_picker();
-        platform::platform_pick_folders(self.host_ctx(), self.host_ctx(), picker.as_ref(), &self.plugin_id)
+        platform::platform_pick_folders(
+            self.host_ctx(),
+            self.host_ctx(),
+            picker.as_ref(),
+            &self.plugin_id,
+        )
     }
 
     /// 宿主平台标识（v38；无权限门——平台事实不是能力）
@@ -359,7 +391,6 @@ pub(crate) fn abi_form(
         .map(|(form,)| Some(form))
         .map_err(|e| AppError::Plugin(format!("Failed to call abi-form.form(): {}", e)))
 }
-
 
 // ==================== Linker 装配（交集段） ====================
 

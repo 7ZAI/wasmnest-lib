@@ -21,21 +21,29 @@ enum CallbackOutcome {
 /// 圈护静态插件回调（M-01）：`on_startup` / `on_shutdown` 是第三方链接代码，
 /// 同步调用段与未来 poll 段的 panic 都不得 unwind 穿透宿主任务——两段分别
 /// `catch_unwind`，载荷转 [`CallbackOutcome`] 供日志点名。
-fn guarded_callback<F>(invoke: F) -> Pin<Box<dyn std::future::Future<Output = CallbackOutcome> + Send>>
+fn guarded_callback<F>(
+    invoke: F,
+) -> Pin<Box<dyn std::future::Future<Output = CallbackOutcome> + Send>>
 where
-    F: FnOnce() -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>> + Send + 'static,
+    F: FnOnce() -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>>
+        + Send
+        + 'static,
 {
     // 同步调用段（返回 future 之前可能 panic）
     let invoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(invoke));
     match invoked {
-        Ok(fut) => Box::pin(std::panic::AssertUnwindSafe(fut).catch_unwind().map(|r| match r {
-            Ok(Ok(())) => CallbackOutcome::Done,
-            Ok(Err(e)) => CallbackOutcome::Failed(format!("{e:#}")),
-            Err(payload) => CallbackOutcome::Panicked(panic_message(&payload)),
-        })),
-        Err(payload) => Box::pin(futures_util::future::ready(CallbackOutcome::Panicked(panic_message(
-            &payload,
-        )))),
+        Ok(fut) => Box::pin(
+            std::panic::AssertUnwindSafe(fut)
+                .catch_unwind()
+                .map(|r| match r {
+                    Ok(Ok(())) => CallbackOutcome::Done,
+                    Ok(Err(e)) => CallbackOutcome::Failed(format!("{e:#}")),
+                    Err(payload) => CallbackOutcome::Panicked(panic_message(&payload)),
+                }),
+        ),
+        Err(payload) => Box::pin(futures_util::future::ready(CallbackOutcome::Panicked(
+            panic_message(&payload),
+        ))),
     }
 }
 
@@ -60,7 +68,11 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 /// `registered_owner` = 此刻注册表里认证中心的属主（`None` = 无人注册）。**只看属主
 /// 相等**（不比对 methods）：methods 是中心自述的能力清单，宿主不解释它，缺席一个
 /// 方法不构成「没就位」，而由 `auth-grant` 分派侧的失败显性化。
-fn l2_auth_center_unready(kind: PluginKind, plugin_id: &str, registered_owner: Option<&str>) -> bool {
+fn l2_auth_center_unready(
+    kind: PluginKind,
+    plugin_id: &str,
+    registered_owner: Option<&str>,
+) -> bool {
     kind.is_internal_business() && registered_owner != Some(plugin_id)
 }
 
@@ -136,7 +148,9 @@ impl PluginHost {
                 )
                 .await;
                 match result {
-                    Err(_) => tracing::error!(plugin_id = %entry.id, "Plugin on_shutdown timed out"),
+                    Err(_) => {
+                        tracing::error!(plugin_id = %entry.id, "Plugin on_shutdown timed out")
+                    }
                     Ok(CallbackOutcome::Panicked(panic)) => {
                         tracing::error!(plugin_id = %entry.id, panic = %panic, "Plugin on_shutdown panicked");
                     }
@@ -208,7 +222,8 @@ impl PluginHost {
                 // fail-closed 下它的后果是全部认证面拒绝，故必须在就位点显性点名
                 // 「按当前 SDK 重建以注册认证中心」（fail-visible 形态②），而不是等
                 // 用户撞到「所有东西都连不上」再猜。
-                let registered_owner = crate::host_api::auth_center::center().map(|entry| entry.owner);
+                let registered_owner =
+                    crate::host_api::auth_center::center().map(|entry| entry.owner);
                 if l2_auth_center_unready(kind, &id, registered_owner.as_deref()) {
                     tracing::error!(
                         plugin_id = %id,
@@ -267,27 +282,31 @@ impl PluginHost {
 
         let approved = approval::known_permissions(&requested);
         let dir = PathBuf::from(&extension_path);
-        let content_hash = match tokio::task::spawn_blocking(move || approval::compute_dir_hash(&dir)).await {
-            Ok(Ok(hash)) => hash,
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    plugin_id = %plugin_id,
-                    error = %e,
-                    "[PluginHost] 计算插件目录哈希失败，跳过存量用户插件自动批准"
-                );
-                return;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    plugin_id = %plugin_id,
-                    error = %e,
-                    "[PluginHost] 哈希任务失败，跳过存量用户插件自动批准"
-                );
-                return;
-            }
-        };
+        let content_hash =
+            match tokio::task::spawn_blocking(move || approval::compute_dir_hash(&dir)).await {
+                Ok(Ok(hash)) => hash,
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        plugin_id = %plugin_id,
+                        error = %e,
+                        "[PluginHost] 计算插件目录哈希失败，跳过存量用户插件自动批准"
+                    );
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        plugin_id = %plugin_id,
+                        error = %e,
+                        "[PluginHost] 哈希任务失败，跳过存量用户插件自动批准"
+                    );
+                    return;
+                }
+            };
 
-        match store.approve(plugin_id, &approved, &content_hash, &version).await {
+        match store
+            .approve(plugin_id, &approved, &content_hash, &version)
+            .await
+        {
             Ok(()) => tracing::warn!(
                 plugin_id = %plugin_id,
                 permission_count = approved.len(),
@@ -341,7 +360,10 @@ impl PluginHost {
                         // L3 批 = 业务应用面（ADR 0032）：角色驱动层（L1/L2）由
                         // `activate_role_driven_components` 按角色激活，其启停不
                         // 持久化（见 `get_activated_state`），故本批不重复激活它们
-                        .map(|p| p.source != PluginSource::StaticRegistry && p.manifest.kind.is_business_app())
+                        .map(|p| {
+                            p.source != PluginSource::StaticRegistry
+                                && p.manifest.kind.is_business_app()
+                        })
                         .unwrap_or(false)
                 })
                 .map(|(id, _)| id.clone())
@@ -377,7 +399,10 @@ impl PluginHost {
                 original_len - cleaned_map.len()
             );
             if let Err(e) = self.storage.save_activated_plugins(&cleaned_map).await {
-                tracing::warn!("[PluginHost] Failed to clean up stale activation entries: {}", e);
+                tracing::warn!(
+                    "[PluginHost] Failed to clean up stale activation entries: {}",
+                    e
+                );
             }
         }
 
@@ -399,7 +424,11 @@ mod tests {
     /// C-1（正例）：L2 激活完但注册表空 → 未就位（fail-closed 全拒，必须点名）
     #[test]
     fn l2_activation_without_registered_center_is_flagged() {
-        assert!(l2_auth_center_unready(PluginKind::InternalBusiness, SESSION, None));
+        assert!(l2_auth_center_unready(
+            PluginKind::InternalBusiness,
+            SESSION,
+            None
+        ));
     }
 
     /// C-2（正例）：L2 激活完但注册表里是**别的**属主 → 仍未就位
@@ -432,7 +461,11 @@ mod tests {
                 "{} 不得被判为认证中心未就位",
                 kind.label()
             );
-            assert!(!l2_auth_center_unready(kind, SESSION, Some("com.wasmnest.other")));
+            assert!(!l2_auth_center_unready(
+                kind,
+                SESSION,
+                Some("com.wasmnest.other")
+            ));
         }
     }
 

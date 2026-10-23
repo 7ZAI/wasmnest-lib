@@ -199,7 +199,9 @@ mod tests {
     crate::submit_hooks!(REJECT_PROBE);
 
     fn reject_manifest(plugin_id: &str, _manifest_json: &str) -> Result<(), String> {
-        Err(format!("kit-lifecycle-reject-probe 拒绝 {plugin_id} 的 manifest 声明"))
+        Err(format!(
+            "kit-lifecycle-reject-probe 拒绝 {plugin_id} 的 manifest 声明"
+        ))
     }
 
     /// 自报的探针必须被收集到（强制引用在本文件内成立 ⇒ inventory 静态被执行）

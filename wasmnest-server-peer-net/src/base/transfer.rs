@@ -46,8 +46,7 @@ pub use batch::{
     DEFAULT_ASK_TIMEOUT_SECS, MAX_ASK_TIMEOUT_SECS, MIN_ASK_TIMEOUT_SECS,
 };
 pub use message::{
-    read_control, write_control, write_data, CancelOrigin, IncomingFrame, TransferFrame,
-    TRANSFER_PROTOCOL_VERSION,
+    read_control, write_control, write_data, CancelOrigin, IncomingFrame, TransferFrame, TRANSFER_PROTOCOL_VERSION,
 };
 
 // ==================== 配置 ====================
@@ -416,9 +415,7 @@ impl RateTracker {
 
     /// 带显式时刻的采样（纯函数式内核：单测以合成时刻驱动窗口边界）
     pub(crate) fn sample_at(&mut self, total_bytes: u64, now: std::time::Instant) -> f64 {
-        let elapsed = now
-            .saturating_duration_since(self.window_start)
-            .as_secs_f64();
+        let elapsed = now.saturating_duration_since(self.window_start).as_secs_f64();
         if elapsed < self.window.as_secs_f64() {
             return self.last_rate;
         }
@@ -511,10 +508,7 @@ impl TransferReceiveHandler {
 }
 
 impl crate::base::transport::ConnectionHandler for TransferReceiveHandler {
-    fn handle(
-        &self,
-        conn: crate::base::transport::Connection,
-    ) -> crate::base::transport::HandlerFuture {
+    fn handle(&self, conn: crate::base::transport::Connection) -> crate::base::transport::HandlerFuture {
         let config = self.config.clone();
         let events = self.events.clone();
         let cancel = self.cancel.clone();
@@ -536,14 +530,12 @@ impl crate::base::transport::ConnectionHandler for TransferReceiveHandler {
             )
             .await
             {
-                    Ok(state) => state,
-                    Err(e) => {
-                        tracing::warn!("receive session failed: {e}");
-                        TerminalState::Failed {
-                            detail: e.to_string(),
-                        }
-                    }
-                };
+                Ok(state) => state,
+                Err(e) => {
+                    tracing::warn!("receive session failed: {e}");
+                    TerminalState::Failed { detail: e.to_string() }
+                }
+            };
             emit(
                 &events,
                 TransferEvent::Terminal {
@@ -671,7 +663,11 @@ where
 {
     write_control(
         sink,
-        &TransferFrame::Decision { accepted, reason, enc_pub_key },
+        &TransferFrame::Decision {
+            accepted,
+            reason,
+            enc_pub_key,
+        },
     )
     .await
 }
@@ -708,55 +704,45 @@ pub(crate) async fn run_receive(
         Some(frame) => frame,
         None => tokio::time::timeout(OFFER_TIMEOUT, message::read_frame(&mut conn))
             .await
-            .map_err(|_| {
-                proto_violation(ROLE, "timed out waiting for offer after trust gate")
-            })?
+            .map_err(|_| proto_violation(ROLE, "timed out waiting for offer after trust gate"))?
             .map_err(|e| sess_io(ROLE, e))?,
     };
-    let (batch_id, files, total_size, offer_encrypted, sender_enc_pub_key) =
-        match *match first {
-            IncomingFrame::Control(frame) => frame,
-            IncomingFrame::Data(_) => {
+    let (batch_id, files, total_size, offer_encrypted, sender_enc_pub_key) = match *match first {
+        IncomingFrame::Control(frame) => frame,
+        IncomingFrame::Data(_) => return Err(proto_violation(ROLE, "first transfer frame must be an offer, got data")),
+    } {
+        TransferFrame::Offer {
+            protocol_version,
+            batch_id,
+            files,
+            total_size,
+            encrypted,
+            enc_pub_key,
+        } => {
+            if protocol_version > TRANSFER_PROTOCOL_VERSION {
+                // 版本不识别：按拒绝回话并快速失败——静默错读未来协议更危险
+                let _ = write_decision(&mut conn, false, Some(RejectReason::PolicyDenied), None).await;
                 return Err(proto_violation(
                     ROLE,
-                    "first transfer frame must be an offer, got data",
-                ))
+                    format!("offer protocol_version {protocol_version} is newer than supported"),
+                ));
             }
-        } {
-            TransferFrame::Offer {
-                protocol_version,
-                batch_id,
-                files,
-                total_size,
-                encrypted,
-                enc_pub_key,
-            } => {
-                if protocol_version > TRANSFER_PROTOCOL_VERSION {
-                    // 版本不识别：按拒绝回话并快速失败——静默错读未来协议更危险
-                    let _ =
-                        write_decision(&mut conn, false, Some(RejectReason::PolicyDenied), None)
-                            .await;
-                    return Err(proto_violation(
-                        ROLE,
-                        format!("offer protocol_version {protocol_version} is newer than supported"),
-                    ));
-                }
-                // 加密请求头自洽性：声明加密却缺公钥即协议违规（fail-fast）
-                if encrypted && enc_pub_key.is_none() {
-                    return Err(proto_violation(
-                        ROLE,
-                        "offer declares encrypted=true but carries no enc_pub_key header",
-                    ));
-                }
-                (batch_id, files, total_size, encrypted, enc_pub_key)
-            }
-            other => {
+            // 加密请求头自洽性：声明加密却缺公钥即协议违规（fail-fast）
+            if encrypted && enc_pub_key.is_none() {
                 return Err(proto_violation(
                     ROLE,
-                    format!("first transfer frame must be an offer, got {other:?}"),
-                ))
+                    "offer declares encrypted=true but carries no enc_pub_key header",
+                ));
             }
-        };
+            (batch_id, files, total_size, encrypted, enc_pub_key)
+        }
+        other => {
+            return Err(proto_violation(
+                ROLE,
+                format!("first transfer frame must be an offer, got {other:?}"),
+            ))
+        }
+    };
     *batch_slot = Some(batch_id.clone());
 
     // ---- 接收策略分流（spec Decision 10）----
@@ -820,8 +806,7 @@ pub(crate) async fn run_receive(
     }
 
     // pending → approved 是唯一合法迁移（状态机纯函数在此消费）
-    validate_batch_transition(&batch.state, &BatchState::Approved)
-        .map_err(|detail| proto_violation(ROLE, detail))?;
+    validate_batch_transition(&batch.state, &BatchState::Approved).map_err(|detail| proto_violation(ROLE, detail))?;
     batch.state = BatchState::Approved;
 
     // ---- 加密协商结算（接收方自动解密契约）：对加密 Offer 生成本端临时密钥，
@@ -907,17 +892,11 @@ pub(crate) async fn receive_files_after_accept(
         let index = index as u32;
 
         // 落位安全：清洗相对路径，拒绝越界写（共享目录只读的对偶约束）
-        let rel = sanitize_relative_path(&meta.path).ok_or_else(|| {
-            proto_violation(
-                ROLE,
-                format!("offer carries unsafe relative path: {}", meta.path),
-            )
-        })?;
+        let rel = sanitize_relative_path(&meta.path)
+            .ok_or_else(|| proto_violation(ROLE, format!("offer carries unsafe relative path: {}", meta.path)))?;
         let target = config.download_dir.join(&rel);
         if let Some(parent) = target.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| sess_io(ROLE, e))?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| sess_io(ROLE, e))?;
         }
         let tmp_dir = target.parent().unwrap_or(&config.download_dir).to_path_buf();
         let tmp = tmp_dir.join(part_file_name(batch_id, index));
@@ -1139,9 +1118,7 @@ pub(crate) async fn receive_files_after_accept(
                 ),
             });
         }
-        tokio::fs::rename(&tmp, &target)
-            .await
-            .map_err(|e| sess_io(ROLE, e))?;
+        tokio::fs::rename(&tmp, &target).await.map_err(|e| sess_io(ROLE, e))?;
 
         // 落位钩子（issue 07）：完整文件已就位；实现方自行兜底失败，
         // 引擎不因钩子结果改变会话终态（移动端在此提升 MediaStore）
@@ -1184,10 +1161,7 @@ impl OutgoingFile {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Self {
-            source,
-            remote_path,
-        }
+        Self { source, remote_path }
     }
 }
 
@@ -1231,9 +1205,7 @@ pub async fn send_batch(
         Ok(state) => state,
         Err(e) => {
             tracing::warn!("send session failed: {e}");
-            TerminalState::Failed {
-                detail: e.to_string(),
-            }
+            TerminalState::Failed { detail: e.to_string() }
         }
     };
     emit(
@@ -1486,17 +1458,8 @@ async fn drive_send(
 
     // ---- 批协商应答（含加密回执头结算）----
     // 协商应答等待同样处理暂停面：暂停在任一阶段按下都要下发给对端
-    let decision = next_frame_handling_pause(
-        wr,
-        frame_rx,
-        cancel,
-        &mut pause,
-        &pause_slot,
-        events,
-        &remote,
-        batch_id,
-    )
-    .await?;
+    let decision =
+        next_frame_handling_pause(wr, frame_rx, cancel, &mut pause, &pause_slot, events, &remote, batch_id).await?;
     let Some(IncomingFrame::Control(boxed)) = decision else {
         return Err(proto_violation(ROLE, "expected decision frame"));
     };
@@ -1509,26 +1472,25 @@ async fn drive_send(
             None => None,
             Some(keys) => {
                 let peer_key = enc_pub_key.ok_or_else(|| {
-                    proto_violation(
-                        ROLE,
-                        "peer lacks transfer encryption support (no ack header on accept)",
-                    )
+                    proto_violation(ROLE, "peer lacks transfer encryption support (no ack header on accept)")
                 })?;
-                let cipher = keys
-                    .derive_cipher(&peer_key, batch_id)
-                    .map_err(|e| sess_io(ROLE, e))?;
+                let cipher = keys.derive_cipher(&peer_key, batch_id).map_err(|e| sess_io(ROLE, e))?;
                 tracing::debug!(batch_id = %batch_id, "transfer session encryption negotiated");
                 Some(cipher)
             }
         },
-        TransferFrame::Decision { accepted: false, reason, .. } => {
+        TransferFrame::Decision {
+            accepted: false,
+            reason,
+            ..
+        } => {
             // reason 缺省视为协议违规（拒绝必须带原因）
-            let reason = reason.ok_or_else(|| {
-                proto_violation(ROLE, "decision rejected without reason")
-            })?;
+            let reason = reason.ok_or_else(|| proto_violation(ROLE, "decision rejected without reason"))?;
             return Ok(TerminalState::Rejected { reason });
         }
-        TransferFrame::Cancel { by: CancelOrigin::Receiver } => {
+        TransferFrame::Cancel {
+            by: CancelOrigin::Receiver,
+        } => {
             return Ok(TerminalState::Cancelled { by_peer: true });
         }
         other => {
@@ -1551,17 +1513,8 @@ async fn drive_send(
         let index = index as u32;
 
         // ---- 等接收端声明起点（断点真源）----
-        let start = next_frame_handling_pause(
-            wr,
-            frame_rx,
-            cancel,
-            &mut pause,
-            &pause_slot,
-            events,
-            &remote,
-            batch_id,
-        )
-        .await?;
+        let start =
+            next_frame_handling_pause(wr, frame_rx, cancel, &mut pause, &pause_slot, events, &remote, batch_id).await?;
         let Some(IncomingFrame::Control(boxed)) = start else {
             return Err(proto_violation(ROLE, "expected start_file frame"));
         };
@@ -1735,22 +1688,15 @@ async fn drive_send(
         }
 
         // ---- 等该文件落位确认 ----
-        let done = next_frame_handling_pause(
-            wr,
-            frame_rx,
-            cancel,
-            &mut pause,
-            &pause_slot,
-            events,
-            &remote,
-            batch_id,
-        )
-        .await?;
+        let done =
+            next_frame_handling_pause(wr, frame_rx, cancel, &mut pause, &pause_slot, events, &remote, batch_id).await?;
         match done {
             None => {
                 let _ = message::write_control(
                     wr,
-                    &TransferFrame::Cancel { by: CancelOrigin::Sender },
+                    &TransferFrame::Cancel {
+                        by: CancelOrigin::Sender,
+                    },
                 )
                 .await;
                 return Ok(TerminalState::Cancelled { by_peer: false });
@@ -1767,24 +1713,13 @@ async fn drive_send(
                     ))
                 }
             },
-            Some(IncomingFrame::Data(_)) => {
-                return Err(proto_violation(ROLE, "data frame is receiver-to-sender only"))
-            }
+            Some(IncomingFrame::Data(_)) => return Err(proto_violation(ROLE, "data frame is receiver-to-sender only")),
         }
     }
 
     // ---- 批完成确认 ----
-    let done = next_frame_handling_pause(
-        wr,
-        frame_rx,
-        cancel,
-        &mut pause,
-        &pause_slot,
-        events,
-        &remote,
-        batch_id,
-    )
-    .await?;
+    let done =
+        next_frame_handling_pause(wr, frame_rx, cancel, &mut pause, &pause_slot, events, &remote, batch_id).await?;
     match done {
         Some(IncomingFrame::Control(boxed)) if matches!(*boxed, TransferFrame::BatchDone {}) => {
             tracing::info!(batch_id = %batch_id, "transfer batch sent completely");
@@ -1797,7 +1732,9 @@ async fn drive_send(
         None => {
             let _ = message::write_control(
                 wr,
-                &TransferFrame::Cancel { by: CancelOrigin::Sender },
+                &TransferFrame::Cancel {
+                    by: CancelOrigin::Sender,
+                },
             )
             .await;
             Ok(TerminalState::Cancelled { by_peer: false })
@@ -1904,15 +1841,12 @@ mod tests {
         let mut stream = PipeReader::new(Arc::clone(&state));
         // 只喂前 3 字节（不足 u32 长度前缀）→ 读帧挂起在帧中
         PipeReader::feed(&state, &bytes[..3]);
-        let cancelled =
-            tokio::time::timeout(Duration::from_millis(50), message::read_frame(&mut stream)).await;
+        let cancelled = tokio::time::timeout(Duration::from_millis(50), message::read_frame(&mut stream)).await;
         assert!(cancelled.is_err(), "半截帧必须挂起，才能覆盖被取消的窗口");
 
         // 补齐剩余字节：被取消的读已吞掉前 3 字节 → 帧边界错位
         PipeReader::feed(&state, &bytes[3..]);
-        let next =
-            tokio::time::timeout(Duration::from_millis(200), message::read_frame(&mut stream))
-                .await;
+        let next = tokio::time::timeout(Duration::from_millis(200), message::read_frame(&mut stream)).await;
         match next {
             Ok(Err(_)) => {}
             Ok(Ok(frame)) => panic!("misaligned stream must not decode a frame, got {frame:?}"),
@@ -1956,7 +1890,6 @@ mod tests {
             .expect("frame decodes");
         assert_eq!(got_second, IncomingFrame::Control(Box::new(second)));
     }
-
 
     /// 会话级暂停面契约（回归：真机「一端按暂停，对端会话直接失败」）：
     /// 控制相等待期间必须同时做两件事——消费本端暂停命令（下发帧）与容忍
@@ -2031,10 +1964,7 @@ mod tests {
         let peer_cancel = TransferFrame::Cancel {
             by: CancelOrigin::Sender,
         };
-        PipeReader::feed(
-            &state,
-            &encode_frames(std::slice::from_ref(&peer_cancel)).await,
-        );
+        PipeReader::feed(&state, &encode_frames(std::slice::from_ref(&peer_cancel)).await);
         let got = next_frame_handling_pause(
             &mut out,
             &mut frame_rx,
@@ -2059,15 +1989,9 @@ mod tests {
         let base = Instant::now();
 
         // 首块：窗口（500ms）远未满 → 不得产出速率（防首窗尖峰）
-        assert_eq!(
-            rate.sample_at(64 * 1024, base + Duration::from_micros(150)),
-            0.0
-        );
+        assert_eq!(rate.sample_at(64 * 1024, base + Duration::from_micros(150)), 0.0);
         // 同窗口内连续喂块（快网上一个窗口能喂进大量块）→ 仍不产出速率
-        assert_eq!(
-            rate.sample_at(8 * 1024 * 1024, base + Duration::from_millis(100)),
-            0.0
-        );
+        assert_eq!(rate.sample_at(8 * 1024 * 1024, base + Duration::from_millis(100)), 0.0);
         // 窗口满：rate = 窗口增量 / 窗口时长，是平均而非瞬时
         let rate_1s = rate.sample_at(16 * 1024 * 1024, base + Duration::from_millis(500));
         assert!(

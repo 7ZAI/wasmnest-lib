@@ -38,9 +38,9 @@ pub mod face;
 pub mod gateway;
 pub mod middleware;
 pub mod plugin_binding;
-pub mod wire;
 pub mod registry;
 pub mod routes;
+pub mod wire;
 
 pub use face::HttpTransportFace;
 pub use routes::configure_routes;

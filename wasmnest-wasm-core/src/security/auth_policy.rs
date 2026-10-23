@@ -261,7 +261,10 @@ impl AuthPolicyStore {
 
     /// 注入 core-monitor 句柄（两阶段初始化；重复注入覆盖）
     pub fn set_monitor(&self, monitor: Arc<MetricsRegistry>) {
-        *self.monitor.write().expect("auth policy monitor lock poisoned") = Some(monitor);
+        *self
+            .monitor
+            .write()
+            .expect("auth policy monitor lock poisoned") = Some(monitor);
     }
 
     /// 装配单应用读模型（spec §9.3）
@@ -299,7 +302,11 @@ impl AuthPolicyStore {
     /// **实时读取**、不缓存、不做激活期快照（spec §8.1）：否则「已改成总是询问」却仍有
     /// 缓存判定在放行，策略语义就是骗人的。缺行 / 非法值都回落默认档
     /// （fail-safe 方向见 [`AuthStrategy::parse`]）。
-    pub async fn strategy(&self, plugin_id: &str, resource: AuthResource) -> crate::Result<AuthStrategy> {
+    pub async fn strategy(
+        &self,
+        plugin_id: &str,
+        resource: AuthResource,
+    ) -> crate::Result<AuthStrategy> {
         let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
         let raw = db.conn().query_row(
             "SELECT strategy FROM plugin_auth_policies WHERE plugin_id = ?1 AND resource = ?2",
@@ -438,7 +445,12 @@ impl AuthPolicyStore {
                     |row| row.get(0),
                 )?;
                 if stored as usize >= AUTH_RECORDS_CAP {
-                    if let Some(monitor) = self.monitor.read().expect("auth policy monitor lock poisoned").as_ref() {
+                    if let Some(monitor) = self
+                        .monitor
+                        .read()
+                        .expect("auth policy monitor lock poisoned")
+                        .as_ref()
+                    {
                         monitor.plugin(plugin_id).record_authz_record_dropped();
                     }
                     tracing::warn!(
@@ -522,7 +534,12 @@ impl AuthPolicyStore {
     /// 拿不到 `$HOME`，传 `~/<rel>` 由这里展开成绝对路径再落账——判定链
     /// （`fs_auth::record_signals`）只认规范化绝对路径，不展开直接落账的 `~/` 目标
     /// 永远匹配不上（静默撤销无效）；home 不可得时显性报错、不落账（§8 fail-visible）。
-    pub async fn revoke(&self, plugin_id: &str, resource: AuthResource, target: &str) -> crate::Result<usize> {
+    pub async fn revoke(
+        &self,
+        plugin_id: &str,
+        resource: AuthResource,
+        target: &str,
+    ) -> crate::Result<usize> {
         let target = resolve_revoke_target(resource, target)?;
         let removed = {
             let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -540,7 +557,12 @@ impl AuthPolicyStore {
     /// 移除该目标的 deny 记录（界面「硬拒绝」分区自行移除，spec §8.4 的恢复出口）
     ///
     /// 只删 deny 行，不动同目标的 allow 行。返回删除行数（0 = 本就没有 deny）。
-    pub async fn remove_deny(&self, plugin_id: &str, resource: AuthResource, target: &str) -> crate::Result<usize> {
+    pub async fn remove_deny(
+        &self,
+        plugin_id: &str,
+        resource: AuthResource,
+        target: &str,
+    ) -> crate::Result<usize> {
         let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
         let removed = db.conn().execute(
             "DELETE FROM plugin_auth_records \
@@ -617,7 +639,10 @@ fn parse_ops(raw: &str, plugin_id: &str, record_id: i64) -> crate::Result<Vec<St
 }
 
 /// 读某应用两类资源的策略：缺行 / 非法值都回落 `default`（见 [`AuthStrategy::parse`]）
-fn load_strategies(conn: &rusqlite::Connection, plugin_id: &str) -> crate::Result<Vec<ResourceStrategy>> {
+fn load_strategies(
+    conn: &rusqlite::Connection,
+    plugin_id: &str,
+) -> crate::Result<Vec<ResourceStrategy>> {
     let mut out = Vec::with_capacity(AuthResource::ALL.len());
     for resource in AuthResource::ALL {
         let raw = conn.query_row(
@@ -729,7 +754,12 @@ mod tests {
             .expect("seed auth record");
     }
 
-    async fn seed_strategy(store: &AuthPolicyStore, plugin_id: &str, resource: &str, strategy: &str) {
+    async fn seed_strategy(
+        store: &AuthPolicyStore,
+        plugin_id: &str,
+        resource: &str,
+        strategy: &str,
+    ) {
         let db = store.db.lock().expect("auth policy db lock poisoned");
         db.conn()
             .execute(
@@ -775,7 +805,10 @@ mod tests {
         seed_strategy(&store, "com.wasmnest.test", "fs", "bypass").await;
         seed_strategy(&store, "com.wasmnest.test", "network", "ALWAYS_ALLOW").await;
 
-        let overview = store.overview("com.wasmnest.test", "T", Vec::new()).await.expect("overview");
+        let overview = store
+            .overview("com.wasmnest.test", "T", Vec::new())
+            .await
+            .expect("overview");
         assert_eq!(
             overview
                 .strategies
@@ -794,7 +827,10 @@ mod tests {
         seed_strategy(&store, "com.wasmnest.test", "fs", "always_ask").await;
         seed_strategy(&store, "com.wasmnest.test", "network", "always_allow").await;
 
-        let overview = store.overview("com.wasmnest.test", "T", Vec::new()).await.expect("overview");
+        let overview = store
+            .overview("com.wasmnest.test", "T", Vec::new())
+            .await
+            .expect("overview");
         assert_eq!(
             overview
                 .strategies
@@ -848,7 +884,10 @@ mod tests {
         )
         .await;
 
-        let overview = store.overview("com.wasmnest.test", "T", Vec::new()).await.expect("overview");
+        let overview = store
+            .overview("com.wasmnest.test", "T", Vec::new())
+            .await
+            .expect("overview");
         assert_eq!(overview.records.len(), 3, "allow 与 deny 都必须进读模型");
         assert_eq!(
             overview.records[0],
@@ -902,7 +941,10 @@ mod tests {
         )
         .await;
 
-        let overview = store.overview("com.wasmnest.mine", "Mine", Vec::new()).await.expect("overview");
+        let overview = store
+            .overview("com.wasmnest.mine", "Mine", Vec::new())
+            .await
+            .expect("overview");
         assert_eq!(overview.records.len(), 1);
         assert_eq!(overview.records[0].target, "/tmp/mine");
     }
@@ -927,7 +969,10 @@ mod tests {
         )
         .await;
         assert!(
-            store.overview("com.wasmnest.test", "T", Vec::new()).await.is_err(),
+            store
+                .overview("com.wasmnest.test", "T", Vec::new())
+                .await
+                .is_err(),
             "脏 ops 必须让读模型报错（fail-visible）"
         );
     }
@@ -997,9 +1042,18 @@ mod tests {
         assert_eq!(rows.len(), 1, "每个 (应用, 资源, 目标) 至多一行");
         assert_eq!(rows[0].target, "/tmp/dir");
         assert_eq!(rows[0].ops, ops(&["read", "write"]), "操作集取并集且不重复");
-        let overview = store.overview("com.wasmnest.test", "T", Vec::new()).await.unwrap();
-        assert_eq!(overview.records[0].source, "user", "用户确认的溯源不得被自动放行覆盖");
-        assert!(!overview.records[0].prefix_match, "fs 记录不按 path 前缀匹配");
+        let overview = store
+            .overview("com.wasmnest.test", "T", Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            overview.records[0].source, "user",
+            "用户确认的溯源不得被自动放行覆盖"
+        );
+        assert!(
+            !overview.records[0].prefix_match,
+            "fs 记录不按 path 前缀匹配"
+        );
     }
 
     /// 容量上限（spec §8.2，票 04）：第 501 个新目标丢弃 + core-monitor 计数；
@@ -1040,7 +1094,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(dropped, GrantOutcome::DroppedByCap, "超上限的新目标必须被丢弃");
+        assert_eq!(
+            dropped,
+            GrantOutcome::DroppedByCap,
+            "超上限的新目标必须被丢弃"
+        );
         assert_eq!(
             store
                 .records_for_match("com.wasmnest.test", AuthResource::Fs)
@@ -1131,7 +1189,11 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1, "撤销后只剩 deny 行");
         assert_eq!(rows[0].effect, AUTH_EFFECT_DENY);
-        assert_eq!(rows[0].ops, Vec::<String>::new(), "deny 行不带操作集（整目标硬拒绝）");
+        assert_eq!(
+            rows[0].ops,
+            Vec::<String>::new(),
+            "deny 行不带操作集（整目标硬拒绝）"
+        );
 
         // 重复撤销：不堆行、返回 0（界面据此判断无需刷新）
         assert_eq!(
@@ -1149,7 +1211,10 @@ mod tests {
                 .len(),
             1
         );
-        let overview = store.overview("com.wasmnest.test", "T", Vec::new()).await.unwrap();
+        let overview = store
+            .overview("com.wasmnest.test", "T", Vec::new())
+            .await
+            .unwrap();
         assert_eq!(overview.records[0].source, "user_deny");
     }
 
@@ -1190,7 +1255,11 @@ mod tests {
     async fn revoke_does_not_expand_tilde_for_network() {
         let store = store().await;
         store
-            .revoke("com.wasmnest.test", AuthResource::Network, "https://api.github.com:443")
+            .revoke(
+                "com.wasmnest.test",
+                AuthResource::Network,
+                "https://api.github.com:443",
+            )
             .await
             .unwrap();
 
@@ -1324,16 +1393,26 @@ mod tests {
         let store = store().await;
 
         store
-            .set_strategy("com.wasmnest.test", AuthResource::Fs, AuthStrategy::AlwaysAsk)
+            .set_strategy(
+                "com.wasmnest.test",
+                AuthResource::Fs,
+                AuthStrategy::AlwaysAsk,
+            )
             .await
             .unwrap();
         assert_eq!(
-            store.strategy("com.wasmnest.test", AuthResource::Fs).await.unwrap(),
+            store
+                .strategy("com.wasmnest.test", AuthResource::Fs)
+                .await
+                .unwrap(),
             AuthStrategy::AlwaysAsk,
             "写入的档位必须原样读回（重启后仍生效 = 只依赖本表）"
         );
         assert_eq!(
-            store.strategy("com.wasmnest.test", AuthResource::Network).await.unwrap(),
+            store
+                .strategy("com.wasmnest.test", AuthResource::Network)
+                .await
+                .unwrap(),
             AuthStrategy::Default,
             "另一资源不得被顺带改写（两类资源独立设置）"
         );
@@ -1355,12 +1434,18 @@ mod tests {
         };
         assert_eq!(rows, 1, "每 (应用, 资源) 至多一行");
         assert_eq!(
-            store.strategy("com.wasmnest.test", AuthResource::Fs).await.unwrap(),
+            store
+                .strategy("com.wasmnest.test", AuthResource::Fs)
+                .await
+                .unwrap(),
             AuthStrategy::Default
         );
         // 别人的档位不得被波及
         assert_eq!(
-            store.strategy("com.wasmnest.other", AuthResource::Fs).await.unwrap(),
+            store
+                .strategy("com.wasmnest.other", AuthResource::Fs)
+                .await
+                .unwrap(),
             AuthStrategy::Default
         );
     }
@@ -1373,8 +1458,14 @@ mod tests {
     /// 本条转红。
     #[test]
     fn unknown_strategy_wire_value_is_rejected_by_write_face() {
-        assert_eq!(AuthStrategy::parse_wire("always_ask"), Some(AuthStrategy::AlwaysAsk));
-        assert_eq!(AuthStrategy::parse_wire("default"), Some(AuthStrategy::Default));
+        assert_eq!(
+            AuthStrategy::parse_wire("always_ask"),
+            Some(AuthStrategy::AlwaysAsk)
+        );
+        assert_eq!(
+            AuthStrategy::parse_wire("default"),
+            Some(AuthStrategy::Default)
+        );
         assert_eq!(
             AuthStrategy::parse_wire("always_allow"),
             Some(AuthStrategy::AlwaysAllow)
@@ -1482,7 +1573,10 @@ mod tests {
             "terminal-session 的是项目目录段形态"
         );
 
-        let third_party = store.overview("com.wasmnest.test", "T", Vec::new()).await.unwrap();
+        let third_party = store
+            .overview("com.wasmnest.test", "T", Vec::new())
+            .await
+            .unwrap();
         assert!(
             third_party.first_party_dirs.is_empty(),
             "不在第一方清单里的应用不得凭空获得免询问项"

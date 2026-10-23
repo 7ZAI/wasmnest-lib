@@ -14,15 +14,24 @@ fn handshake_interop_and_frame_roundtrip() {
     let (s_priv, s_pub) = generate_ephemeral();
 
     let hs = derive_server_handshake(&m_ek_b64, &kd_priv, &s_priv).unwrap();
-    assert_eq!(hs.server_ek_b64, b64_encode(&s_pub), "回执公钥必须来自同一临时私钥");
+    assert_eq!(
+        hs.server_ek_b64,
+        b64_encode(&s_pub),
+        "回执公钥必须来自同一临时私钥"
+    );
     let mut server = TestServerCrypto::new(hs.clone());
 
     let mut client =
         ClientWsCrypto::derive(&m_priv, &m_ek_b64, &hs.server_ek_b64, &kd_pub).unwrap();
 
     // 客户端 → 服务端文本往返（c2s）
-    let up = client.seal_text("ws-event", "{\"type\":\"subscribe\"}").unwrap();
-    assert_eq!(server.open_text("ws-event", &up).unwrap(), "{\"type\":\"subscribe\"}");
+    let up = client
+        .seal_text("ws-event", "{\"type\":\"subscribe\"}")
+        .unwrap();
+    assert_eq!(
+        server.open_text("ws-event", &up).unwrap(),
+        "{\"type\":\"subscribe\"}"
+    );
     // 重放拒绝：接收序号已推进，同一帧再次到达报 mismatch
     assert!(server.open_text("ws-event", &up).is_err());
 

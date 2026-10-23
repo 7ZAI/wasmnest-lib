@@ -161,7 +161,10 @@ impl TrustStore {
 
     /// 是否信任给定节点（accept 循环热路径，只取读锁）
     pub fn contains(&self, node_id: &NodeId) -> bool {
-        self.peers.read().expect("trust store lock poisoned").contains_key(node_id)
+        self.peers
+            .read()
+            .expect("trust store lock poisoned")
+            .contains_key(node_id)
     }
 
     /// 加入可信集（幂等：已存在时不重复落盘），返回是否为新加入
@@ -195,7 +198,10 @@ impl TrustStore {
                 None => {
                     guard.insert(
                         node_id.clone(),
-                        PeerMeta { name, added_at: Utc::now() },
+                        PeerMeta {
+                            name,
+                            added_at: Utc::now(),
+                        },
                     );
                     inserted = true;
                 }
@@ -220,11 +226,7 @@ impl TrustStore {
 
     /// 从可信集撤销指定节点（AC#5 的 API 面），返回该节点原本是否存在
     pub fn remove(&self, node_id: &NodeId) -> Result<bool> {
-        let removed_meta = self
-            .peers
-            .write()
-            .expect("trust store lock poisoned")
-            .remove(node_id);
+        let removed_meta = self.peers.write().expect("trust store lock poisoned").remove(node_id);
         let Some(meta) = removed_meta else {
             return Ok(false);
         };
@@ -242,7 +244,12 @@ impl TrustStore {
 
     /// 当前可信节点快照（按 ID 排序）
     pub fn list(&self) -> Vec<NodeId> {
-        self.peers.read().expect("trust store lock poisoned").keys().cloned().collect()
+        self.peers
+            .read()
+            .expect("trust store lock poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// 完整元数据快照（按 ID 排序）：设置面管理列表的直接数据源
@@ -263,17 +270,15 @@ impl TrustStore {
 
     /// 从磁盘加载并校验自洽（格式版本 + 每个 ID 形状合法；v1 原位迁移到 v2）
     fn load_from_file(path: &PathBuf) -> Result<BTreeMap<NodeId, PeerMeta>> {
-        let content =
-            std::fs::read_to_string(path).map_err(|e| PeerNetError::TrustStoreRead {
-                path: path.clone(),
-                source: e,
-            })?;
+        let content = std::fs::read_to_string(path).map_err(|e| PeerNetError::TrustStoreRead {
+            path: path.clone(),
+            source: e,
+        })?;
         // 非 JSON 即损坏：快速失败，保留原文件供人工诊断
-        let value: serde_json::Value =
-            serde_json::from_str(&content).map_err(|e| PeerNetError::TrustStoreParse {
-                path: path.clone(),
-                source: e,
-            })?;
+        let value: serde_json::Value = serde_json::from_str(&content).map_err(|e| PeerNetError::TrustStoreParse {
+            path: path.clone(),
+            source: e,
+        })?;
         let version = match value.get("version").and_then(|v| v.as_u64()) {
             Some(v) => v,
             None => {
@@ -299,7 +304,10 @@ impl TrustStore {
                     .map(|raw| {
                         Ok((
                             parse_node_id_entry(&raw, path)?,
-                            PeerMeta { name: None, added_at: migrated_at },
+                            PeerMeta {
+                                name: None,
+                                added_at: migrated_at,
+                            },
                         ))
                     })
                     .collect::<Result<Vec<_>>>()?
@@ -335,11 +343,7 @@ impl TrustStore {
         for (node_id, meta) in entries {
             peers.insert(node_id, meta);
         }
-        tracing::debug!(
-            count = peers.len(),
-            "loaded trusted nodes from {}",
-            path.display()
-        );
+        tracing::debug!(count = peers.len(), "loaded trusted nodes from {}", path.display());
         Ok(peers)
     }
 
@@ -366,8 +370,8 @@ impl TrustStore {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        let content = serde_json::to_string_pretty(file)
-            .map_err(|e| PeerNetError::TrustStoreSerialize { source: e })?;
+        let content =
+            serde_json::to_string_pretty(file).map_err(|e| PeerNetError::TrustStoreSerialize { source: e })?;
 
         // 同目录保证 rename 在同一文件系统内原子生效
         let tmp_path = path.with_extension("tmp");
@@ -380,12 +384,12 @@ impl TrustStore {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600)).map_err(
-                |e| PeerNetError::TrustStorePermissions {
+            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+                PeerNetError::TrustStorePermissions {
                     path: tmp_path.clone(),
                     source: e,
-                },
-            )?;
+                }
+            })?;
         }
 
         std::fs::rename(&tmp_path, path).map_err(|e| PeerNetError::TrustStoreRename {
@@ -537,7 +541,9 @@ mod tests {
 
         // 缺名条目可被带名的重复 add 补注；已有名不被覆盖
         assert!(!store.add_with_metadata(&named, Some("改名")).expect("no-op"));
-        assert!(!store.add_with_metadata(&renamed_target, Some("后到的名字")).expect("annotate"));
+        assert!(!store
+            .add_with_metadata(&renamed_target, Some("后到的名字"))
+            .expect("annotate"));
 
         let reloaded = TrustStore::load_or_create(dir.path()).expect("reload");
         let by_id = |id: &NodeId| {

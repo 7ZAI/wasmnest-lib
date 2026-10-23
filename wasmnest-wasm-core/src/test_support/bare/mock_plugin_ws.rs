@@ -125,7 +125,9 @@ pub fn event_frame(event: &str, payload: serde_json::Value) -> serde_json::Value
 /// （`mode` 为 `None` 时省略键——桌面缺省 live，两端协议事实）
 pub fn subscribe_frame(session_id: &str, mode: Option<&str>) -> serde_json::Value {
     match mode {
-        Some(m) => serde_json::json!({ "type": TERM_SUBSCRIBE, "sessionId": session_id, "mode": m }),
+        Some(m) => {
+            serde_json::json!({ "type": TERM_SUBSCRIBE, "sessionId": session_id, "mode": m })
+        }
         None => serde_json::json!({ "type": TERM_SUBSCRIBE, "sessionId": session_id }),
     }
 }
@@ -172,7 +174,11 @@ pub fn ring_resync_frame(offset: u64) -> serde_json::Value {
 
 /// 停止帧 `{"type":"session_stopped","sessionId":"...","reason":"...","exitCode":N?}`
 /// （`exit_code` 为 `None` 时省略键——桌面仅在 pty exit 码可用时携带）
-pub fn session_stopped_frame(session_id: &str, reason: &str, exit_code: Option<i32>) -> serde_json::Value {
+pub fn session_stopped_frame(
+    session_id: &str,
+    reason: &str,
+    exit_code: Option<i32>,
+) -> serde_json::Value {
     let mut frame = serde_json::json!({
         "type": TERM_SESSION_STOPPED,
         "sessionId": session_id,
@@ -210,7 +216,8 @@ impl Default for AuthPolicy {
 
 // ==================== 服务器 ====================
 
-type SharedSink = Arc<AsyncMutex<futures_util::stream::SplitSink<WebSocketStream<TcpStream>, WsMsg>>>;
+type SharedSink =
+    Arc<AsyncMutex<futures_util::stream::SplitSink<WebSocketStream<TcpStream>, WsMsg>>>;
 
 /// 本地假插件 WS server（127.0.0.1:0 随机端口；单监听按路径路由双端点）
 ///
@@ -328,7 +335,9 @@ impl MockPluginWsServer {
 
     /// 累计握手成功次数（断线重连断言用：重建后应递增）
     pub fn total_accepted(&self, endpoint: &str) -> u64 {
-        self.endpoint(endpoint).total_accepted.load(Ordering::SeqCst)
+        self.endpoint(endpoint)
+            .total_accepted
+            .load(Ordering::SeqCst)
     }
 
     /// 收到的全部可解析文本帧（按到达序，跨连接累计）
@@ -338,7 +347,11 @@ impl MockPluginWsServer {
 
     /// 收到的全部文本帧原文（含非 JSON 畸形帧）
     pub async fn received_raw_text(&self, endpoint: &str) -> Vec<String> {
-        self.endpoint(endpoint).received_raw_text.lock().await.clone()
+        self.endpoint(endpoint)
+            .received_raw_text
+            .lock()
+            .await
+            .clone()
     }
 
     /// 收到的全部二进制帧（原始输入字节）
@@ -557,7 +570,11 @@ async fn handle_connection(ep: Arc<EndpointState>, ws: WebSocketStream<TcpStream
 }
 
 /// 首帧认证门：帧为合法 auth 且通过策略 → `true`（已认证）；否则 close 4001 → `false`
-async fn accept_auth_if_first(ep: &EndpointState, sink: &SharedSink, frame: Option<&serde_json::Value>) -> bool {
+async fn accept_auth_if_first(
+    ep: &EndpointState,
+    sink: &SharedSink,
+    frame: Option<&serde_json::Value>,
+) -> bool {
     let Some(frame) = frame else {
         // 首帧非 JSON：协议违规
         let _ = sink
@@ -570,7 +587,8 @@ async fn accept_auth_if_first(ep: &EndpointState, sink: &SharedSink, frame: Opti
             .await;
         return false;
     };
-    let is_auth = frame.get("type").and_then(|v| v.as_str()) == Some(TYPE_AUTH) && frame.get("token").is_some();
+    let is_auth = frame.get("type").and_then(|v| v.as_str()) == Some(TYPE_AUTH)
+        && frame.get("token").is_some();
     if !is_auth {
         let _ = sink
             .lock()
@@ -585,14 +603,19 @@ async fn accept_auth_if_first(ep: &EndpointState, sink: &SharedSink, frame: Opti
     let policy = ep.auth_policy.lock().unwrap().clone();
     let accepted = match policy {
         AuthPolicy::RequireAnyToken => true,
-        AuthPolicy::RequireToken(expected) => frame.get("token").and_then(|v| v.as_str()) == Some(expected.as_str()),
+        AuthPolicy::RequireToken(expected) => {
+            frame.get("token").and_then(|v| v.as_str()) == Some(expected.as_str())
+        }
         AuthPolicy::RejectAll => false,
     };
     if !accepted {
         let _ = sink
             .lock()
             .await
-            .send(WsMsg::Close(Some(close_frame(AUTH_REJECT_CLOSE_CODE, "auth rejected"))))
+            .send(WsMsg::Close(Some(close_frame(
+                AUTH_REJECT_CLOSE_CODE,
+                "auth rejected",
+            ))))
             .await;
         return false;
     }

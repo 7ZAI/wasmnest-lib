@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::provider::{KDF_HKDF_SHA256};
+use crate::provider::KDF_HKDF_SHA256;
 
 #[test]
 fn kdf_derive_via_registry() {

@@ -87,7 +87,9 @@ fn resume_or_return<T>(result: std::thread::Result<T>) -> T {
     match result {
         Ok(value) => value,
         Err(payload) => {
-            tracing::error!("block_on_async: driver thread panicked, re-raising original panic payload");
+            tracing::error!(
+                "block_on_async: driver thread panicked, re-raising original panic payload"
+            );
             std::panic::resume_unwind(payload);
         }
     }
@@ -250,7 +252,10 @@ pub fn ambient_handle() -> tokio::runtime::Handle {
 /// 使用错误边界包装 tokio::spawn（当前线程必须有 runtime 上下文）
 ///
 /// 捕获 spawned 任务中的 panic 并记录日志，防止任务静默终止。
-pub fn spawn_with_error_boundary<F>(task_name: &'static str, future: F) -> tokio::task::JoinHandle<()>
+pub fn spawn_with_error_boundary<F>(
+    task_name: &'static str,
+    future: F,
+) -> tokio::task::JoinHandle<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {

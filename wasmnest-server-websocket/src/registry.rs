@@ -602,6 +602,6 @@ pub struct ClientSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    mod scaffold;
     mod endpoint_reservation;
+    mod scaffold;
 }

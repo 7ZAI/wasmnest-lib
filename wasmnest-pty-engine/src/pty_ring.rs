@@ -183,7 +183,9 @@ impl PtyRing {
         }
         // ② 余量作为新块（先淘汰腾位）
         let len = rest.len() as u64;
-        while self.resident_bytes + len > self.capacity_bytes || self.chunks.len() + 1 > self.max_chunks {
+        while self.resident_bytes + len > self.capacity_bytes
+            || self.chunks.len() + 1 > self.max_chunks
+        {
             if !self.evict_oldest() {
                 break;
             }
@@ -196,7 +198,11 @@ impl PtyRing {
         self.resident_bytes += len;
         self.max_offset = start + len;
         // 淘汰后驻留起点前移；环此前为空时即本块起点
-        self.min_offset = self.chunks.front().map(|chunk| chunk.start).unwrap_or(self.max_offset);
+        self.min_offset = self
+            .chunks
+            .front()
+            .map(|chunk| chunk.start)
+            .unwrap_or(self.max_offset);
     }
 
     /// 淘汰最旧一块；返回 `false` = 环已空（调用方据此停止淘汰）
@@ -231,7 +237,9 @@ impl PtyRing {
             if chunk.start >= end {
                 break;
             }
-            let lo = start.saturating_sub(chunk.start).min(chunk.bytes.len() as u64) as usize;
+            let lo = start
+                .saturating_sub(chunk.start)
+                .min(chunk.bytes.len() as u64) as usize;
             let hi = (end - chunk.start).min(chunk.bytes.len() as u64) as usize;
             if lo < hi {
                 data.extend_from_slice(&chunk.bytes[lo..hi]);
@@ -277,7 +285,10 @@ impl PtyRingSink {
     /// sink 交 `PtySession::with_private_sink` / `with_private_command`，ring 由宿主侧
     /// 按游标应答 `ring-fetch`；二者共享同一 `Arc<Mutex<PtyRing>>`。容量是**调用方
     /// 参数**（host-pty 由插件在 spawn config 里声明、宿主仲裁上限），不是编译期常量。
-    pub fn paired_with_limits(capacity_bytes: u64, max_chunks: usize) -> (Arc<Self>, Arc<Mutex<PtyRing>>) {
+    pub fn paired_with_limits(
+        capacity_bytes: u64,
+        max_chunks: usize,
+    ) -> (Arc<Self>, Arc<Mutex<PtyRing>>) {
         let ring = Arc::new(Mutex::new(PtyRing::with_limits(capacity_bytes, max_chunks)));
         let sink = Arc::new(Self {
             ring: Arc::clone(&ring),
@@ -492,7 +503,10 @@ mod tests {
         sink.on_bytes(payload(b'B', 3), 1001).await;
 
         let guard = ring.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(guard.fetch(0, 1024).data, [payload(b'A', 3), payload(b'B', 3)].concat());
+        assert_eq!(
+            guard.fetch(0, 1024).data,
+            [payload(b'A', 3), payload(b'B', 3)].concat()
+        );
         assert_eq!(guard.watermarks(), (0, 6), "自备环是这 6 字节的唯一去处");
     }
 
@@ -545,7 +559,9 @@ mod tests {
         assert!(behind.truncated, "块数淘汰同样造成缺口，必须如实上报");
         assert_eq!(
             behind.data,
-            (2u8..6).flat_map(|tag| payload(tag, BIG)).collect::<Vec<u8>>()
+            (2u8..6)
+                .flat_map(|tag| payload(tag, BIG))
+                .collect::<Vec<u8>>()
         );
     }
 
@@ -587,8 +603,16 @@ mod tests {
             "字节容量未满时不得淘汰：有效驻留窗口必须等于声明容量，否则慢消费者 \
              被无谓地逼进重锚（历史教训：会话输出环的固定块数上限）"
         );
-        assert_eq!(max, (PUSHES * 7) as u64, "产出偏移 = 全部短读之和，不丢字节");
-        assert_eq!(ring.resident_bytes(), (PUSHES * 7) as u64, "驻留字节 = 产出字节");
+        assert_eq!(
+            max,
+            (PUSHES * 7) as u64,
+            "产出偏移 = 全部短读之和，不丢字节"
+        );
+        assert_eq!(
+            ring.resident_bytes(),
+            (PUSHES * 7) as u64,
+            "驻留字节 = 产出字节"
+        );
         assert!(
             ring.chunk_count() <= 4 * 1024 * 1024 / PtyRing::COALESCE_TARGET + 1,
             "块数由「容量 / 合并目标」决定（4 MiB → ≤257），不得回到「一次 push 一块」：{}",
@@ -622,13 +646,21 @@ mod tests {
             "驻留字节不得超过声明容量：{} > {CAPACITY}",
             ring.resident_bytes()
         );
-        assert_eq!(max - min, ring.resident_bytes(), "偏移差必须等于驻留字节（记账自洽）");
+        assert_eq!(
+            max - min,
+            ring.resident_bytes(),
+            "偏移差必须等于驻留字节（记账自洽）"
+        );
         assert!(min >= total - CAPACITY, "淘汰不得少于溢出量（min={min}）");
         assert!(min < total, "环不得被清空");
         // ① 游标落后于驻留起点 ⇒ 必须报缺口（淘汰的诚实性），且从 min_offset 起续
         let behind = ring.fetch(0, 4 * 1024);
         assert!(behind.truncated, "已被淘汰的字节必须如实上报，不得静默补洞");
-        assert_eq!(behind.next_offset, min + 4096, "从驻留起点起返回，且不超过请求上限");
+        assert_eq!(
+            behind.next_offset,
+            min + 4096,
+            "从驻留起点起返回，且不超过请求上限"
+        );
 
         // ② 自驻留起点续拉到底：必须与产出对应区间逐字节相等
         let mut cursor = min;
@@ -700,14 +732,20 @@ mod tests {
         ring.push(&payload(b'C', 8)); // 24 > 16 → 淘汰 A；驻留 [8,24)
 
         let slow = ring.fetch(0, 1024);
-        assert!(slow.truncated, "慢消费者（游标 0 未动）落后即报缺口——读取不共享窗口");
+        assert!(
+            slow.truncated,
+            "慢消费者（游标 0 未动）落后即报缺口——读取不共享窗口"
+        );
         assert_eq!(slow.data, [payload(b'B', 8), payload(b'C', 8)].concat());
         assert_eq!(slow.next_offset, 24);
 
         // 快消费者以自己游标续拉：不因慢消费者落后而受影响，也不重复
         let fast_rest = ring.fetch(fast, 1024);
         assert!(!fast_rest.truncated, "快消费者游标仍在驻留区间内");
-        assert_eq!(fast_rest.data, [payload(b'B', 8), payload(b'C', 8)].concat());
+        assert_eq!(
+            fast_rest.data,
+            [payload(b'B', 8), payload(b'C', 8)].concat()
+        );
         assert_eq!(fast_rest.next_offset, 24);
     }
 }

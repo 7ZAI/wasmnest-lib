@@ -14,7 +14,10 @@ async fn headless_context_denies_unrecorded_origin() {
         .await
         .expect("authorize must not error");
     assert!(!verdict.is_allowed(), "无弹窗通道时必须拒绝: {verdict:?}");
-    assert!(checker.prompts.lock().await.is_empty(), "无头失败不得留下悬空询问");
+    assert!(
+        checker.prompts.lock().await.is_empty(),
+        "无头失败不得留下悬空询问"
+    );
 }
 /// 事件投递失败（前端通道断）⇒ 整批拒绝，且不留下悬空询问
 #[tokio::test]
@@ -49,7 +52,9 @@ async fn second_response_for_same_request_is_ignored() {
     let request_id = wait_for_request_id(&log).await;
     assert!(checker.respond(&request_id, NetworkDecision::Deny).await);
     assert!(
-        !checker.respond(&request_id, NetworkDecision::AllowOnce).await,
+        !checker
+            .respond(&request_id, NetworkDecision::AllowOnce)
+            .await,
         "重复应答必须被拒绝（否则已放行批次会被迟到点击改写）"
     );
     assert!(!task.await.expect("join").expect("authorize").is_allowed());

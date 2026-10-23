@@ -42,12 +42,10 @@ use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream as UnifiedTlsStream};
 
 use crate::base::cert::node_id_from_cert;
 use crate::base::error::{PeerNetError, Result};
-use crate::base::frame::{
-    TrustStatus, TrustStatusFrame, read_frame, write_frame,
-};
+use crate::base::frame::{read_frame, write_frame, TrustStatus, TrustStatusFrame};
 use crate::base::identity::{NodeId, NodeIdentity};
 use crate::base::node::StaticPeerRecord;
-use crate::base::tls::{BINDING_MISMATCH_PREFIX, parse_binding_mismatch};
+use crate::base::tls::{parse_binding_mismatch, BINDING_MISMATCH_PREFIX};
 
 // ==================== 常量 ====================
 
@@ -100,10 +98,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub(crate) fn new(
-        io: impl Into<UnifiedTlsStream<TcpStream>>,
-        peer_node_id: NodeId,
-    ) -> Self {
+    pub(crate) fn new(io: impl Into<UnifiedTlsStream<TcpStream>>, peer_node_id: NodeId) -> Self {
         Self {
             io: io.into(),
             peer_node_id,
@@ -132,11 +127,7 @@ impl AsyncRead for Connection {
 }
 
 impl AsyncWrite for Connection {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut self.io).poll_write(cx, buf)
     }
 
@@ -144,10 +135,7 @@ impl AsyncWrite for Connection {
         Pin::new(&mut self.io).poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.io).poll_shutdown(cx)
     }
 }
@@ -353,9 +341,7 @@ async fn serve_inbound(
 
     // —— 已进入 pending 表：以下任何出口都必须先 settle ——
     let verdict: bool = 'gate: {
-        if let Err(e) =
-            write_frame(&mut tls, &TrustStatusFrame::pending_confirmation(&peer_id)).await
-        {
+        if let Err(e) = write_frame(&mut tls, &TrustStatusFrame::pending_confirmation(&peer_id)).await {
             tracing::warn!(node_id = %peer_id, peer = %peer_addr, "write pending frame failed: {e}");
             break 'gate false;
         }
@@ -480,10 +466,9 @@ pub(crate) async fn dial(
         .map_err(|e| map_handshake_error(record.addr, e))?;
 
     loop {
-        let frame =
-            read_frame(&mut tls)
-                .await
-                .map_err(|e| control_frame_error(record.addr, e))?;
+        let frame = read_frame(&mut tls)
+            .await
+            .map_err(|e| control_frame_error(record.addr, e))?;
         let subject = NodeId::parse(&frame.node_id).map_err(|_| PeerNetError::ControlFrame {
             peer_addr: record.addr,
             detail: format!("status frame carries invalid node id: {}", frame.node_id),
@@ -545,11 +530,7 @@ async fn wait_for_shutdown(rx: &mut watch::Receiver<bool>) {
 }
 
 /// 尽力写入 Denied 帧：写失败只记日志——连接即将关闭，无恢复动作可做
-async fn write_best_effort_denied(
-    tls: &mut ServerTlsStream<TcpStream>,
-    peer_id: &NodeId,
-    peer_addr: SocketAddr,
-) {
+async fn write_best_effort_denied(tls: &mut ServerTlsStream<TcpStream>, peer_id: &NodeId, peer_addr: SocketAddr) {
     if let Err(e) = write_frame(tls, &TrustStatusFrame::denied(peer_id)).await {
         tracing::warn!(node_id = %peer_id, peer = %peer_addr, "write denied frame failed: {e}");
     }
@@ -570,11 +551,12 @@ fn control_frame_error(peer_addr: SocketAddr, e: std::io::Error) -> PeerNetError
 /// 错误种类级断言）。
 fn map_handshake_error(peer_addr: SocketAddr, e: std::io::Error) -> PeerNetError {
     let io_display = e.to_string();
-    let inner = e.into_inner().and_then(|b| b.downcast::<RustlsError>().ok().map(|b| *b));
+    let inner = e
+        .into_inner()
+        .and_then(|b| b.downcast::<RustlsError>().ok().map(|b| *b));
     match inner {
         Some(RustlsError::General(msg)) if msg.starts_with(BINDING_MISMATCH_PREFIX) => {
-            let (expected, actual) = parse_binding_mismatch(&msg)
-                .unwrap_or_else(|| (String::new(), String::new()));
+            let (expected, actual) = parse_binding_mismatch(&msg).unwrap_or_else(|| (String::new(), String::new()));
             PeerNetError::TlsBindingMismatch { expected, actual }
         }
         Some(other) => PeerNetError::TlsHandshake {
@@ -649,17 +631,13 @@ pub(crate) fn spawn_running_node(
     events: mpsc::Sender<TrustEvent>,
     handler: Arc<dyn ConnectionHandler>,
 ) -> Result<RunningNode> {
-    let local_addr =
-        listener
-            .local_addr()
-            .map_err(|source| PeerNetError::ListenerPrepare { source })?;
+    let local_addr = listener
+        .local_addr()
+        .map_err(|source| PeerNetError::ListenerPrepare { source })?;
     listener
         .set_nonblocking(true)
         .map_err(|source| PeerNetError::ListenerPrepare { source })?;
-    let listener =
-        TcpListener::from_std(listener).map_err(|source| PeerNetError::ListenerPrepare {
-            source,
-        })?;
+    let listener = TcpListener::from_std(listener).map_err(|source| PeerNetError::ListenerPrepare { source })?;
 
     let server_config = Arc::new(crate::base::tls::server_config(identity, own_cert_der)?);
     let acceptor = TlsAcceptor::from(server_config);

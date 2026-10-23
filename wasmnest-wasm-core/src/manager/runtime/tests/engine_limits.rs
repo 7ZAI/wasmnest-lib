@@ -29,7 +29,9 @@ fn test_set_config_rejects_invalid() {
     let (wasm_runtime, _host_ctx) = setup_wasm_runtime();
     let mut cfg = CoreConfig::default();
     cfg.store.fuel_per_call = 0;
-    let err = wasm_runtime.set_config(cfg).expect_err("zero fuel must be rejected");
+    let err = wasm_runtime
+        .set_config(cfg)
+        .expect_err("zero fuel must be rejected");
     assert!(format!("{err}").contains("fuel_per_call"));
     assert_eq!(wasm_runtime.config(), CoreConfig::default());
 }

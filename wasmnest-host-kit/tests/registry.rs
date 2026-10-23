@@ -3,8 +3,10 @@
 //! 依据 `unit-test-discipline`：每个用例断言**可观察行为**，不测 mock 调用次数；
 //! 白名单锁必须**双向**都钉住（漏进 / 漏出），否则任一方向单独存在都能被绕过。
 
-use wasmnest_host_kit::{HostKitError, HostModule, HostModuleDesc, ModuleRegistry, WasmPluginState};
 use std::cell::RefCell;
+use wasmnest_host_kit::{
+    HostKitError, HostModule, HostModuleDesc, ModuleRegistry, WasmPluginState,
+};
 use wasmtime::component::Linker;
 
 // 装配记录（本测试线程上哪些模块的 `register` 真的跑起来了）
@@ -301,7 +303,10 @@ fn whitelist_mismatch_message_carries_remediation_for_both_directions() {
         .expect_err("双侧差异必须失败");
     let msg = err.to_string();
 
-    assert!(msg.contains("unlisted="), "文案必须标出 unlisted 方向：{msg}");
+    assert!(
+        msg.contains("unlisted="),
+        "文案必须标出 unlisted 方向：{msg}"
+    );
     assert!(msg.contains("missing="), "文案必须标出 missing 方向：{msg}");
     // 两侧的名字都要点名（unlisted=[mid, zeta]，missing=[ghost]）
     for name in ["mid", "zeta", "ghost"] {
@@ -335,7 +340,6 @@ fn host_port_unavailable_error_names_both_types() {
 inventory::submit! {
     wasmnest_host_kit::ModuleEntry { module: &ALPHA }
 }
-
 
 // ==================== 兜底/兼容桩的两遍装配（cross-end 同进程装配的让位语义）====================
 

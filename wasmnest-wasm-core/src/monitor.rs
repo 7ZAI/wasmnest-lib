@@ -282,7 +282,10 @@ mod tests {
             serde_json::json!({ "name": "Monitor", "kind": "internal-business" }),
         );
         let snap = reg.snapshot();
-        assert_eq!(snap["plugin_meta"]["com.wasmnest.monitor"]["kind"], "internal-business");
+        assert_eq!(
+            snap["plugin_meta"]["com.wasmnest.monitor"]["kind"],
+            "internal-business"
+        );
 
         reg.remove("com.wasmnest.monitor");
         let snap = reg.snapshot();

@@ -37,11 +37,11 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use crate::wire::PERMISSION_NETWORK_HTTP;
+use futures_util::StreamExt;
 use wasmnest_server_base::constants::{
     PLUGIN_HTTP_CONNECT_TIMEOUT_SECS, PLUGIN_HTTP_RESPONSE_BODY_LIMIT_BYTES, PLUGIN_HTTP_TIMEOUT_SECS,
 };
 use wasmnest_server_base::error_boundary::spawn_with_error_boundary;
-use futures_util::StreamExt;
 
 use crate::plugin_binding::ports::{block_on, HttpEventSink, HttpPorts, OutboundAuth};
 

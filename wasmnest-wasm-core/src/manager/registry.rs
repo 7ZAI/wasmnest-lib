@@ -157,13 +157,22 @@ impl PluginRegistry {
 
     /// 获取所有终端处理器
     pub async fn list_terminal_handlers(&self) -> Vec<TerminalHandlers> {
-        self.terminal_handlers.read().await.values().cloned().collect()
+        self.terminal_handlers
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect()
     }
 
     // ==================== File Handlers ====================
 
     /// 注册文件处理器（从 manifest contributes.fileHandlers 批量注册）
-    pub async fn register_file_handlers(&self, plugin_id: &str, handlers: &[FileHandlerContribution]) {
+    pub async fn register_file_handlers(
+        &self,
+        plugin_id: &str,
+        handlers: &[FileHandlerContribution],
+    ) {
         let mut map = self.file_handlers.write().await;
         for handler in handlers {
             let entry = FileHandlerEntry {
@@ -296,7 +305,10 @@ mod tests {
         assert_eq!(c1.plugin_id, "plugin-a");
         assert_eq!(c1.title, "Command One");
         assert_eq!(c1.icon.as_deref(), Some("icon1"));
-        assert_eq!(registry.get_plugin_commands("no-such-plugin").await.len(), 0);
+        assert_eq!(
+            registry.get_plugin_commands("no-such-plugin").await.len(),
+            0
+        );
     }
 
     /// 相同 command_id 重复注册以最后一次为准（覆盖语义）
@@ -360,7 +372,10 @@ mod tests {
 
         let all = registry.list_terminal_handlers().await;
         assert_eq!(all.len(), 2);
-        let a = all.iter().find(|t| t.plugin_id == "plugin-a").expect("plugin-a 应存在");
+        let a = all
+            .iter()
+            .find(|t| t.plugin_id == "plugin-a")
+            .expect("plugin-a 应存在");
         assert_eq!(a.input_handlers, vec!["h1", "h2"]);
         assert!(a.output_parsers.is_empty());
     }
@@ -372,11 +387,18 @@ mod tests {
         registry
             .register_file_handlers(
                 "plugin-a",
-                &[file_handler("md-viewer", &["md", "markdown"], "MarkdownPreview")],
+                &[file_handler(
+                    "md-viewer",
+                    &["md", "markdown"],
+                    "MarkdownPreview",
+                )],
             )
             .await;
         registry
-            .register_file_handlers("plugin-b", &[file_handler("json-viewer", &["json"], "JsonView")])
+            .register_file_handlers(
+                "plugin-b",
+                &[file_handler("json-viewer", &["json"], "JsonView")],
+            )
             .await;
 
         let md = registry.find_file_handler("md").await.expect("md 应命中");
@@ -400,8 +422,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_unregister_plugin_removes_all_entries() {
         let registry = PluginRegistry::new();
-        registry.register_commands("plugin-a", &[cmd("a1", "A1", None)]).await;
-        registry.register_commands("plugin-b", &[cmd("b1", "B1", None)]).await;
+        registry
+            .register_commands("plugin-a", &[cmd("a1", "A1", None)])
+            .await;
+        registry
+            .register_commands("plugin-b", &[cmd("b1", "B1", None)])
+            .await;
         registry
             .register_views("plugin-a", &[view("va", "sidebar", "VA")])
             .await;
@@ -428,13 +454,19 @@ mod tests {
     async fn test_command_entry_serializes_camel_case() {
         let registry = PluginRegistry::new();
         registry
-            .register_commands("plugin-a", &[cmd("c1", "T", Some("i")), cmd("c2", "T2", None)])
+            .register_commands(
+                "plugin-a",
+                &[cmd("c1", "T", Some("i")), cmd("c2", "T2", None)],
+            )
             .await;
         let json = serde_json::to_value(registry.list_commands().await).unwrap();
         let arr = json.as_array().expect("应为数组");
         assert_eq!(arr.len(), 2);
         for entry in arr {
-            assert!(entry.get("commandId").is_some(), "字段应为 commandId 驼峰命名");
+            assert!(
+                entry.get("commandId").is_some(),
+                "字段应为 commandId 驼峰命名"
+            );
             assert!(entry.get("pluginId").is_some());
             assert!(entry.get("command_id").is_none());
         }

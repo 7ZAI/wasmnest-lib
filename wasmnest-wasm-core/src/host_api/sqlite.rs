@@ -26,11 +26,11 @@
 //! 无 per-plugin 注册表，故无 `purge_for_plugin`：域只借用宿主的库句柄，不持有需要
 //! 回收的资源（插件私有库的连接与目录始终归宿主生命周期）。
 
-use std::any::Any;
 use crate::host_api::context::{StorageScope, WasmHostContext};
 use crate::host_api::sqlite_ports::{BoxedBlocked, PluginDbFuture, SqlitePorts};
 use crate::manager::capability;
 use crate::runtime_util::block_on_async;
+use std::any::Any;
 
 /// 端口的宿主实现（生产路径：借用一份宿主上下文）
 ///
@@ -71,7 +71,11 @@ impl SqlitePorts for HostSqlitePorts<'_> {
         // 懒创建策略（目录根二选一 + 缓存登记）整段留在宿主：域只拿到句柄。
         // future 借用上下文（`'a` 生命周期由端口 trait 传递），无需克隆任何东西。
         let ctx = self.ctx;
-        Box::pin(async move { ctx.get_or_create_plugin_db(&plugin_id).await.map_err(|e| e.to_string()) })
+        Box::pin(async move {
+            ctx.get_or_create_plugin_db(&plugin_id)
+                .await
+                .map_err(|e| e.to_string())
+        })
     }
 
     fn block_on_any(&self, fut: BoxedBlocked<'_>) -> Box<dyn Any + Send> {
@@ -80,11 +84,20 @@ impl SqlitePorts for HostSqlitePorts<'_> {
         block_on_async(fut)
     }
 
-    fn forward_storage_get(&self, plugin_id: &str, key: &str) -> Option<Result<Option<String>, String>> {
+    fn forward_storage_get(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> Option<Result<Option<String>, String>> {
         capability::forward_storage_get(self.ctx, plugin_id, key)
     }
 
-    fn forward_storage_set(&self, plugin_id: &str, key: &str, value: &str) -> Option<Result<(), String>> {
+    fn forward_storage_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Option<Result<(), String>> {
         capability::forward_storage_set(self.ctx, plugin_id, key, value)
     }
 
@@ -97,13 +110,20 @@ impl SqlitePorts for HostSqlitePorts<'_> {
         block_on_async(async move { storage.get(plugin_id, key).await }).map_err(|e| e.to_string())
     }
 
-    fn storage_set(&self, plugin_id: &str, key: &str, value: serde_json::Value) -> Result<(), String> {
+    fn storage_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<(), String> {
         let storage = self.ctx.storage().clone();
-        block_on_async(async move { storage.set(plugin_id, key, value).await }).map_err(|e| e.to_string())
+        block_on_async(async move { storage.set(plugin_id, key, value).await })
+            .map_err(|e| e.to_string())
     }
 
     fn storage_delete(&self, plugin_id: &str, key: &str) -> Result<(), String> {
         let storage = self.ctx.storage().clone();
-        block_on_async(async move { storage.delete(plugin_id, key).await }).map_err(|e| e.to_string())
+        block_on_async(async move { storage.delete(plugin_id, key).await })
+            .map_err(|e| e.to_string())
     }
 }

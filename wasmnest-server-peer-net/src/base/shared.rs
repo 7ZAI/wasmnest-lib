@@ -25,9 +25,7 @@
 
 pub mod registry;
 
-pub use registry::{
-    resolve_rel_path, sort_entries, SharedDirEntry, SharedDirRoot, SharedDirStore,
-};
+pub use registry::{resolve_rel_path, sort_entries, SharedDirEntry, SharedDirRoot, SharedDirStore};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,16 +33,13 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::base::NodeId;
-use crate::base::transfer::message::{
-    self, CancelOrigin, IncomingFrame, TransferFrame, TRANSFER_PROTOCOL_VERSION,
-};
+use crate::base::transfer::message::{self, CancelOrigin, IncomingFrame, TransferFrame, TRANSFER_PROTOCOL_VERSION};
 use crate::base::transfer::{
-    emit, next_frame_handling_pause, next_pause_cmd, proto_violation, receive_files_after_accept,
-    run_receive, sess_io, CancelToken, FileMeta, PauseCmd, RateTracker, SessionPause, TerminalState,
-    TransferConfig, TransferEvent,
+    emit, next_frame_handling_pause, next_pause_cmd, proto_violation, receive_files_after_accept, run_receive, sess_io,
+    CancelToken, FileMeta, PauseCmd, RateTracker, SessionPause, TerminalState, TransferConfig, TransferEvent,
 };
 use crate::base::transport::{Connection, ConnectionHandler, HandlerFuture};
+use crate::base::NodeId;
 
 /// 首帧与会话级等待超时（镜像 transfer 的 OFFER_TIMEOUT：信任放行后对端应立即发起请求）
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -66,9 +61,7 @@ pub fn saf_not_found(detail: impl std::fmt::Display) -> crate::base::error::Peer
 /// 判定一个 crate 错误是否为适配层报告的「目标不存在」
 pub(crate) fn is_saf_not_found(e: &crate::base::error::PeerNetError) -> bool {
     match e {
-        crate::base::error::PeerNetError::TransferProtocol { detail, .. } => {
-            detail.starts_with(SAF_NOT_FOUND_PREFIX)
-        }
+        crate::base::error::PeerNetError::TransferProtocol { detail, .. } => detail.starts_with(SAF_NOT_FOUND_PREFIX),
         _ => false,
     }
 }
@@ -367,11 +360,7 @@ impl ConnectionHandler for SharedDirHandler {
                 Ok(frame) => Ok(frame),
             };
             // 配置快照：本条连接生命周期内固定，热更新只影响后续连接
-            let config = inner
-                .transfer
-                .read()
-                .map(|config| config.clone())
-                .unwrap_or_default();
+            let config = inner.transfer.read().map(|config| config.clone()).unwrap_or_default();
             // 会话子令牌：急停令牌的 child；批 ID 确认后登记供按批取消，
             // 守卫 drop（任何退出路径）时自动摘除登记项
             let cancel = CancelToken::child(&inner.cancel);
@@ -390,8 +379,7 @@ impl ConnectionHandler for SharedDirHandler {
                         enc_pub_key,
                     } => {
                         batch_slot = Some(batch_id.clone());
-                        let _guard =
-                            SessionGuard::new(Arc::clone(&inner), batch_id.clone(), cancel.clone());
+                        let _guard = SessionGuard::new(Arc::clone(&inner), batch_id.clone(), cancel.clone());
                         // 接收侧本地暂停句柄：会话存续期登记（守卫 drop 摘除），
                         // 宿主可对 push 接收批按 batch_id 下发暂停/恢复
                         let receive_pause = crate::base::transfer::PauseSlot::new();
@@ -422,9 +410,7 @@ impl ConnectionHandler for SharedDirHandler {
                         .await
                         .unwrap_or_else(|e| {
                             tracing::warn!("receive session failed: {e}");
-                            TerminalState::Failed {
-                                detail: e.to_string(),
-                            }
+                            TerminalState::Failed { detail: e.to_string() }
                         })
                     }
                     TransferFrame::BrowseRequest {
@@ -433,15 +419,11 @@ impl ConnectionHandler for SharedDirHandler {
                         rel_path,
                     } => {
                         batch_slot = Some(dir_id.clone());
-                        match serve_browse(conn, &store, saf.as_ref(), protocol_version, &dir_id, &rel_path)
-                            .await
-                        {
+                        match serve_browse(conn, &store, saf.as_ref(), protocol_version, &dir_id, &rel_path).await {
                             Ok(()) => TerminalState::Completed,
                             Err(e) => {
                                 tracing::warn!("browse session failed: {e}");
-                                TerminalState::Failed {
-                                    detail: e.to_string(),
-                                }
+                                TerminalState::Failed { detail: e.to_string() }
                             }
                         }
                     }
@@ -451,8 +433,7 @@ impl ConnectionHandler for SharedDirHandler {
                         rel_path,
                     } => {
                         batch_slot = Some(dir_id.clone());
-                        let _guard =
-                            SessionGuard::new(Arc::clone(&inner), dir_id.clone(), cancel.clone());
+                        let _guard = SessionGuard::new(Arc::clone(&inner), dir_id.clone(), cancel.clone());
                         // 服务侧任务终态由 serve_pull 自行经 serve_events 上报（batch_id
                         // 与 PullServed/Progress 同源），外层统一 emit 跳过该分支
                         serve_handled = true;
@@ -474,9 +455,7 @@ impl ConnectionHandler for SharedDirHandler {
                             Ok(state) => state,
                             Err(e) => {
                                 tracing::warn!("pull serve failed: {e}");
-                                TerminalState::Failed {
-                                    detail: e.to_string(),
-                                }
+                                TerminalState::Failed { detail: e.to_string() }
                             }
                         }
                     }
@@ -485,17 +464,12 @@ impl ConnectionHandler for SharedDirHandler {
                         match serve_roots(conn, &store, protocol_version).await {
                             Ok(()) => {
                                 // 诊断插桩：暴露端 roots 服务成功路径（请求方侧已有日志）
-                                tracing::info!(
-                                    count = store.list().len(),
-                                    "shared roots served to peer"
-                                );
+                                tracing::info!(count = store.list().len(), "shared roots served to peer");
                                 TerminalState::Completed
                             }
                             Err(e) => {
                                 tracing::warn!("roots session failed: {e}");
-                                TerminalState::Failed {
-                                    detail: e.to_string(),
-                                }
+                                TerminalState::Failed { detail: e.to_string() }
                             }
                         }
                     }
@@ -517,9 +491,7 @@ impl ConnectionHandler for SharedDirHandler {
                 Ok(IncomingFrame::Data(_)) => TerminalState::Failed {
                     detail: "first share frame must be control".to_string(),
                 },
-                Err(e) => TerminalState::Failed {
-                    detail: e.to_string(),
-                },
+                Err(e) => TerminalState::Failed { detail: e.to_string() },
             };
             if !serve_handled {
                 emit(
@@ -537,10 +509,7 @@ impl ConnectionHandler for SharedDirHandler {
 }
 
 /// 写一条拒绝 Decision（尽力而为：写失败只记日志，连接即将关闭）
-async fn write_rejection(
-    conn: &mut Connection,
-    reason: crate::base::transfer::RejectReason,
-) {
+async fn write_rejection(conn: &mut Connection, reason: crate::base::transfer::RejectReason) {
     if let Err(e) = crate::base::transfer::write_decision(conn, false, Some(reason), None).await {
         tracing::debug!("write rejection decision failed: {e}");
     }
@@ -551,9 +520,7 @@ fn check_version(protocol_version: u32) -> crate::base::Result<()> {
     if protocol_version > TRANSFER_PROTOCOL_VERSION {
         return Err(proto_violation(
             "share",
-            format!(
-                "request protocol_version {protocol_version} is newer than supported {TRANSFER_PROTOCOL_VERSION}"
-            ),
+            format!("request protocol_version {protocol_version} is newer than supported {TRANSFER_PROTOCOL_VERSION}"),
         ));
     }
     Ok(())
@@ -609,11 +576,7 @@ enum ListError {
 }
 
 /// 共享根清单服务流程：校验版本 → 注册表快照（含内置条目，按注册序）→ 应答
-async fn serve_roots(
-    mut conn: Connection,
-    store: &SharedDirStore,
-    protocol_version: u32,
-) -> crate::base::Result<()> {
+async fn serve_roots(mut conn: Connection, store: &SharedDirStore, protocol_version: u32) -> crate::base::Result<()> {
     const ROLE: &str = "share";
     if let Err(e) = check_version(protocol_version) {
         return Err(e);
@@ -642,8 +605,7 @@ async fn list_shared_dir(
     use crate::base::transfer::RejectReason;
 
     let entry = store.get(dir_id).ok_or(ListError::NotFound(RejectReason::NotFound))?;
-    let components =
-        resolve_rel_path(rel_path).ok_or(ListError::NotFound(RejectReason::NotFound))?;
+    let components = resolve_rel_path(rel_path).ok_or(ListError::NotFound(RejectReason::NotFound))?;
 
     match &entry.root {
         SharedDirRoot::Fs { path } => {
@@ -657,9 +619,11 @@ async fn list_shared_dir(
                 ListError::NotFound(RejectReason::NotFound)
             })?;
             let mut out = Vec::new();
-            while let Some(item) = reader.next_entry().await.map_err(|e| {
-                ListError::Engine(sess_io("share", e))
-            })? {
+            while let Some(item) = reader
+                .next_entry()
+                .await
+                .map_err(|e| ListError::Engine(sess_io("share", e)))?
+            {
                 let name = item.file_name().to_string_lossy().into_owned();
                 let meta = item.metadata().await;
                 let (is_dir, size) = match meta {
@@ -681,9 +645,7 @@ async fn list_shared_dir(
             };
             match saf.list_dir(tree_uri, rel_path) {
                 Ok(entries) => Ok(entries),
-                Err(e) if is_saf_not_found(&e) => {
-                    Err(ListError::NotFound(RejectReason::NotFound))
-                }
+                Err(e) if is_saf_not_found(&e) => Err(ListError::NotFound(RejectReason::NotFound)),
                 Err(e) => Err(ListError::Engine(e)),
             }
         }
@@ -744,13 +706,8 @@ async fn serve_pull(
         .expect("serve pause table lock poisoned")
         .insert(batch_id.clone(), Arc::clone(&pause_slot));
     // 服务侧按批取消登记：宿主按同一 batch_id 取消本会话（守卫 drop 摘除）
-    let _cancel_guard = TableGuard::new(
-        Arc::clone(&serve_cancels),
-        batch_id.clone(),
-        cancel.clone(),
-    );
-    let session_pause =
-        crate::base::transfer::SessionPause::from_optional(Some(Arc::clone(&pause_slot))).await;
+    let _cancel_guard = TableGuard::new(Arc::clone(&serve_cancels), batch_id.clone(), cancel.clone());
+    let session_pause = crate::base::transfer::SessionPause::from_optional(Some(Arc::clone(&pause_slot))).await;
     // 会话级暂停面：控制相等待（等 StartFile）期间同样消费本地暂停命令、
     // 容忍对端 Pause/Resume 帧（见 next_frame_handling_pause 文档）
     let mut session_pause = session_pause;
@@ -823,7 +780,9 @@ async fn serve_pull(
                 None => {
                     let _ = message::write_control(
                         &mut wr,
-                        &TransferFrame::Cancel { by: CancelOrigin::Sender },
+                        &TransferFrame::Cancel {
+                            by: CancelOrigin::Sender,
+                        },
                     )
                     .await;
                     break Ok(TerminalState::Cancelled { by_peer: false });
@@ -848,10 +807,7 @@ async fn serve_pull(
                     TransferFrame::StartFile { index: 0, offset } => {
                         break Err(proto_violation(
                             ROLE,
-                            format!(
-                                "peer reported offset {offset} beyond declared size {}",
-                                resolved.size
-                            ),
+                            format!("peer reported offset {offset} beyond declared size {}", resolved.size),
                         ));
                     }
                     TransferFrame::Cancel { .. } => {
@@ -865,10 +821,7 @@ async fn serve_pull(
                     }
                 },
                 Some(IncomingFrame::Data(_)) => {
-                    break Err(proto_violation(
-                        ROLE,
-                        "data frame is receiver-to-sender only",
-                    ));
+                    break Err(proto_violation(ROLE, "data frame is receiver-to-sender only"));
                 }
             }
         }
@@ -894,9 +847,7 @@ async fn serve_pull(
     // ---- 服务侧终态上报（host drive_serve_events 消费；失败路径同样落 Failed）----
     let terminal_state = match &outcome {
         Ok(state) => state.clone(),
-        Err(e) => TerminalState::Failed {
-            detail: e.to_string(),
-        },
+        Err(e) => TerminalState::Failed { detail: e.to_string() },
     };
     emit(
         serve_events,
@@ -961,9 +912,10 @@ async fn resolve_pull_target(
 ) -> Result<ResolvedPullTarget, PullResolveError> {
     use crate::base::transfer::RejectReason;
 
-    let entry = store.get(dir_id).ok_or(PullResolveError::NotFound(RejectReason::NotFound))?;
-    let components =
-        resolve_rel_path(rel_path).ok_or(PullResolveError::NotFound(RejectReason::NotFound))?;
+    let entry = store
+        .get(dir_id)
+        .ok_or(PullResolveError::NotFound(RejectReason::NotFound))?;
+    let components = resolve_rel_path(rel_path).ok_or(PullResolveError::NotFound(RejectReason::NotFound))?;
 
     match &entry.root {
         SharedDirRoot::Fs { path } => {
@@ -997,9 +949,7 @@ async fn resolve_pull_target(
                 return Err(PullResolveError::NotFound(RejectReason::ReadFailed));
             };
             let reader = saf.open_read(tree_uri, rel_path).map_err(|e| match e {
-                crate::base::error::PeerNetError::TransferProtocol { detail, .. }
-                    if detail.contains("not-found") =>
-                {
+                crate::base::error::PeerNetError::TransferProtocol { detail, .. } if detail.contains("not-found") => {
                     PullResolveError::NotFound(RejectReason::NotFound)
                 }
                 other => PullResolveError::Engine(other),
@@ -1173,22 +1123,15 @@ where
 
     // ---- 等落位确认 ----
     // 会话级暂停面：此阶段对端按暂停（或本端暂停）都要正确处理而不是判违规
-    let done = next_frame_handling_pause(
-        wr,
-        frame_rx,
-        cancel,
-        &mut pause,
-        &pause_slot,
-        events,
-        &remote,
-        batch_id,
-    )
-    .await?;
+    let done =
+        next_frame_handling_pause(wr, frame_rx, cancel, &mut pause, &pause_slot, events, &remote, batch_id).await?;
     match done {
         None => {
             let _ = message::write_control(
                 wr,
-                &TransferFrame::Cancel { by: CancelOrigin::Sender },
+                &TransferFrame::Cancel {
+                    by: CancelOrigin::Sender,
+                },
             )
             .await;
             return Ok(TerminalState::Cancelled { by_peer: false });
@@ -1205,23 +1148,12 @@ where
                 ))
             }
         },
-        Some(IncomingFrame::Data(_)) => {
-            return Err(proto_violation(ROLE, "data frame is receiver-to-sender only"))
-        }
+        Some(IncomingFrame::Data(_)) => return Err(proto_violation(ROLE, "data frame is receiver-to-sender only")),
     }
 
     // ---- 批完成确认 ----
-    let done = next_frame_handling_pause(
-        wr,
-        frame_rx,
-        cancel,
-        &mut pause,
-        &pause_slot,
-        events,
-        &remote,
-        batch_id,
-    )
-    .await?;
+    let done =
+        next_frame_handling_pause(wr, frame_rx, cancel, &mut pause, &pause_slot, events, &remote, batch_id).await?;
     match done {
         Some(IncomingFrame::Control(boxed)) if matches!(*boxed, TransferFrame::BatchDone {}) => {
             Ok(TerminalState::Completed)
@@ -1233,7 +1165,9 @@ where
         None => {
             let _ = message::write_control(
                 wr,
-                &TransferFrame::Cancel { by: CancelOrigin::Sender },
+                &TransferFrame::Cancel {
+                    by: CancelOrigin::Sender,
+                },
             )
             .await;
             Ok(TerminalState::Cancelled { by_peer: false })
@@ -1361,24 +1295,11 @@ pub async fn pull_shared_file(
 ) -> crate::base::Result<TerminalState> {
     let remote = conn.peer_node_id().clone();
 
-    let state = match run_pull_session(
-        conn,
-        dir_id,
-        rel_path,
-        batch_id,
-        &config,
-        &events,
-        &cancel,
-        pause,
-    )
-    .await
-    {
+    let state = match run_pull_session(conn, dir_id, rel_path, batch_id, &config, &events, &cancel, pause).await {
         Ok(state) => state,
         Err(e) => {
             tracing::warn!("pull session failed: {e}");
-            TerminalState::Failed {
-                detail: e.to_string(),
-            }
+            TerminalState::Failed { detail: e.to_string() }
         }
     };
     emit(

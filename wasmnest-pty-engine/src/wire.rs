@@ -94,7 +94,7 @@ pub mod key;
 
 #[cfg(test)]
 mod tests {
-    use super::{PTY_EXIT, PTY_OUTPUT, pty_event_topic};
+    use super::{pty_event_topic, PTY_EXIT, PTY_OUTPUT};
 
     /// [`pty_event_topic`] 的对外形状：属主私有命名空间 + 事件名常量拼接
     ///

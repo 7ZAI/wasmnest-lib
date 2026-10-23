@@ -483,7 +483,9 @@ impl PlatformPickerPort for EnginePortsPlatformPicker {
     /// 必须可区分），口径与 `pick_files` 一致。
     async fn pick_folders(&self) -> Result<Vec<String>> {
         if self.app_handle.is_none() {
-            return Err(crate::error::AppError::Internal(HEADLESS_PICKER_ERROR.to_string()));
+            return Err(crate::error::AppError::Internal(
+                HEADLESS_PICKER_ERROR.to_string(),
+            ));
         }
         Ok(self
             .ports

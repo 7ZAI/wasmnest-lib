@@ -51,7 +51,12 @@ impl StoragePorts for SqliteStoragePorts<'_> {
         self.ports.forward_storage_get(plugin_id, key)
     }
 
-    fn forward_kv_set(&self, plugin_id: &str, key: &str, value: &str) -> Option<Result<(), String>> {
+    fn forward_kv_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Option<Result<(), String>> {
         self.ports.forward_storage_set(plugin_id, key, value)
     }
 
@@ -70,7 +75,11 @@ pub fn storage_get(
         &SqliteStoragePorts { ports },
         plugin_id,
         key,
-        &PermissionGate { permission: PERMISSION_STORAGE, api: "host_storage_get", deny_error: "permission denied" },
+        &PermissionGate {
+            permission: PERMISSION_STORAGE,
+            api: "host_storage_get",
+            deny_error: "permission denied",
+        },
     )
 }
 
@@ -86,7 +95,11 @@ pub fn storage_set(
         plugin_id,
         key,
         value,
-        &PermissionGate { permission: PERMISSION_STORAGE, api: "host_storage_set", deny_error: "permission denied" },
+        &PermissionGate {
+            permission: PERMISSION_STORAGE,
+            api: "host_storage_set",
+            deny_error: "permission denied",
+        },
     )
 }
 

@@ -26,9 +26,9 @@ use crate::base::{
     CancelToken, Connection, DiscoveredPeerRecord, OutgoingFile, PauseCmd, PauseSlot, PeerNetNode, TerminalState,
     TransferEvent,
 };
+use tokio::sync::mpsc;
 use wasmnest_server_base::error::AppError;
 use wasmnest_server_base::error::Result as PeerResult;
-use tokio::sync::mpsc;
 
 use super::source_collect::{collect_outgoing_files, CollectedSources};
 use super::PeerCtx;

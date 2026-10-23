@@ -16,9 +16,9 @@
 // 中性词汇（票 02 M4）：清单统一取自 crate::manifest；`InstanceLifecycle` /
 // lifecycle 校验是桌面 manifest 专属面（移动 manifest 无 lifecycle 声明），
 // 该校验函数与 import 同随桌面装配面门控（`desktop-assembly`，语义边界不变）
-use crate::manifest::PluginManifest;
 #[cfg(feature = "desktop-assembly")]
 use crate::manifest::InstanceLifecycle;
+use crate::manifest::PluginManifest;
 
 use crate::security::auth_policy::AuthStrategy;
 
@@ -33,13 +33,19 @@ use crate::security::auth_policy::AuthStrategy;
 /// 它们不是重复项，合并（取并集）会改变既有路径的口径。
 pub fn validate_manifest_required(manifest: &PluginManifest) -> crate::Result<()> {
     if manifest.id.is_empty() {
-        return Err(crate::AppError::Plugin("plugin.json missing id field".to_string()));
+        return Err(crate::AppError::Plugin(
+            "plugin.json missing id field".to_string(),
+        ));
     }
     if manifest.name.is_empty() {
-        return Err(crate::AppError::Plugin("plugin.json missing name field".to_string()));
+        return Err(crate::AppError::Plugin(
+            "plugin.json missing name field".to_string(),
+        ));
     }
     if manifest.version.is_empty() {
-        return Err(crate::AppError::Plugin("plugin.json missing version field".to_string()));
+        return Err(crate::AppError::Plugin(
+            "plugin.json missing version field".to_string(),
+        ));
     }
     // `ptyQuota` 区间仲裁**不在此处**（票 02 批次 03）：判据与常量真源都在能力域，
     // 装载期经 `DomainHooks::on_manifest_load` 由 `wasmnest-pty-engine` 自解析、自仲裁，
@@ -115,7 +121,8 @@ pub fn validate_lifecycle(manifest: &PluginManifest) -> crate::Result<()> {
 /// worker 启用（ephemeral 放行）后 preopen 即恢复为 worker 专属能力。
 #[cfg(feature = "desktop-assembly")]
 pub fn validate_preopen_category(manifest: &PluginManifest) -> crate::Result<()> {
-    if !manifest.wasi_preopen_dirs.is_empty() && manifest.lifecycle != InstanceLifecycle::Ephemeral {
+    if !manifest.wasi_preopen_dirs.is_empty() && manifest.lifecycle != InstanceLifecycle::Ephemeral
+    {
         return Err(crate::AppError::Plugin(
             "plugin.json wasiPreopenDirs 仅 worker 类别（lifecycle=\"ephemeral\"）可用：\
              业务应用文件访问一律走宿主 host-fs 授权机制（permissions 声明 fs:read/fs:write，\
@@ -276,12 +283,15 @@ pub fn validate_plugin_id(id: &str) -> bool {
         let bytes = seg.as_bytes();
         // 首段必须纯字母数字（spec：^[a-z0-9]+），拒绝 "my-plugin.com" 形态
         if i == 0 {
-            return bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+            return bytes
+                .iter()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
         }
         if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
             return false;
         }
-        if !bytes[bytes.len() - 1].is_ascii_lowercase() && !bytes[bytes.len() - 1].is_ascii_digit() {
+        if !bytes[bytes.len() - 1].is_ascii_lowercase() && !bytes[bytes.len() - 1].is_ascii_digit()
+        {
             return false;
         }
         bytes
@@ -326,14 +336,14 @@ mod tests {
             "noplugin",                         // 单段
             "my-plugin.com",                    // 首段连字符（spec 拒绝）
             "com..wasmnest",                    // 连续点（空段）
-            "com.wasmnest.",                     // 尾点
-            ".com.wasmnest",                     // 首点
-            "Com.WasmNest.X",                    // 大写
-            "com.wasmnest.my_plugin",            // 下划线
-            "com.wasmnest.-x",                   // 段首连字符
-            "com.wasmnest.x-",                   // 段尾连字符
-            "com.wasmnest.x y",                  // 空格
-            "com.wasmnest.x/y",                  // 路径分隔符
+            "com.wasmnest.",                    // 尾点
+            ".com.wasmnest",                    // 首点
+            "Com.WasmNest.X",                   // 大写
+            "com.wasmnest.my_plugin",           // 下划线
+            "com.wasmnest.-x",                  // 段首连字符
+            "com.wasmnest.x-",                  // 段尾连字符
+            "com.wasmnest.x y",                 // 空格
+            "com.wasmnest.x/y",                 // 路径分隔符
             &"a".repeat(PLUGIN_ID_MAX_LEN + 1), // 超长
         ] {
             assert!(!validate_plugin_id(id), "id should be invalid: {}", id);
@@ -359,7 +369,10 @@ mod tests {
             ))
         };
 
-        assert!(parse("").is_ok(), "缺省（未声明 lifecycle）= 常驻，既有插件零迁移");
+        assert!(
+            parse("").is_ok(),
+            "缺省（未声明 lifecycle）= 常驻，既有插件零迁移"
+        );
         assert_eq!(
             parse(r#","lifecycle":"persistent""#)
                 .expect("显式声明常驻合法")
@@ -415,7 +428,9 @@ mod tests {
             .expect("persistent manifest declaring preopen must be rejected");
         let text = err.to_string();
         assert!(
-            text.contains("wasiPreopenDirs") && text.contains("host-fs") && text.contains("ADR 0034"),
+            text.contains("wasiPreopenDirs")
+                && text.contains("host-fs")
+                && text.contains("ADR 0034"),
             "错误必须点名字段、替代机制与 ADR，got: {text}"
         );
 
@@ -453,7 +468,10 @@ mod tests {
         assert!(parse("basic-service").is_ok());
         assert!(parse("internal-business").is_ok());
         assert!(parse("business-app").is_ok());
-        assert!(parse("system").is_ok(), "旧拼写（L1）仍按别名解析，旧产物零迁移");
+        assert!(
+            parse("system").is_ok(),
+            "旧拼写（L1）仍按别名解析，旧产物零迁移"
+        );
         assert!(parse("application").is_ok(), "旧拼写（L3）仍按别名解析");
         for bad in ["systemm", "internal", "BASIC-SERVICE", ""] {
             assert!(parse(bad).is_err(), "非法角色取值必须加载期失败: {bad:?}");
@@ -553,7 +571,10 @@ mod tests {
             r#","strategies":["default"]"#,
             r#","policy":{"fs":"always_allow"}"#,
         ] {
-            assert!(with(extra).is_err(), "通用键名带档位取值也必须拒绝: {extra}");
+            assert!(
+                with(extra).is_err(),
+                "通用键名带档位取值也必须拒绝: {extra}"
+            );
         }
 
         // 嵌套（contributes 内）与一般未知键：前者拒，后者照常加载（老端忽略未知字段的演进约定）
@@ -595,6 +616,9 @@ mod tests {
             "com.wasmnest.evil",
             "com.wasmnest.terminal-session"
         ));
-        assert!(!validate_dir_binding("session", "com.wasmnest.terminal-session"));
+        assert!(!validate_dir_binding(
+            "session",
+            "com.wasmnest.terminal-session"
+        ));
     }
 }

@@ -89,16 +89,21 @@ pub fn read_bytes_via_wsl(distro: &str, wsl_path: &str) -> std::io::Result<Vec<u
 /// → Other。
 fn map_wsl_failure(action: &str, distro: &str, stderr: &[u8]) -> std::io::Error {
     let msg = String::from_utf8_lossy(stderr);
-    let kind = if msg.contains("No such file") || msg.contains("cannot open") || msg.contains("not found") {
-        std::io::ErrorKind::NotFound
-    } else if msg.contains("Permission denied") {
-        std::io::ErrorKind::PermissionDenied
-    } else if msg.contains("Is a directory") {
-        std::io::ErrorKind::IsADirectory
-    } else {
-        std::io::ErrorKind::Other
-    };
-    std::io::Error::new(kind, format!("{} failed (distro={}): {}", action, distro, msg.trim()))
+    let kind =
+        if msg.contains("No such file") || msg.contains("cannot open") || msg.contains("not found")
+        {
+            std::io::ErrorKind::NotFound
+        } else if msg.contains("Permission denied") {
+            std::io::ErrorKind::PermissionDenied
+        } else if msg.contains("Is a directory") {
+            std::io::ErrorKind::IsADirectory
+        } else {
+            std::io::ErrorKind::Other
+        };
+    std::io::Error::new(
+        kind,
+        format!("{} failed (distro={}): {}", action, distro, msg.trim()),
+    )
 }
 
 /// 通过 wsl.exe 读取文本文件（等价于 std::fs::read_to_string）
@@ -245,7 +250,9 @@ mod tests {
             "\\\\wsl.localhost\\Ubuntu\\home\\user/.claude/settings.json"
         ));
         assert!(!is_wsl_unc_path("C:\\Users\\test"));
-        assert!(!is_wsl_unc_path("D:\\Projects\\my-app/.claude/settings.json"));
+        assert!(!is_wsl_unc_path(
+            "D:\\Projects\\my-app/.claude/settings.json"
+        ));
         assert!(!is_wsl_unc_path("/home/user"));
     }
 
@@ -253,19 +260,25 @@ mod tests {
     fn test_parse_wsl_unc_path() {
         // wsl.localhost 新格式
         let (distro, wsl_path) =
-            parse_wsl_unc_path("\\\\wsl.localhost\\Ubuntu\\home\\binblink\\project\\blink").expect("parse failed");
+            parse_wsl_unc_path("\\\\wsl.localhost\\Ubuntu\\home\\binblink\\project\\blink")
+                .expect("parse failed");
         assert_eq!(distro, "Ubuntu");
         assert_eq!(wsl_path, "/home/binblink/project/blink");
 
         // 混合分隔符（Windows 前缀 + 正斜杠后续）
-        let (distro, wsl_path) =
-            parse_wsl_unc_path("\\\\wsl.localhost\\Ubuntu\\home\\binblink\\project\\blink/.claude/settings.json")
-                .expect("parse failed");
+        let (distro, wsl_path) = parse_wsl_unc_path(
+            "\\\\wsl.localhost\\Ubuntu\\home\\binblink\\project\\blink/.claude/settings.json",
+        )
+        .expect("parse failed");
         assert_eq!(distro, "Ubuntu");
-        assert_eq!(wsl_path, "/home/binblink/project/blink/.claude/settings.json");
+        assert_eq!(
+            wsl_path,
+            "/home/binblink/project/blink/.claude/settings.json"
+        );
 
         // wsl$ 旧格式
-        let (distro, wsl_path) = parse_wsl_unc_path("\\\\wsl$\\Ubuntu\\home\\user").expect("parse failed");
+        let (distro, wsl_path) =
+            parse_wsl_unc_path("\\\\wsl$\\Ubuntu\\home\\user").expect("parse failed");
         assert_eq!(distro, "Ubuntu");
         assert_eq!(wsl_path, "/home/user");
 

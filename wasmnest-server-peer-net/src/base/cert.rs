@@ -45,26 +45,21 @@ pub fn generate_self_signed_cert(identity: &NodeIdentity) -> Result<CertDer> {
     // 保证「证书公钥 == 身份公钥 == node_id 指纹源」；rustls 侧（tls.rs）复用
     // 同一构造入口，杜绝两套密钥材料路径漂移
     let pkcs8 = identity_pkcs8_private_key(identity);
-    let key_pair =
-        KeyPair::try_from(pkcs8.as_slice()).map_err(|e| PeerNetError::KeyPairFromSeed {
-            node_id: node_id.to_string(),
-            source: e,
-        })?;
+    let key_pair = KeyPair::try_from(pkcs8.as_slice()).map_err(|e| PeerNetError::KeyPairFromSeed {
+        node_id: node_id.to_string(),
+        source: e,
+    })?;
 
     // 无 SAN 列表：节点以 ID 而非域名寻址，CN 承载完整身份
-    let mut params = CertificateParams::new(Vec::<String>::new()).map_err(|e| {
-        PeerNetError::CertGenerate {
-            node_id: node_id.to_string(),
-            source: e,
-        }
+    let mut params = CertificateParams::new(Vec::<String>::new()).map_err(|e| PeerNetError::CertGenerate {
+        node_id: node_id.to_string(),
+        source: e,
     })?;
     params.distinguished_name.push(DnType::CommonName, node_id.as_str());
 
-    let cert = params.self_signed(&key_pair).map_err(|e| {
-        PeerNetError::CertGenerate {
-            node_id: node_id.to_string(),
-            source: e,
-        }
+    let cert = params.self_signed(&key_pair).map_err(|e| PeerNetError::CertGenerate {
+        node_id: node_id.to_string(),
+        source: e,
     })?;
 
     Ok(cert.der().as_ref().to_vec())
@@ -147,8 +142,7 @@ mod tests {
     /// 独立身份辅助构造（各自 tempdir，互不共享目录）
     fn fresh_identity() -> (tempfile::TempDir, NodeIdentity) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let identity =
-            NodeIdentity::load_or_create(dir.path()).expect("load_or_create identity");
+        let identity = NodeIdentity::load_or_create(dir.path()).expect("load_or_create identity");
         (dir, identity)
     }
 
@@ -194,8 +188,7 @@ mod tests {
         // 篡改 node_id 首字符（保持合法 hex 形状）：绑定校验必须为假
         let mut tampered = identity.node_id().as_str().to_owned().into_bytes();
         tampered[0] = if tampered[0] == b'0' { b'1' } else { b'0' };
-        let tampered_id = NodeId::parse(std::str::from_utf8(&tampered).expect("utf8"))
-            .expect("still valid hex");
+        let tampered_id = NodeId::parse(std::str::from_utf8(&tampered).expect("utf8")).expect("still valid hex");
 
         assert_ne!(&tampered_id, identity.node_id());
         assert!(!verify_cert_matches_node_id(&cert, &tampered_id));
@@ -212,8 +205,7 @@ mod tests {
         let (_dir, identity) = fresh_identity();
         let cert = generate_self_signed_cert(&identity).expect("generate cert");
 
-        let (_, parsed) =
-            X509Certificate::from_der(&cert).expect("parse own generated cert");
+        let (_, parsed) = X509Certificate::from_der(&cert).expect("parse own generated cert");
         let cn = parsed
             .subject()
             .iter_common_name()

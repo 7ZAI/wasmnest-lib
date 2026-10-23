@@ -16,10 +16,10 @@
 //! `maxClients` / `maxMessageBytes` 一律按宿主常量 / 配置上限截断（插件不能放宽
 //! 宿主安全边界）。
 
-use wasmnest_server_base::constants::{PLUGIN_WS_MAX_CLIENTS_PER_ENDPOINT, PLUGIN_WS_MAX_ENDPOINTS_PER_PLUGIN};
-use wasmnest_server_base::ports::BusPort;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
+use wasmnest_server_base::constants::{PLUGIN_WS_MAX_CLIENTS_PER_ENDPOINT, PLUGIN_WS_MAX_ENDPOINTS_PER_PLUGIN};
+use wasmnest_server_base::ports::BusPort;
 
 /// 端点句柄前缀（`wse-<uuid>`；与客户端域 `wsc-<uuid>` 对称）
 pub const ENDPOINT_HANDLE_PREFIX: &str = "wse-";

@@ -164,10 +164,7 @@ impl Default for ReceivePolicy {
 ///
 /// 仅 pending → approved / rejected 合法；已终态批重复应答、approved 后再
 /// 拒绝等一律拒绝。
-pub fn validate_batch_transition(
-    from: &BatchState,
-    to: &BatchState,
-) -> Result<(), &'static str> {
+pub fn validate_batch_transition(from: &BatchState, to: &BatchState) -> Result<(), &'static str> {
     match (from, to) {
         (BatchState::Pending, BatchState::Approved) => Ok(()),
         (BatchState::Pending, BatchState::Rejected { .. }) => Ok(()),

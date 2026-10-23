@@ -43,7 +43,9 @@ impl PluginHost {
             );
             return (
                 LoadedPlugin {
-                    state: PluginState::Error { error: format!("WASM module not found: {}", wasm_path.display()) },
+                    state: PluginState::Error {
+                        error: format!("WASM module not found: {}", wasm_path.display()),
+                    },
                     ..loaded.clone()
                 },
                 None,
@@ -75,7 +77,9 @@ impl PluginHost {
                 );
                 (
                     LoadedPlugin {
-                        state: PluginState::Error { error: format!("WASM load failed: {}", e) },
+                        state: PluginState::Error {
+                            error: format!("WASM load failed: {}", e),
+                        },
                         ..loaded.clone()
                     },
                     None,
@@ -85,9 +89,16 @@ impl PluginHost {
     }
 
     /// 按当前配置把已加载实例装配成装配条目（调用模型在这里定一次，实例级快照）
-    pub(crate) fn assemble_instance_entry(&self, plugin: LoadedWasmPlugin) -> Arc<WasmInstanceEntry> {
+    pub(crate) fn assemble_instance_entry(
+        &self,
+        plugin: LoadedWasmPlugin,
+    ) -> Arc<WasmInstanceEntry> {
         let call_model = self.wasm_runtime.config().call_model;
-        Arc::new(WasmInstanceEntry::new(plugin, call_model, self.owner_sink.clone()))
+        Arc::new(WasmInstanceEntry::new(
+            plugin,
+            call_model,
+            self.owner_sink.clone(),
+        ))
     }
 
     /// 把已加载实例装配入表（调用模型**显式指定**）
@@ -105,7 +116,11 @@ impl PluginHost {
         plugin: LoadedWasmPlugin,
         call_model: CallModel,
     ) -> Arc<WasmInstanceEntry> {
-        let entry = Arc::new(WasmInstanceEntry::new(plugin, call_model, self.owner_sink.clone()));
+        let entry = Arc::new(WasmInstanceEntry::new(
+            plugin,
+            call_model,
+            self.owner_sink.clone(),
+        ));
         self.wasm_plugins
             .write()
             .await
@@ -130,7 +145,10 @@ impl PluginHost {
             let plugin_id = loaded.manifest.id.clone();
             let (record, instance) = self.instantiate_wasm_plugin(&loaded);
             if let Some(instance) = instance {
-                self.wasm_plugins.write().await.insert(plugin_id.clone(), instance);
+                self.wasm_plugins
+                    .write()
+                    .await
+                    .insert(plugin_id.clone(), instance);
             }
             let mut plugins = self.plugins.write().await;
             if let Some(slot) = plugins.get_mut(&plugin_id) {
@@ -147,9 +165,9 @@ impl PluginHost {
     pub(crate) async fn rebuild_wasm_instance(&self, plugin_id: &str) -> crate::Result<()> {
         let (rust_library, extension_path, declared_preopen_dirs, resource_overrides) = {
             let plugins = self.plugins.read().await;
-            let loaded = plugins
-                .get(plugin_id)
-                .ok_or_else(|| crate::AppError::Plugin(format!("Plugin not found: {}", plugin_id)))?;
+            let loaded = plugins.get(plugin_id).ok_or_else(|| {
+                crate::AppError::Plugin(format!("Plugin not found: {}", plugin_id))
+            })?;
             (
                 loaded.manifest.rust_library.clone(),
                 loaded.extension_path.clone(),
@@ -186,7 +204,10 @@ impl PluginHost {
             resource_overrides.as_ref(),
         )?;
         let new_entry = self.assemble_instance_entry(new_wasm_plugin);
-        self.wasm_plugins.write().await.insert(plugin_id.to_string(), new_entry);
+        self.wasm_plugins
+            .write()
+            .await
+            .insert(plugin_id.to_string(), new_entry);
 
         // core-plugin-manager：L1 基础服务实例重建后，能力注册表中的旧实例句柄
         // 已失效，按新实例重新装配（trap 自愈回落宿主原语的场景亦在此恢复）
@@ -213,9 +234,9 @@ impl PluginHost {
     pub async fn reload_wasm_plugin(&self, plugin_id: &str) -> crate::Result<()> {
         {
             let plugins = self.plugins.read().await;
-            let loaded = plugins
-                .get(plugin_id)
-                .ok_or_else(|| crate::AppError::Plugin(format!("Plugin not found: {}", plugin_id)))?;
+            let loaded = plugins.get(plugin_id).ok_or_else(|| {
+                crate::AppError::Plugin(format!("Plugin not found: {}", plugin_id))
+            })?;
             if loaded.source != PluginSource::Wasm {
                 return Err(crate::AppError::Plugin(format!(
                     "Plugin {} is not a WASM plugin, cannot hot-reload",

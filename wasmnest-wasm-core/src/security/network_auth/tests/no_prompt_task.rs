@@ -8,14 +8,22 @@ use super::*;
 async fn is_granted_only_trusts_records() {
     let checker = headless().await;
     assert!(
-        !checker.is_granted("com.wasmnest.test", "https://api.x.com:443/v1").await,
+        !checker
+            .is_granted("com.wasmnest.test", "https://api.x.com:443/v1")
+            .await,
         "无记录必须拒绝（池线程不弹窗）"
     );
     seed_allow(&checker, "com.wasmnest.test", "https://api.x.com:443").await;
-    assert!(checker.is_granted("com.wasmnest.test", "https://api.x.com:443/v1").await);
+    assert!(
+        checker
+            .is_granted("com.wasmnest.test", "https://api.x.com:443/v1")
+            .await
+    );
     seed_deny(&checker, "com.wasmnest.test", "https://api.x.com:443").await;
     assert!(
-        !checker.is_granted("com.wasmnest.test", "https://api.x.com:443/v1").await,
+        !checker
+            .is_granted("com.wasmnest.test", "https://api.x.com:443/v1")
+            .await,
         "deny 必须压过 allow（无询问面同源）"
     );
 }
@@ -24,7 +32,11 @@ async fn is_granted_only_trusts_records() {
 async fn other_plugins_records_do_not_release_this_plugin() {
     let checker = headless().await;
     seed_allow(&checker, "com.wasmnest.other", "https://api.x.com:443").await;
-    assert!(!checker.is_granted("com.wasmnest.test", "https://api.x.com:443/v1").await);
+    assert!(
+        !checker
+            .is_granted("com.wasmnest.test", "https://api.x.com:443/v1")
+            .await
+    );
 }
 /// 决定枚举：wire 值与解析一一对应，未知值显性拒绝（不放行兜底）
 #[test]
@@ -37,6 +49,10 @@ fn network_decision_wire_values_round_trip() {
         assert_eq!(NetworkDecision::parse(wire), Some(decision));
         assert_eq!(decision.as_str(), wire);
     }
-    assert_eq!(NetworkDecision::parse("allow"), None, "未知值必须 None（调用方报错）");
+    assert_eq!(
+        NetworkDecision::parse("allow"),
+        None,
+        "未知值必须 None（调用方报错）"
+    );
     assert_eq!(NetworkDecision::parse("ALLOW_ONCE"), None, "大小写不容混");
 }

@@ -10,7 +10,11 @@ async fn test_static_builtin_activated_notifies_startup() {
     // 日志称 loaded 却永不激活、on_startup 永不执行
     host.plugins.write().await.insert(
         SYNTHETIC_STATIC_ID.to_string(),
-        make_plugin(SYNTHETIC_STATIC_ID, PluginSource::StaticRegistry, PluginState::Loaded),
+        make_plugin(
+            SYNTHETIC_STATIC_ID,
+            PluginSource::StaticRegistry,
+            PluginState::Loaded,
+        ),
     );
     SYNTHETIC_ON_STARTUP_CALLED.store(false, Ordering::SeqCst);
     host.notify_startup().await;
@@ -20,7 +24,12 @@ async fn test_static_builtin_activated_notifies_startup() {
     );
 
     // 置 Activated（模拟 new() 的 builtin 常驻初始化产物）：回调真实发生
-    host.plugins.write().await.get_mut(SYNTHETIC_STATIC_ID).unwrap().state = PluginState::Activated;
+    host.plugins
+        .write()
+        .await
+        .get_mut(SYNTHETIC_STATIC_ID)
+        .unwrap()
+        .state = PluginState::Activated;
     assert!(host.is_activated(SYNTHETIC_STATIC_ID).await);
     host.notify_startup().await;
     assert!(
@@ -38,7 +47,11 @@ async fn test_static_builtin_command_routed_after_activation() {
     // 未激活：身份门禁拒绝
     host.plugins.write().await.insert(
         SYNTHETIC_STATIC_ID.to_string(),
-        make_plugin(SYNTHETIC_STATIC_ID, PluginSource::StaticRegistry, PluginState::Loaded),
+        make_plugin(
+            SYNTHETIC_STATIC_ID,
+            PluginSource::StaticRegistry,
+            PluginState::Loaded,
+        ),
     );
     let err = host
         .invoke_rust_command(SYNTHETIC_STATIC_ID, "ping", json!({}))
@@ -47,7 +60,12 @@ async fn test_static_builtin_command_routed_after_activation() {
     assert!(err.to_string().contains("not activated"));
 
     // 置 Activated 后命令可达 handler
-    host.plugins.write().await.get_mut(SYNTHETIC_STATIC_ID).unwrap().state = PluginState::Activated;
+    host.plugins
+        .write()
+        .await
+        .get_mut(SYNTHETIC_STATIC_ID)
+        .unwrap()
+        .state = PluginState::Activated;
     let result = host
         .invoke_rust_command(SYNTHETIC_STATIC_ID, "ping", json!({}))
         .await
@@ -73,7 +91,9 @@ async fn test_static_builtin_deactivate_and_reactivate() {
         .is_ok());
 
     // 停用：回落 Deactivated，命令门禁重新关闭
-    host.deactivate_plugin(SYNTHETIC_STATIC_ID, false).await.unwrap();
+    host.deactivate_plugin(SYNTHETIC_STATIC_ID, false)
+        .await
+        .unwrap();
     assert!(!host.is_activated(SYNTHETIC_STATIC_ID).await);
     assert_eq!(
         host.get_plugin(SYNTHETIC_STATIC_ID).await.unwrap().state,
@@ -85,7 +105,9 @@ async fn test_static_builtin_deactivate_and_reactivate() {
         .is_err());
 
     // 重启：activate_plugin 对 StaticRegistry 跳过 WASM phase 直接置回 Activated，命令恢复路由
-    host.activate_plugin(SYNTHETIC_STATIC_ID, false).await.unwrap();
+    host.activate_plugin(SYNTHETIC_STATIC_ID, false)
+        .await
+        .unwrap();
     assert!(host.is_activated(SYNTHETIC_STATIC_ID).await);
     let result = host
         .invoke_rust_command(SYNTHETIC_STATIC_ID, "ping", json!({}))
@@ -115,11 +137,19 @@ async fn test_list_plugins_and_get_plugin() {
     let host = setup_host().await;
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
     );
     host.plugins.write().await.insert(
         "com.wasmnest.static".to_string(),
-        make_plugin("com.wasmnest.static", PluginSource::StaticRegistry, PluginState::Loaded),
+        make_plugin(
+            "com.wasmnest.static",
+            PluginSource::StaticRegistry,
+            PluginState::Loaded,
+        ),
     );
 
     let list = host.list_plugins().await;
@@ -147,7 +177,12 @@ async fn test_is_activated_by_state() {
         (PluginState::Loaded, false),
         (PluginState::Activated, true),
         (PluginState::Deactivated, false),
-        (PluginState::Error { error: "boom".into() }, false),
+        (
+            PluginState::Error {
+                error: "boom".into(),
+            },
+            false,
+        ),
     ] {
         host.plugins.write().await.insert(
             TEST_PLUGIN_ID.to_string(),
@@ -162,13 +197,22 @@ async fn test_mark_error_updates_state() {
     let host = setup_host().await;
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
     );
 
     host.mark_error(TEST_PLUGIN_ID, "hooks install failed".to_string())
         .await;
     let info = host.get_plugin(TEST_PLUGIN_ID).await.unwrap();
-    assert_eq!(info.state, PluginState::Error { error: "hooks install failed".to_string() });
+    assert_eq!(
+        info.state,
+        PluginState::Error {
+            error: "hooks install failed".to_string()
+        }
+    );
 
     // 未注册插件：静默 no-op，不 panic
     host.mark_error("com.missing", "x".to_string()).await;
@@ -180,11 +224,19 @@ async fn test_get_activated_state_excludes_static() {
     let host = setup_host().await;
     host.plugins.write().await.insert(
         TEST_PLUGIN_ID.to_string(),
-        make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Activated),
+        make_plugin(
+            TEST_PLUGIN_ID,
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
     );
     host.plugins.write().await.insert(
         "com.wasmnest.ts".to_string(),
-        make_plugin("com.wasmnest.ts", PluginSource::FileScan, PluginState::Deactivated),
+        make_plugin(
+            "com.wasmnest.ts",
+            PluginSource::FileScan,
+            PluginState::Deactivated,
+        ),
     );
     // 静态注册插件即使激活也不应进入持久化映射（由应用进程生命周期托管）
     host.plugins.write().await.insert(
@@ -219,25 +271,40 @@ async fn test_should_lazy_activate_rules() {
         }],
         ..Default::default()
     };
-    host.plugins.write().await.insert(TEST_PLUGIN_ID.to_string(), plugin);
+    host.plugins
+        .write()
+        .await
+        .insert(TEST_PLUGIN_ID.to_string(), plugin);
     assert!(host.should_lazy_activate(TEST_PLUGIN_ID).await);
 
     // 无任何扩展点贡献 → false（激活无意义）
     host.plugins.write().await.insert(
         "com.wasmnest.empty".to_string(),
-        make_plugin("com.wasmnest.empty", PluginSource::FileScan, PluginState::Loaded),
+        make_plugin(
+            "com.wasmnest.empty",
+            PluginSource::FileScan,
+            PluginState::Loaded,
+        ),
     );
     assert!(!host.should_lazy_activate("com.wasmnest.empty").await);
 
     // 已激活/已停用/错误态 → false（仅 Loaded 态参与按需激活）
     host.plugins.write().await.insert(
         "com.wasmnest.act".to_string(),
-        make_plugin("com.wasmnest.act", PluginSource::FileScan, PluginState::Activated),
+        make_plugin(
+            "com.wasmnest.act",
+            PluginSource::FileScan,
+            PluginState::Activated,
+        ),
     );
     assert!(!host.should_lazy_activate("com.wasmnest.act").await);
 
     // 静态注册插件 → false（生命周期由 inventory 注册表托管）
-    let mut static_p = make_plugin("com.wasmnest.s", PluginSource::StaticRegistry, PluginState::Loaded);
+    let mut static_p = make_plugin(
+        "com.wasmnest.s",
+        PluginSource::StaticRegistry,
+        PluginState::Loaded,
+    );
     static_p.manifest.contributes = PluginContributes {
         commands: vec![crate::manifest::CommandContribution {
             id: "test.cmd".into(),
@@ -246,6 +313,9 @@ async fn test_should_lazy_activate_rules() {
         }],
         ..Default::default()
     };
-    host.plugins.write().await.insert("com.wasmnest.s".to_string(), static_p);
+    host.plugins
+        .write()
+        .await
+        .insert("com.wasmnest.s".to_string(), static_p);
     assert!(!host.should_lazy_activate("com.wasmnest.s").await);
 }

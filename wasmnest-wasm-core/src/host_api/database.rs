@@ -10,8 +10,8 @@
 
 use crate::host_api::sqlite_ports::{block_on, SqlitePorts};
 use crate::permission::PERMISSION_STORAGE;
-use wasmnest_host_api_core::database as core_db;
 use std::time::Duration;
+use wasmnest_host_api_core::database as core_db;
 
 // ==================== 机制面 re-export（真源 = 共享核；tests 既有路径保符号面） ====================
 
@@ -19,12 +19,18 @@ use std::time::Duration;
 // 其余共享核符号生产路径一律走 `core_db::` 全限定，不在此 re-export。
 // 非 test 构建无消费者 → cfg_attr 豁免（t 与既有注释「tests 既有路径保符号面」一致）
 #[cfg_attr(not(test), allow(unused_imports))]
-pub use wasmnest_host_api_core::database::{query_to_json, reject_bare_transaction_control, with_statement_timeout};
+pub use wasmnest_host_api_core::database::{
+    query_to_json, reject_bare_transaction_control, with_statement_timeout,
+};
 
 // ==================== 逻辑层（Component Model 绑定调用） ====================
 
 /// 插件独立库执行 SQL（权限校验 + 超时护栏，无表名前缀校验）
-pub fn plugin_db_execute(ports: &dyn SqlitePorts, plugin_id: &str, sql: &str) -> Result<u32, String> {
+pub fn plugin_db_execute(
+    ports: &dyn SqlitePorts,
+    plugin_id: &str,
+    sql: &str,
+) -> Result<u32, String> {
     if !ports.check_permission(plugin_id, PERMISSION_STORAGE, "host_plugin_db_execute") {
         return Err("permission denied".to_string());
     }
@@ -37,14 +43,20 @@ pub fn plugin_db_execute(ports: &dyn SqlitePorts, plugin_id: &str, sql: &str) ->
             .map_err(|e| e.to_string())?;
         let db = db_arc.lock().expect("plugin db lock poisoned");
         core_db::with_statement_timeout(plugin_id, db.conn(), timeout, |conn| {
-            conn.execute(sql, []).map(|n| n as u32).map_err(|e| e.to_string())
+            conn.execute(sql, [])
+                .map(|n| n as u32)
+                .map_err(|e| e.to_string())
         })
     })
     .map_err(|e| format!("database error: {}", e))
 }
 
 /// 插件独立库查询（权限校验 + 超时护栏，无表名前缀校验）
-pub fn plugin_db_query(ports: &dyn SqlitePorts, plugin_id: &str, sql: &str) -> Result<Option<String>, String> {
+pub fn plugin_db_query(
+    ports: &dyn SqlitePorts,
+    plugin_id: &str,
+    sql: &str,
+) -> Result<Option<String>, String> {
     if !ports.check_permission(plugin_id, PERMISSION_STORAGE, "host_plugin_db_query") {
         return Err("permission denied".to_string());
     }
@@ -72,7 +84,11 @@ pub fn plugin_db_execute_params(
     sql: &str,
     params_json: &str,
 ) -> Result<u32, String> {
-    if !ports.check_permission(plugin_id, PERMISSION_STORAGE, "host_plugin_db_execute_params") {
+    if !ports.check_permission(
+        plugin_id,
+        PERMISSION_STORAGE,
+        "host_plugin_db_execute_params",
+    ) {
         return Err("permission denied".to_string());
     }
     core_db::reject_bare_transaction_control(sql)?;
@@ -125,7 +141,11 @@ pub fn plugin_db_execute_batch(
     plugin_id: &str,
     sqls_json: &str,
 ) -> Result<u32, String> {
-    if !ports.check_permission(plugin_id, PERMISSION_STORAGE, "host_plugin_db_execute_batch") {
+    if !ports.check_permission(
+        plugin_id,
+        PERMISSION_STORAGE,
+        "host_plugin_db_execute_batch",
+    ) {
         return Err("permission denied".to_string());
     }
     let sqls = core_db::parse_sqls_json(sqls_json)?;

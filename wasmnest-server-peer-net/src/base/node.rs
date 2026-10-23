@@ -21,13 +21,11 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::base::cert::{CertDer, generate_self_signed_cert};
+use crate::base::cert::{generate_self_signed_cert, CertDer};
 use crate::base::discovery::DiscoveryCache;
 use crate::base::error::Result;
 use crate::base::identity::{NodeId, NodeIdentity};
-use crate::base::transport::{
-    Connection, ConnectionHandler, RunningNode, TrustEvent, spawn_running_node,
-};
+use crate::base::transport::{spawn_running_node, Connection, ConnectionHandler, RunningNode, TrustEvent};
 use crate::base::trust_store::TrustStore;
 
 // ==================== 发现记录 ====================
@@ -120,18 +118,13 @@ impl PeerNetNode {
     ///
     /// 必须在 tokio 运行时上下文中调用。`events` 为首连确认事件通道，
     /// `handler` 接收信任放行后的已认证连接。
-    pub fn start(
-        &self,
-        events: mpsc::Sender<TrustEvent>,
-        handler: Arc<dyn ConnectionHandler>,
-    ) -> Result<RunningNode> {
-        let listener =
-            std::net::TcpListener::bind(self.config.bind_addr).map_err(|source| {
-                crate::base::error::PeerNetError::ListenBind {
-                    addr: self.config.bind_addr,
-                    source,
-                }
-            })?;
+    pub fn start(&self, events: mpsc::Sender<TrustEvent>, handler: Arc<dyn ConnectionHandler>) -> Result<RunningNode> {
+        let listener = std::net::TcpListener::bind(self.config.bind_addr).map_err(|source| {
+            crate::base::error::PeerNetError::ListenBind {
+                addr: self.config.bind_addr,
+                source,
+            }
+        })?;
         self.start_with_listener(listener, events, handler)
     }
 
@@ -157,13 +150,7 @@ impl PeerNetNode {
 
     /// 拨号对端并完成 mTLS 身份钉扎握手与信任状态协商（见 transport::dial）
     pub async fn dial(&self, record: &StaticPeerRecord) -> Result<Connection> {
-        crate::base::transport::dial(
-            &self.config.identity,
-            &self.certificate,
-            &self.trust_store,
-            record,
-        )
-        .await
+        crate::base::transport::dial(&self.config.identity, &self.certificate, &self.trust_store, record).await
     }
 
     /// 共享可信存储句柄（测试断言 / 宿主撤销入口）

@@ -39,10 +39,10 @@ use crate::bus::{BusMessageHandler, MessageBus};
 #[cfg(test)]
 use crate::host_api::context::WasmHostContext;
 use crate::runtime_util::block_on_async;
-use wasmnest_plugin_api::host::bus::API_TOPIC_PREFIX;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
+use wasmnest_plugin_api::host::bus::API_TOPIC_PREFIX;
 
 /// 宿主侧互调调用方身份（票 11 命令面桥接）：宿主不是插件，reply topic 路由
 /// `wasmnest.api.reply.<caller>.<request-id>` 需要稳定身份；互调门禁（层 1）
@@ -109,13 +109,15 @@ pub fn api_call(
     timeout_ms: u64,
 ) -> Result<String, String> {
     // 1. 解析请求载荷并提取 correlation id（回复 topic 路由依据）
-    let payload: Value =
-        serde_json::from_str(payload_json).map_err(|e| format!("api_call: invalid JSON payload: {}", e))?;
+    let payload: Value = serde_json::from_str(payload_json)
+        .map_err(|e| format!("api_call: invalid JSON payload: {}", e))?;
     let request_id = payload
         .get("id")
         .and_then(|v| v.as_str())
         .filter(|id| !id.is_empty())
-        .ok_or_else(|| "api_call: request payload must contain a non-empty string 'id'".to_string())?;
+        .ok_or_else(|| {
+            "api_call: request payload must contain a non-empty string 'id'".to_string()
+        })?;
 
     // 2. 解析目标 api 的声明属主——回复只接受来自它的投递。门禁本身仍由
     //    bus_publish 兜（此处多读一次注册表，同一张表不漂移）；未声明目标在
@@ -125,7 +127,9 @@ pub fn api_call(
         None => {
             return Err(format!(
                 "api_call: api '{}' is not declared by any activated plugin (gate)",
-                request_topic.strip_prefix(API_TOPIC_PREFIX).unwrap_or(request_topic)
+                request_topic
+                    .strip_prefix(API_TOPIC_PREFIX)
+                    .unwrap_or(request_topic)
             ));
         }
     };
@@ -142,7 +146,9 @@ pub fn api_call(
     let sub_bus = bus.message_bus().clone();
     let sub_topic = reply_topic.clone();
     let sub_result = block_on_async(async move {
-        sub_bus.subscribe_static(caller_id, &sub_topic, Box::new(handler)).await;
+        sub_bus
+            .subscribe_static(caller_id, &sub_topic, Box::new(handler))
+            .await;
         Ok::<(), String>(())
     });
     sub_result.map_err(|e| format!("api_call: subscribe failed: {}", e))?;
@@ -157,16 +163,18 @@ pub fn api_call(
     //    与其它 async fire-and-forget 调用同根因（如连接触摸通知），此处改为发布也
     //    经 `block_on_async` 搬到 ambient 多线程上下文：spawn 落在 ambient 线程池，
     //    回复自由投递。
-    let publish_result =
-        block_on_async(async move { bus::bus_publish(bus, sec, caller_id, request_topic, payload_json) });
+    let publish_result = block_on_async(async move {
+        bus::bus_publish(bus, sec, caller_id, request_topic, payload_json)
+    });
     if let Err(e) = publish_result {
         cleanup_reply_subscription(bus.message_bus(), caller_id, &reply_topic);
         return Err(e);
     }
 
     // 5. 等待回复（超时）
-    let wait_result =
-        block_on_async(async move { tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await });
+    let wait_result = block_on_async(async move {
+        tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await
+    });
     let reply_json = match wait_result {
         Ok(Ok(reply)) => reply,
         Ok(Err(_)) => {
@@ -186,7 +194,8 @@ pub fn api_call(
     };
 
     // 6. 校验回复 id 与请求一致（防迟到的旧回复/错配回复串台）
-    let reply: Value = serde_json::from_str(&reply_json).map_err(|e| format!("api_call: invalid reply JSON: {}", e))?;
+    let reply: Value = serde_json::from_str(&reply_json)
+        .map_err(|e| format!("api_call: invalid reply JSON: {}", e))?;
     let reply_id = reply.get("id").and_then(|v| v.as_str());
     if reply_id != Some(request_id) {
         cleanup_reply_subscription(bus.message_bus(), caller_id, &reply_topic);
@@ -257,8 +266,13 @@ mod tests {
             // 回复 topic：wasmnest.api.reply.<caller>.<request-id>；sender 用目标插件 ID
             // （真实流程中回复由目标插件发布 —— 总线跳过「发送者自己」，若以 caller
             // 身份发布会命中回复订阅者的插件 ID 而错失投递）
-            let reply_topic = format!("wasmnest.api.reply.{}.{}", msg.sender, req["id"].as_str().unwrap());
-            self.bus.publish(&reply_topic, "com.wasmnest.sdk-test", reply);
+            let reply_topic = format!(
+                "wasmnest.api.reply.{}.{}",
+                msg.sender,
+                req["id"].as_str().unwrap()
+            );
+            self.bus
+                .publish(&reply_topic, "com.wasmnest.sdk-test", reply);
             Ok(())
         }
     }
@@ -296,9 +310,13 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             ctx.api_registry()
-                .register("com.wasmnest.sdk-test", &["com.wasmnest.sdk-test.echo".to_string()])
+                .register(
+                    "com.wasmnest.sdk-test",
+                    &["com.wasmnest.sdk-test.echo".to_string()],
+                )
                 .expect("夹具登记 echo api 失败：往返用例的前置条件未成立");
-            let mut rx = setup_responder(&ctx, "wasmnest.api.com.wasmnest.sdk-test.echo", true, None);
+            let mut rx =
+                setup_responder(&ctx, "wasmnest.api.com.wasmnest.sdk-test.echo", true, None);
 
             let reply = api_call(
                 ctx.as_ref(),
@@ -348,10 +366,18 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             ctx.api_registry()
-                .register("com.wasmnest.sdk-test", &["com.wasmnest.sdk-test.silent".to_string()])
+                .register(
+                    "com.wasmnest.sdk-test",
+                    &["com.wasmnest.sdk-test.silent".to_string()],
+                )
                 .expect("夹具登记 silent api 失败：超时用例测的就��没回复");
             // 目标订阅了但静默不回复
-            setup_responder(&ctx, "wasmnest.api.com.wasmnest.sdk-test.silent", false, None);
+            setup_responder(
+                &ctx,
+                "wasmnest.api.com.wasmnest.sdk-test.silent",
+                false,
+                None,
+            );
 
             let started = std::time::Instant::now();
             let err = api_call(
@@ -379,7 +405,10 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             ctx.api_registry()
-                .register("com.wasmnest.sdk-test", &["com.wasmnest.sdk-test.echo".to_string()])
+                .register(
+                    "com.wasmnest.sdk-test",
+                    &["com.wasmnest.sdk-test.echo".to_string()],
+                )
                 .expect("夹具登记 echo api 失败：id 错配用例的前置条件未成立");
             setup_responder(
                 &ctx,
@@ -437,7 +466,11 @@ mod tests {
                 "id": req["id"].as_str().unwrap(),
                 "result": { "spoofed": true },
             });
-            let reply_topic = format!("wasmnest.api.reply.{}.{}", msg.sender, req["id"].as_str().unwrap());
+            let reply_topic = format!(
+                "wasmnest.api.reply.{}.{}",
+                msg.sender,
+                req["id"].as_str().unwrap()
+            );
             self.bus.publish(&reply_topic, &self.fake_sender, reply);
             Ok(())
         }
@@ -451,7 +484,10 @@ mod tests {
         rt.block_on(async {
             // 目标 api 已声明但真目标缺席：只有第三方插件在请求道上抢答
             ctx.api_registry()
-                .register("com.wasmnest.sdk-test", &["com.wasmnest.sdk-test.echo".to_string()])
+                .register(
+                    "com.wasmnest.sdk-test",
+                    &["com.wasmnest.sdk-test.echo".to_string()],
+                )
                 .expect("夹具登记 echo api 失败：真目标缺席用例的前置条件未成立");
             ctx.message_bus
                 .subscribe_static(
@@ -474,8 +510,16 @@ mod tests {
                 500,
             )
             .unwrap_err();
-            assert!(err.contains("timeout"), "抢答须被拒→调用方按超时收敛, got: {}", err);
-            assert!(!err.contains("spoofed"), "伪造载荷不得出现在调用方错误里: got: {}", err);
+            assert!(
+                err.contains("timeout"),
+                "抢答须被拒→调用方按超时收敛, got: {}",
+                err
+            );
+            assert!(
+                !err.contains("spoofed"),
+                "伪造载荷不得出现在调用方错误里: got: {}",
+                err
+            );
         });
     }
 
@@ -486,9 +530,13 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             ctx.api_registry()
-                .register("com.wasmnest.sdk-test", &["com.wasmnest.sdk-test.echo".to_string()])
+                .register(
+                    "com.wasmnest.sdk-test",
+                    &["com.wasmnest.sdk-test.echo".to_string()],
+                )
                 .expect("夹具登记 echo api 失败：属主回复用例的前置条件未成立");
-            let mut rx = setup_responder(&ctx, "wasmnest.api.com.wasmnest.sdk-test.echo", true, None);
+            let mut rx =
+                setup_responder(&ctx, "wasmnest.api.com.wasmnest.sdk-test.echo", true, None);
 
             let reply = api_call(
                 ctx.as_ref(),
@@ -542,7 +590,10 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             ctx.api_registry()
-                .register("com.wasmnest.sdk-test", &["com.wasmnest.sdk-test.echo".to_string()])
+                .register(
+                    "com.wasmnest.sdk-test",
+                    &["com.wasmnest.sdk-test.echo".to_string()],
+                )
                 .expect("夹具登记 echo api 失败：订阅清理用例的前置条件未成立");
             setup_responder(&ctx, "wasmnest.api.com.wasmnest.sdk-test.echo", true, None);
 

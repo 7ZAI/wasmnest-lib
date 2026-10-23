@@ -3,7 +3,12 @@
 use super::*;
 
 /// 构造带属主 / 端点标识的注册条目（插件端点通道域测试用）
-pub(super) fn entry_owned(client_id: &str, owner: &str, endpoint_id: &str, authenticated: bool) -> (String, WsSessionEntry) {
+pub(super) fn entry_owned(
+    client_id: &str,
+    owner: &str,
+    endpoint_id: &str,
+    authenticated: bool,
+) -> (String, WsSessionEntry) {
     entry_with(client_id, Some(owner), Some(endpoint_id), authenticated, None, None)
 }
 

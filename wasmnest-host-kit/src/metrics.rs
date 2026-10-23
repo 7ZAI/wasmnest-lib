@@ -359,8 +359,7 @@ impl PluginMetrics {
 
     /// 表增长被 limiter 拒绝的记账
     pub fn record_table_denied(&self) {
-        self.table_grow_denied_total
-            .fetch_add(1, Ordering::Relaxed);
+        self.table_grow_denied_total.fetch_add(1, Ordering::Relaxed);
     }
 
     /// activate() 耗时记账（微秒；调用聚合之外单列，便于看启动成本）
@@ -436,9 +435,7 @@ impl PluginMetrics {
             lifecycle,
             lifecycle_last_unix,
             trap_reasons,
-            memory_grow_denied_total: self
-                .memory_grow_denied_total
-                .load(Ordering::Relaxed),
+            memory_grow_denied_total: self.memory_grow_denied_total.load(Ordering::Relaxed),
             table_grow_denied_total: self.table_grow_denied_total.load(Ordering::Relaxed),
             activation_us_total: self.activation_us_total.load(Ordering::Relaxed),
             activation_us_max: self.activation_us_max.load(Ordering::Relaxed),

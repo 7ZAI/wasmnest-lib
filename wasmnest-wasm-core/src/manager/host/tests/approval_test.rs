@@ -27,7 +27,10 @@ async fn user_installed_plugin_needs_approval_before_activation() {
         err.to_string().contains("requires user approval"),
         "必须显性报告「需人工批准」，实际: {err}"
     );
-    assert!(!host.is_activated(id).await, "未批准的插件不得进入 Activated");
+    assert!(
+        !host.is_activated(id).await,
+        "未批准的插件不得进入 Activated"
+    );
     assert_eq!(
         host.get_plugin(id).await.expect("plugin present").state,
         PluginState::NeedsApproval,
@@ -92,7 +95,13 @@ async fn activation_grants_only_approved_subset_of_declared() {
     let id = "com.wasmnest.test-partial-approval";
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join(PLUGIN_MANIFEST_FILE), r#"{"id":"x"}"#).unwrap();
-    register_user_installed(&host, id, tmp.path(), &["storage", "terminal:input", "process:run"]).await;
+    register_user_installed(
+        &host,
+        id,
+        tmp.path(),
+        &["storage", "terminal:input", "process:run"],
+    )
+    .await;
 
     // 只批准 storage（按位批准的记录形态：批准集是请求集的真子集）
     let hash = compute_dir_hash(tmp.path()).expect("hash ok");
@@ -101,7 +110,9 @@ async fn activation_grants_only_approved_subset_of_declared() {
         .await
         .expect("seed approval");
 
-    host.activate_plugin(id, false).await.expect("已批准 → 可激活");
+    host.activate_plugin(id, false)
+        .await
+        .expect("已批准 → 可激活");
     assert_eq!(
         host.permission().get_granted(id),
         HashSet::from(["storage".to_string()]),
@@ -125,7 +136,10 @@ async fn approval_revoked_when_plugin_content_changes() {
     std::fs::write(tmp.path().join("index.js"), "console.log('evil')").unwrap();
 
     let err = host.activate_plugin(id, false).await.unwrap_err();
-    assert!(err.to_string().contains("requires user approval"), "实际: {err}");
+    assert!(
+        err.to_string().contains("requires user approval"),
+        "实际: {err}"
+    );
     assert_eq!(
         host.get_plugin(id).await.expect("plugin present").state,
         PluginState::NeedsApproval
@@ -167,7 +181,9 @@ async fn builtin_source_skips_approval_gate() {
     plugin.extension_path = "/nonexistent/plugins/com.wasmnest.test-builtin-scan".to_string();
     host.plugins.write().await.insert(id.to_string(), plugin);
 
-    host.activate_plugin(id, false).await.expect("内置来源免审批");
+    host.activate_plugin(id, false)
+        .await
+        .expect("内置来源免审批");
     assert!(host.is_activated(id).await);
 }
 
@@ -182,7 +198,10 @@ async fn approve_rejects_trusted_source() {
     );
 
     let err = host.approve_plugin(id).await.unwrap_err();
-    assert!(err.to_string().contains("approval is not required"), "实际: {err}");
+    assert!(
+        err.to_string().contains("approval is not required"),
+        "实际: {err}"
+    );
 }
 
 // ==================== 服务型 wasm 免权限拦截（issue #6 D4） ====================
@@ -193,10 +212,19 @@ fn service_exemption_requires_trusted_source_and_role() {
     use crate::manager::host::preauth::is_exempt_service;
 
     // 随包 + L1/L2 → 免
-    assert!(is_exempt_service(&PluginSource::FileScan, PluginKind::InternalBusiness));
-    assert!(is_exempt_service(&PluginSource::Wasm, PluginKind::BasicService));
+    assert!(is_exempt_service(
+        &PluginSource::FileScan,
+        PluginKind::InternalBusiness
+    ));
+    assert!(is_exempt_service(
+        &PluginSource::Wasm,
+        PluginKind::BasicService
+    ));
     // 随包但 L3 业务应用 → 不免（既有口径不变，仍需目录授权弹窗）
-    assert!(!is_exempt_service(&PluginSource::FileScan, PluginKind::BusinessApp));
+    assert!(!is_exempt_service(
+        &PluginSource::FileScan,
+        PluginKind::BusinessApp
+    ));
     // **硬红线**：用户安装来源永不豁免，即使自报 L1/L2
     assert!(!is_exempt_service(
         &PluginSource::UserInstalled,

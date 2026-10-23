@@ -76,7 +76,8 @@ pub trait GuestEventDispatcher: Send + Sync {
         _instance: wasmtime::component::Instance,
     ) -> crate::Result<()> {
         Err(crate::AppError::Plugin(
-            "WASM guest events: on-auth-success not wired by this host (mobile-only export)".to_string(),
+            "WASM guest events: on-auth-success not wired by this host (mobile-only export)"
+                .to_string(),
         ))
     }
 
@@ -88,7 +89,8 @@ pub trait GuestEventDispatcher: Send + Sync {
         _reason: &str,
     ) -> crate::Result<()> {
         Err(crate::AppError::Plugin(
-            "WASM guest events: on-disconnect not wired by this host (mobile-only export)".to_string(),
+            "WASM guest events: on-disconnect not wired by this host (mobile-only export)"
+                .to_string(),
         ))
     }
 
@@ -100,7 +102,8 @@ pub trait GuestEventDispatcher: Send + Sync {
         _session_id: &str,
     ) -> crate::Result<()> {
         Err(crate::AppError::Plugin(
-            "WASM guest events: on-session-created not wired by this host (mobile-only export)".to_string(),
+            "WASM guest events: on-session-created not wired by this host (mobile-only export)"
+                .to_string(),
         ))
     }
 
@@ -112,7 +115,8 @@ pub trait GuestEventDispatcher: Send + Sync {
         _session_id: &str,
     ) -> crate::Result<()> {
         Err(crate::AppError::Plugin(
-            "WASM guest events: on-session-stopped not wired by this host (mobile-only export)".to_string(),
+            "WASM guest events: on-session-stopped not wired by this host (mobile-only export)"
+                .to_string(),
         ))
     }
 }

@@ -33,9 +33,14 @@ const CMD_SPIN: &str = "a03.spin";
 const CMD_RANDOM: &str = "a03.get-random";
 
 /// 构建并实例化 wasip3 探针 fixture（工具链未装时返回 None，测试跳过）
-fn instantiate_a03_fixture(wasm_runtime: &WasmRuntime, host_ctx: &Arc<WasmHostContext>) -> Option<LoadedWasmPlugin> {
+fn instantiate_a03_fixture(
+    wasm_runtime: &WasmRuntime,
+    host_ctx: &Arc<WasmHostContext>,
+) -> Option<LoadedWasmPlugin> {
     let bytes = build_wasip3_test_component()?;
-    let component = wasm_runtime.compile_component(&bytes).expect("compile a03 fixture");
+    let component = wasm_runtime
+        .compile_component(&bytes)
+        .expect("compile a03 fixture");
     Some(
         wasm_runtime
             .instantiate_component(&component, A03_PLUGIN_ID, Arc::clone(host_ctx), &[], None)
@@ -125,7 +130,8 @@ fn a03_p1a_sync_host_impl_under_async_store() {
             let mut g = plugin.lock().await;
             g.on_message_binary("a03.topic", "host", b"\x00\xff-probe")
                 .expect("on_message_binary 在 async store 下可用");
-            let m: serde_json::Value = serde_json::from_str(&g.get_manifest().expect("manifest")).unwrap();
+            let m: serde_json::Value =
+                serde_json::from_str(&g.get_manifest().expect("manifest")).unwrap();
             assert_eq!(m["id"], "com.wasmnest.wasip3-test");
         });
         println!("[a03][P1-a] hooks / on_message_binary / get_manifest 同实例 OK");
@@ -161,15 +167,22 @@ fn a03_p1c_sync_call_under_async_store_mechanism() {
                 .map_err(|e| format!("get_typed_func: {e}"))
         })
     else {
-        println!("[a03][P1-c] 同步 call 探针：导出函数获取失败（bindgen async 绑定下无 sync 形态）");
+        println!(
+            "[a03][P1-c] 同步 call 探针：导出函数获取失败（bindgen async 绑定下无 sync 形态）"
+        );
         return;
     };
     // catch_unwind 包裹：同步 call 预期 Err（store 配置要求 *_async），不许 panic
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        func.call(&mut *store, ("a03.host-log-roundtrip".to_string(), "{}".to_string()))
+        func.call(
+            &mut *store,
+            ("a03.host-log-roundtrip".to_string(), "{}".to_string()),
+        )
     }));
     match outcome {
-        Ok(Ok(_)) => println!("[a03][P1-c] 同步 call 意外成功（async-required store 未强制 async 路径）"),
+        Ok(Ok(_)) => {
+            println!("[a03][P1-c] 同步 call 意外成功（async-required store 未强制 async 路径）")
+        }
         Ok(Err(e)) => println!(
             "[a03][P1-c] 同步 call 按文档报错（async-required）: {}",
             e.to_string().chars().take(160).collect::<String>()
@@ -194,7 +207,9 @@ fn a03_p2_fuel_async_semantics() {
     // ① 燃料开启：set_fuel/get_fuel 可用（wasmtime 48 语义：未开启时 set_fuel 报错）
     {
         let (store, _) = plugin.raw_store();
-        store.set_fuel(1_000_000).expect("燃料开启时 set_fuel 必须可用");
+        store
+            .set_fuel(1_000_000)
+            .expect("燃料开启时 set_fuel 必须可用");
         let _ = store.get_fuel().expect("get_fuel 必须可用");
     }
 
@@ -302,7 +317,9 @@ fn a03_p2_resource_limiter_async_semantics() {
             );
             // 继续第二道闸：上限高于最小内存、低于工作集 → 调用期 memory_growing 拒绝
             call_time_memory_denial(&wasm_runtime, &host_ctx, &component);
-            println!("[a03][P2] ResourceLimiter 在 async store 下强制生效 ✓（对照成功 / 紧内存被拒）");
+            println!(
+                "[a03][P2] ResourceLimiter 在 async store 下强制生效 ✓（对照成功 / 紧内存被拒）"
+            );
             return;
         }
     };
@@ -359,7 +376,10 @@ fn call_time_memory_denial(
     };
     // 对照（同实例上限内的小分配）：分配 32KiB 在 17 页上限内 → 成功
     let small = run_command(&mut plugin, "a03.allocate", r#"{"bytes": 32768}"#);
-    assert_eq!(small["allocated"], 32768, "32KiB 分配应在 17 页上限内成功: {small}");
+    assert_eq!(
+        small["allocated"], 32768,
+        "32KiB 分配应在 17 页上限内成功: {small}"
+    );
     // 超限分配：4MiB 增长远超上限 → memory_growing 拒绝 → trap
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         plugin.invoke_command("a03.allocate", r#"{"bytes": 4194304}"#)
@@ -463,5 +483,8 @@ fn a03_p5_short_call_overhead_microbench() {
         guest_roundtrip_us < 5_000.0,
         "端到端往返异常慢: {guest_roundtrip_us:.1} us/op"
     );
-    assert!(bridge_ambient_us < 1_000.0, "桥开销异常: {bridge_ambient_us:.1} us/op");
+    assert!(
+        bridge_ambient_us < 1_000.0,
+        "桥开销异常: {bridge_ambient_us:.1} us/op"
+    );
 }

@@ -378,15 +378,34 @@ pub use wasmnest_host_kit::limits::StoreLimits;
 /// 形态说明：本函数是原 `StoreLimits::apply_overrides` 固有方法的等价物，仅因
 /// `StoreLimits` 已随机制内核搬出本模块（不能再给外来类型写 inherent impl）
 /// 而降为自由函数。调用点：`security::framework::resolve_store_limits` 与本模块单测。
-pub(crate) fn apply_store_overrides(base: &StoreLimits, request: &ResourceOverrides) -> StoreLimits {
+pub(crate) fn apply_store_overrides(
+    base: &StoreLimits,
+    request: &ResourceOverrides,
+) -> StoreLimits {
     StoreLimits {
-        fuel_per_call: nonzero_or_inherit("fuel_per_call", request.fuel_per_call, base.fuel_per_call),
+        fuel_per_call: nonzero_or_inherit(
+            "fuel_per_call",
+            request.fuel_per_call,
+            base.fuel_per_call,
+        ),
         // debug 放大倍率不在请求面（全局调试开关参数），恒继承配置
         fuel_debug_multiplier: base.fuel_debug_multiplier,
-        max_memory_bytes: nonzero_or_inherit("max_memory_bytes", request.max_memory_bytes, base.max_memory_bytes),
-        max_table_entries: nonzero_or_inherit("max_table_entries", request.max_table_entries, base.max_table_entries),
+        max_memory_bytes: nonzero_or_inherit(
+            "max_memory_bytes",
+            request.max_memory_bytes,
+            base.max_memory_bytes,
+        ),
+        max_table_entries: nonzero_or_inherit(
+            "max_table_entries",
+            request.max_table_entries,
+            base.max_table_entries,
+        ),
         max_wasm_stack_bytes: base.max_wasm_stack_bytes,
-        max_instances: nonzero_or_inherit("max_instances", request.max_instances, base.max_instances),
+        max_instances: nonzero_or_inherit(
+            "max_instances",
+            request.max_instances,
+            base.max_instances,
+        ),
         max_memories: nonzero_or_inherit("max_memories", request.max_memories, base.max_memories),
         max_tables: nonzero_or_inherit("max_tables", request.max_tables, base.max_tables),
     }
@@ -479,19 +498,24 @@ impl CoreConfig {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| crate::AppError::Config(format!("读取内核配置文件 '{}' 失败: {}", path.display(), e)))?;
-        let cfg: Self = serde_json::from_str(&text)
-            .map_err(|e| crate::AppError::Config(format!("解析内核配置文件 '{}' 失败: {}", path.display(), e)))?;
-        cfg.validate()
-            .map_err(|e| crate::AppError::Config(format!("内核配置文件 '{}' 非法: {}", path.display(), e)))?;
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            crate::AppError::Config(format!("读取内核配置文件 '{}' 失败: {}", path.display(), e))
+        })?;
+        let cfg: Self = serde_json::from_str(&text).map_err(|e| {
+            crate::AppError::Config(format!("解析内核配置文件 '{}' 失败: {}", path.display(), e))
+        })?;
+        cfg.validate().map_err(|e| {
+            crate::AppError::Config(format!("内核配置文件 '{}' 非法: {}", path.display(), e))
+        })?;
         Ok(cfg)
     }
 
     /// 合法性校验（跨字段约束一并在此）
     pub fn validate(&self) -> std::result::Result<(), String> {
         if self.store.fuel_per_call == 0 {
-            return Err("store.fuel_per_call 必须 > 0（为 0 会让任何插件调用立即 trap）".to_string());
+            return Err(
+                "store.fuel_per_call 必须 > 0（为 0 会让任何插件调用立即 trap）".to_string(),
+            );
         }
         if self.store.fuel_debug_multiplier == 0 {
             return Err("store.fuel_debug_multiplier 必须 > 0".to_string());
@@ -504,7 +528,10 @@ impl CoreConfig {
             .checked_mul(self.store.fuel_debug_multiplier)
             .is_none()
         {
-            return Err("store.fuel_per_call × fuel_debug_multiplier 溢出 u64（debug 模式预算无法表示）".to_string());
+            return Err(
+                "store.fuel_per_call × fuel_debug_multiplier 溢出 u64（debug 模式预算无法表示）"
+                    .to_string(),
+            );
         }
         if self.store.max_memory_bytes == 0 {
             return Err("store.max_memory_bytes 必须 > 0".to_string());
@@ -515,10 +542,19 @@ impl CoreConfig {
             return Err("store.max_table_entries 必须 > 0".to_string());
         }
         if self.store.max_wasm_stack_bytes == 0 {
-            return Err("store.max_wasm_stack_bytes 必须 > 0（0 会让任意深度的 wasm 递归立即栈溢出）".to_string());
+            return Err(
+                "store.max_wasm_stack_bytes 必须 > 0（0 会让任意深度的 wasm 递归立即栈溢出）"
+                    .to_string(),
+            );
         }
-        if self.store.max_instances == 0 || self.store.max_memories == 0 || self.store.max_tables == 0 {
-            return Err("store.max_instances/max_memories/max_tables 必须 > 0（为 0 组件无法实例化）".to_string());
+        if self.store.max_instances == 0
+            || self.store.max_memories == 0
+            || self.store.max_tables == 0
+        {
+            return Err(
+                "store.max_instances/max_memories/max_tables 必须 > 0（为 0 组件无法实例化）"
+                    .to_string(),
+            );
         }
         if self.engine.wasm_backtrace_max_frames == 0 {
             return Err("engine.wasm_backtrace_max_frames 必须 > 0".to_string());
@@ -582,8 +618,8 @@ mod tests {
     /// `serde(default)` + 字段级默认的联合语义）——「只关一项」不得顺手关掉全部
     #[test]
     fn wasi_config_partial_json_keeps_other_defaults() {
-        let cfg: CoreConfig =
-            serde_json::from_str(r#"{"wasi":{"p3":false}}"#).expect("partial wasi config must parse");
+        let cfg: CoreConfig = serde_json::from_str(r#"{"wasi":{"p3":false}}"#)
+            .expect("partial wasi config must parse");
         assert!(cfg.wasi.enabled, "未写 enabled：保持默认开");
         assert!(cfg.wasi.p2, "未写 p2：保持默认开");
         assert!(!cfg.wasi.p3, "写了的字段必须生效");
@@ -599,7 +635,10 @@ mod tests {
         // 显式钉死组（runtime.rs 构建 Engine 时的历史字面量）
         assert!(tuning.component_model_async);
         assert_eq!(tuning.backtrace_details, BacktraceDetails::Environment);
-        assert!(!tuning.memory_may_move, "内存预留即硬顶：基址恒定、不允许搬移");
+        assert!(
+            !tuning.memory_may_move,
+            "内存预留即硬顶：基址恒定、不允许搬移"
+        );
         // 跟随默认组：一律不调用 wasmtime API（否则锁版升级会带进行为变更）
         assert_eq!(tuning.debug_info, None);
         assert_eq!(tuning.native_unwind_info, None);
@@ -708,7 +747,10 @@ mod tests {
         )
         .unwrap();
         let cfg = CoreConfig::load_from(&path).expect("合法 tuning 配置应加载成功");
-        assert_eq!(cfg.engine.tuning.backtrace_details, BacktraceDetails::Disable);
+        assert_eq!(
+            cfg.engine.tuning.backtrace_details,
+            BacktraceDetails::Disable
+        );
         assert!(cfg.engine.tuning.memory_may_move);
         assert_eq!(cfg.engine.tuning.debug_info, Some(true));
         assert_eq!(cfg.engine.tuning.opt_level, Some(OptLevel::SpeedAndSize));
@@ -720,14 +762,23 @@ mod tests {
         std::fs::write(&path, r#"{"engine":{"tuning":{"debug_info":true}}}"#).unwrap();
         let cfg = CoreConfig::load_from(&path).expect("只写一个字段应回落其余默认");
         assert_eq!(cfg.engine.tuning.debug_info, Some(true));
-        assert!(cfg.engine.tuning.component_model_async, "未写字段须回落默认");
-        assert_eq!(cfg.engine.tuning.backtrace_details, BacktraceDetails::Environment);
+        assert!(
+            cfg.engine.tuning.component_model_async,
+            "未写字段须回落默认"
+        );
+        assert_eq!(
+            cfg.engine.tuning.backtrace_details,
+            BacktraceDetails::Environment
+        );
 
         // 非法枚举取值：报错须带文件路径 + 操作上下文（不留「以为生效了」的静默）
         std::fs::write(&path, r#"{"engine":{"tuning":{"opt_level":"turbo"}}}"#).unwrap();
         let err = CoreConfig::load_from(&path).expect_err("未知枚举取值必须报错");
         let msg = format!("{err}");
-        assert!(msg.contains("解析内核配置文件"), "错误须带操作上下文: {msg}");
+        assert!(
+            msg.contains("解析内核配置文件"),
+            "错误须带操作上下文: {msg}"
+        );
         assert!(msg.contains("wasm-core.json"), "错误须带文件路径: {msg}");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -738,7 +789,10 @@ mod tests {
         let mut cfg = CoreConfig::default();
         cfg.engine.tuning.component_model_async = false;
         let err = cfg.validate().expect_err("关掉组件异步必须被拒");
-        assert!(err.contains("component_model_async"), "错误须指明字段: {err}");
+        assert!(
+            err.contains("component_model_async"),
+            "错误须指明字段: {err}"
+        );
         assert!(err.contains("wasip3"), "错误须说明后果: {err}");
     }
 
@@ -759,13 +813,17 @@ mod tests {
 
         std::fs::write(&path, r#"{"call_model":"nope"}"#).unwrap();
         let err = CoreConfig::load_from(&path).expect_err("未知取值必须报错");
-        assert!(format!("{err}").contains("wasm-core.json"), "错误须带文件路径: {err}");
+        assert!(
+            format!("{err}").contains("wasm-core.json"),
+            "错误须带文件路径: {err}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn load_missing_file_returns_default() {
-        let cfg = CoreConfig::load_from(Path::new("/nonexistent/wasm-core.json")).expect("缺失文件应回落默认");
+        let cfg = CoreConfig::load_from(Path::new("/nonexistent/wasm-core.json"))
+            .expect("缺失文件应回落默认");
         assert_eq!(cfg, CoreConfig::default());
     }
 
@@ -775,10 +833,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("wasm-core.json");
         // 只覆盖一个字段 + 携带未知字段
-        std::fs::write(&path, r#"{"store":{"fuel_per_call":1024},"future_field":{"x":1}}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"store":{"fuel_per_call":1024},"future_field":{"x":1}}"#,
+        )
+        .unwrap();
         let cfg = CoreConfig::load_from(&path).expect("部分字段 + 未知字段应加载成功");
         assert_eq!(cfg.store.fuel_per_call, 1024);
-        assert_eq!(cfg.store.max_memory_bytes, defaults::MAX_PLUGIN_MEMORY_BYTES);
+        assert_eq!(
+            cfg.store.max_memory_bytes,
+            defaults::MAX_PLUGIN_MEMORY_BYTES
+        );
         assert_eq!(cfg.engine, EngineConfig::default());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -791,7 +856,10 @@ mod tests {
         std::fs::write(&path, "{ not json").unwrap();
         let err = CoreConfig::load_from(&path).expect_err("非法 JSON 必须报错");
         let msg = format!("{err}");
-        assert!(msg.contains("解析内核配置文件"), "错误须带操作上下文: {msg}");
+        assert!(
+            msg.contains("解析内核配置文件"),
+            "错误须带操作上下文: {msg}"
+        );
         assert!(msg.contains("wasm-core.json"), "错误须带文件路径: {msg}");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -800,7 +868,8 @@ mod tests {
     /// 同一文件里的合法字段不掩盖错误（整体拒绝，不静默回落）
     #[test]
     fn load_invalid_value_reports_context() {
-        let dir = std::env::temp_dir().join(format!("wasm-core-cfg-invalid-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("wasm-core-cfg-invalid-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("wasm-core.json");
         std::fs::write(&path, r#"{"store":{"fuel_per_call":0}}"#).unwrap();
@@ -817,7 +886,11 @@ mod tests {
     #[test]
     fn fuel_budget_for_applies_debug_multiplier() {
         let limits = StoreLimits::default();
-        assert_eq!(limits.fuel_budget_for(false), limits.fuel_per_call, "非 debug 不得放大");
+        assert_eq!(
+            limits.fuel_budget_for(false),
+            limits.fuel_per_call,
+            "非 debug 不得放大"
+        );
         assert_eq!(
             limits.fuel_budget_for(true),
             limits.fuel_per_call * limits.fuel_debug_multiplier,
@@ -887,7 +960,11 @@ mod tests {
         };
         // 乘法溢出 → 饱和而非回卷
         assert_eq!(limits.fuel_budget_for(true), u64::MAX);
-        assert_eq!(limits.fuel_budget_for(false), limits.fuel_per_call, "非 debug 不过倍率");
+        assert_eq!(
+            limits.fuel_budget_for(false),
+            limits.fuel_per_call,
+            "非 debug 不过倍率"
+        );
 
         // 配置面拒绝超产品预算（加载期就判非法）
         let mut cfg = CoreConfig::default();
@@ -912,7 +989,10 @@ mod tests {
             ..ResourceOverrides::default()
         };
         let merged = apply_store_overrides(&cfg, &relaxed);
-        assert_eq!(merged.max_memory_bytes, cfg.max_memory_bytes, "放宽请求须被钳回配置值");
+        assert_eq!(
+            merged.max_memory_bytes, cfg.max_memory_bytes,
+            "放宽请求须被钳回配置值"
+        );
         assert_eq!(merged.fuel_per_call, cfg.fuel_per_call);
         assert_eq!(merged.max_tables, cfg.max_tables);
 
@@ -939,7 +1019,10 @@ mod tests {
             ..ResourceOverrides::default()
         };
         let merged = apply_store_overrides(&cfg, &zeros);
-        assert_eq!(merged.max_memory_bytes, cfg.max_memory_bytes, "Some(0) 必须继承配置值");
+        assert_eq!(
+            merged.max_memory_bytes, cfg.max_memory_bytes,
+            "Some(0) 必须继承配置值"
+        );
         assert_eq!(merged.fuel_per_call, cfg.fuel_per_call);
         assert_eq!(merged.max_tables, cfg.max_tables);
     }

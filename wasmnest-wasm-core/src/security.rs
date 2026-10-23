@@ -22,4 +22,6 @@ pub mod fs_auth;
 pub mod network_auth;
 pub mod strategy;
 
-pub use framework::{AuthDecision, AuthRequest, ResourceAuthorizer, ResourceKind, SecurityFramework};
+pub use framework::{
+    AuthDecision, AuthRequest, ResourceAuthorizer, ResourceKind, SecurityFramework,
+};

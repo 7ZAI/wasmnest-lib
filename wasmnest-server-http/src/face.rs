@@ -8,8 +8,8 @@ use actix_service::boxed::BoxService;
 use actix_web::body::BoxBody;
 use actix_web::dev::{ServiceRequest, ServiceResponse, Transform};
 use actix_web::{web, Error};
-use wasmnest_server_core::TransportFace;
 use futures_util::FutureExt;
+use wasmnest_server_core::TransportFace;
 
 use crate::middleware::http_filter::TrafficFilter;
 

@@ -101,10 +101,10 @@ pub fn registered_key_agreement_names() -> Vec<&'static str> {
 mod tests {
     use super::*;
     use crate::provider::{AEAD_AES_256_GCM, AEAD_CHACHA20_POLY1305, KDF_HKDF_SHA256, KEY_AGREEMENT_X25519};
-    mod resolve_aead_hits_known;
-    mod resolve_aead_unknown;
     mod aead;
     mod kdf;
-    mod x25519_shared_secret_via;
     mod registered_names_match;
+    mod resolve_aead_hits_known;
+    mod resolve_aead_unknown;
+    mod x25519_shared_secret_via;
 }

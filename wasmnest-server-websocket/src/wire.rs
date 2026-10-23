@@ -91,10 +91,7 @@ impl EndpointAuth {
             "" => Ok(default),
             "none" => Ok(Self::None),
             "jwt" => Ok(Self::Jwt),
-            other => Err(format!(
-                "unknown auth '{}' (expected \"none\" or \"jwt\")",
-                other
-            )),
+            other => Err(format!("unknown auth '{}' (expected \"none\" or \"jwt\")", other)),
         }
     }
 }

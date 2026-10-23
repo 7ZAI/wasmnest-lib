@@ -253,8 +253,8 @@ mod tests {
     use super::*;
     use crate::controllers::plugin_controller::build_plugin_http_args;
     use crate::middleware::auth_gateway::auth_gateway;
-    mod scaffold;
+    mod business_endpoint_shapes;
     mod decide_forwards_only_when;
     mod forwarded_request_shape;
-    mod business_endpoint_shapes;
+    mod scaffold;
 }

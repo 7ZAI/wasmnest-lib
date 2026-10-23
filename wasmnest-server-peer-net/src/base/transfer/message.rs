@@ -239,10 +239,7 @@ where
     if chunk.len() > MAX_DATA_CHUNK_LEN {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!(
-                "transfer data chunk {} exceeds cap {MAX_DATA_CHUNK_LEN}",
-                chunk.len()
-            ),
+            format!("transfer data chunk {} exceeds cap {MAX_DATA_CHUNK_LEN}", chunk.len()),
         ));
     }
     write_raw(sink, KIND_DATA, chunk).await
@@ -395,10 +392,7 @@ mod tests {
                 rel_path: "sub/dir".to_string(),
             },
             TransferFrame::BrowseResponse {
-                entries: vec![
-                    DirEntry::new("docs", true, 0),
-                    DirEntry::new("a.txt", false, 3),
-                ],
+                entries: vec![DirEntry::new("docs", true, 0), DirEntry::new("a.txt", false, 3)],
                 filtered: true,
             },
             TransferFrame::PullRequest {
@@ -451,20 +445,14 @@ mod tests {
         futures_block_on(async {
             write_control(&mut buf, &sample_offer()).await.expect("offer");
             write_data(&mut buf, b"hello").await.expect("chunk");
-            write_control(
-                &mut buf,
-                &TransferFrame::StartFile { index: 0, offset: 5 },
-            )
-            .await
-            .expect("start");
+            write_control(&mut buf, &TransferFrame::StartFile { index: 0, offset: 5 })
+                .await
+                .expect("start");
         });
 
         let mut reader: &[u8] = &buf;
         let first = futures_block_on(read_frame(&mut reader)).expect("first");
-        assert_eq!(
-            first,
-            IncomingFrame::Control(Box::new(sample_offer()))
-        );
+        assert_eq!(first, IncomingFrame::Control(Box::new(sample_offer())));
         let second = futures_block_on(read_frame(&mut reader)).expect("second");
         assert_eq!(second, IncomingFrame::Data(b"hello".to_vec()));
         let third = futures_block_on(read_frame(&mut reader)).expect("third");
@@ -505,11 +493,7 @@ mod tests {
     #[test]
     fn truncated_stream_is_reported_not_hang() {
         let mut buf = Vec::new();
-        futures_block_on(write_control(
-            &mut buf,
-            &TransferFrame::FileDone { index: 3 },
-        ))
-        .expect("encode");
+        futures_block_on(write_control(&mut buf, &TransferFrame::FileDone { index: 3 })).expect("encode");
         let truncated = &buf[..buf.len() - 2];
         let mut reader: &[u8] = truncated;
         let err = futures_block_on(read_frame(&mut reader)).expect_err("truncated must fail");

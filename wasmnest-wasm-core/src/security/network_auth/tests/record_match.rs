@@ -25,7 +25,10 @@ fn record_covers_matches_origin_and_segment_prefix() {
 fn record_covers_respects_path_segment_boundary() {
     let target = normalize_target("https://api.x.com:443/v1abc/models").expect("normalize");
     assert!(
-        !record_covers(&match_row("https://api.x.com:443/v1", AUTH_EFFECT_ALLOW, true), &target),
+        !record_covers(
+            &match_row("https://api.x.com:443/v1", AUTH_EFFECT_ALLOW, true),
+            &target
+        ),
         "/v1 前缀不得命中 /v1abc"
     );
 }
@@ -56,7 +59,10 @@ fn record_covers_treats_malformed_rows_as_no_match() {
         ),
         "flag 与形状不一致的行不得被当成整站授权"
     );
-    assert!(!record_covers(&match_row("garbage", AUTH_EFFECT_ALLOW, true), &target));
+    assert!(!record_covers(
+        &match_row("garbage", AUTH_EFFECT_ALLOW, true),
+        &target
+    ));
 }
 /// C7 边界：origin 比较忽略大小写（手改过的 deny 行不得因大小写逃逸）
 #[test]

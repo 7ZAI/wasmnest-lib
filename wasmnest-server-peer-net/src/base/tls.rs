@@ -36,8 +36,8 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::crypto::ring as crypto_ring;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
+use rustls::{version, SignatureScheme};
 use rustls::{DigitallySignedStruct, DistinguishedName, Error as RustlsError};
-use rustls::{SignatureScheme, version};
 
 use crate::base::cert::{extract_spki_raw_public_key, identity_pkcs8_private_key, node_id_from_cert};
 use crate::base::error::{PeerNetError, Result};
@@ -221,9 +221,9 @@ fn verify_ed25519_signature_core(
     })?;
 
     let public_key = UnparsedPublicKey::new(&ring::signature::ED25519, spki_raw);
-    public_key.verify(signed_content, signature_bytes).map_err(|_| {
-        RustlsError::General("peer-net TLS 1.3 CertificateVerify signature invalid".to_string())
-    })
+    public_key
+        .verify(signed_content, signature_bytes)
+        .map_err(|_| RustlsError::General("peer-net TLS 1.3 CertificateVerify signature invalid".to_string()))
 }
 
 // ==================== 配置构建 ====================
@@ -247,9 +247,7 @@ pub(crate) fn client_config(
             detail: format!("enable TLS 1.3 for client config: {e}"),
         })?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(PinningServerCertVerifier::new(
-            expected_peer_id.clone(),
-        )))
+        .with_custom_certificate_verifier(Arc::new(PinningServerCertVerifier::new(expected_peer_id.clone())))
         .with_client_auth_cert(
             vec![CertificateDer::from(own_cert_der.to_vec())],
             PrivateKeyDer::from(key_der),
@@ -289,8 +287,7 @@ mod tests {
     /// 独立身份辅助构造（各自 tempdir，互不共享目录）
     fn fresh_identity() -> (tempfile::TempDir, NodeIdentity) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let identity =
-            NodeIdentity::load_or_create(dir.path()).expect("load_or_create identity");
+        let identity = NodeIdentity::load_or_create(dir.path()).expect("load_or_create identity");
         (dir, identity)
     }
 
@@ -334,24 +331,12 @@ mod tests {
         let (message, sig) = sign_certificate_verify(&signing_key_of(&identity));
 
         // 与证书公钥对应的私钥所签：通过
-        assert!(verify_ed25519_signature_core(
-            &message,
-            &cert_der,
-            SignatureScheme::ED25519,
-            &sig
-        )
-        .is_ok());
+        assert!(verify_ed25519_signature_core(&message, &cert_der, SignatureScheme::ED25519, &sig).is_ok());
 
         // 内容被替换（transcript 不同）：必须拒绝——签名与消息必须逐字节对应
         let mut other_content = message.clone();
         other_content[100] ^= 0x01;
-        assert!(verify_ed25519_signature_core(
-            &other_content,
-            &cert_der,
-            SignatureScheme::ED25519,
-            &sig
-        )
-        .is_err());
+        assert!(verify_ed25519_signature_core(&other_content, &cert_der, SignatureScheme::ED25519, &sig).is_err());
     }
 
     #[test]
@@ -383,20 +368,11 @@ mod tests {
         let (message, mut sig) = sign_certificate_verify(&signing_key_of(&identity));
 
         sig[10] ^= 0xFF;
-        let tampered = verify_ed25519_signature_core(
-            &message.clone(),
-            &cert_der.clone(),
-            SignatureScheme::ED25519,
-            &sig,
-        );
+        let tampered =
+            verify_ed25519_signature_core(&message.clone(), &cert_der.clone(), SignatureScheme::ED25519, &sig);
         assert!(tampered.is_err(), "tampered signature must be rejected");
 
-        let wrong_scheme = verify_ed25519_signature_core(
-            &message,
-            &cert_der,
-            SignatureScheme::RSA_PSS_SHA256,
-            &sig,
-        );
+        let wrong_scheme = verify_ed25519_signature_core(&message, &cert_der, SignatureScheme::RSA_PSS_SHA256, &sig);
         assert!(wrong_scheme.is_err(), "non-ed25519 scheme must be rejected");
     }
 
@@ -489,18 +465,10 @@ mod tests {
         let (_dir, identity) = fresh_identity();
 
         assert!(verifier
-            .verify_client_cert(
-                &CertificateDer::from(identity_cert(&identity)),
-                &[],
-                unix_now(),
-            )
+            .verify_client_cert(&CertificateDer::from(identity_cert(&identity)), &[], unix_now(),)
             .is_ok());
         assert!(verifier
-            .verify_client_cert(
-                &CertificateDer::from(b"garbage der bytes".to_vec()),
-                &[],
-                unix_now(),
-            )
+            .verify_client_cert(&CertificateDer::from(b"garbage der bytes".to_vec()), &[], unix_now(),)
             .is_err());
     }
 

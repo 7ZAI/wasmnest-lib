@@ -48,7 +48,9 @@ impl PluginDevWatcher {
         // canonicalize（M-14）：watch 根与事件路径共用规范路径——macOS /private/var
         // symlink、`..` 组件会让 strip_prefix 失配 → 事件全量静默丢弃（热重载死亡无日志）。
         // 目录不存在时 canonicalize 失败，保留原路径（watch 会在下方报错降级）。
-        let canonical = plugins_dir.canonicalize().unwrap_or_else(|_| plugins_dir.clone());
+        let canonical = plugins_dir
+            .canonicalize()
+            .unwrap_or_else(|_| plugins_dir.clone());
 
         // 防抖状态：plugin_id → 最近一次触发时间（per-plugin 时间戳，M-05——
         // 共享单 (id, Instant) 对会让异插件事件交错覆盖彼此的防抖窗口）。
@@ -59,43 +61,44 @@ impl PluginDevWatcher {
         let pd = canonical.clone();
         let plugin_host_weak = plugin_host;
 
-        let mut watcher = match notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            let event = match res {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::debug!("Plugin watcher error: {}", e);
-                    return;
-                }
-            };
-
-            // 只关注文件创建/修改事件
-            if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
-                return;
-            }
-
-            for path in &event.paths {
-                let ext = path.extension().map(|e| e.to_string_lossy().to_string());
-
-                let plugin_id = match extract_plugin_id(path, &pd) {
-                    Some(id) => id,
-                    None => continue,
+        let mut watcher = match notify::recommended_watcher(
+            move |res: Result<Event, notify::Error>| {
+                let event = match res {
+                    Ok(e) => e,
+                    Err(e) => {
+                        tracing::debug!("Plugin watcher error: {}", e);
+                        return;
+                    }
                 };
 
-                match ext.as_deref() {
-                    // WASM 产物变化 → 触发 Rust 端热重载
-                    Some("wasm") => {
-                        tracing::info!(
-                            plugin_id = %plugin_id,
-                            "Plugin watcher: WASM changed: {}",
-                            path.display()
-                        );
+                // 只关注文件创建/修改事件
+                if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
+                    return;
+                }
 
-                        let pending = pending.clone();
-                        let plugin_id_clone = plugin_id.clone();
-                        // FnMut 回调不能 move 捕获弱引用：在 spawn 前 clone（Weak 是 Clone）
-                        let plugin_host_weak = plugin_host_weak.clone();
-                        // notify 回调在非 Tokio 线程中运行，必须通过 Handle::spawn 而非 tokio::spawn
-                        runtime_handle.spawn(async move {
+                for path in &event.paths {
+                    let ext = path.extension().map(|e| e.to_string_lossy().to_string());
+
+                    let plugin_id = match extract_plugin_id(path, &pd) {
+                        Some(id) => id,
+                        None => continue,
+                    };
+
+                    match ext.as_deref() {
+                        // WASM 产物变化 → 触发 Rust 端热重载
+                        Some("wasm") => {
+                            tracing::info!(
+                                plugin_id = %plugin_id,
+                                "Plugin watcher: WASM changed: {}",
+                                path.display()
+                            );
+
+                            let pending = pending.clone();
+                            let plugin_id_clone = plugin_id.clone();
+                            // FnMut 回调不能 move 捕获弱引用：在 spawn 前 clone（Weak 是 Clone）
+                            let plugin_host_weak = plugin_host_weak.clone();
+                            // notify 回调在非 Tokio 线程中运行，必须通过 Handle::spawn 而非 tokio::spawn
+                            runtime_handle.spawn(async move {
                             // 防抖 check-and-set 全程持写锁（M-05）：并发两任务都看到空/过期
                             // pending 都调 reload 的窗口被原子化堵死；per-plugin 时间戳使
                             // 异插件事件互不干扰对方的防抖窗口
@@ -132,40 +135,44 @@ impl PluginDevWatcher {
                                 }
                             }
                         });
-                    }
-                    // TS 产物变化 → 通知前端重新加载（M-09：打包器一次重建写多个 JS
-                    // 文件会逐个触发 → 同样走防抖，否则前端收到 reload 洪泛）
-                    Some("js") => {
-                        tracing::info!(
-                            plugin_id = %plugin_id,
-                            "Plugin watcher: JS changed: {}",
-                            path.display()
-                        );
-
-                        let mut p = pending.lock().unwrap_or_else(|e| e.into_inner());
-                        if p.get(&plugin_id)
-                            .is_some_and(|t| t.elapsed() < Duration::from_millis(PLUGIN_RELOAD_DEBOUNCE_MS))
-                        {
-                            tracing::debug!(plugin_id = %plugin_id, "Plugin watcher: debounced JS reload");
-                            continue;
                         }
-                        p.insert(plugin_id.clone(), Instant::now());
-                        drop(p);
+                        // TS 产物变化 → 通知前端重新加载（M-09：打包器一次重建写多个 JS
+                        // 文件会逐个触发 → 同样走防抖，否则前端收到 reload 洪泛）
+                        Some("js") => {
+                            tracing::info!(
+                                plugin_id = %plugin_id,
+                                "Plugin watcher: JS changed: {}",
+                                path.display()
+                            );
 
-                        // 经注入的 PluginHost 弱引用取 app_handle（整核抽出：不再经
-                        // lib `AppContext::global()`）；弱引用失效 → 跳过
-                        let Some(ph) = plugin_host_weak.upgrade() else {
-                            continue;
-                        };
-                        // 无头/测试上下文无 AppHandle：跳过前端重载通知
-                        if let Some(handle) = ph.wasm_host_ctx().app_handle() {
-                            let _ = handle.emit(PLUGIN_DEV_RELOAD, serde_json::json!({ "pluginId": plugin_id }));
+                            let mut p = pending.lock().unwrap_or_else(|e| e.into_inner());
+                            if p.get(&plugin_id).is_some_and(|t| {
+                                t.elapsed() < Duration::from_millis(PLUGIN_RELOAD_DEBOUNCE_MS)
+                            }) {
+                                tracing::debug!(plugin_id = %plugin_id, "Plugin watcher: debounced JS reload");
+                                continue;
+                            }
+                            p.insert(plugin_id.clone(), Instant::now());
+                            drop(p);
+
+                            // 经注入的 PluginHost 弱引用取 app_handle（整核抽出：不再经
+                            // lib `AppContext::global()`）；弱引用失效 → 跳过
+                            let Some(ph) = plugin_host_weak.upgrade() else {
+                                continue;
+                            };
+                            // 无头/测试上下文无 AppHandle：跳过前端重载通知
+                            if let Some(handle) = ph.wasm_host_ctx().app_handle() {
+                                let _ = handle.emit(
+                                    PLUGIN_DEV_RELOAD,
+                                    serde_json::json!({ "pluginId": plugin_id }),
+                                );
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
-        }) {
+            },
+        ) {
             Ok(w) => w,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to create plugin file watcher; dev hot-reload disabled");
@@ -183,7 +190,10 @@ impl PluginDevWatcher {
             return Self { _watcher: None };
         }
 
-        tracing::info!("Plugin dev watcher started: watching '{}'", canonical.display());
+        tracing::info!(
+            "Plugin dev watcher started: watching '{}'",
+            canonical.display()
+        );
 
         Self {
             _watcher: Some(Box::new(watcher)),
@@ -252,7 +262,11 @@ mod tests {
     #[test]
     fn test_extract_plugin_id_deeply_nested_path() {
         let dir = plugins_dir();
-        let path = dir.join("plugin-a").join("dist").join("assets").join("main.js");
+        let path = dir
+            .join("plugin-a")
+            .join("dist")
+            .join("assets")
+            .join("main.js");
         assert_eq!(extract_plugin_id(&path, &dir), Some("plugin-a".to_string()));
     }
 

@@ -147,10 +147,7 @@ pub(crate) fn caller_identity(req: &actix_web::HttpRequest) -> (HttpCaller, Opti
 /// 该由哪个插件应答本次请求（纯决策，供测试）
 ///
 /// 只认请求前缀自身：已激活 → 本人应答；未激活 → None（「未激活」错误响应）。
-pub(crate) fn resolve_http_owner<'a>(
-    requested: &'a str,
-    requested_activated: bool,
-) -> Option<&'a str> {
+pub(crate) fn resolve_http_owner<'a>(requested: &'a str, requested_activated: bool) -> Option<&'a str> {
     if requested_activated {
         Some(requested)
     } else {

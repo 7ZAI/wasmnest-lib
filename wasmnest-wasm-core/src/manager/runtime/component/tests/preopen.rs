@@ -289,7 +289,9 @@ async fn build_ctx_yields_empty_context_when_wasi_disabled() {
     let (wasi_ctx, preopened) = build_ctx(
         &ctx,
         pid,
-        &[WasiPreopenDir::writable(dir.path().to_string_lossy().to_string())],
+        &[WasiPreopenDir::writable(
+            dir.path().to_string_lossy().to_string(),
+        )],
         &WasiConfig {
             enabled: false,
             ..WasiConfig::default()

@@ -87,7 +87,12 @@ pub trait BusPorts: Send + Sync {
 /// 形态即边界——判定只看串，不查激活表、不看安装表，因此与「属主是否已激活 /
 /// 是否已安装」无关，抢在属主之前订阅或伪发布都进不去（这是选命名空间而非
 /// 「解析 owner 段」的根本原因：后者的边界会随时序漏）。
-pub fn check_namespace(plugin_id: &str, topic: &str, action: &str, target: &str) -> Result<(), String> {
+pub fn check_namespace(
+    plugin_id: &str,
+    topic: &str,
+    action: &str,
+    target: &str,
+) -> Result<(), String> {
     let owner = match topic_owner(topic) {
         Some(owner) => owner,
         None => return Ok(()),
@@ -152,7 +157,11 @@ fn check_api_gate(ports: &dyn BusPorts, plugin_id: &str, topic: &str) -> Result<
 /// 权限位判定（两端策略分叉的统一入口：`None` = 该端无权限位，如桌面——
 /// 形态即 ACL）。发布链内部已含本步骤；订阅/退订由 adapter 显式调用
 /// （其投递机制各端自持，门禁步骤在投递之前）。
-pub fn check_gate(ports: &dyn BusPorts, plugin_id: &str, gate: Option<&PermissionGate<'_>>) -> Result<(), String> {
+pub fn check_gate(
+    ports: &dyn BusPorts,
+    plugin_id: &str,
+    gate: Option<&PermissionGate<'_>>,
+) -> Result<(), String> {
     match gate {
         Some(gate) => {
             if ports.check_permission(plugin_id, gate.permission, gate.api) {
@@ -179,8 +188,8 @@ pub fn bus_publish(
     gate: Option<&PermissionGate<'_>>,
 ) -> Result<(), String> {
     check_gate(ports, plugin_id, gate)?;
-    let payload: Value =
-        serde_json::from_str(payload_json).map_err(|e| format!("bus error: invalid JSON payload: {}", e))?;
+    let payload: Value = serde_json::from_str(payload_json)
+        .map_err(|e| format!("bus error: invalid JSON payload: {}", e))?;
     check_namespace(plugin_id, topic, "publish", "that plugin (and the host)")?;
     check_api_gate(ports, plugin_id, topic)?;
     ports.publish_json(topic, plugin_id, payload);
@@ -256,14 +265,18 @@ mod tests {
         }
 
         fn publish_json(&self, topic: &str, sender: &str, payload: Value) {
-            self.published.lock().unwrap().push((topic.to_string(), sender.to_string(), payload));
-        }
-
-        fn publish_binary(&self, topic: &str, sender: &str, payload: Vec<u8>) {
-            self.published_binary
+            self.published
                 .lock()
                 .unwrap()
                 .push((topic.to_string(), sender.to_string(), payload));
+        }
+
+        fn publish_binary(&self, topic: &str, sender: &str, payload: Vec<u8>) {
+            self.published_binary.lock().unwrap().push((
+                topic.to_string(),
+                sender.to_string(),
+                payload,
+            ));
         }
     }
 
@@ -271,7 +284,11 @@ mod tests {
     const PERM: &str = "bus";
 
     fn gate() -> Option<PermissionGate<'static>> {
-        Some(PermissionGate { permission: PERM, api: "host_bus_publish", deny_error: "permission denied: bus" })
+        Some(PermissionGate {
+            permission: PERM,
+            api: "host_bus_publish",
+            deny_error: "permission denied: bus",
+        })
     }
 
     // ==================== topic 形态机制（桌面 SDK 用例语义随迁） ====================
@@ -314,21 +331,67 @@ mod tests {
             "got: {err}"
         );
         // ③ 他人命名空间伪发布拒绝（点名属主）
-        let err = bus_publish(&ports, PLUGIN, "com.victim::pty:exit", "{}", gate().as_ref()).unwrap_err();
-        assert!(err.contains("namespace") && err.contains("com.victim"), "got: {err}");
+        let err = bus_publish(
+            &ports,
+            PLUGIN,
+            "com.victim::pty:exit",
+            "{}",
+            gate().as_ref(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("namespace") && err.contains("com.victim"),
+            "got: {err}"
+        );
         // ④ 互调门：未声明 api 拒绝（点名 api）
-        let err = bus_publish(&ports, PLUGIN, "wasmnest.api.com.x.remove", "{}", gate().as_ref()).unwrap_err();
-        assert!(err.contains("not declared") && err.contains("com.x.remove"), "got: {err}");
+        let err = bus_publish(
+            &ports,
+            PLUGIN,
+            "wasmnest.api.com.x.remove",
+            "{}",
+            gate().as_ref(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("not declared") && err.contains("com.x.remove"),
+            "got: {err}"
+        );
         // ⑤ 互调门：已声明 api 放行
         ports.declare_api("com.x.add");
-        bus_publish(&ports, PLUGIN, "wasmnest.api.com.x.add", r#"{"jsonrpc":"2.0"}"# , gate().as_ref())
-            .expect("declared api must pass gate");
+        bus_publish(
+            &ports,
+            PLUGIN,
+            "wasmnest.api.com.x.add",
+            r#"{"jsonrpc":"2.0"}"#,
+            gate().as_ref(),
+        )
+        .expect("declared api must pass gate");
         // ⑥ 回复道免互调校验
-        bus_publish(&ports, PLUGIN, "wasmnest.api.reply.com.b.req-1", r#"{"ok":1}"#, gate().as_ref())
-            .expect("reply lane must bypass api gate");
+        bus_publish(
+            &ports,
+            PLUGIN,
+            "wasmnest.api.reply.com.b.req-1",
+            r#"{"ok":1}"#,
+            gate().as_ref(),
+        )
+        .expect("reply lane must bypass api gate");
         // ⑦ 公开 topic + 自有命名空间放行，载荷原样投递
-        bus_publish(&ports, PLUGIN, "task:status-changed", r#"{"n":1}"#, gate().as_ref()).expect("public ok");
-        bus_publish(&ports, PLUGIN, "com.a::inbox", r#"{"n":2}"#, gate().as_ref()).expect("own ns ok");
+        bus_publish(
+            &ports,
+            PLUGIN,
+            "task:status-changed",
+            r#"{"n":1}"#,
+            gate().as_ref(),
+        )
+        .expect("public ok");
+        bus_publish(
+            &ports,
+            PLUGIN,
+            "com.a::inbox",
+            r#"{"n":2}"#,
+            gate().as_ref(),
+        )
+        .expect("own ns ok");
         let published = ports.published.lock().unwrap();
         assert_eq!(published.len(), 4);
         assert_eq!(published[0].2, serde_json::json!({"jsonrpc": "2.0"}));
@@ -348,10 +411,25 @@ mod tests {
     fn publish_binary_gates_and_bytes_passthrough() {
         let ports = MockPorts::new();
         ports.grant(PLUGIN, PERM);
-        let err = bus_publish_binary(&ports, PLUGIN, "com.victim::blob", vec![1, 2] , gate().as_ref()).unwrap_err();
+        let err = bus_publish_binary(
+            &ports,
+            PLUGIN,
+            "com.victim::blob",
+            vec![1, 2],
+            gate().as_ref(),
+        )
+        .unwrap_err();
         assert!(err.contains("namespace"), "got: {err}");
-        bus_publish_binary(&ports, PLUGIN, "com.a::blob", vec![1, 2, 3] , gate().as_ref()).expect("own ns ok");
-        bus_publish_binary(&ports, PLUGIN, "task:chunk", vec![9] , gate().as_ref()).expect("public ok");
+        bus_publish_binary(
+            &ports,
+            PLUGIN,
+            "com.a::blob",
+            vec![1, 2, 3],
+            gate().as_ref(),
+        )
+        .expect("own ns ok");
+        bus_publish_binary(&ports, PLUGIN, "task:chunk", vec![9], gate().as_ref())
+            .expect("public ok");
         let published = ports.published_binary.lock().unwrap();
         assert_eq!(published.len(), 2);
         assert_eq!(published[0].2, vec![1, 2, 3]);
@@ -364,20 +442,32 @@ mod tests {
     #[test]
     fn subscribe_access_gate_texts() {
         let err = check_subscribe_access("com.evil", "com.victim::pty:exit").unwrap_err();
-        assert!(err.contains("namespace") && err.contains("com.victim"), "got: {err}");
-        let err = check_subscribe_access("com.evil", "wasmnest.api.reply.com.victim.req-1").unwrap_err();
+        assert!(
+            err.contains("namespace") && err.contains("com.victim"),
+            "got: {err}"
+        );
+        let err =
+            check_subscribe_access("com.evil", "wasmnest.api.reply.com.victim.req-1").unwrap_err();
         assert!(err.contains("reply"), "got: {err}");
-        let err = check_subscribe_access("com.victim", "wasmnest.api.reply.com.victim.req-1").unwrap_err();
+        let err = check_subscribe_access("com.victim", "wasmnest.api.reply.com.victim.req-1")
+            .unwrap_err();
         assert!(err.contains("reply"), "自身回复道亦不对 WASM 开放: {err}");
         check_subscribe_access("com.victim", "com.victim::pty:exit").expect("own ns ok");
-        check_subscribe_access("com.victim", "wasmnest.api.com.victim.echo").expect("request lane ok");
+        check_subscribe_access("com.victim", "wasmnest.api.com.victim.echo")
+            .expect("request lane ok");
         check_subscribe_access("com.evil", "peer:consent").expect("public ok");
     }
 
     /// 退订只过命名空间门：回复道不拦（清理动作幂等可用）
     #[test]
     fn unsubscribe_gate_is_namespace_only() {
-        assert!(check_namespace("com.evil", "com.victim::t", "unsubscribe", "that plugin (and the host)").is_err());
+        assert!(check_namespace(
+            "com.evil",
+            "com.victim::t",
+            "unsubscribe",
+            "that plugin (and the host)"
+        )
+        .is_err());
         check_namespace(
             "com.victim",
             "wasmnest.api.reply.com.victim.req-1",

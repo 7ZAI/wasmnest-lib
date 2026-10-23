@@ -37,7 +37,8 @@ fn test_add_to_linker_rejects_duplicate_registration() {
     let mut linker = Linker::new(&engine);
     add_to_linker(&mut linker, &WasiConfig::default()).expect("first registration");
 
-    let err = add_to_linker(&mut linker, &WasiConfig::default()).expect_err("duplicate registration should fail");
+    let err = add_to_linker(&mut linker, &WasiConfig::default())
+        .expect_err("duplicate registration should fail");
     // wasmtime 对已注册的同名 interface instance 报 "defined twice"
     assert!(
         err.to_string().contains("defined twice"),

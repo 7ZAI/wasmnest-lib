@@ -38,7 +38,8 @@ fn send_files_accepts_both_path_shapes_past_validation() {
     let ports = granted();
     let h = mint("shapes-session");
     for payload in [r#"["/tmp/a.bin"]"#, r#"[{"path":"/tmp/a.bin","encrypt":true}]"#] {
-        let err = super::peer_send_files(&ports, "com.wasmnest.owner-a", &h, payload).expect_err("无头上下文取不到引擎");
+        let err =
+            super::peer_send_files(&ports, "com.wasmnest.owner-a", &h, payload).expect_err("无头上下文取不到引擎");
         assert!(
             !err.contains("invalid paths json"),
             "载荷形态 {payload} 应过校验: {err}"
@@ -135,8 +136,8 @@ fn set_shared_roots_accepts_both_root_shapes_past_validation() {
         r#"[{"id":"a","name":"n1","path":"/srv/share"}]"#,
         r#"[{"id":"b","name":"n2","safTreeUri":"content://tree/1"}]"#,
     ] {
-        let err = super::peer_set_shared_roots(&ports, "com.wasmnest.owner-a", payload)
-            .expect_err("无头上下文取不到引擎");
+        let err =
+            super::peer_set_shared_roots(&ports, "com.wasmnest.owner-a", payload).expect_err("无头上下文取不到引擎");
         assert_eq!(err, ports::HEADLESS_UNAVAILABLE, "载荷 {payload} 应过解析: {err}");
     }
 }

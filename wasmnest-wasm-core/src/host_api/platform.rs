@@ -46,7 +46,11 @@ use std::sync::Arc;
 /// 文案点名缺失的权限位与补法（fail-visible）：插件拿到的错误必须能直接回答
 /// 「我在 manifest 里加什么」——「permission denied」这种无信息文案在这里是
 /// 把排障成本推给插件作者。
-fn require_pick_permission(perm: &dyn PermissionScope, plugin_id: &str, api: &str) -> Result<(), String> {
+fn require_pick_permission(
+    perm: &dyn PermissionScope,
+    plugin_id: &str,
+    api: &str,
+) -> Result<(), String> {
     if super::check_permission(perm, plugin_id, PERMISSION_FS_PICK, api) {
         return Ok(());
     }
@@ -118,8 +122,7 @@ fn authorize_picked(
     if picked.is_empty() {
         return Ok(picked);
     }
-    let checker: Arc<FsAuthChecker> = fs
-        .fs_auth_checker();
+    let checker: Arc<FsAuthChecker> = fs.fs_auth_checker();
     if block_on_async(checker.authorize_picked(plugin_id, &picked)) {
         return Ok(picked);
     }
@@ -152,8 +155,8 @@ fn sync_result<T>(r: crate::Result<T>) -> Result<T, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_api::tests::build_host_ctx;
     use crate::host_api::grant_permissions;
+    use crate::host_api::tests::build_host_ctx;
     use crate::permission::PERMISSION_FS_PICK;
 
     const PLUGIN: &str = "com.test.pick";
@@ -244,7 +247,10 @@ mod tests {
             err.contains(PERMISSION_FS_PICK),
             "错误必须点名缺失的权限位（插件作者据此知道 manifest 补什么），got: {err}"
         );
-        assert!(!err.contains("not wired"), "权限门必须早于选择器, got: {err}");
+        assert!(
+            !err.contains("not wired"),
+            "权限门必须早于选择器, got: {err}"
+        );
     }
 
     // 权限位进 CLI 生成物的断言已随漂移锁迁平台仓（票 08）：
@@ -281,7 +287,10 @@ mod tests {
         let err = platform_pick_files(ctx.as_ref(), ctx.as_ref(), picker.as_ref(), PLUGIN)
             .expect_err("未授权选择结果在无弹窗通道下必须拒绝，且不得回传路径");
         assert!(err.contains("not authorized"), "got: {err}");
-        assert!(!err.contains(&file), "拒绝时不得把路径回传给插件, got: {err}");
+        assert!(
+            !err.contains(&file),
+            "拒绝时不得把路径回传给插件, got: {err}"
+        );
 
         ctx.fs_auth_checker()
             .seed_legacy_granted_path(PLUGIN, &dir.to_string_lossy())
@@ -289,7 +298,10 @@ mod tests {
             .expect("seed granted dir");
         let json = platform_pick_files(ctx.as_ref(), ctx.as_ref(), picker.as_ref(), PLUGIN)
             .expect("已授权选择结果必须放行");
-        assert_eq!(serde_json::from_str::<Vec<String>>(&json).expect("json"), vec![file]);
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&json).expect("json"),
+            vec![file]
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -312,7 +324,10 @@ mod tests {
             .expect("seed granted dir");
         let json = platform_pick_folders(ctx.as_ref(), ctx.as_ref(), picker.as_ref(), PLUGIN)
             .expect("已授权目录必须放行");
-        assert_eq!(serde_json::from_str::<Vec<String>>(&json).expect("json"), vec![dir_str]);
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&json).expect("json"),
+            vec![dir_str]
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

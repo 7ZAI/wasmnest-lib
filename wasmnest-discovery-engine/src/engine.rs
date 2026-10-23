@@ -72,8 +72,17 @@ fn init_daemon() -> ServiceDaemon {
 /// 已知虚拟/回环网卡名模式（mDNS 机制，2026-10-22 peer-net-dissolve 归位：
 /// 原住 `wasmnest-peer-net`，本质是 mDNS 守护的接口过滤，随守护一并归属本 crate）
 const VIRTUAL_IFACE_PATTERNS: &[&str] = &[
-    "vmware", "virtualbox", "vbox", "vethernet", "hyper-v", "wsl", "docker",
-    "loopback", "loopback pseudo", "virbr", "libvirt",
+    "vmware",
+    "virtualbox",
+    "vbox",
+    "vethernet",
+    "hyper-v",
+    "wsl",
+    "docker",
+    "loopback",
+    "loopback pseudo",
+    "virbr",
+    "libvirt",
 ];
 
 /// 禁用已知虚拟/回环网卡的 mDNS 收发（枚举失败则保持默认全接口，降级不阻断）

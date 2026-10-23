@@ -155,7 +155,11 @@ fn on_manifest_load(plugin_id: &str, manifest_json: &str) -> Result<(), String> 
     let declared: Option<usize> = serde_json::from_str::<serde_json::Value>(manifest_json)
         .ok()
         .and_then(|value| value.get("ptyQuota").cloned())
-        .and_then(|value| serde_json::from_value::<Option<usize>>(value).ok().flatten());
+        .and_then(|value| {
+            serde_json::from_value::<Option<usize>>(value)
+                .ok()
+                .flatten()
+        });
     if let Some(quota) = declared {
         if quota == 0 || quota > PLUGIN_PTY_SESSIONS_CEILING_PER_PLUGIN {
             // 先判后动：拒绝时不登记（不让越界值残留在配额表）
@@ -218,8 +222,11 @@ mod manifest_quota_tests {
     #[test]
     fn quota_accepts_absent_and_in_range_rejects_out_of_range() {
         let owner = "pty-test.manifest-quota";
-        on_manifest_load(owner, r#"{"id":"com.wasmnest.quota","name":"quota","version":"1.0.0"}"#)
-            .expect("缺省即默认档，不得拒绝");
+        on_manifest_load(
+            owner,
+            r#"{"id":"com.wasmnest.quota","name":"quota","version":"1.0.0"}"#,
+        )
+        .expect("缺省即默认档，不得拒绝");
         assert_eq!(quota_of(owner), DEFAULT_MAX, "未声明 ⇒ 默认档");
 
         on_manifest_load(owner, &manifest("1")).expect("声明下界可装载");
@@ -236,7 +243,11 @@ mod manifest_quota_tests {
                 "错误必须点名越界值与字段名，got: {err}"
             );
         }
-        assert_eq!(quota_of(owner), CEILING, "被拒的声明不得改写在册配额（先判后动）");
+        assert_eq!(
+            quota_of(owner),
+            CEILING,
+            "被拒的声明不得改写在册配额（先判后动）"
+        );
     }
 }
 

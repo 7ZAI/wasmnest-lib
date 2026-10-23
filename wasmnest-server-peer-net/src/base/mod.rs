@@ -32,29 +32,26 @@ pub mod trust_store;
 
 pub(crate) mod tls;
 
-pub use cert::{CertDer, generate_self_signed_cert, verify_cert_matches_node_id};
+pub use cert::{generate_self_signed_cert, verify_cert_matches_node_id, CertDer};
 pub use discovery::{
-    CAP_FILE_TRANSFER, DISCOVERY_PROTOCOL_VERSION, DiscoveryCache, DiscoveryConfig,
-    DiscoveryDaemon, DiscoveredPeerRecord, PEER_DISCOVERY_TTL, PeerMdnsBrowse, SERVICE_TYPE,
-    SWEEP_INTERVAL, spawn_peer_mdns_daemon,
+    spawn_peer_mdns_daemon, DiscoveredPeerRecord, DiscoveryCache, DiscoveryConfig, DiscoveryDaemon, PeerMdnsBrowse,
+    CAP_FILE_TRANSFER, DISCOVERY_PROTOCOL_VERSION, PEER_DISCOVERY_TTL, SERVICE_TYPE, SWEEP_INTERVAL,
 };
 pub use error::{PeerNetError, Result};
 pub use frame::{TrustStatus, TrustStatusFrame};
 pub use identity::{NodeId, NodeIdentity};
 pub use node::{PeerNetNode, PeerNetNodeConfig, StaticPeerRecord};
 pub use shared::{
-    BrowseListing, SharedRootMeta, browse_shared_dir, list_shared_roots, pull_shared_file,
-    resolve_rel_path, saf_not_found, sort_entries, SeqReader, SharedDirEntry, SharedDirHandler,
-    SharedDirRoot, SharedSafAccess, SharedDirStore,
-};
-pub use transfer::{
-    CancelOrigin, CancelToken, FileLanding, FileMeta, IncomingFrame, OutgoingFile, PauseCmd,
-    PauseSlot, ReceivePolicy, RejectReason, TerminalState, TransferConfig, TransferEvent,
-    TransferFrame, TransferReceiveHandler, send_batch,
+    browse_shared_dir, list_shared_roots, pull_shared_file, resolve_rel_path, saf_not_found, sort_entries,
+    BrowseListing, SeqReader, SharedDirEntry, SharedDirHandler, SharedDirRoot, SharedDirStore, SharedRootMeta,
+    SharedSafAccess,
 };
 pub use transfer::batch::DirEntry;
+pub use transfer::{
+    send_batch, CancelOrigin, CancelToken, FileLanding, FileMeta, IncomingFrame, OutgoingFile, PauseCmd, PauseSlot,
+    ReceivePolicy, RejectReason, TerminalState, TransferConfig, TransferEvent, TransferFrame, TransferReceiveHandler,
+};
 pub use transport::{
-    CONFIRM_TIMEOUT, Connection, ConnectionHandler, HandlerFuture, MAX_PENDING_CONFIRMATIONS,
-    RunningNode, TrustEvent,
+    Connection, ConnectionHandler, HandlerFuture, RunningNode, TrustEvent, CONFIRM_TIMEOUT, MAX_PENDING_CONFIRMATIONS,
 };
 pub use trust_store::{TrustStore, TrustedPeerEntry};

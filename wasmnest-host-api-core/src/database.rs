@@ -56,7 +56,8 @@ pub fn parse_params_json(params_json: &str) -> Result<Vec<serde_json::Value>, St
 
 /// 解析 execute-batch 的 sqls-json（SQL 字符串数组）
 pub fn parse_sqls_json(sqls_json: &str) -> Result<Vec<String>, String> {
-    serde_json::from_str::<Vec<String>>(sqls_json).map_err(|e| format!("invalid sqls JSON array: {}", e))
+    serde_json::from_str::<Vec<String>>(sqls_json)
+        .map_err(|e| format!("invalid sqls JSON array: {}", e))
 }
 
 /// 将 JSON 参数绑定到预编译语句（1-based 索引，rusqlite 真绑定，防注入）
@@ -79,7 +80,9 @@ pub fn bind_json_params(
             }
             serde_json::Value::String(s) => stmt.raw_bind_parameter(idx, s.as_str())?,
             // 数组/对象 fallback：序列化为 JSON 字符串存储
-            other => stmt.raw_bind_parameter(idx, serde_json::to_string(other).unwrap_or_default())?,
+            other => {
+                stmt.raw_bind_parameter(idx, serde_json::to_string(other).unwrap_or_default())?
+            }
         }
     }
     Ok(())
@@ -237,7 +240,9 @@ pub fn column_to_json(row: &rusqlite::Row<'_>, col_index: usize) -> serde_json::
     }
     // 尝试浮点数
     if let Ok(v) = row.get::<_, f64>(col_index) {
-        return serde_json::Value::Number(serde_json::Number::from_f64(v).unwrap_or(serde_json::Number::from(0)));
+        return serde_json::Value::Number(
+            serde_json::Number::from_f64(v).unwrap_or(serde_json::Number::from(0)),
+        );
     }
     // 尝试字符串
     if let Ok(v) = row.get::<_, String>(col_index) {
@@ -332,9 +337,17 @@ pub fn reject_bare_transaction_control(sql: &str) -> Result<(), String> {
     // 剥离前导注释（-- 行注释 / /* 块注释），最多剥 8 层防病态输入
     for _ in 0..8 {
         if let Some(rest) = s.strip_prefix("--") {
-            s = rest.split_once('\n').map(|(_, after)| after).unwrap_or("").trim_start();
+            s = rest
+                .split_once('\n')
+                .map(|(_, after)| after)
+                .unwrap_or("")
+                .trim_start();
         } else if let Some(rest) = s.strip_prefix("/*") {
-            s = rest.split_once("*/").map(|(_, after)| after).unwrap_or("").trim_start();
+            s = rest
+                .split_once("*/")
+                .map(|(_, after)| after)
+                .unwrap_or("")
+                .trim_start();
         } else {
             break;
         }
@@ -344,7 +357,10 @@ pub fn reject_bare_transaction_control(sql: &str) -> Result<(), String> {
     let is_bare_transaction = matches!(
         first.as_deref(),
         Some("begin" | "commit" | "end" | "rollback" | "savepoint" | "release")
-    ) || matches!(last.as_deref(), Some("commit" | "rollback" | "end" | "release"));
+    ) || matches!(
+        last.as_deref(),
+        Some("commit" | "rollback" | "end" | "release")
+    );
     if is_bare_transaction {
         return Err(
             "database error: bare transaction control statements are rejected at execute level \
@@ -379,11 +395,12 @@ pub fn execute_batch_on_conn(conn: &rusqlite::Connection, sqls: &[String]) -> Re
         let affected = tx
             .execute(sql.as_str(), [])
             .map_err(|e| format!("execute '{}': {}", sql, e))?;
-        total_affected = total_affected
-            .checked_add(affected as u32)
-            .ok_or_else(|| "database error: execute-batch affected row count overflow".to_string())?;
+        total_affected = total_affected.checked_add(affected as u32).ok_or_else(|| {
+            "database error: execute-batch affected row count overflow".to_string()
+        })?;
     }
-    tx.commit().map_err(|e| format!("commit transaction: {}", e))?;
+    tx.commit()
+        .map_err(|e| format!("commit transaction: {}", e))?;
     Ok(total_affected)
 }
 
@@ -402,7 +419,8 @@ mod tests {
     #[test]
     fn params_roundtrip() {
         let conn = mem_conn();
-        conn.execute("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)", []).unwrap();
+        conn.execute("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)", [])
+            .unwrap();
         let affected = execute_with_params(
             &conn,
             "INSERT INTO kv (k, v) VALUES (?1, ?2)",
@@ -437,7 +455,8 @@ mod tests {
             push_row_capped("p1", &mut rows, &mut bytes, serde_json::json!({"x": 1})).unwrap();
         }
         push_row_capped("p1", &mut rows, &mut bytes, serde_json::json!({"x": 1})).unwrap();
-        let err = push_row_capped("p1", &mut rows, &mut bytes, serde_json::json!({"x": 1})).unwrap_err();
+        let err =
+            push_row_capped("p1", &mut rows, &mut bytes, serde_json::json!({"x": 1})).unwrap_err();
         assert!(err.contains("rows limit"), "got: {err}");
     }
 
@@ -460,7 +479,8 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO t VALUES (42, 3.5, 'hi', 1, x'00ff', NULL)", []).unwrap();
+        conn.execute("INSERT INTO t VALUES (42, 3.5, 'hi', 1, x'00ff', NULL)", [])
+            .unwrap();
         let out = query_to_json("p1", &conn, "SELECT * FROM t").unwrap();
         let row = &out[0];
         assert_eq!(row["i"], 42);
@@ -487,7 +507,8 @@ mod tests {
     #[test]
     fn batch_transaction_semantics() {
         let conn = mem_conn();
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", []).unwrap();
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", [])
+            .unwrap();
         let ok = execute_batch_on_conn(
             &conn,
             &[
@@ -506,8 +527,14 @@ mod tests {
             ],
         )
         .unwrap_err();
-        assert!(err.contains("UNIQUE") || err.contains("duplicate"), "got: {err}");
-        assert_eq!(query_to_json("p1", &conn, "SELECT COUNT(*) AS n FROM t").unwrap()[0]["n"], 2);
+        assert!(
+            err.contains("UNIQUE") || err.contains("duplicate"),
+            "got: {err}"
+        );
+        assert_eq!(
+            query_to_json("p1", &conn, "SELECT COUNT(*) AS n FROM t").unwrap()[0]["n"],
+            2
+        );
         // 内部裸事务拒绝
         assert!(execute_batch_on_conn(&conn, &["BEGIN".to_string()]).is_err());
         assert!(execute_batch_on_conn(
@@ -537,11 +564,13 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("timed out"), "got: {err}");
         // handler 已卸载：后续普通执行不受超时残留影响
-        assert!(with_statement_timeout("p1", &conn, Duration::from_secs(60), |c| {
-            c.query_row("SELECT 2", [], |row| row.get::<_, i64>(0))
-                .map(|v| v)
-                .map_err(|e| e.to_string())
-        })
-        .is_ok());
+        assert!(
+            with_statement_timeout("p1", &conn, Duration::from_secs(60), |c| {
+                c.query_row("SELECT 2", [], |row| row.get::<_, i64>(0))
+                    .map(|v| v)
+                    .map_err(|e| e.to_string())
+            })
+            .is_ok()
+        );
     }
 }

@@ -51,7 +51,8 @@
 
 use crate::db::Database;
 use crate::security::auth_policy::{
-    AuthPolicyStore, AuthRecordMatch, AuthRecordSource, AuthResource, GrantOutcome, AUTH_EFFECT_ALLOW, AUTH_EFFECT_DENY,
+    AuthPolicyStore, AuthRecordMatch, AuthRecordSource, AuthResource, GrantOutcome,
+    AUTH_EFFECT_ALLOW, AUTH_EFFECT_DENY,
 };
 use crate::security::strategy::{self, StrategyStep, Tier};
 use std::collections::HashMap;
@@ -326,7 +327,11 @@ impl NetworkAuthChecker {
     ///
     /// `Err` 是 fail-visible 的两类情况：URL 不可归一化、库读失败——都不降级放行
     /// （spec §4.2 硬闸门 3：规范化失败即拒）。
-    pub async fn authorize_outbound(&self, plugin_id: &str, url: &str) -> crate::Result<OutboundVerdict> {
+    pub async fn authorize_outbound(
+        &self,
+        plugin_id: &str,
+        url: &str,
+    ) -> crate::Result<OutboundVerdict> {
         let Some(target) = normalize_target(url) else {
             // 错误串**不含**原始 url：query 里的 token 不进日志 / 错误信封
             return Err(crate::AppError::Internal(
@@ -334,7 +339,10 @@ impl NetworkAuthChecker {
             ));
         };
 
-        let records = self.store.records_for_match(plugin_id, AuthResource::Network).await?;
+        let records = self
+            .store
+            .records_for_match(plugin_id, AuthResource::Network)
+            .await?;
 
         // 第 1 步：硬拒绝记录优先于一切放行路径（spec §6.1）
         if records
@@ -400,7 +408,10 @@ impl NetworkAuthChecker {
         }
 
         // 第 4 步：询问用户（未记录目标 = 未授权）
-        match self.prompt(plugin_id, &target, strategy.lands_allow_record).await {
+        match self
+            .prompt(plugin_id, &target, strategy.lands_allow_record)
+            .await
+        {
             NetworkDecision::AllowOnce => {
                 tracing::info!(
                     plugin_id = %plugin_id,
@@ -436,13 +447,20 @@ impl NetworkAuthChecker {
     }
 
     /// [`Self::is_granted`] 的结构化版本（带 origin / 原因，供错误文案用）
-    pub async fn authorize_outbound_quiet(&self, plugin_id: &str, url: &str) -> crate::Result<OutboundVerdict> {
+    pub async fn authorize_outbound_quiet(
+        &self,
+        plugin_id: &str,
+        url: &str,
+    ) -> crate::Result<OutboundVerdict> {
         let Some(target) = normalize_target(url) else {
             return Err(crate::AppError::Internal(
                 "网络出站授权：URL 不可归一化（缺 scheme / host / 端口），已拒绝".to_string(),
             ));
         };
-        let records = self.store.records_for_match(plugin_id, AuthResource::Network).await?;
+        let records = self
+            .store
+            .records_for_match(plugin_id, AuthResource::Network)
+            .await?;
         if records
             .iter()
             .any(|row| row.effect == AUTH_EFFECT_DENY && record_covers(row, &target))
@@ -664,7 +682,12 @@ impl NetworkAuthChecker {
     /// 假 ⇒ 应答「允许」只放行本批、不落账（那条记录没人会读，落了等于在管理界面
     /// 谎称「用户已授权」）。合并窗口在**所有档位**下都生效（票 06 第二条）——否则
     /// 「总是询问」在 agent-hub 一次几十个请求的刷新里会变成几十次弹窗。
-    async fn prompt(&self, plugin_id: &str, target: &NormalizedTarget, lands_allow_record: bool) -> NetworkDecision {
+    async fn prompt(
+        &self,
+        plugin_id: &str,
+        target: &NormalizedTarget,
+        lands_allow_record: bool,
+    ) -> NetworkDecision {
         let key = PromptKey {
             plugin_id: plugin_id.to_string(),
             origin: target.origin.clone(),
@@ -712,7 +735,10 @@ impl NetworkAuthChecker {
                             lands_allow_record,
                         },
                     );
-                    Slot::Fresh { request_id, reply: rx }
+                    Slot::Fresh {
+                        request_id,
+                        reply: rx,
+                    }
                 }
             }
         };
@@ -799,7 +825,9 @@ impl NetworkAuthChecker {
     /// 丢弃本询问（仅当条目仍属该 request_id；已被新询问替换则不动）
     async fn drop_prompt_if_current(&self, key: &PromptKey, request_id: &str) {
         let mut prompts = self.prompts.lock().await;
-        let owned_by_request = prompts.get(key).is_some_and(|entry| entry.request_id == request_id);
+        let owned_by_request = prompts
+            .get(key)
+            .is_some_and(|entry| entry.request_id == request_id);
         if owned_by_request {
             prompts.remove(key);
         }

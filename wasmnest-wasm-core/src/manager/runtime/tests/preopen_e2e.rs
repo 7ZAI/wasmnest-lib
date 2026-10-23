@@ -24,7 +24,9 @@ fn test_wasi_preopen_std_fs_e2e() {
     // 组件 ctor 不触发 wasi 文件访问，故此时有 handle 仍安全。
     let (mut plugin, dir) = rt.block_on(async {
         // 授权插件（storage 权限用于 seed fs_granted_paths）
-        host_ctx.permission.grant_permissions(pid, &["storage".to_string()]);
+        host_ctx
+            .permission
+            .grant_permissions(pid, &["storage".to_string()]);
         let dir = tempfile::tempdir().expect("tempdir");
         crate::host_api::storage::storage_set(
             &crate::host_api::sqlite::ports_for(&host_ctx),
@@ -35,7 +37,9 @@ fn test_wasi_preopen_std_fs_e2e() {
         .expect("seed granted path");
 
         // 实例化：组件导入 wasi 接口，宿主按声明（授权过滤后）preopen /data
-        let declared = vec![WasiPreopenDir::writable(dir.path().to_string_lossy().to_string())];
+        let declared = vec![WasiPreopenDir::writable(
+            dir.path().to_string_lossy().to_string(),
+        )];
         let plugin = wasm_runtime
             .instantiate_component(&component, pid, host_ctx.clone(), &declared, None)
             .expect("instantiate wasi test component");
@@ -75,7 +79,9 @@ fn test_wasi_preopen_std_fs_e2e() {
         );
 
         // 3. 列举 preopen 根目录，demo.txt 可见
-        let r = plugin.invoke_command("wasi-test.list", "{}").expect("list command");
+        let r = plugin
+            .invoke_command("wasi-test.list", "{}")
+            .expect("list command");
         let entries = serde_json::from_str::<serde_json::Value>(&r)
             .unwrap()
             .get("entries")
@@ -97,7 +103,10 @@ fn test_wasi_preopen_std_fs_e2e() {
             .get("leaked")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        assert!(!leaked, "WASI sandbox must block access outside preopen root");
+        assert!(
+            !leaked,
+            "WASI sandbox must block access outside preopen root"
+        );
     })
     .join()
     .expect("guest call thread panicked");
@@ -123,11 +132,14 @@ fn test_wasi_preopen_read_only_std_fs_e2e() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (mut plugin, dir) = rt.block_on(async {
-        host_ctx.permission.grant_permissions(pid, &["storage".to_string()]);
+        host_ctx
+            .permission
+            .grant_permissions(pid, &["storage".to_string()]);
         let dir = tempfile::tempdir().expect("tempdir");
         // 宿主侧预置可读内容：只读档下 guest 无从造出这个文件，读到它即证明
         // 「挂载生效 + 读放行」，而不是「写失败顺带什么都读不到」
-        std::fs::write(dir.path().join("demo.txt"), "preexisting-from-host").expect("seed host file");
+        std::fs::write(dir.path().join("demo.txt"), "preexisting-from-host")
+            .expect("seed host file");
         crate::host_api::storage::storage_set(
             &crate::host_api::sqlite::ports_for(&host_ctx),
             pid,
@@ -136,7 +148,9 @@ fn test_wasi_preopen_read_only_std_fs_e2e() {
         )
         .expect("seed granted path");
 
-        let declared = vec![WasiPreopenDir::read_only(dir.path().to_string_lossy().to_string())];
+        let declared = vec![WasiPreopenDir::read_only(
+            dir.path().to_string_lossy().to_string(),
+        )];
         let plugin = wasm_runtime
             .instantiate_component(&component, pid, host_ctx.clone(), &declared, None)
             .expect("instantiate wasi test component with read-only preopen");
@@ -177,7 +191,9 @@ fn test_wasi_preopen_read_only_std_fs_e2e() {
         );
 
         // 3. 列举放行：preopen 根对 guest 可见
-        let r = plugin.invoke_command("wasi-test.list", "{}").expect("list command");
+        let r = plugin
+            .invoke_command("wasi-test.list", "{}")
+            .expect("list command");
         let entries = serde_json::from_str::<serde_json::Value>(&r)
             .unwrap()
             .get("entries")
@@ -192,7 +208,8 @@ fn test_wasi_preopen_read_only_std_fs_e2e() {
 
         // 4. 宿主侧字节未被动过（写被拒不是「写到了别处」）
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("demo.txt")).expect("host file must still exist"),
+            std::fs::read_to_string(dir.path().join("demo.txt"))
+                .expect("host file must still exist"),
             "preexisting-from-host"
         );
     })
@@ -249,7 +266,10 @@ fn test_wasip3_fixture_async_closure() {
         .unwrap_or("")
         .to_string();
     assert_eq!(hex1.len(), 64, "32 字节 → 64 hex 字符");
-    assert!(hex1.chars().any(|c| c != '0'), "entropy must not be all zeros");
+    assert!(
+        hex1.chars().any(|c| c != '0'),
+        "entropy must not be all zeros"
+    );
 
     // 同一实例第二次调用：结果必须不同（每次新鲜熵，非缓存/伪随机重复）
     let r2 = plugin

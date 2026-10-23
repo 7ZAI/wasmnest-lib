@@ -71,14 +71,14 @@ pub mod config;
 /// 契约包名单点派生（ADR 0051 D3/D4）：导出名 / 接口全名的版本后缀由
 /// `wasmnest-contract` crate 经本模块集中注入，消费点只传接口名 + 函数名
 pub mod contract;
-/// 引擎面：宿主主库（schema.sql 单一事实源，ADR 0036「机制与真源同侧」）
-pub mod db;
 /// crate 边界锁共享面（票 05 落点）：拆分产物登记表 + 扫描根单一事源上提本 crate
 ///
 /// 常编译（非 `#[cfg(test)]`）：lib 侧 `server/crate_boundary_lock.rs` 在**非 test
 /// 构建**里也要经 `wasmnest_wasm_core::crate_boundary_lock` 取 `SPLIT_CRATES` 登记表
 /// （lib → crate 单向引用，票 05 收口；lib 的 `cargo check` / 全量断言都依赖它）。
 pub mod crate_boundary_lock;
+/// 引擎面：宿主主库（schema.sql 单一事实源，ADR 0036「机制与真源同侧」）
+pub mod db;
 /// 宿主对外接口模块：WASM 宿主能力实现（host-* 原语，权限校验 + 宿主服务调用，
 /// 由 `manager::runtime::core_binding` 的 core 交集绑定逐接口调用）+ 前端 Tauri
 /// 命令桥（api_bridge，权限校验后执行操作）。
@@ -176,10 +176,7 @@ mod tests {
     /// 两处落点不同 crate 内模块，故各持一份并各自在文件头注记来源（双份而非抽取到
     /// 别处：`engine.rs` 是常编译生产模块、此处是 `#[cfg(test)]`，抽公共会让生产面
     /// 多一个只为测试存在的常量）。
-    const SHELL_FILES: &[&str] = &[
-        "src/manager/runtime.rs",
-        "src/manager/runtime/component.rs",
-    ];
+    const SHELL_FILES: &[&str] = &["src/manager/runtime.rs", "src/manager/runtime/component.rs"];
 
     /// 本 crate 禁止出现的模块声明形态（PTY 已整面迁出）
     ///
@@ -468,7 +465,8 @@ mod tests {
     fn api_call_wit_impl_must_not_return_to_wasm_core() {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let path = manifest_dir.join("src/host_api/api.rs");
-        let source = std::fs::read_to_string(&path).expect("src/host_api/api.rs 必须在场（回复道编排的住所）");
+        let source = std::fs::read_to_string(&path)
+            .expect("src/host_api/api.rs 必须在场（回复道编排的住所）");
         // 正面锚点（防空转）：编排机制本体必须在，否则本锁可能对着一个空文件恒绿
         assert!(
             source.contains("HOST_API_CALLER_ID") && source.contains("ReplyHandler"),
@@ -514,8 +512,10 @@ mod tests {
         let fs_src = std::fs::read_to_string(manifest_dir.join("src/host_api/fs.rs"))
             .expect("src/host_api/fs.rs 必须在场（交集 fs 实现 + FsUnitExecutor）");
         assert!(
-            fs_src.contains("pub fn fs_read_dir") && fs_src.contains("pub fn fs_canonicalize")
-                && fs_src.contains("pub fn fs_stat") && fs_src.contains("pub(crate) fn fs_read"),
+            fs_src.contains("pub fn fs_read_dir")
+                && fs_src.contains("pub fn fs_canonicalize")
+                && fs_src.contains("pub fn fs_stat")
+                && fs_src.contains("pub(crate) fn fs_read"),
             "src/host_api/fs.rs 必须仍含交集 fs 实现与提 pub 的三扩展函数实现本体（本锁正面锚点）"
         );
         let platform_src = std::fs::read_to_string(manifest_dir.join("src/host_api/platform.rs"))
@@ -606,8 +606,9 @@ mod tests {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
         // 正面锚点：两条注册通路必须在场
-        let core_binding = std::fs::read_to_string(manifest_dir.join("src/manager/runtime/core_binding.rs"))
-            .expect("src/manager/runtime/core_binding.rs 必须在场（core 交集绑定）");
+        let core_binding =
+            std::fs::read_to_string(manifest_dir.join("src/manager/runtime/core_binding.rs"))
+                .expect("src/manager/runtime/core_binding.rs 必须在场（core 交集绑定）");
         assert!(
             core_binding.contains("add_to_linker"),
             "core_binding.rs 必须仍含 add_to_linker（内核唯一的交集注册通路，本锁正面锚点）"
@@ -633,7 +634,9 @@ mod tests {
         let mut violations: Vec<String> = Vec::new();
         let mut stack = vec![manifest_dir.join("src")];
         while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
@@ -647,14 +650,21 @@ mod tests {
                 if path == manifest_dir.join("src/lib.rs") {
                     continue;
                 }
-                let Ok(content) = std::fs::read_to_string(&path) else { continue };
+                let Ok(content) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
                 for (idx, raw_line) in content.lines().enumerate() {
                     if raw_line.trim_start().starts_with("//") {
                         continue;
                     }
                     for needle in needles {
                         if raw_line.contains(needle) {
-                            violations.push(format!("{}:{}: {}", path.display(), idx + 1, raw_line.trim()));
+                            violations.push(format!(
+                                "{}:{}: {}",
+                                path.display(),
+                                idx + 1,
+                                raw_line.trim()
+                            ));
                         }
                     }
                 }

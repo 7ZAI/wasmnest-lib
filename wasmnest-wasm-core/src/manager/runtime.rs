@@ -83,7 +83,9 @@ pub(crate) use component::{InstanceMeta, OptionalExports};
 // 定义已迁 `crate::host_api::context`（host_api 消费方家园）；以下 re-export
 // 保持历史路径 `manager::runtime::WasmHostContext` 等编译绿——manager→host_api 合法
 // 方向，后续迭代按需清理。
-pub use crate::host_api::context::{CapabilityProvider, PluginServices, ProcessRegistry, WasmHostContext};
+pub use crate::host_api::context::{
+    CapabilityProvider, PluginServices, ProcessRegistry, WasmHostContext,
+};
 // `WasmPluginState` / `StoreSpec` 连同 `WasiView` 与 `ResourceLimiter` 实现整体搬入
 // `wasmnest-host-kit`（wasm-core-lib-split 票 03）：它们是**插件实例状态的机制面**，
 // 且必须与「能力 crate 能命名状态类型」这一硬约束同 crate。可见性以 `pub use`
@@ -112,16 +114,18 @@ use crate::storage::PluginStorage;
 // 等纯函数）亦在其中——桌面为真源、移动侧消费同一份。`tests/engine_config.rs`
 // 的判据（配置→wasmtime 的逐项映射、逃生舱锁定项重申）按名消费同一批函数。
 #[cfg(test)]
-use engine::{build_engine_config, wasmtime_backtrace_details, wasmtime_opt_level, wasmtime_profiling};
+use engine::{
+    build_engine_config, wasmtime_backtrace_details, wasmtime_opt_level, wasmtime_profiling,
+};
 // 异步桥（`block_on_async`）已中立化到 core-runtime-util：本模块与它的消费者
 // （host_api / security / task 等）同为其使用方，不再由本模块定义（票 01）；
 // 本模块仅测试代码使用它，故 cfg(test) 门控（非 test 构建零 unused import）
+use crate::config::ResourceOverrides;
+use crate::manifest::WasiPreopenDir;
+use crate::monitor::{LifecycleEvent, MetricsRegistry};
 #[cfg(test)]
 use crate::runtime_util::block_on_async;
 use crate::security::fs_auth::FsAuthChecker;
-use crate::monitor::{LifecycleEvent, MetricsRegistry};
-use crate::config::ResourceOverrides;
-use crate::manifest::WasiPreopenDir;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::Manager;
@@ -375,8 +379,9 @@ impl WasmRuntime {
             engine::reassert_locked_knobs(&mut config, &core_config);
             tracing::info!("WASM engine customizer applied (locked knobs re-asserted)");
         }
-        let engine = Engine::new(&config)
-            .map_err(|e| crate::AppError::Plugin(format!("Failed to initialize WASM engine: {}", e)))?;
+        let engine = Engine::new(&config).map_err(|e| {
+            crate::AppError::Plugin(format!("Failed to initialize WASM engine: {}", e))
+        })?;
         let mut linker = wasmtime::component::Linker::new(&engine);
 
         // 注册已接线的 Component import 接口（实现见宿主侧域实现 + component）
@@ -400,7 +405,11 @@ impl WasmRuntime {
             }
         }
 
-        let fs_auth = Arc::new(FsAuthChecker::new(storage.clone(), app_handle, first_party_dirs));
+        let fs_auth = Arc::new(FsAuthChecker::new(
+            storage.clone(),
+            app_handle,
+            first_party_dirs,
+        ));
 
         let monitor = Arc::new(MetricsRegistry::new());
         // task 段快照源注册（spec 票 02 去环）：monitor 经注册回调取 host-task
@@ -444,7 +453,10 @@ impl WasmRuntime {
 
     /// 当前内核配置快照
     pub fn config(&self) -> CoreConfig {
-        self.config.read().expect("core config lock poisoned").clone()
+        self.config
+            .read()
+            .expect("core config lock poisoned")
+            .clone()
     }
 
     /// 运行时覆盖内核配置：只影响覆盖后新建立的 Store（Engine 参数构建期已固化）
@@ -486,15 +498,19 @@ impl WasmRuntime {
 
     /// 从字节流编译 WASM 组件（Component Model，迁移阶段 A）
     pub fn compile_component(&self, bytes: &[u8]) -> crate::Result<wasmtime::component::Component> {
-        wasmtime::component::Component::from_binary(&self.engine, bytes)
-            .map_err(|e| crate::AppError::Plugin(format!("Failed to compile WASM component: {}", e)))
+        wasmtime::component::Component::from_binary(&self.engine, bytes).map_err(|e| {
+            crate::AppError::Plugin(format!("Failed to compile WASM component: {}", e))
+        })
     }
 
     /// 从文件编译 WASM 组件（带 AOT 缓存，与 core 路径同构）
     ///
     /// 机制本体在 [`engine`]（双端唯一一份）；本方法只把形态面（Engine 句柄 +
     /// 宿主 cache 目录）传进去。
-    pub fn compile_component_from_file(&self, path: &Path) -> crate::Result<wasmtime::component::Component> {
+    pub fn compile_component_from_file(
+        &self,
+        path: &Path,
+    ) -> crate::Result<wasmtime::component::Component> {
         engine::compile_component_from_file(&self.engine, self.aot_cache_dir.as_deref(), path)
     }
 
@@ -512,7 +528,11 @@ impl WasmRuntime {
         resource_overrides: Option<&ResourceOverrides>,
     ) -> crate::Result<LoadedWasmPlugin> {
         let bytes = std::fs::read(path).map_err(|e| {
-            crate::AppError::Plugin(format!("Failed to read WASM artifact '{}': {}", path.display(), e))
+            crate::AppError::Plugin(format!(
+                "Failed to read WASM artifact '{}': {}",
+                path.display(),
+                e
+            ))
         })?;
         let component = self.compile_component(&bytes)?;
         self.instantiate_component(
@@ -683,7 +703,8 @@ mod tests {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let plugin_dir = manifest_dir.join("fixtures/wasi-test");
 
-        let module_path = fixture_target::artifact("wasm32-wasip2", "release", "wasmnest_plugin_wasi_test");
+        let module_path =
+            fixture_target::artifact("wasm32-wasip2", "release", "wasmnest_plugin_wasi_test");
 
         if module_path.exists() {
             // 源文件含契约真源：夹具绑定 `wit/core.wit`，契约变了必须重建，
@@ -706,7 +727,8 @@ mod tests {
             });
 
             if !needs_rebuild {
-                return std::fs::read(&module_path).expect("Failed to read WASI test component module");
+                return std::fs::read(&module_path)
+                    .expect("Failed to read WASI test component module");
             }
         }
 
@@ -745,7 +767,14 @@ mod tests {
         static READY: OnceLock<Option<bool>> = OnceLock::new();
         match READY.get_or_init(|| {
             let out = std::process::Command::new("rustup")
-                .args(["run", WASIP3_NIGHTLY, "rustup", "target", "list", "--installed"])
+                .args([
+                    "run",
+                    WASIP3_NIGHTLY,
+                    "rustup",
+                    "target",
+                    "list",
+                    "--installed",
+                ])
                 .output()
                 .ok()?;
             Some(
@@ -795,7 +824,8 @@ mod tests {
             });
             if !needs_rebuild {
                 return Some(
-                    std::fs::read(&module_path).expect("Failed to read cached wasip3 test component"),
+                    std::fs::read(&module_path)
+                        .expect("Failed to read cached wasip3 test component"),
                 );
             }
         }

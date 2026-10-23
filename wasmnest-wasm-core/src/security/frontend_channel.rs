@@ -83,7 +83,10 @@ impl FrontendChannelRegistry {
     pub fn reset(&self, webview_label: &str) -> usize {
         let mut domains = self.domains.lock().unwrap_or_else(|e| e.into_inner());
         let removed = domains.remove(webview_label);
-        let had_session = removed.as_ref().map(|d| d.loader_session.is_some()).unwrap_or(false);
+        let had_session = removed
+            .as_ref()
+            .map(|d| d.loader_session.is_some())
+            .unwrap_or(false);
         let revoked = removed.map(|d| d.tokens.len()).unwrap_or(0);
         tracing::debug!(
             webview = %webview_label,
@@ -127,7 +130,12 @@ impl FrontendChannelRegistry {
     /// **校验与登记同临界区**（S-02）：loader 会话校验通过到令牌写入之间
     /// 不再有 `reset()` / `revoke_plugin()` 插缝——夹缝期清掉的域不会被
     /// 过期令牌重新填满。
-    pub fn issue_token(&self, webview_label: &str, loader_session: &str, plugin_id: &str) -> crate::Result<String> {
+    pub fn issue_token(
+        &self,
+        webview_label: &str,
+        loader_session: &str,
+        plugin_id: &str,
+    ) -> crate::Result<String> {
         let mut domains = self.domains.lock().unwrap_or_else(|e| e.into_inner());
         let domain = domains.entry(webview_label.to_string()).or_default();
         if domain.loader_session.as_deref() != Some(loader_session) {
@@ -137,7 +145,10 @@ impl FrontendChannelRegistry {
         }
         let token = generate_credential();
         // 先摘旧令牌、再登记新令牌（同一临界区内）
-        if let Some(old) = domain.plugin_token.insert(plugin_id.to_string(), token.clone()) {
+        if let Some(old) = domain
+            .plugin_token
+            .insert(plugin_id.to_string(), token.clone())
+        {
             domain.tokens.remove(&old);
         }
         domain.tokens.insert(token.clone(), plugin_id.to_string());
@@ -193,7 +204,12 @@ impl FrontendChannelRegistry {
     /// - 宿主面凭证（loader 会话密钥）→ 放行任意目标（宿主配置页 / 宿主 `pluginInvoke` 的职权）；
     /// - 插件面令牌 → 目标必须等于令牌身份，否则拒绝；
     /// - 凭证无效 / 属于其它窗口的域 → 拒绝（**fail-closed**，绝不落回「按参数 plugin_id 放行」）。
-    pub fn authorize(&self, webview_label: &str, target_plugin_id: &str, credential: &str) -> crate::Result<()> {
+    pub fn authorize(
+        &self,
+        webview_label: &str,
+        target_plugin_id: &str,
+        credential: &str,
+    ) -> crate::Result<()> {
         match self.resolve(webview_label, credential) {
             Some(ChannelIdentity::Host) => Ok(()),
             Some(ChannelIdentity::Plugin(caller)) => {
@@ -269,12 +285,17 @@ mod tests {
         assert!(registry.issue_token(MAIN, "forged", "com.test.a").is_err());
         assert!(registry.issue_token(MAIN, "", "com.test.a").is_err());
 
-        let token = registry.issue_token(MAIN, &session, "com.test.a").expect("issue ok");
+        let token = registry
+            .issue_token(MAIN, &session, "com.test.a")
+            .expect("issue ok");
         assert_eq!(
             registry.resolve(MAIN, &token),
             Some(ChannelIdentity::Plugin("com.test.a".into()))
         );
-        assert_eq!(registry.resolve(MAIN, &session), Some(ChannelIdentity::Host));
+        assert_eq!(
+            registry.resolve(MAIN, &session),
+            Some(ChannelIdentity::Host)
+        );
         assert_eq!(registry.resolve(MAIN, "forged"), None);
         assert_eq!(registry.resolve(MAIN, ""), None);
     }
@@ -296,7 +317,10 @@ mod tests {
         registry.revoke_plugin("com.test.a");
         assert_eq!(registry.resolve(MAIN, &second), None, "停用后令牌必须失效");
         // 只回收目标插件：宿主密钥与其它插件不受影响
-        assert_eq!(registry.resolve(MAIN, &session), Some(ChannelIdentity::Host));
+        assert_eq!(
+            registry.resolve(MAIN, &session),
+            Some(ChannelIdentity::Host)
+        );
         let other = registry.issue_token(MAIN, &session, "com.test.b").unwrap();
         registry.revoke_plugin("com.test.a");
         assert_eq!(
@@ -317,9 +341,15 @@ mod tests {
             !registry.verify_loader_session(MAIN, &session),
             "页面加载后旧 loader 密钥失效"
         );
-        assert_eq!(registry.resolve(MAIN, &token), None, "页面加载后插件令牌失效");
+        assert_eq!(
+            registry.resolve(MAIN, &token),
+            None,
+            "页面加载后插件令牌失效"
+        );
         // 新页面加载可重新签发（dev 刷新路径）
-        let fresh = registry.issue_loader_session(MAIN).expect("reissue after reset");
+        let fresh = registry
+            .issue_loader_session(MAIN)
+            .expect("reissue after reset");
         assert_ne!(fresh, session);
     }
 
@@ -343,23 +373,37 @@ mod tests {
             .collect();
 
         // 终端窗口加载：reset 只清 TERMINAL 域（该域此前为空 → 回收 0）
-        assert_eq!(registry.reset(TERMINAL), 0, "reset 不得越域回收其它窗口的令牌");
+        assert_eq!(
+            registry.reset(TERMINAL),
+            0,
+            "reset 不得越域回收其它窗口的令牌"
+        );
         // 终端窗口 bootstrap 签发自己的密钥与令牌
         let terminal_session = registry.issue_loader_session(TERMINAL).unwrap();
-        let terminal_token = registry.issue_token(TERMINAL, &terminal_session, "com.test.a").unwrap();
+        let terminal_token = registry
+            .issue_token(TERMINAL, &terminal_session, "com.test.a")
+            .unwrap();
         assert_ne!(terminal_session, main_session, "两窗口密钥必须相互独立");
-        assert_ne!(terminal_token, main_tokens[0], "两窗口的同插件令牌必须相互独立");
+        assert_ne!(
+            terminal_token, main_tokens[0],
+            "两窗口的同插件令牌必须相互独立"
+        );
 
         // 主窗口凭证全部仍然有效（修复前这里全数失效 → 本次 bug）
         assert!(registry.verify_loader_session(MAIN, &main_session));
-        assert_eq!(registry.resolve(MAIN, &main_session), Some(ChannelIdentity::Host));
+        assert_eq!(
+            registry.resolve(MAIN, &main_session),
+            Some(ChannelIdentity::Host)
+        );
         for token in &main_tokens {
             assert!(
                 registry.resolve(MAIN, token).is_some(),
                 "主窗口插件令牌不得因其它窗口加载而失效"
             );
         }
-        assert!(registry.authorize(MAIN, "com.test.a", &main_tokens[0]).is_ok());
+        assert!(registry
+            .authorize(MAIN, "com.test.a", &main_tokens[0])
+            .is_ok());
 
         // 反向：主窗口刷新（reset MAIN）后终端窗口凭证不受影响
         registry.reset(MAIN);
@@ -376,20 +420,30 @@ mod tests {
     fn credentials_do_not_cross_webview_domains() {
         let registry = FrontendChannelRegistry::new();
         let main_session = registry.issue_loader_session(MAIN).unwrap();
-        let main_token = registry.issue_token(MAIN, &main_session, "com.test.a").unwrap();
+        let main_token = registry
+            .issue_token(MAIN, &main_session, "com.test.a")
+            .unwrap();
         let terminal_session = registry.issue_loader_session(TERMINAL).unwrap();
 
         // 主窗口的令牌拿到终端窗口用 → 不可解析、不可授权
         assert_eq!(registry.resolve(TERMINAL, &main_token), None);
-        assert!(registry.authorize(TERMINAL, "com.test.a", &main_token).is_err());
+        assert!(registry
+            .authorize(TERMINAL, "com.test.a", &main_token)
+            .is_err());
         // 主窗口的 loader 密钥拿到终端窗口同样无效（也不能替终端窗口签令牌）
         assert_eq!(registry.resolve(TERMINAL, &main_session), None);
-        assert!(registry.issue_token(TERMINAL, &main_session, "com.test.a").is_err());
+        assert!(registry
+            .issue_token(TERMINAL, &main_session, "com.test.a")
+            .is_err());
         // 各自域内正常
         assert!(registry.authorize(MAIN, "com.test.a", &main_token).is_ok());
-        assert!(registry.issue_token(TERMINAL, &terminal_session, "com.test.a").is_ok());
+        assert!(registry
+            .issue_token(TERMINAL, &terminal_session, "com.test.a")
+            .is_ok());
         // 跨插件目标仍按域内身份裁决（终端窗口令牌不得冒充主窗口插件身份）
-        assert!(registry.authorize(TERMINAL, "com.test.b", &main_token).is_err());
+        assert!(registry
+            .authorize(TERMINAL, "com.test.b", &main_token)
+            .is_err());
     }
 
     /// 同 label 窗口重建（终端窗口关闭后再开同一会话）：旧域被新页面加载重置，可重新签发
@@ -397,11 +451,17 @@ mod tests {
     fn recreated_window_with_same_label_gets_fresh_session() {
         let registry = FrontendChannelRegistry::new();
         let first_session = registry.issue_loader_session(TERMINAL).unwrap();
-        let first_token = registry.issue_token(TERMINAL, &first_session, "com.test.a").unwrap();
+        let first_token = registry
+            .issue_token(TERMINAL, &first_session, "com.test.a")
+            .unwrap();
 
         // 窗口销毁重建 → 再次页面加载：域内旧凭证先被重置
         assert_eq!(registry.reset(TERMINAL), 1);
-        assert_eq!(registry.resolve(TERMINAL, &first_token), None, "旧窗口令牌必须失效");
+        assert_eq!(
+            registry.resolve(TERMINAL, &first_token),
+            None,
+            "旧窗口令牌必须失效"
+        );
         assert!(
             registry.issue_loader_session(TERMINAL).is_ok(),
             "重建窗口必须能重新取得密钥"
@@ -413,7 +473,9 @@ mod tests {
     fn authorize_scopes_plugin_token_to_its_own_target() {
         let registry = FrontendChannelRegistry::new();
         let session = registry.issue_loader_session(MAIN).unwrap();
-        let alice = registry.issue_token(MAIN, &session, "com.test.alice").unwrap();
+        let alice = registry
+            .issue_token(MAIN, &session, "com.test.alice")
+            .unwrap();
 
         // 宿主面：任意目标放行（宿主配置页读写插件存储、宿主 pluginInvoke 的职权）
         assert!(registry.authorize(MAIN, "com.test.alice", &session).is_ok());
@@ -437,14 +499,17 @@ mod tests {
     fn authorize_rejects_missing_forged_and_revoked_credentials() {
         let registry = FrontendChannelRegistry::new();
         let session = registry.issue_loader_session(MAIN).unwrap();
-        let token = registry.issue_token(MAIN, &session, "com.test.alice").unwrap();
+        let token = registry
+            .issue_token(MAIN, &session, "com.test.alice")
+            .unwrap();
 
         for credential in ["", "forged", "deadbeef"] {
             let err = registry
                 .authorize(MAIN, "com.test.alice", credential)
                 .expect_err("无有效凭证必须拒绝");
             assert!(
-                err.to_string().contains("Missing or invalid channel credential"),
+                err.to_string()
+                    .contains("Missing or invalid channel credential"),
                 "实际: {err}"
             );
         }
@@ -457,7 +522,9 @@ mod tests {
         // 页面加载（前端重启）后同样失效，但宿主面在重置前仍有效
         assert!(registry.authorize(MAIN, "com.test.alice", &session).is_ok());
         registry.reset(MAIN);
-        assert!(registry.authorize(MAIN, "com.test.alice", &session).is_err());
+        assert!(registry
+            .authorize(MAIN, "com.test.alice", &session)
+            .is_err());
     }
 
     /// 停用插件回收其**所有窗口**的令牌，其它插件与宿主密钥不受影响
@@ -466,13 +533,23 @@ mod tests {
         let registry = FrontendChannelRegistry::new();
         let main_session = registry.issue_loader_session(MAIN).unwrap();
         let terminal_session = registry.issue_loader_session(TERMINAL).unwrap();
-        let main_token = registry.issue_token(MAIN, &main_session, "com.test.a").unwrap();
-        let terminal_token = registry.issue_token(TERMINAL, &terminal_session, "com.test.a").unwrap();
-        let other = registry.issue_token(MAIN, &main_session, "com.test.b").unwrap();
+        let main_token = registry
+            .issue_token(MAIN, &main_session, "com.test.a")
+            .unwrap();
+        let terminal_token = registry
+            .issue_token(TERMINAL, &terminal_session, "com.test.a")
+            .unwrap();
+        let other = registry
+            .issue_token(MAIN, &main_session, "com.test.b")
+            .unwrap();
 
         registry.revoke_plugin("com.test.a");
 
-        assert_eq!(registry.resolve(MAIN, &main_token), None, "主窗口令牌必须回收");
+        assert_eq!(
+            registry.resolve(MAIN, &main_token),
+            None,
+            "主窗口令牌必须回收"
+        );
         assert_eq!(
             registry.resolve(TERMINAL, &terminal_token),
             None,
@@ -483,7 +560,10 @@ mod tests {
             Some(ChannelIdentity::Plugin("com.test.b".into())),
             "其它插件令牌不受影响"
         );
-        assert_eq!(registry.resolve(MAIN, &main_session), Some(ChannelIdentity::Host));
+        assert_eq!(
+            registry.resolve(MAIN, &main_session),
+            Some(ChannelIdentity::Host)
+        );
         assert_eq!(
             registry.resolve(TERMINAL, &terminal_session),
             Some(ChannelIdentity::Host),
@@ -495,7 +575,11 @@ mod tests {
     fn credentials_are_unique_and_high_entropy() {
         let registry = FrontendChannelRegistry::new();
         let session = registry.issue_loader_session(MAIN).unwrap();
-        assert_eq!(session.len(), CREDENTIAL_BYTES * 2, "32 字节 → 64 位十六进制");
+        assert_eq!(
+            session.len(),
+            CREDENTIAL_BYTES * 2,
+            "32 字节 → 64 位十六进制"
+        );
 
         let a = registry.issue_token(MAIN, &session, "com.test.a").unwrap();
         let b = registry.issue_token(MAIN, &session, "com.test.b").unwrap();

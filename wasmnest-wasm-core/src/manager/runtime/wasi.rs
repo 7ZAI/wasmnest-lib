@@ -55,7 +55,10 @@ pub(crate) fn add_to_linker(
         // （"Cannot start a runtime from within a runtime"，实证 wasi preopen e2e），
         // 改使 async adapter（fiber 内原生 await，与 wasip3 p3 同机制）。
         p2::add_to_linker_async(linker).map_err(|e| {
-            AppError::Plugin(format!("Failed to register WASI preview2 interfaces: {}", e))
+            AppError::Plugin(format!(
+                "Failed to register WASI preview2 interfaces: {}",
+                e
+            ))
         })?;
     } else {
         tracing::info!("WASI preview2 按配置关闭（wasi.p2=false）");
@@ -66,7 +69,10 @@ pub(crate) fn add_to_linker(
         // 内部以 func_wrap_async 注册（CM_ASYNC 并发模型），仅 wasip3 组件消费，
         // 既有插件不导入 wasi0.3 则注册惰性无效。
         p3::add_to_linker(linker).map_err(|e| {
-            AppError::Plugin(format!("Failed to register WASI 0.3 (p3) interfaces: {}", e))
+            AppError::Plugin(format!(
+                "Failed to register WASI 0.3 (p3) interfaces: {}",
+                e
+            ))
         })?;
     } else {
         tracing::info!("WASI 0.3（p3）按配置关闭（wasi.p3=false）");
@@ -183,7 +189,10 @@ pub(crate) fn build_ctx(
 /// preauthorize 编排，files 授权直连 host_api/fs）；移动形态不消费，单形态
 /// 共享故保留 + 按形态豁免
 #[cfg_attr(not(feature = "desktop-assembly"), allow(dead_code))]
-pub(crate) fn expand_preopen_declarations(plugin_id: &str, declared_dirs: &[WasiPreopenDir]) -> Vec<WasiPreopenDir> {
+pub(crate) fn expand_preopen_declarations(
+    plugin_id: &str,
+    declared_dirs: &[WasiPreopenDir],
+) -> Vec<WasiPreopenDir> {
     expand_preopen_declarations_with_home(plugin_id, declared_dirs, None)
 }
 
@@ -195,8 +204,18 @@ fn expand_preopen_declarations_with_home(
     home_override: Option<&std::path::Path>,
 ) -> Vec<WasiPreopenDir> {
     let home = home_override
-        .map(|p| p.to_string_lossy().trim_end_matches(['/', '\\']).to_string())
-        .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().trim_end_matches(['/', '\\']).to_string()));
+        .map(|p| {
+            p.to_string_lossy()
+                .trim_end_matches(['/', '\\'])
+                .to_string()
+        })
+        .or_else(|| {
+            dirs::home_dir().map(|p| {
+                p.to_string_lossy()
+                    .trim_end_matches(['/', '\\'])
+                    .to_string()
+            })
+        });
     declared_dirs
         .iter()
         .filter_map(|decl| {
@@ -251,11 +270,14 @@ fn resolve_preopen_dirs_with_home(
     expand_preopen_declarations_with_home(plugin_id, declared_dirs, home_override)
         .into_iter()
         .filter(|dir| {
-            let needed = if dir.readonly() { FsOps::READ } else { FsOps::READ_WRITE };
+            let needed = if dir.readonly() {
+                FsOps::READ
+            } else {
+                FsOps::READ_WRITE
+            };
             // 票 02 B5：`is_granted` 是 FsAuthChecker 具体机制方法（不在窄
             // FsAuthGate trait 上）——经下转型访问器取回（桌面装配恒 Some）
-            let checker = host_ctx
-                .fs_auth_checker();
+            let checker = host_ctx.fs_auth_checker();
             block_on_async(checker.is_granted(plugin_id, dir.path(), needed))
         })
         .collect()

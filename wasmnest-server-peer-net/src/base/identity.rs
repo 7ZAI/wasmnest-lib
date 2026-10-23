@@ -95,9 +95,7 @@ impl fmt::Display for NodeId {
 
 /// node_id 格式校验：长度 64 且全为小写 hex 字符
 fn is_valid_node_id(s: &str) -> bool {
-    s.len() == NODE_ID_HEX_LEN
-        && s.bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    s.len() == NODE_ID_HEX_LEN && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 // ==================== NodeIdentity ====================
@@ -174,11 +172,10 @@ impl NodeIdentity {
             source: e,
         })?;
         // 非 JSON 即损坏：按 D3 报错，不静默重新生成
-        let file: IdentityFile =
-            serde_json::from_str(&content).map_err(|e| PeerNetError::IdentityParse {
-                path: path.clone(),
-                source: e,
-            })?;
+        let file: IdentityFile = serde_json::from_str(&content).map_err(|e| PeerNetError::IdentityParse {
+            path: path.clone(),
+            source: e,
+        })?;
 
         if file.version != IDENTITY_FORMAT_VERSION {
             return Err(PeerNetError::IdentityCorrupted {
@@ -219,10 +216,7 @@ impl NodeIdentity {
             secret_seed_hex: hex::encode(self.seed_bytes()),
             node_id: self.node_id.as_str().to_string(),
         };
-        let content =
-            serde_json::to_string_pretty(&file).map_err(|e| PeerNetError::IdentitySerialize {
-                source: e,
-            })?;
+        let content = serde_json::to_string_pretty(&file).map_err(|e| PeerNetError::IdentitySerialize { source: e })?;
 
         // 同目录保证 rename 在同一文件系统内原子生效
         let tmp_path = path.with_extension("tmp");
@@ -236,12 +230,12 @@ impl NodeIdentity {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600)).map_err(
-                |e| PeerNetError::IdentityPermissions {
+            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+                PeerNetError::IdentityPermissions {
                     path: tmp_path.clone(),
                     source: e,
-                },
-            )?;
+                }
+            })?;
         }
 
         std::fs::rename(&tmp_path, path).map_err(|e| PeerNetError::IdentityRename {
@@ -329,8 +323,7 @@ mod tests {
         }
 
         // 不静默重建：损坏文件原样保留（人工恢复/诊断的前提）
-        let still_corrupted =
-            std::fs::read_to_string(&path).expect("file untouched after failed load");
+        let still_corrupted = std::fs::read_to_string(&path).expect("file untouched after failed load");
         assert_eq!(still_corrupted, "{ not valid json !!!");
 
         // 且没有偷偷生成新身份顶替旧 ID
@@ -352,11 +345,7 @@ mod tests {
         let mut tampered = file.node_id.clone().into_bytes();
         tampered[0] = if tampered[0] == b'0' { b'1' } else { b'0' };
         file.node_id = String::from_utf8(tampered).expect("utf8");
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&file).expect("serialize"),
-        )
-        .expect("write");
+        std::fs::write(&path, serde_json::to_string_pretty(&file).expect("serialize")).expect("write");
 
         let err = NodeIdentity::load_or_create(dir.path()).expect_err("inconsistency detected");
         assert!(matches!(err, PeerNetError::IdentityCorrupted { .. }));
@@ -377,10 +366,7 @@ mod tests {
 
         // 截断串拒绝
         let short = "a".repeat(NODE_ID_HEX_LEN - 1);
-        assert!(matches!(
-            NodeId::parse(&short),
-            Err(PeerNetError::InvalidNodeId { .. })
-        ));
+        assert!(matches!(NodeId::parse(&short), Err(PeerNetError::InvalidNodeId { .. })));
     }
 
     #[test]

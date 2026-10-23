@@ -47,8 +47,8 @@
 #![deny(missing_docs)]
 
 pub mod assembly;
-pub mod limits;
 pub mod lifecycle;
+pub mod limits;
 pub mod metrics;
 pub mod module;
 pub mod ports;

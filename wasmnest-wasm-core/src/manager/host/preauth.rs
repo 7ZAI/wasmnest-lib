@@ -101,7 +101,10 @@ impl PluginHost {
         if paths.is_empty() {
             if let Ok(Some(value)) = self.storage.get(plugin_id, PREAUTH_PATHS_STORAGE_KEY).await {
                 if let Value::Array(arr) = value {
-                    paths = arr.into_iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                    paths = arr
+                        .into_iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
                 }
             }
         }

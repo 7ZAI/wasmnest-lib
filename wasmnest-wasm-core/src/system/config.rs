@@ -15,9 +15,9 @@ use std::path::PathBuf;
 
 pub use wasmnest_server_base::config::{
     default_backlog, default_client_disconnect_timeout_secs, default_client_request_timeout_secs,
-    default_keep_alive_secs, default_max_connections, default_metrics_enabled, default_prevent_sleep,
-    default_shutdown_timeout_secs, default_tcp_nodelay, default_ws_max_frame_size_kb, default_ws_max_message_size_mb,
-    NetworkConfig,
+    default_keep_alive_secs, default_max_connections, default_metrics_enabled,
+    default_prevent_sleep, default_shutdown_timeout_secs, default_tcp_nodelay,
+    default_ws_max_frame_size_kb, default_ws_max_message_size_mb, NetworkConfig,
 };
 /// 全局配置单例
 static CONFIG_INSTANCE: std::sync::OnceLock<AppConfig> = std::sync::OnceLock::new();
@@ -26,11 +26,26 @@ static CONFIG_INSTANCE: std::sync::OnceLock<AppConfig> = std::sync::OnceLock::ne
 static PROPERTY_COMMENTS: &[(&str, &str)] = &[
     ("network.port", "WebSocket 服务器端口"),
     ("network.auto_start", "应用启动时是否自动开启服务器"),
-    ("network.prevent_sleep", "服务器运行时阻止系统休眠（允许屏幕熄灭）"),
-    ("network.workers", "Actix Web worker 线程数（0 = CPU 核心数）"),
-    ("network.keep_alive_secs", "HTTP Keep-Alive 超时秒数（0 = 禁用）"),
-    ("network.client_request_timeout_secs", "客户端请求头读取超时秒数"),
-    ("network.client_disconnect_timeout_secs", "客户端断开连接等待超时秒数"),
+    (
+        "network.prevent_sleep",
+        "服务器运行时阻止系统休眠（允许屏幕熄灭）",
+    ),
+    (
+        "network.workers",
+        "Actix Web worker 线程数（0 = CPU 核心数）",
+    ),
+    (
+        "network.keep_alive_secs",
+        "HTTP Keep-Alive 超时秒数（0 = 禁用）",
+    ),
+    (
+        "network.client_request_timeout_secs",
+        "客户端请求头读取超时秒数",
+    ),
+    (
+        "network.client_disconnect_timeout_secs",
+        "客户端断开连接等待超时秒数",
+    ),
     ("network.max_connections", "每 worker 最大并发连接数"),
     ("network.backlog", "TCP 半连接队列上限"),
     (
@@ -38,7 +53,10 @@ static PROPERTY_COMMENTS: &[(&str, &str)] = &[
         "启用 TCP_NODELAY（禁用 Nagle 算法，降低小包延迟）",
     ),
     ("network.shutdown_timeout_secs", "优雅停机超时秒数"),
-    ("network.ws_max_frame_size_kb", "WebSocket 单帧最大大小（KB）"),
+    (
+        "network.ws_max_frame_size_kb",
+        "WebSocket 单帧最大大小（KB）",
+    ),
     (
         "network.ws_max_message_size_mb",
         "WebSocket 单消息最大大小（MB，可跨多帧）",
@@ -52,22 +70,34 @@ static PROPERTY_COMMENTS: &[(&str, &str)] = &[
         "ui.theme_palette",
         "主题色板（warm 暖调 / cool 冷调 / forest / ocean / sunset / violet）",
     ),
-    ("ui.font_size", "全局界面字体大小（终端字体在终端设置中独立配置）"),
+    (
+        "ui.font_size",
+        "全局界面字体大小（终端字体在终端设置中独立配置）",
+    ),
     ("ui.terminal_font_size", "终端字体大小"),
     ("ui.terminal_font_family", "终端字体名称"),
     ("ui.terminal_theme", "终端配色主题名"),
-    ("ui.terminal_letter_spacing", "终端字间距（px，0-4；0 = 不加，字间留白仅来自字体自身）"),
+    (
+        "ui.terminal_letter_spacing",
+        "终端字间距（px，0-4；0 = 不加，字间留白仅来自字体自身）",
+    ),
     ("ui.language", "语言偏好（zh-CN / en）"),
     (
         "ui.terminal_bg_image",
         "终端背景图片文件名（位于应用数据目录，留空表示不启用）",
     ),
-    ("ui.terminal_bg_opacity", "终端背景图片不透明度（0-100，越小图片越淡）"),
+    (
+        "ui.terminal_bg_opacity",
+        "终端背景图片不透明度（0-100，越小图片越淡）",
+    ),
     (
         "ui.animations_enabled",
         "全局动画效果总开关（true/false，关闭后禁用所有页面过渡/动画，默认开启）",
     ),
-    ("channels.lifecycle_capacity", "生命周期事件广播容量 - PTY 进程状态变更"),
+    (
+        "channels.lifecycle_capacity",
+        "生命周期事件广播容量 - PTY 进程状态变更",
+    ),
     ("terminal.default_cols", "默认终端列数"),
     ("terminal.default_rows", "默认终端行数"),
     (
@@ -271,7 +301,9 @@ pub struct ChannelsConfig {
 
 impl Default for ChannelsConfig {
     fn default() -> Self {
-        Self { lifecycle_capacity: 16 }
+        Self {
+            lifecycle_capacity: 16,
+        }
     }
 }
 
@@ -419,7 +451,8 @@ impl AppConfig {
     ///
     /// 如果未初始化，返回默认配置
     pub fn global() -> &'static AppConfig {
-        static DEFAULT: std::sync::LazyLock<AppConfig> = std::sync::LazyLock::new(AppConfig::default);
+        static DEFAULT: std::sync::LazyLock<AppConfig> =
+            std::sync::LazyLock::new(AppConfig::default);
         CONFIG_INSTANCE.get().unwrap_or(&DEFAULT)
     }
 
@@ -431,7 +464,11 @@ impl AppConfig {
                 auto_start: parse_value(props, "network.auto_start", true),
                 prevent_sleep: parse_value(props, "network.prevent_sleep", true),
                 workers: parse_value(props, "network.workers", 0),
-                keep_alive_secs: parse_value(props, "network.keep_alive_secs", default_keep_alive_secs()),
+                keep_alive_secs: parse_value(
+                    props,
+                    "network.keep_alive_secs",
+                    default_keep_alive_secs(),
+                ),
                 client_request_timeout_secs: parse_value(
                     props,
                     "network.client_request_timeout_secs",
@@ -442,7 +479,11 @@ impl AppConfig {
                     "network.client_disconnect_timeout_secs",
                     default_client_disconnect_timeout_secs(),
                 ),
-                max_connections: parse_value(props, "network.max_connections", default_max_connections()),
+                max_connections: parse_value(
+                    props,
+                    "network.max_connections",
+                    default_max_connections(),
+                ),
                 backlog: parse_value(props, "network.backlog", default_backlog()),
                 tcp_nodelay: parse_value(props, "network.tcp_nodelay", default_tcp_nodelay()),
                 shutdown_timeout_secs: parse_value(
@@ -460,14 +501,22 @@ impl AppConfig {
                     "network.ws_max_message_size_mb",
                     default_ws_max_message_size_mb(),
                 ),
-                metrics_enabled: parse_value(props, "network.metrics_enabled", default_metrics_enabled()),
+                metrics_enabled: parse_value(
+                    props,
+                    "network.metrics_enabled",
+                    default_metrics_enabled(),
+                ),
             },
             ui: UiConfig {
                 theme: parse_value(props, "ui.theme", "system".to_string()),
                 theme_palette: parse_value(props, "ui.theme_palette", default_theme_palette()),
                 font_size: parse_value(props, "ui.font_size", default_font_size()),
                 terminal_font_size: parse_value(props, "ui.terminal_font_size", 12),
-                terminal_font_family: parse_value(props, "ui.terminal_font_family", "Consolas".to_string()),
+                terminal_font_family: parse_value(
+                    props,
+                    "ui.terminal_font_family",
+                    "Consolas".to_string(),
+                ),
                 terminal_theme: parse_value(props, "ui.terminal_theme", default_terminal_theme()),
                 terminal_letter_spacing: parse_value(
                     props,
@@ -476,8 +525,16 @@ impl AppConfig {
                 ),
                 language: parse_value(props, "ui.language", default_language()),
                 terminal_bg_image: parse_optional(props, "ui.terminal_bg_image"),
-                terminal_bg_opacity: parse_value(props, "ui.terminal_bg_opacity", default_terminal_bg_opacity()),
-                animations_enabled: parse_value(props, "ui.animations_enabled", default_animations_enabled()),
+                terminal_bg_opacity: parse_value(
+                    props,
+                    "ui.terminal_bg_opacity",
+                    default_terminal_bg_opacity(),
+                ),
+                animations_enabled: parse_value(
+                    props,
+                    "ui.animations_enabled",
+                    default_animations_enabled(),
+                ),
             },
             channels: ChannelsConfig {
                 lifecycle_capacity: parse_value(props, "channels.lifecycle_capacity", 16),
@@ -489,10 +546,18 @@ impl AppConfig {
             },
             log: LogConfig {
                 file_level: parse_value(props, "log.file_level", default_log_file_level()),
-                console_filter: parse_value(props, "log.console_filter", default_log_console_filter()),
+                console_filter: parse_value(
+                    props,
+                    "log.console_filter",
+                    default_log_console_filter(),
+                ),
                 rotation: parse_value(props, "log.rotation", default_log_rotation()),
                 max_files: parse_value(props, "log.max_files", default_log_max_files()),
-                capacity_bytes: parse_value(props, "log.capacity_bytes", default_log_capacity_bytes()),
+                capacity_bytes: parse_value(
+                    props,
+                    "log.capacity_bytes",
+                    default_log_capacity_bytes(),
+                ),
                 format: parse_value(props, "log.format", default_log_format()),
                 console_in_release: parse_value(props, "log.console_in_release", false),
             },
@@ -505,7 +570,10 @@ impl AppConfig {
         let mut lines = Vec::new();
 
         for (group_name, keys) in PROPERTY_GROUPS {
-            lines.push(format!("# ==================== {} ====================", group_name));
+            lines.push(format!(
+                "# ==================== {} ====================",
+                group_name
+            ));
             for key in *keys {
                 // 写入注释说明
                 if let Some((_, comment)) = PROPERTY_COMMENTS.iter().find(|(k, _)| *k == *key) {
@@ -525,12 +593,18 @@ impl AppConfig {
     fn to_property_values(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         map.insert("network.port".to_string(), self.network.port.to_string());
-        map.insert("network.auto_start".to_string(), self.network.auto_start.to_string());
+        map.insert(
+            "network.auto_start".to_string(),
+            self.network.auto_start.to_string(),
+        );
         map.insert(
             "network.prevent_sleep".to_string(),
             self.network.prevent_sleep.to_string(),
         );
-        map.insert("network.workers".to_string(), self.network.workers.to_string());
+        map.insert(
+            "network.workers".to_string(),
+            self.network.workers.to_string(),
+        );
         map.insert(
             "network.keep_alive_secs".to_string(),
             self.network.keep_alive_secs.to_string(),
@@ -547,8 +621,14 @@ impl AppConfig {
             "network.max_connections".to_string(),
             self.network.max_connections.to_string(),
         );
-        map.insert("network.backlog".to_string(), self.network.backlog.to_string());
-        map.insert("network.tcp_nodelay".to_string(), self.network.tcp_nodelay.to_string());
+        map.insert(
+            "network.backlog".to_string(),
+            self.network.backlog.to_string(),
+        );
+        map.insert(
+            "network.tcp_nodelay".to_string(),
+            self.network.tcp_nodelay.to_string(),
+        );
         map.insert(
             "network.shutdown_timeout_secs".to_string(),
             self.network.shutdown_timeout_secs.to_string(),
@@ -566,7 +646,10 @@ impl AppConfig {
             self.network.metrics_enabled.to_string(),
         );
         map.insert("ui.theme".to_string(), self.ui.theme.clone());
-        map.insert("ui.theme_palette".to_string(), self.ui.theme_palette.clone());
+        map.insert(
+            "ui.theme_palette".to_string(),
+            self.ui.theme_palette.clone(),
+        );
         map.insert("ui.font_size".to_string(), self.ui.font_size.to_string());
         map.insert(
             "ui.terminal_font_size".to_string(),
@@ -576,7 +659,10 @@ impl AppConfig {
             "ui.terminal_font_family".to_string(),
             self.ui.terminal_font_family.clone(),
         );
-        map.insert("ui.terminal_theme".to_string(), self.ui.terminal_theme.clone());
+        map.insert(
+            "ui.terminal_theme".to_string(),
+            self.ui.terminal_theme.clone(),
+        );
         map.insert(
             "ui.terminal_letter_spacing".to_string(),
             self.ui.terminal_letter_spacing.to_string(),
@@ -611,10 +697,16 @@ impl AppConfig {
             self.terminal.read_buffer_size.to_string(),
         );
         map.insert("log.file_level".to_string(), self.log.file_level.clone());
-        map.insert("log.console_filter".to_string(), self.log.console_filter.clone());
+        map.insert(
+            "log.console_filter".to_string(),
+            self.log.console_filter.clone(),
+        );
         map.insert("log.rotation".to_string(), self.log.rotation.clone());
         map.insert("log.max_files".to_string(), self.log.max_files.to_string());
-        map.insert("log.capacity_bytes".to_string(), self.log.capacity_bytes.to_string());
+        map.insert(
+            "log.capacity_bytes".to_string(),
+            self.log.capacity_bytes.to_string(),
+        );
         map.insert("log.format".to_string(), self.log.format.clone());
         map.insert(
             "log.console_in_release".to_string(),
@@ -650,7 +742,10 @@ fn parse_properties(content: &str) -> HashMap<String, String> {
 
 /// 从 properties map 中解析值，不存在时返回默认值
 fn parse_value<T: std::str::FromStr>(props: &HashMap<String, String>, key: &str, default: T) -> T {
-    props.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
+    props
+        .get(key)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// 从 properties map 中解析可选值，空字符串返回 None
@@ -731,7 +826,10 @@ channels.lifecycle_capacity=16
         assert_eq!(config.ui.theme, config2.ui.theme);
         assert_eq!(config.ui.terminal_theme, config2.ui.terminal_theme);
         assert_eq!(config.ui.terminal_bg_image, config2.ui.terminal_bg_image);
-        assert_eq!(config.ui.terminal_bg_opacity, config2.ui.terminal_bg_opacity);
+        assert_eq!(
+            config.ui.terminal_bg_opacity,
+            config2.ui.terminal_bg_opacity
+        );
         assert_eq!(config.terminal.default_cols, config2.terminal.default_cols);
     }
 
@@ -749,9 +847,19 @@ channels.lifecycle_capacity=16
 
         // 反例/边界：非法值（非数字 / 越界）按缺省回退 0，不炸
         props.insert("ui.terminal_letter_spacing".to_string(), "abc".to_string());
-        assert_eq!(AppConfig::from_properties(&props).ui.terminal_letter_spacing, 0);
+        assert_eq!(
+            AppConfig::from_properties(&props)
+                .ui
+                .terminal_letter_spacing,
+            0
+        );
         props.insert("ui.terminal_letter_spacing".to_string(), "99".to_string());
-        assert_eq!(AppConfig::from_properties(&props).ui.terminal_letter_spacing, 99);
+        assert_eq!(
+            AppConfig::from_properties(&props)
+                .ui
+                .terminal_letter_spacing,
+            99
+        );
     }
 
     #[test]
@@ -794,10 +902,16 @@ channels.lifecycle_capacity=16
     #[test]
     fn test_terminal_bg_image_from_properties() {
         let mut props = HashMap::new();
-        props.insert("ui.terminal_bg_image".to_string(), "terminal_bg.png".to_string());
+        props.insert(
+            "ui.terminal_bg_image".to_string(),
+            "terminal_bg.png".to_string(),
+        );
         props.insert("ui.terminal_bg_opacity".to_string(), "45".to_string());
         let config = AppConfig::from_properties(&props);
-        assert_eq!(config.ui.terminal_bg_image, Some("terminal_bg.png".to_string()));
+        assert_eq!(
+            config.ui.terminal_bg_image,
+            Some("terminal_bg.png".to_string())
+        );
         assert_eq!(config.ui.terminal_bg_opacity, 45);
 
         // 空字符串视为未设置
@@ -812,7 +926,10 @@ channels.lifecycle_capacity=16
         // 验证已移除的配置 key（output_history、display）不影响加载
         let mut props = HashMap::new();
         props.insert("network.port".to_string(), "9999".to_string());
-        props.insert("output_history.ring_buffer_capacity".to_string(), "5000".to_string());
+        props.insert(
+            "output_history.ring_buffer_capacity".to_string(),
+            "5000".to_string(),
+        );
         props.insert("display.max_read_size".to_string(), "100".to_string());
         let config = AppConfig::from_properties(&props);
         // 有效的 key 正常读取
@@ -859,7 +976,10 @@ channels.lifecycle_capacity=16
         assert_eq!(config.log.console_filter, config2.log.console_filter);
         assert_eq!(config.log.rotation, config2.log.rotation);
         assert_eq!(config.log.max_files, config2.log.max_files);
-        assert_eq!(config.log.console_in_release, config2.log.console_in_release);
+        assert_eq!(
+            config.log.console_in_release,
+            config2.log.console_in_release
+        );
     }
 
     #[test]

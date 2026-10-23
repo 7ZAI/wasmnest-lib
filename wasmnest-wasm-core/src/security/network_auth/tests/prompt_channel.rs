@@ -24,7 +24,9 @@ async fn concurrent_requests_to_same_origin_share_one_prompt() {
     // 等首条询问发出（三条请求都已进入判定链的询问步骤）
     let request_id = wait_for_request_id(&log).await;
     assert!(
-        checker.respond(&request_id, NetworkDecision::AllowOnce).await,
+        checker
+            .respond(&request_id, NetworkDecision::AllowOnce)
+            .await,
         "应答必须命中在途询问"
     );
 
@@ -36,7 +38,11 @@ async fn concurrent_requests_to_same_origin_share_one_prompt() {
         );
     }
     assert_eq!(log.len(), 1, "同 origin 并发只弹一次（票 05 C9）");
-    assert_eq!(counter.load(Ordering::SeqCst), 3, "三条请求都真的走过判定链");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        3,
+        "三条请求都真的走过判定链"
+    );
 }
 /// 不同 origin 各自独立弹窗（合并键必须含 origin，不得跨站点合并）
 #[tokio::test]
@@ -77,7 +83,11 @@ async fn allow_once_records_origin_so_later_requests_are_silent() {
         }
     });
     let request_id = wait_for_request_id(&log).await;
-    assert!(checker.respond(&request_id, NetworkDecision::AllowOnce).await);
+    assert!(
+        checker
+            .respond(&request_id, NetworkDecision::AllowOnce)
+            .await
+    );
     assert!(task.await.expect("join").expect("authorize").is_allowed());
 
     let stored = records(&checker, "com.wasmnest.test").await;
@@ -91,7 +101,10 @@ async fn allow_once_records_origin_so_later_requests_are_silent() {
         .authorize_outbound("com.wasmnest.test", "https://api.x.com:443/v2/other")
         .await
         .expect("authorize");
-    assert!(verdict.is_allowed(), "记录命中后续请求必须免询问: {verdict:?}");
+    assert!(
+        verdict.is_allowed(),
+        "记录命中后续请求必须免询问: {verdict:?}"
+    );
     assert_eq!(log.len(), 1, "记录命中不得再弹窗");
 }
 /// 「以后都拒绝」：落 deny 记录 → 后续请求被硬拒绝且零弹窗
@@ -107,7 +120,11 @@ async fn deny_always_records_deny_and_later_requests_are_blocked() {
         }
     });
     let request_id = wait_for_request_id(&log).await;
-    assert!(checker.respond(&request_id, NetworkDecision::DenyAlways).await);
+    assert!(
+        checker
+            .respond(&request_id, NetworkDecision::DenyAlways)
+            .await
+    );
     let verdict = task.await.expect("join").expect("authorize");
     assert_eq!(
         verdict,
@@ -185,7 +202,11 @@ async fn plain_deny_leaves_no_record_and_asks_again_after_window() {
         !after.await.expect("join").expect("authorize").is_allowed(),
         "无应答按拒绝"
     );
-    assert_eq!(records(&checker, "com.wasmnest.test").await.len(), 0, "超时不得落账");
+    assert_eq!(
+        records(&checker, "com.wasmnest.test").await.len(),
+        0,
+        "超时不得落账"
+    );
 }
 /// C10：无人应答时超时按拒绝、不落账、条目不残留
 #[tokio::test]
@@ -197,7 +218,10 @@ async fn prompt_timeout_denies_without_recording() {
         .expect("authorize must not error");
     assert!(!verdict.is_allowed(), "超时必须按拒绝: {verdict:?}");
     assert_eq!(log.len(), 1);
-    assert!(records(&checker, "com.wasmnest.test").await.is_empty(), "超时不得落账");
+    assert!(
+        records(&checker, "com.wasmnest.test").await.is_empty(),
+        "超时不得落账"
+    );
     assert!(
         checker.prompts.lock().await.is_empty(),
         "超时后不得残留悬空询问（否则 map 无界增长）"

@@ -106,7 +106,6 @@ pub enum PeerNetError {
     CertParse { detail: String },
 
     // ==================== 监听 / 拨号 / TLS（ticket 02）====================
-
     /// 绑定本节点 TCP 监听端口失败
     #[error("bind peer-net TCP listener failed: {addr}: {source}")]
     ListenBind {
@@ -143,16 +142,11 @@ pub enum PeerNetError {
 
     /// 对端证书指纹与期望节点 ID 不符——拨号侧 TLS 层身份钉扎拒绝（AC#3 的错误种类）
     #[error("TLS certificate binding mismatch: expected node_id={expected}, actual={actual}")]
-    TlsBindingMismatch {
-        expected: String,
-        actual: String,
-    },
+    TlsBindingMismatch { expected: String, actual: String },
 
     /// mTLS 握手完成但对端未出示证书（mandatory client auth 被绕过的防御分支）
     #[error("mTLS peer presented no certificate (peer_addr={peer_addr})")]
-    PeerCertMissing {
-        peer_addr: SocketAddr,
-    },
+    PeerCertMissing { peer_addr: SocketAddr },
 
     /// 首连信任状态控制帧读写失败（长度前缀/JSON/IO 层）
     #[error("trust status control frame I/O failed ({peer_addr}): {detail}")]
@@ -171,7 +165,6 @@ pub enum PeerNetError {
     ConfirmTimeout { node_id: NodeId },
 
     // ==================== 可信节点存储 ====================
-
     /// 读取可信节点列表文件失败（IO 层）
     #[error("read trusted nodes file failed: {path}: {source}")]
     TrustStoreRead {
@@ -226,7 +219,6 @@ pub enum PeerNetError {
     },
 
     // ==================== 传输会话（issue 05）====================
-
     /// 传输会话 IO/编解码失败（读写帧、文件落盘层）
     ///
     /// `role` 标注失败发生在哪一端角色（sender/receiver），detail 说明具体操作。
@@ -238,7 +230,6 @@ pub enum PeerNetError {
     TransferProtocol { role: &'static str, detail: String },
 
     // ==================== 共享目录（issue 07）====================
-
     /// 读取共享目录注册表文件失败（IO 层）
     #[error("read shared dirs file failed: {path}: {source}")]
     SharedDirsRead {
@@ -281,7 +272,6 @@ pub enum PeerNetError {
     },
 
     // ==================== mDNS 发现（ticket 03）====================
-
     /// 启动发现守护时节点未挂载在线缓存（宿主编排错误，非运行态故障）
     #[error("start discovery daemon requires a DiscoveryCache attached via PeerNetNode::with_discovery")]
     DiscoveryNotAttached,

@@ -40,11 +40,17 @@ impl BusPorts for HostBusPorts<'_> {
     }
 
     fn publish_json(&self, topic: &str, sender: &str, payload: serde_json::Value) {
-        self.bus.message_bus().clone().publish(topic, sender, payload);
+        self.bus
+            .message_bus()
+            .clone()
+            .publish(topic, sender, payload);
     }
 
     fn publish_binary(&self, topic: &str, sender: &str, payload: Vec<u8>) {
-        self.bus.message_bus().clone().publish_binary(topic, sender, payload);
+        self.bus
+            .message_bus()
+            .clone()
+            .publish_binary(topic, sender, payload);
     }
 }
 
@@ -92,7 +98,11 @@ pub(crate) fn bus_publish_binary(
 ///
 /// 门禁（命名空间/回复道）在共享核、于 spawn **之前**同步判定：错误必须回给
 /// guest，不能退化成「返回 Ok 但没订阅上」。
-pub(crate) fn bus_subscribe(bus: &dyn BusScope, plugin_id: &str, topic: &str) -> Result<(), String> {
+pub(crate) fn bus_subscribe(
+    bus: &dyn BusScope,
+    plugin_id: &str,
+    topic: &str,
+) -> Result<(), String> {
     core_bus::check_subscribe_access(plugin_id, topic)?;
     let bus = bus.message_bus().clone();
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
@@ -109,7 +119,11 @@ pub(crate) fn bus_subscribe(bus: &dyn BusScope, plugin_id: &str, topic: &str) ->
 
 /// 以二进制格式偏好订阅（v11）：只接收 publish-binary 投递，
 /// JSON 消息对其按格式不匹配拒绝（与 subscribe 同因异步投递）
-pub(crate) fn bus_subscribe_binary(bus: &dyn BusScope, plugin_id: &str, topic: &str) -> Result<(), String> {
+pub(crate) fn bus_subscribe_binary(
+    bus: &dyn BusScope,
+    plugin_id: &str,
+    topic: &str,
+) -> Result<(), String> {
     core_bus::check_subscribe_access(plugin_id, topic)?;
     let bus = bus.message_bus().clone();
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
@@ -127,8 +141,17 @@ pub(crate) fn bus_subscribe_binary(bus: &dyn BusScope, plugin_id: &str, topic: &
 /// 取消订阅（与 subscribe 同因异步投递）
 ///
 /// 只过命名空间门：回复道形态在此不拦——退订是清理动作，必须幂等可用
-pub(crate) fn bus_unsubscribe(bus: &dyn BusScope, plugin_id: &str, topic: &str) -> Result<(), String> {
-    core_bus::check_namespace(plugin_id, topic, "unsubscribe", "that plugin (and the host)")?;
+pub(crate) fn bus_unsubscribe(
+    bus: &dyn BusScope,
+    plugin_id: &str,
+    topic: &str,
+) -> Result<(), String> {
+    core_bus::check_namespace(
+        plugin_id,
+        topic,
+        "unsubscribe",
+        "that plugin (and the host)",
+    )?;
     let bus = bus.message_bus().clone();
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         tracing::warn!(plugin_id = %plugin_id, topic = %topic, "bus_unsubscribe: no runtime context, unsubscribe dropped");
@@ -151,7 +174,10 @@ pub(crate) fn bus_unsubscribe(bus: &dyn BusScope, plugin_id: &str, topic: &str) 
 /// 消费方在桌面装配面（`host_api/api.rs`）；移动形态互调走宿主侧编排，
 /// 不消费——单形态共享故保留 + 按形态豁免
 #[cfg_attr(not(feature = "desktop-assembly"), allow(dead_code))]
-pub(crate) fn api_gate_target_owner(reg: &dyn ApiRegistryScope, request_topic: &str) -> Option<String> {
+pub(crate) fn api_gate_target_owner(
+    reg: &dyn ApiRegistryScope,
+    request_topic: &str,
+) -> Option<String> {
     let api = request_topic.strip_prefix(core_bus::API_TOPIC_PREFIX)?;
     if api.starts_with("reply.") {
         return None;
@@ -166,9 +192,9 @@ pub(crate) fn api_gate_target_owner(reg: &dyn ApiRegistryScope, request_topic: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::BusMessage;
     use crate::bus::{BusMessageHandler, MessageDispatcher};
     use crate::host_api::tests::build_host_ctx;
-    use crate::bus::BusMessage;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -199,7 +225,8 @@ mod tests {
     #[test]
     fn bus_publish_invalid_json_rejected() {
         let ctx = build_host_ctx();
-        let err = bus_publish(ctx.as_ref(), ctx.as_ref(), "plugin-a", "topic", "not-json").unwrap_err();
+        let err =
+            bus_publish(ctx.as_ref(), ctx.as_ref(), "plugin-a", "topic", "not-json").unwrap_err();
         assert!(err.contains("invalid JSON payload"), "got: {}", err);
     }
 
@@ -207,7 +234,9 @@ mod tests {
     #[tokio::test]
     async fn bus_publish_delivers_to_subscriber() {
         let ctx = build_host_ctx();
-        ctx.message_bus.set_dispatcher(Arc::new(NoopDispatcher)).await;
+        ctx.message_bus
+            .set_dispatcher(Arc::new(NoopDispatcher))
+            .await;
         let (tx, mut rx) = mpsc::unbounded_channel();
         ctx.message_bus
             .subscribe_static("plugin-b", "greeting", Box::new(ChannelHandler(tx)))
@@ -235,7 +264,10 @@ mod tests {
     fn gate_allows_declared_api() {
         let ctx = build_host_ctx();
         ctx.api_registry()
-            .register("com.wasmnest.scheduler", &["com.wasmnest.scheduler.add".to_string()])
+            .register(
+                "com.wasmnest.scheduler",
+                &["com.wasmnest.scheduler.add".to_string()],
+            )
             .expect("夹具登记 add api 失败：门禁未布防则本用例失去意义");
         bus_publish(
             ctx.as_ref(),
@@ -260,7 +292,11 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("not declared"), "got: {}", err);
-        assert!(err.contains("com.wasmnest.scheduler.remove"), "got: {}", err);
+        assert!(
+            err.contains("com.wasmnest.scheduler.remove"),
+            "got: {}",
+            err
+        );
     }
 
     /// 停用注销后的 api：不再放行（未激活插件目标调用被拒）
@@ -268,7 +304,10 @@ mod tests {
     fn gate_rejects_after_unregister() {
         let ctx = build_host_ctx();
         ctx.api_registry()
-            .register("com.wasmnest.scheduler", &["com.wasmnest.scheduler.add".to_string()])
+            .register(
+                "com.wasmnest.scheduler",
+                &["com.wasmnest.scheduler.add".to_string()],
+            )
             .expect("夹具登记 add api 失败：注销路径的前置条件未成立");
         ctx.api_registry().unregister("com.wasmnest.scheduler");
         let err = bus_publish(
@@ -300,8 +339,14 @@ mod tests {
     #[test]
     fn gate_ignores_regular_topics() {
         let ctx = build_host_ctx();
-        bus_publish(ctx.as_ref(), ctx.as_ref(), "plugin-a", "filesrv:peer_changed", "{}")
-            .expect("regular topics must bypass gate");
+        bus_publish(
+            ctx.as_ref(),
+            ctx.as_ref(),
+            "plugin-a",
+            "filesrv:peer_changed",
+            "{}",
+        )
+        .expect("regular topics must bypass gate");
     }
 
     /// 门禁只校验目标（层 1）：任意已激活插件声明的 api 均可调，不校验调用方身份
@@ -309,7 +354,10 @@ mod tests {
     fn gate_layer1_does_not_check_caller() {
         let ctx = build_host_ctx();
         ctx.api_registry()
-            .register("com.wasmnest.scheduler", &["com.wasmnest.scheduler.list".to_string()])
+            .register(
+                "com.wasmnest.scheduler",
+                &["com.wasmnest.scheduler.list".to_string()],
+            )
             .expect("夹具登记 list api 失败：层 1 门禁用例失去目标声明");
         bus_publish(
             ctx.as_ref(),
@@ -325,7 +373,9 @@ mod tests {
     #[tokio::test]
     async fn bus_publish_skips_sender() {
         let ctx = build_host_ctx();
-        ctx.message_bus.set_dispatcher(Arc::new(NoopDispatcher)).await;
+        ctx.message_bus
+            .set_dispatcher(Arc::new(NoopDispatcher))
+            .await;
         let (tx, mut rx) = mpsc::unbounded_channel();
         ctx.message_bus
             .subscribe_static("plugin-a", "echo", Box::new(ChannelHandler(tx)))
@@ -380,7 +430,8 @@ mod tests {
     #[tokio::test]
     async fn subscribe_binary_rejects_other_namespace() {
         let ctx = build_host_ctx();
-        let err = bus_subscribe_binary(ctx.as_ref(), "com.evil", "com.victim::blob:chunk").unwrap_err();
+        let err =
+            bus_subscribe_binary(ctx.as_ref(), "com.evil", "com.victim::blob:chunk").unwrap_err();
         assert!(err.contains("namespace"), "got: {}", err);
     }
 
@@ -388,14 +439,22 @@ mod tests {
     #[tokio::test]
     async fn subscribe_allows_own_namespace() {
         let ctx = build_host_ctx();
-        bus_subscribe(ctx.as_ref(), "com.victim", "com.victim::pty:exit").expect("own namespace must pass");
+        bus_subscribe(ctx.as_ref(), "com.victim", "com.victim::pty:exit")
+            .expect("own namespace must pass");
     }
 
     /// 跨命名空间伪发布（他人收件箱投毒）：拒绝
     #[tokio::test]
     async fn publish_rejects_other_namespace() {
         let ctx = build_host_ctx();
-        let err = bus_publish(ctx.as_ref(), ctx.as_ref(), "com.evil", "com.victim::pty:exit", "{}").unwrap_err();
+        let err = bus_publish(
+            ctx.as_ref(),
+            ctx.as_ref(),
+            "com.evil",
+            "com.victim::pty:exit",
+            "{}",
+        )
+        .unwrap_err();
         assert!(err.contains("namespace"), "got: {}", err);
     }
 
@@ -418,9 +477,16 @@ mod tests {
     #[tokio::test]
     async fn publish_public_topic_unaffected_by_namespace_gate() {
         let ctx = build_host_ctx();
-        bus_publish(ctx.as_ref(), ctx.as_ref(), "com.evil", "task:status-changed", "{}")
-            .expect("public topic must pass");
-        bus_subscribe(ctx.as_ref(), "com.evil", "peer:consent").expect("public subscribe must pass");
+        bus_publish(
+            ctx.as_ref(),
+            ctx.as_ref(),
+            "com.evil",
+            "task:status-changed",
+            "{}",
+        )
+        .expect("public topic must pass");
+        bus_subscribe(ctx.as_ref(), "com.evil", "peer:consent")
+            .expect("public subscribe must pass");
     }
 
     /// 退订同样受门禁约束（他人命名空间不可寻址）
@@ -437,7 +503,12 @@ mod tests {
     #[tokio::test]
     async fn subscribe_rejects_reply_lane() {
         let ctx = build_host_ctx();
-        let err = bus_subscribe(ctx.as_ref(), "com.evil", "wasmnest.api.reply.com.victim.req-1").unwrap_err();
+        let err = bus_subscribe(
+            ctx.as_ref(),
+            "com.evil",
+            "wasmnest.api.reply.com.victim.req-1",
+        )
+        .unwrap_err();
         assert!(err.contains("reply"), "got: {}", err);
     }
 
@@ -445,7 +516,12 @@ mod tests {
     #[tokio::test]
     async fn subscribe_rejects_own_reply_lane() {
         let ctx = build_host_ctx();
-        let err = bus_subscribe(ctx.as_ref(), "com.victim", "wasmnest.api.reply.com.victim.req-1").unwrap_err();
+        let err = bus_subscribe(
+            ctx.as_ref(),
+            "com.victim",
+            "wasmnest.api.reply.com.victim.req-1",
+        )
+        .unwrap_err();
         assert!(err.contains("reply"), "got: {}", err);
     }
 
@@ -453,7 +529,12 @@ mod tests {
     #[tokio::test]
     async fn subscribe_binary_rejects_reply_lane() {
         let ctx = build_host_ctx();
-        let err = bus_subscribe_binary(ctx.as_ref(), "com.evil", "wasmnest.api.reply.com.victim.req-1").unwrap_err();
+        let err = bus_subscribe_binary(
+            ctx.as_ref(),
+            "com.evil",
+            "wasmnest.api.reply.com.victim.req-1",
+        )
+        .unwrap_err();
         assert!(err.contains("reply"), "got: {}", err);
     }
 
@@ -461,19 +542,25 @@ mod tests {
     #[tokio::test]
     async fn subscribe_allows_api_request_lane() {
         let ctx = build_host_ctx();
-        bus_subscribe(ctx.as_ref(), "com.victim", "wasmnest.api.com.victim.echo").expect("request lane must pass");
+        bus_subscribe(ctx.as_ref(), "com.victim", "wasmnest.api.com.victim.echo")
+            .expect("request lane must pass");
     }
 
     /// 端到端：B 订阅不到 A 的定向事件流，也就收不到宿主投给 A 的事件
     #[tokio::test]
     async fn cross_namespace_subscriber_never_receives_directed_event() {
         let ctx = build_host_ctx();
-        ctx.message_bus.set_dispatcher(Arc::new(NoopDispatcher)).await;
+        ctx.message_bus
+            .set_dispatcher(Arc::new(NoopDispatcher))
+            .await;
         assert!(bus_subscribe(ctx.as_ref(), "com.evil", "com.victim::pty:exit").is_err());
 
         // 宿主按新形态定向投递给 victim：evil 无订阅者条目，收不到任何投递
-        ctx.message_bus
-            .publish("com.victim::pty:exit", "host", serde_json::json!({ "ptyId": "p-1" }));
+        ctx.message_bus.publish(
+            "com.victim::pty:exit",
+            "host",
+            serde_json::json!({ "ptyId": "p-1" }),
+        );
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }

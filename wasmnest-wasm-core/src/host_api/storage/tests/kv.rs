@@ -16,12 +16,18 @@ const PLUGIN: &str = "test-plugin";
 fn storage_ops_permission_denied() {
     let fake = FakePorts::new();
     let ports = as_ports(&fake);
-    assert_eq!(storage_get(ports, PLUGIN, "k").unwrap_err(), "permission denied");
+    assert_eq!(
+        storage_get(ports, PLUGIN, "k").unwrap_err(),
+        "permission denied"
+    );
     assert_eq!(
         storage_set(ports, PLUGIN, "k", serde_json::json!(1)).unwrap_err(),
         "permission denied"
     );
-    assert_eq!(storage_delete(ports, PLUGIN, "k").unwrap_err(), "permission denied");
+    assert_eq!(
+        storage_delete(ports, PLUGIN, "k").unwrap_err(),
+        "permission denied"
+    );
 }
 
 /// 授权后 set/get/delete 往返 + 插件间隔离 + 缺失 key 返回 None
@@ -34,15 +40,21 @@ async fn storage_set_get_delete_roundtrip() {
 
     storage_set(ports, PLUGIN, "cfg", value.clone()).expect("set ok");
     assert_eq!(
-        storage_get(ports, PLUGIN, "cfg").expect("get ok").expect("value"),
+        storage_get(ports, PLUGIN, "cfg")
+            .expect("get ok")
+            .expect("value"),
         value
     );
     // 插件间隔离：另一个插件读不到（key 按 plugin_id 分区）——
     // 需先授权该插件，否则在权限门禁处就被拒绝，无法触达存储层语义
     fake.grant("other-plugin", &[PERMISSION_STORAGE]);
-    assert!(storage_get(ports, "other-plugin", "cfg").expect("get ok").is_none());
+    assert!(storage_get(ports, "other-plugin", "cfg")
+        .expect("get ok")
+        .is_none());
     // 未设置的 key 返回 None
-    assert!(storage_get(ports, PLUGIN, "missing").expect("get ok").is_none());
+    assert!(storage_get(ports, PLUGIN, "missing")
+        .expect("get ok")
+        .is_none());
 
     storage_delete(ports, PLUGIN, "cfg").expect("delete ok");
     assert!(storage_get(ports, PLUGIN, "cfg").expect("get ok").is_none());
@@ -61,7 +73,8 @@ fn system_space_rejected_on_plugin_primitives() {
     fake.grant(PLUGIN, &[PERMISSION_STORAGE]);
     fake.grant(SYSTEM_PLUGIN_ID, &[PERMISSION_STORAGE]);
 
-    let err = storage_get(ports, SYSTEM_PLUGIN_ID, "activation_state").expect_err("系统空间读取必须被拒");
+    let err =
+        storage_get(ports, SYSTEM_PLUGIN_ID, "activation_state").expect_err("系统空间读取必须被拒");
     assert!(err.contains("system storage space"), "实际: {err}");
     assert!(
         storage_set(ports, SYSTEM_PLUGIN_ID, "k", serde_json::json!(1)).is_err(),
@@ -100,16 +113,25 @@ fn capability_routing_short_circuits_host_primitives() {
         Some(serde_json::json!({ "count": 3 })),
         "值必须落在系统组件侧空间"
     );
-    assert_eq!(fake.host_value(PLUGIN, "cfg"), None, "转发命中时不得同时写宿主原语空间");
+    assert_eq!(
+        fake.host_value(PLUGIN, "cfg"),
+        None,
+        "转发命中时不得同时写宿主原语空间"
+    );
 
     // 未登记转发的属主：走宿主原语，读不到系统组件侧的值
     fake.grant("other-plugin", &[PERMISSION_STORAGE]);
     assert!(
-        storage_get(ports, "other-plugin", "cfg").expect("get ok").is_none(),
+        storage_get(ports, "other-plugin", "cfg")
+            .expect("get ok")
+            .is_none(),
         "转发空间按调用方命名空间隔离，他属主不得读到"
     );
     storage_set(ports, "other-plugin", "cfg", serde_json::json!(1)).expect("set 走原语应成功");
-    assert_eq!(fake.host_value("other-plugin", "cfg"), Some(serde_json::json!(1)));
+    assert_eq!(
+        fake.host_value("other-plugin", "cfg"),
+        Some(serde_json::json!(1))
+    );
     assert_eq!(
         fake.forwarded_value("other-plugin", "cfg"),
         None,

@@ -206,24 +206,24 @@ impl PtySession {
         let (cmd, pair) = {
             let mut state = self.state.lock().await;
             // 命令已在构造期算好（argv 形态）：本层原样 exec，不做包装 / 注入
-            let cmd = state
-                .command
-                .take()
-                .ok_or_else(|| AppError::Pty(format!("PTY 命令已消耗，无法重复启动 (session {})", self.id)))?;
+            let cmd = state.command.take().ok_or_else(|| {
+                AppError::Pty(format!(
+                    "PTY 命令已消耗，无法重复启动 (session {})",
+                    self.id
+                ))
+            })?;
 
             // 从 state 中取出 pair
-            let pair = state
-                .pair
-                .take()
-                .ok_or_else(|| AppError::Pty(format!("PTY pair already used (session {})", self.id)))?;
+            let pair = state.pair.take().ok_or_else(|| {
+                AppError::Pty(format!("PTY pair already used (session {})", self.id))
+            })?;
 
             (cmd, pair)
         };
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| AppError::Pty(format!("启动 PTY 子进程失败 (session {}): {}", self.id, e)))?;
+        let child = pair.slave.spawn_command(cmd).map_err(|e| {
+            AppError::Pty(format!("启动 PTY 子进程失败 (session {}): {}", self.id, e))
+        })?;
 
         // 获取进程 ID 用于后续强制终止
         let pid = child.process_id();
@@ -306,10 +306,12 @@ impl PtySession {
     /// 调整终端大小
     pub async fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         let mut state = self.state.lock().await;
-        let master = state
-            .master
-            .as_mut()
-            .ok_or_else(|| AppError::Pty(format!("PTY master 不可用（会话未启动或已销毁 {}）", self.id)))?;
+        let master = state.master.as_mut().ok_or_else(|| {
+            AppError::Pty(format!(
+                "PTY master 不可用（会话未启动或已销毁 {}）",
+                self.id
+            ))
+        })?;
 
         master
             .resize(PtySize {
@@ -318,7 +320,9 @@ impl PtySession {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|e| AppError::Pty(format!("调整 PTY 尺寸失败 (session {}): {}", self.id, e)))?;
+            .map_err(|e| {
+                AppError::Pty(format!("调整 PTY 尺寸失败 (session {}): {}", self.id, e))
+            })?;
 
         Ok(())
     }
@@ -378,7 +382,9 @@ impl PtySession {
                     .args(["/C", &format!("taskkill /F /T /PID {}", pid)])
                     .output();
                 match output {
-                    Ok(o) => tracing::info!("taskkill output: {}", String::from_utf8_lossy(&o.stdout)),
+                    Ok(o) => {
+                        tracing::info!("taskkill output: {}", String::from_utf8_lossy(&o.stdout))
+                    }
                     Err(e) => tracing::error!("taskkill failed: {}", e),
                 }
             }
@@ -415,14 +421,13 @@ impl PtySession {
     async fn start_output_reader(&self) -> Result<()> {
         let reader = {
             let mut state = self.state.lock().await;
-            let master = state
-                .master
-                .as_mut()
-                .ok_or_else(|| AppError::Pty(format!("PTY master not available (session {})", self.id)))?;
+            let master = state.master.as_mut().ok_or_else(|| {
+                AppError::Pty(format!("PTY master not available (session {})", self.id))
+            })?;
 
-            master
-                .try_clone_reader()
-                .map_err(|e| AppError::Pty(format!("克隆 PTY 读取器失败 (session {}): {}", self.id, e)))?
+            master.try_clone_reader().map_err(|e| {
+                AppError::Pty(format!("克隆 PTY 读取器失败 (session {}): {}", self.id, e))
+            })?
         };
 
         let pty_reader = PtyReader::start(
@@ -576,7 +581,10 @@ mod tests {
     #[tokio::test]
     async fn start_spawns_real_process_and_reports_running() {
         let session = new_session("sleep 30");
-        session.start().await.expect("start should spawn real process");
+        session
+            .start()
+            .await
+            .expect("start should spawn real process");
         assert!(session.is_running(), "start 后应 running");
         assert_eq!(session.name().await, "itest-pty");
         session.kill().await.expect("kill");
@@ -612,7 +620,10 @@ mod tests {
         .expect("openpty");
 
         session.start().await.expect("start");
-        session.write_str(&format!("echo {marker}\n")).await.expect("write_str");
+        session
+            .write_str(&format!("echo {marker}\n"))
+            .await
+            .expect("write_str");
 
         let mut collected = String::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -620,13 +631,17 @@ mod tests {
             {
                 let guard = ring.lock().unwrap_or_else(|e| e.into_inner());
                 let (min, max) = guard.watermarks();
-                collected = String::from_utf8_lossy(&guard.fetch(min, (max - min) as usize).data).into_owned();
+                collected = String::from_utf8_lossy(&guard.fetch(min, (max - min) as usize).data)
+                    .into_owned();
             }
             if !collected.contains(&marker) {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
         }
-        assert!(collected.contains(&marker), "write_str 的输出应落入引擎环: {collected}");
+        assert!(
+            collected.contains(&marker),
+            "write_str 的输出应落入引擎环: {collected}"
+        );
 
         session.kill().await.expect("kill");
     }
@@ -637,7 +652,10 @@ mod tests {
     async fn resize_after_start_does_not_panic() {
         let session = new_session("sleep 30");
         session.start().await.expect("start");
-        session.resize(100, 30).await.expect("resize should succeed");
+        session
+            .resize(100, 30)
+            .await
+            .expect("resize should succeed");
         session.resize(80, 24).await.expect("resize idempotent");
         assert!(session.is_running());
         session.kill().await.expect("kill");
@@ -649,7 +667,10 @@ mod tests {
     async fn send_special_key_invalid_key_errors() {
         let session = new_session("sleep 30");
         session.start().await.expect("start");
-        let err = session.send_special_key("not_a_real_key").await.unwrap_err();
+        let err = session
+            .send_special_key("not_a_real_key")
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("key"), "非法 key 应报错: {err}");
         session.kill().await.expect("kill");
     }
@@ -696,7 +717,9 @@ mod tests {
 
     /// 等待终态事件（真 PTY 路径，超时防挂死）
     #[cfg(target_os = "linux")]
-    async fn recv_termination(rx: &mut tokio::sync::broadcast::Receiver<PtyTerminated>) -> PtyTerminated {
+    async fn recv_termination(
+        rx: &mut tokio::sync::broadcast::Receiver<PtyTerminated>,
+    ) -> PtyTerminated {
         tokio::time::timeout(std::time::Duration::from_secs(15), rx.recv())
             .await
             .expect("15s 内应收到 PTY 终态事件")
@@ -714,8 +737,16 @@ mod tests {
         session.start().await.expect("start");
 
         let terminated = recv_termination(&mut lifecycle_rx).await;
-        assert_eq!(terminated.exit_code, Some(7), "短命命令的退出码必须随终态事件带出");
-        assert_eq!(terminated.status, PtySessionStatus::Stopped, "EOF 终态应为 Stopped");
+        assert_eq!(
+            terminated.exit_code,
+            Some(7),
+            "短命命令的退出码必须随终态事件带出"
+        );
+        assert_eq!(
+            terminated.status,
+            PtySessionStatus::Stopped,
+            "EOF 终态应为 Stopped"
+        );
         assert!(!terminated.killed, "自然退出不得标记 killed");
     }
 
@@ -769,7 +800,10 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        assert!(collected.contains(&marker), "自备 sink 应收到进程输出: {collected}");
+        assert!(
+            collected.contains(&marker),
+            "自备 sink 应收到进程输出: {collected}"
+        );
     }
 
     /// 业务会话线（`Hold`）现役语义回归锁：子进程自然退出**不产生**终态事件
@@ -805,7 +839,10 @@ mod tests {
         session.kill().await.expect("kill");
 
         let terminated = recv_termination(&mut lifecycle_rx).await;
-        assert!(terminated.killed, "kill 终止必须标记 killed（信号终止无退出码可判）");
+        assert!(
+            terminated.killed,
+            "kill 终止必须标记 killed（信号终止无退出码可判）"
+        );
         assert_eq!(terminated.status, PtySessionStatus::Stopped);
         assert!(!session.is_running());
     }

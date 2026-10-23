@@ -19,11 +19,11 @@ use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::http::KeepAlive;
 use actix_web::middleware::Next;
 use actix_web::{web, App, Error, HttpServer};
-use wasmnest_server_base::config::NetworkConfig;
-use wasmnest_server_base::constants::{BIND_ADDRESS, CORS_MAX_AGE_SECS};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+use wasmnest_server_base::config::NetworkConfig;
+use wasmnest_server_base::constants::{BIND_ADDRESS, CORS_MAX_AGE_SECS};
 
 /// 传输面组合契约（libp2p SwarmBuilder 式）：一个 face = 一个传输面的
 /// 路由装配 + 可选 app 级中间件（boxed service 链式注入）。

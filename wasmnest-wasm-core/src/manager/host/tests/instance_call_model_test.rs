@@ -15,8 +15,9 @@
 /// `call_capability_export` 直调，本锁立即转红。
 #[test]
 fn instance_slot_structural_lock() {
-    let host_src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/manager/host.rs"))
-        .expect("read host.rs");
+    let host_src =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/manager/host.rs"))
+            .expect("read host.rs");
     let owner_src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/manager/host/owner.rs"
@@ -62,7 +63,8 @@ fn instance_slot_structural_lock() {
         "能力转发必须经窄端口 CapabilityTarget（不得直锁提供者实例）"
     );
     assert!(
-        capability_src.contains("target.storage_get(") && capability_src.contains("target.storage_set("),
+        capability_src.contains("target.storage_get(")
+            && capability_src.contains("target.storage_set("),
         "能力转发必须走端口（超时兜底在端口实现内）"
     );
 

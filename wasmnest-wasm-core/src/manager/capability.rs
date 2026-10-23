@@ -26,15 +26,15 @@
 //! 系统组件不消费自己提供的能力）。自调用（提供者 == 调用方）直接回落
 //! 宿主原语，避免死锁。
 
-use std::sync::OnceLock;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::sync::{Arc, RwLock};
 
 use wasmtime::component::Instance;
 use wasmtime::Store;
 
-use wasmnest_host_kit::WasmPluginState;
 use crate::host_api::context::CapabilityTarget;
+use wasmnest_host_kit::WasmPluginState;
 
 // ==================== 能力名与导出探测表 ====================
 
@@ -175,7 +175,8 @@ const HOST_PRIMITIVE_CAPABILITIES: &[&str] = &[
 /// **为什么是函数而不是 `const`**：自报行由 inventory 静态在装配期汇集（与能力模块
 /// 白名单、域端口装配器同范式），只能运行期求值。内核自身的测试二进制不链能力域
 /// ⇒ 只剩内建行（合法形态；宿主侧锁负责断言自报行到场）。
-pub(crate) fn routable_capabilities() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
+pub(crate) fn routable_capabilities() -> Vec<(&'static str, &'static str, &'static [&'static str])>
+{
     // 内建行就地构造：表项是 `contract::export_item` 的派生值（含版本后缀），
     // `const` 上下文不可用；自报行同为例（inventory 装配期汇集），两者形态一致。
     let mut table: Vec<(&'static str, &'static str, &'static [&'static str])> =
@@ -199,13 +200,16 @@ pub(crate) fn routable_capabilities() -> Vec<(&'static str, &'static str, &'stat
 /// 仅探测能力表（`(能力名, 导出函数表)`）——表项经 [`crate::contract::export_item`] 派生
 fn probe_only_capabilities() -> &'static [(&'static str, &'static [&'static str])] {
     static TABLE: OnceLock<Vec<(&'static str, &'static [&'static str])>> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let exports: &'static [&'static str] = Box::leak(Box::new([
-            crate::contract::export_item("auth-policy", "verify-device-token"),
-        ]));
-        vec![(CAP_AUTH_POLICY, exports)]
-    })
-    .as_slice()
+    TABLE
+        .get_or_init(|| {
+            let exports: &'static [&'static str] =
+                Box::leak(Box::new([crate::contract::export_item(
+                    "auth-policy",
+                    "verify-device-token",
+                )]));
+            vec![(CAP_AUTH_POLICY, exports)]
+        })
+        .as_slice()
 }
 
 // ==================== 能力注册表 ====================
@@ -325,7 +329,9 @@ impl CapabilityRegistry {
             providers
                 .iter()
                 .filter_map(|(name, p)| match p {
-                    CapabilityProvider::SystemComponent { plugin_id: pid, .. } if pid == plugin_id => {
+                    CapabilityProvider::SystemComponent { plugin_id: pid, .. }
+                        if pid == plugin_id =>
+                    {
                         Some(name.clone())
                     }
                     _ => None,
@@ -348,7 +354,9 @@ impl CapabilityRegistry {
     ) -> Option<(String, Arc<dyn CapabilityTarget>)> {
         let providers = self.providers.read().unwrap_or_else(|e| e.into_inner());
         match providers.get(name) {
-            Some(CapabilityProvider::SystemComponent { plugin_id, target }) if plugin_id != caller_plugin_id => {
+            Some(CapabilityProvider::SystemComponent { plugin_id, target })
+                if plugin_id != caller_plugin_id =>
+            {
                 Some((plugin_id.clone(), target.clone()))
             }
             _ => None,
@@ -362,7 +370,9 @@ impl CapabilityRegistry {
         let providers = self.providers.read().unwrap_or_else(|e| e.into_inner());
         match providers.get(name) {
             Some(CapabilityProvider::HostPrimitive) => "host".to_string(),
-            Some(CapabilityProvider::SystemComponent { plugin_id, .. }) => format!("system:{}", plugin_id),
+            Some(CapabilityProvider::SystemComponent { plugin_id, .. }) => {
+                format!("system:{}", plugin_id)
+            }
             None => "none".to_string(),
         }
     }
@@ -417,7 +427,9 @@ impl crate::host_api::context::CapabilityProvider for CapabilityRegistry {
 /// 单形态共享故保留 + 按形态豁免
 #[cfg_attr(not(feature = "desktop-assembly"), allow(dead_code))]
 pub(crate) fn is_routable(name: &str) -> bool {
-    routable_capabilities().iter().any(|(cap, _, _)| *cap == name)
+    routable_capabilities()
+        .iter()
+        .any(|(cap, _, _)| *cap == name)
 }
 
 /// 探测组件实例导出的可路由能力（实例化时调用，全函数命中才算提供）
@@ -425,7 +437,10 @@ pub(crate) fn is_routable(name: &str) -> bool {
 /// 以「可路由 + 仅探测」两张表的**并集**为准——仅探测能力（如 `auth-policy`）
 /// 供宿主导航消费方直查，不进入注册表路由。可路由能力恒在探测面内（构造保证），
 /// 否则宿主会在实例化期认定「本组件提供 X」，激活时却因不可路由被注册表拒绝。
-pub(crate) fn probe_exported_capabilities(instance: &Instance, store: &mut Store<WasmPluginState>) -> Vec<String> {
+pub(crate) fn probe_exported_capabilities(
+    instance: &Instance,
+    store: &mut Store<WasmPluginState>,
+) -> Vec<String> {
     routable_capabilities()
         .into_iter()
         .map(|(cap, _, exports)| (cap, exports))
@@ -456,7 +471,12 @@ pub(crate) fn forward_storage_get(
         .capabilities()
         .system_component_instance(CAP_HOST_STORAGE, caller_plugin_id)?;
     let result = target.storage_get(key);
-    Some(unwrap_forward_result(CAP_HOST_STORAGE, &provider_id, cap, result))
+    Some(unwrap_forward_result(
+        CAP_HOST_STORAGE,
+        &provider_id,
+        cap,
+        result,
+    ))
 }
 
 /// `host-storage.set` 路由（语义同 [`forward_storage_get`]）
@@ -470,7 +490,12 @@ pub(crate) fn forward_storage_set(
         .capabilities()
         .system_component_instance(CAP_HOST_STORAGE, caller_plugin_id)?;
     let result = target.storage_set(key, value);
-    Some(unwrap_forward_result(CAP_HOST_STORAGE, &provider_id, cap, result))
+    Some(unwrap_forward_result(
+        CAP_HOST_STORAGE,
+        &provider_id,
+        cap,
+        result,
+    ))
 }
 
 /// `host-storage.delete` 路由（语义同 [`forward_storage_get`]）
@@ -483,7 +508,12 @@ pub(crate) fn forward_storage_delete(
         .capabilities()
         .system_component_instance(CAP_HOST_STORAGE, caller_plugin_id)?;
     let result = target.storage_delete(key);
-    Some(unwrap_forward_result(CAP_HOST_STORAGE, &provider_id, cap, result))
+    Some(unwrap_forward_result(
+        CAP_HOST_STORAGE,
+        &provider_id,
+        cap,
+        result,
+    ))
 }
 
 // ==================== host-mdns 转发（discovery 域能力端口调用） ====================
@@ -638,7 +668,11 @@ mod tests {
         // 内核测试二进制不链能力域 ⇒ 自报集为空，故此处只断言「自报即认」；
         // 「自报行真的到场」由宿主侧锁（`tests/mdns_wiring.rs`）断言。
         for route in wasmnest_host_kit::collected_routable_capabilities() {
-            assert!(is_routable(route.capability), "自报能力 {} 必须可路由", route.capability);
+            assert!(
+                is_routable(route.capability),
+                "自报能力 {} 必须可路由",
+                route.capability
+            );
         }
         // 票 12：auth-policy 仅探测不路由（消费方是宿主中间件，注册为路由提供者
         // 会让任意插件接管认证策略）——register 必须拒绝
@@ -676,7 +710,9 @@ mod tests {
             .find("pub trait CapabilityTarget")
             .expect("CapabilityTarget trait must exist in context.rs");
         let block = &ctx_src[start..];
-        let end = block.find("\n}\n").expect("CapabilityTarget trait must be closed");
+        let end = block
+            .find("\n}\n")
+            .expect("CapabilityTarget trait must be closed");
         block[..end]
             .lines()
             .filter_map(|line| line.trim().strip_prefix("fn "))
@@ -739,7 +775,9 @@ mod tests {
             for export in *exports {
                 export
                     .parse::<wasmtime::component::wit_parser::ItemName>()
-                    .unwrap_or_else(|e| panic!("export '{export}' of '{cap}' is not a valid ItemName: {e}"));
+                    .unwrap_or_else(|e| {
+                        panic!("export '{export}' of '{cap}' is not a valid ItemName: {e}")
+                    });
             }
             // 4. 能力域端口的转发方法族与导出数一一对应
             let (_, port_src) = ROUTED_CAPABILITY_PORT_SOURCES
@@ -752,8 +790,9 @@ mod tests {
                     )
                 });
             let port_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(port_src);
-            let port_text = std::fs::read_to_string(&port_path)
-                .unwrap_or_else(|e| panic!("read capability domain ports {}: {e}", port_path.display()));
+            let port_text = std::fs::read_to_string(&port_path).unwrap_or_else(|e| {
+                panic!("read capability domain ports {}: {e}", port_path.display())
+            });
             let decls = count_forward_decls(&port_text, prefix);
             assert_eq!(
                 decls,
@@ -766,12 +805,15 @@ mod tests {
         }
 
         // 3. 提供者窄端口的方法族与表**逐项对应**（不多不少）
-        let ctx_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/host_api/context.rs");
-        let ctx_src = std::fs::read_to_string(&ctx_path).unwrap_or_else(|e| panic!("read {}: {e}", ctx_path.display()));
+        let ctx_path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/host_api/context.rs");
+        let ctx_src = std::fs::read_to_string(&ctx_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", ctx_path.display()));
         let methods = capability_target_methods(&ctx_src);
         for (_, prefix, exports) in &table {
             let marker = format!("{prefix}_");
-            let declared: Vec<&String> = methods.iter().filter(|m| m.starts_with(&marker)).collect();
+            let declared: Vec<&String> =
+                methods.iter().filter(|m| m.starts_with(&marker)).collect();
             assert_eq!(
                 declared.len(),
                 exports.len(),
@@ -838,9 +880,7 @@ mod tests {
         let domain_values = export_literals(&domain_src);
         let kernel_values: Vec<String> = kernel_funcs
             .iter()
-            .map(|func| {
-                crate::contract::export_item("host-mdns", func).to_string()
-            })
+            .map(|func| crate::contract::export_item("host-mdns", func).to_string())
             .collect();
         let mut domain_sorted = domain_values.clone();
         domain_sorted.sort();
@@ -930,7 +970,11 @@ mod tests {
         let before = names.len();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), before, "duplicate capability in routable table: {names:?}");
+        assert_eq!(
+            names.len(),
+            before,
+            "duplicate capability in routable table: {names:?}"
+        );
 
         // 前缀不重复：两个能力共用一个前缀 ⇒ 方法族混在一起，闭表锁的前缀判据失效
         let mut prefixes: Vec<&str> = table.iter().map(|(_, prefix, _)| *prefix).collect();
