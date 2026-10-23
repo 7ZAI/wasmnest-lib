@@ -95,3 +95,8 @@ mod tests {
         }
     }
 }
+
+/// Seam 3 跑红探针：故意 3 空格缩进（fmt --check 应红；验证后随探针分支删除）
+pub fn ci_fmt_probe() -> u8 {
+   7
+}
