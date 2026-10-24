@@ -15,6 +15,13 @@ use tauri::State;
 // 身份由宿主解析（宿主面 loader 密钥 → 可操作任意目标；插件面令牌 → 目标必须是自己）。
 // 机制与威胁模型见 `plugin/security/frontend_channel.rs`。
 //
+// **宿主面命令门（ADR 0058 方案 A，2026-10-24，issue #21）**：生命周期管理命令
+// （plugin_preauthorize / plugin_activate / plugin_deactivate / plugin_approve /
+// plugin_install_from_file / plugin_uninstall）已纳入宿主面凭证门——激活 / 停用 /
+// 安装 / 卸载 / 审批是宿主职权，插件面令牌（即使目标是自己）也一律拒绝；前端调用点
+// 必须经宿主面凭证（`ensureHostCredential`）。判据真源见
+// `frontend_channel::require_host_identity`。
+//
 // **凭证域按 webview 分区**（2026-09-26）：每个 `plugin_*` 命令注入 `tauri::Webview`
 // 参数（Tauri 保证是调用发起方所在窗口），label 决定用哪个凭证域解析——主窗口与终端
 // 窗口互不干扰，跨窗口的凭证不可解析（比单一全局表更严）。
@@ -81,8 +88,9 @@ pub async fn plugin_channel_token(
 /// 授权管理面命令的宿主面凭证门（读取 / 撤销 / 代答授权决定）
 ///
 /// 授权记录是安全闸门的配给账：插件面凭证不得用它枚举其它应用的授权情况，
-/// 更不能替用户撤销或同意。这里把判据收成一处，避免每个命令各写一遍
-/// `resolve(...) != Some(Host)` 时漏掉一个。
+/// 更不能替用户撤销或同意。判据委托给
+/// `frontend_channel::require_host_identity`（ADR 0058 方案 A 的真源，有单测），
+/// 本层只负责把失败换成各命令自己的 denial 文案——既有调用点的拒绝文案逐字不变。
 fn require_host_surface(
     plugin_host: &PluginHost,
     webview_label: &str,
@@ -90,20 +98,10 @@ fn require_host_surface(
     credential: &str,
     denial: &str,
 ) -> crate::Result<()> {
-    use crate::security::frontend_channel::ChannelIdentity;
-    if plugin_host
+    plugin_host
         .frontend_channel()
-        .resolve(webview_label, credential)
-        != Some(ChannelIdentity::Host)
-    {
-        tracing::warn!(
-            webview = %webview_label,
-            command = %command,
-            "[API] 非宿主面凭证，拒绝授权管理操作"
-        );
-        return Err(crate::AppError::Plugin(denial.to_string()));
-    }
-    Ok(())
+        .require_host_identity(webview_label, credential, command)
+        .map_err(|_| crate::AppError::Plugin(denial.to_string()))
 }
 
 /// 插件面命令的统一身份校验（fail-closed 语义与裁决规则见 `frontend_channel::authorize`）
@@ -152,9 +150,18 @@ pub async fn plugin_get_info(
 /// （启动 auto-activate 无头场景 + 已授权路径短路无二次弹窗）。
 #[tauri::command]
 pub async fn plugin_preauthorize(
+    webview: tauri::Webview,
     plugin_id: String,
+    credential: String,
     plugin_host: State<'_, Arc<PluginHost>>,
 ) -> crate::Result<()> {
+    require_host_surface(
+        &plugin_host,
+        webview.label(),
+        "plugin_preauthorize",
+        &credential,
+        "plugin preauthorization must be requested by the host frontend",
+    )?;
     tracing::info!(plugin_id = %plugin_id, "[API] plugin_preauthorize");
     let result = plugin_host.preauthorize_plugin(&plugin_id).await;
     if let Err(ref e) = result {
@@ -166,9 +173,18 @@ pub async fn plugin_preauthorize(
 /// 激活插件（用户操作，持久化状态）
 #[tauri::command]
 pub async fn plugin_activate(
+    webview: tauri::Webview,
     plugin_id: String,
+    credential: String,
     plugin_host: State<'_, Arc<PluginHost>>,
 ) -> crate::Result<()> {
+    require_host_surface(
+        &plugin_host,
+        webview.label(),
+        "plugin_activate",
+        &credential,
+        "plugin activation must be requested by the host frontend",
+    )?;
     tracing::info!(plugin_id = %plugin_id, "[API] plugin_activate");
     let result = plugin_host.activate_plugin(&plugin_id, true).await;
     if let Err(ref e) = result {
@@ -180,9 +196,18 @@ pub async fn plugin_activate(
 /// 停用插件（用户操作，持久化状态）
 #[tauri::command]
 pub async fn plugin_deactivate(
+    webview: tauri::Webview,
     plugin_id: String,
+    credential: String,
     plugin_host: State<'_, Arc<PluginHost>>,
 ) -> crate::Result<()> {
+    require_host_surface(
+        &plugin_host,
+        webview.label(),
+        "plugin_deactivate",
+        &credential,
+        "plugin deactivation must be requested by the host frontend",
+    )?;
     tracing::info!(plugin_id = %plugin_id, "[API] plugin_deactivate");
     let result = plugin_host.deactivate_plugin(&plugin_id, true).await;
     if let Err(ref e) = result {
@@ -197,9 +222,18 @@ pub async fn plugin_deactivate(
 /// 目录内容在批准后变化 → 批准自动撤销并回到 NeedsApproval。
 #[tauri::command]
 pub async fn plugin_approve(
+    webview: tauri::Webview,
     plugin_id: String,
+    credential: String,
     plugin_host: State<'_, Arc<PluginHost>>,
 ) -> crate::Result<Vec<String>> {
+    require_host_surface(
+        &plugin_host,
+        webview.label(),
+        "plugin_approve",
+        &credential,
+        "plugin permission approval must be granted by the host frontend",
+    )?;
     tracing::info!(plugin_id = %plugin_id, "[API] plugin_approve");
     let result = plugin_host.approve_plugin(&plugin_id).await;
     if let Err(ref e) = result {
@@ -710,9 +744,18 @@ pub async fn plugin_auth_remove_record(
 /// 仅接收已下载的本地文件路径：解压与身份/路径校验在 Rust 端完成
 #[tauri::command]
 pub async fn plugin_install_from_file(
+    webview: tauri::Webview,
     path: String,
+    credential: String,
     plugin_host: State<'_, Arc<PluginHost>>,
 ) -> crate::Result<String> {
+    require_host_surface(
+        &plugin_host,
+        webview.label(),
+        "plugin_install_from_file",
+        &credential,
+        "plugin installation must be requested by the host frontend",
+    )?;
     tracing::info!("[API] plugin_install_from_file: {}", path);
     let result = plugin_host.install_from_zip(&path).await;
     if let Err(ref e) = result {
@@ -724,9 +767,18 @@ pub async fn plugin_install_from_file(
 /// 卸载插件（所有来源；要求插件未启用，dev 合入）
 #[tauri::command]
 pub async fn plugin_uninstall(
+    webview: tauri::Webview,
     plugin_id: String,
+    credential: String,
     plugin_host: State<'_, Arc<PluginHost>>,
 ) -> crate::Result<()> {
+    require_host_surface(
+        &plugin_host,
+        webview.label(),
+        "plugin_uninstall",
+        &credential,
+        "plugin uninstallation must be requested by the host frontend",
+    )?;
     tracing::info!(plugin_id = %plugin_id, "[API] plugin_uninstall");
     let result = plugin_host.uninstall_plugin(&plugin_id).await;
     if let Err(ref e) = result {
@@ -752,6 +804,10 @@ mod tests {
     //!    （`list_plugins` / `activate_plugin` / `invoke_rust_command` /
     //!    `storage()` 等）均已在 `host.rs` 测试中直接覆盖（含错误分支的
     //!    错误字符串断言），桥接层只是透传。
+    //! 4. 宿主面门禁（ADR 0058 方案 A 起 `require_host_surface` 委托
+    //!    `frontend_channel::require_host_identity`）：其可测逻辑（宿主面凭证放行、
+    //!    插件面令牌即使目标是自己也拒绝、跨 webview 域隔离）已在该模块单测覆盖，
+    //!    桥接层仍是薄委托（Err 时换用调用方传入的 denial 文案），不另测。
     //!
     //! 结论：不硬造测试；桥接层行为由 host.rs 的宿主测试 + 前端集成测试
     //! 覆盖。`plugin_terminal_send_input` 的写入委托目标（会话窄转发层

@@ -241,6 +241,30 @@ impl FrontendChannelRegistry {
             }
         }
     }
+
+    /// 宿主面命令的身份门（ADR 0058 方案 A：管理类命令只认宿主前端凭证）
+    ///
+    /// 与 [`Self::authorize`] 的差别：插件面令牌（即使目标是自己）也一律拒绝——
+    /// 激活 / 停用 / 安装 / 卸载 / 审批是宿主职权，插件前端不得自启停或互相操纵。
+    /// 门禁失败 fail-visible：错误信息点名命令与缺口（缺凭证 / 凭证非宿主面）。
+    pub fn require_host_identity(
+        &self,
+        webview_label: &str,
+        credential: &str,
+        command: &str,
+    ) -> crate::Result<()> {
+        if self.resolve(webview_label, credential) == Some(ChannelIdentity::Host) {
+            return Ok(());
+        }
+        tracing::warn!(
+            webview = %webview_label,
+            command = %command,
+            "[PluginChannel] 非宿主面凭证，宿主面命令被拒绝"
+        );
+        Err(AppError::Plugin(format!(
+            "command '{command}' requires the host frontend credential (loader session); plugin-frontend tokens are not accepted"
+        )))
+    }
 }
 
 /// 生成 32 字节随机凭据（小写十六进制）
@@ -525,6 +549,72 @@ mod tests {
         assert!(registry
             .authorize(MAIN, "com.test.alice", &session)
             .is_err());
+    }
+
+    /// 宿主面命令的身份门（ADR 0058 方案 A）：宿主 loader 会话放行
+    #[test]
+    fn require_host_identity_accepts_host_loader_session() {
+        let registry = FrontendChannelRegistry::new();
+        let session = registry.issue_loader_session(MAIN).unwrap();
+
+        registry
+            .require_host_identity(MAIN, &session, "plugin_activate")
+            .expect("宿主面凭证必须放行宿主面命令");
+    }
+
+    /// 宿主面命令门：缺失 / 伪造凭证一律拒绝，错误信息点名缺口（fail-visible）
+    #[test]
+    fn require_host_identity_rejects_missing_and_forged_credentials() {
+        let registry = FrontendChannelRegistry::new();
+
+        for credential in ["", "forged"] {
+            let err = registry
+                .require_host_identity(MAIN, credential, "plugin_activate")
+                .expect_err("无宿主面凭证必须拒绝");
+            assert!(
+                err.to_string()
+                    .contains("requires the host frontend credential"),
+                "错误信息必须点名宿主面凭证缺口，实际: {err}"
+            );
+        }
+    }
+
+    /// 宿主面命令门与 `authorize` 的关键差别：插件面令牌即使目标是自己也一律拒绝
+    #[test]
+    fn require_host_identity_rejects_plugin_token_even_for_self() {
+        let registry = FrontendChannelRegistry::new();
+        let session = registry.issue_loader_session(MAIN).unwrap();
+        let alice = registry
+            .issue_token(MAIN, &session, "com.test.alice")
+            .unwrap();
+
+        // 对照：authorize 对「自己的目标」放行
+        assert!(registry.authorize(MAIN, "com.test.alice", &alice).is_ok());
+        // 宿主面门：同一令牌一律拒绝——激活 / 停用 / 审批是宿主职权
+        let err = registry
+            .require_host_identity(MAIN, &alice, "plugin_activate")
+            .expect_err("插件面令牌不得通过宿主面门");
+        assert!(
+            err.to_string()
+                .contains("requires the host frontend credential"),
+            "实际: {err}"
+        );
+    }
+
+    /// 宿主面命令门同样受 webview 域隔离约束：跨窗口的宿主凭证不可用（fail-closed）
+    #[test]
+    fn require_host_identity_rejects_cross_webview_host_credential() {
+        let registry = FrontendChannelRegistry::new();
+        let main_session = registry.issue_loader_session(MAIN).unwrap();
+
+        let err = registry
+            .require_host_identity(TERMINAL, &main_session, "plugin_activate")
+            .expect_err("其它窗口的宿主凭证不得通过本窗口的宿主面门");
+        assert!(
+            err.to_string()
+                .contains("requires the host frontend credential"),
+            "实际: {err}"
+        );
     }
 
     /// 停用插件回收其**所有窗口**的令牌，其它插件与宿主密钥不受影响
