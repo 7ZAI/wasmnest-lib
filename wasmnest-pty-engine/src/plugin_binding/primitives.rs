@@ -59,7 +59,7 @@ use crate::plugin_binding::output::OutputNotifySink;
 use crate::plugin_binding::ports::{block_on, BoxedTask, PtyPorts};
 use crate::plugin_binding::registry::{
     exit_reason_of, publish_pty_exit, quota_of, registered_count_for, session_of, with_entry,
-    PtyEntry, HANDLE_PREFIX, PTYS,
+    EXIT_READ_WINDOW, PtyEntry, HANDLE_PREFIX, PTYS,
 };
 use crate::{PtyOutputSink, PtyRing, PtyRingFetch, PtyRingSink, PtySession, PtyTerminated};
 
@@ -207,6 +207,7 @@ pub fn pty_spawn(
             owner: plugin_id.to_string(),
             session,
             ring,
+            exit_published: false,
         },
     );
     // 退出监听在登记之后起动：保证「摘除 + 发布」时句柄必已在册
@@ -384,31 +385,48 @@ async fn reap_and_publish(
         }
     };
     let reason = exit_reason_of(&terminated);
-    // 摘除成功者才发布：与停用回收竞争时保证「每条 PTY 恰好一条事件」
-    let taken = PTYS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&pty_id);
-    match taken {
-        Some(entry) => {
-            // entry 在此 drop：会话最后一次引用释放（进程此时确已退出并被回收）
-            drop(entry);
-            tracing::info!(
-                plugin_id = %owner,
-                pty_id = %pty_id,
-                reason = %reason,
-                exit_code = ?terminated.exit_code,
-                "host-pty: 插件私有 PTY 已终止并摘除"
-            );
-            publish_pty_exit(&ports, &owner, &pty_id, reason, terminated.exit_code);
+    // 发布权认领 + 打开只读窗口（#12A）：`exit_published` 置位即唯一发布者
+    //（与停用回收的竞争判据由「谁 remove 成功」改为「谁先置位」），句柄
+    // **暂留注册表**——退出事件经宿主事件泵异步投递，先摘环会让属主退出
+    // 处理器（终端插件尾帧 fetch）必然 `pty handle not found`，最后未被
+    // drain 的字节永久丢失。
+    let claimed = {
+        let mut table = PTYS.lock().unwrap_or_else(|e| e.into_inner());
+        match table.get_mut(&pty_id) {
+            Some(entry) if entry.owner == owner && !entry.exit_published => {
+                entry.exit_published = true;
+                true
+            }
+            _ => false,
         }
-        None => {
-            tracing::debug!(
-                plugin_id = %owner,
-                pty_id = %pty_id,
-                reason = %reason,
-                "host-pty: 终态到达时句柄已被摘除（停用回收已发布事件），不重复发"
-            );
-        }
+    };
+    if !claimed {
+        tracing::debug!(
+            plugin_id = %owner,
+            pty_id = %pty_id,
+            reason = %reason,
+            "host-pty: 终态到达时句柄已被摘除或事件已发布（停用回收路径），不重复发"
+        );
+        return;
     }
+    tracing::info!(
+        plugin_id = %owner,
+        pty_id = %pty_id,
+        reason = %reason,
+        exit_code = ?terminated.exit_code,
+        "host-pty: 插件私有 PTY 已终止（退出只读窗口开启）"
+    );
+    publish_pty_exit(&ports, &owner, &pty_id, reason, terminated.exit_code);
+    // 窗口到期摘除：环最后一次引用在此释放（进程此时确已退出并被回收）。
+    // 到期前若被停用回收抢先摘除，此处 remove 落空即静默结束
+    ports.spawn_task(
+        "pty_exit_read_window",
+        Box::pin(async move {
+            tokio::time::sleep(EXIT_READ_WINDOW).await;
+            if let Some(entry) = PTYS.lock().unwrap_or_else(|e| e.into_inner()).remove(&pty_id) {
+                drop(entry);
+                tracing::debug!(pty_id = %pty_id, "host-pty: 退出只读窗口到期，句柄已摘除");
+            }
+        }),
+    );
 }

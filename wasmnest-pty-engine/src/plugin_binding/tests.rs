@@ -56,7 +56,7 @@ use crate::plugin_binding::output::EVENT_OUTPUT;
 use crate::plugin_binding::ports::{BoxedBlocked, BoxedTask, PtyHostConfig, PtyPorts};
 use crate::plugin_binding::primitives::*;
 use crate::plugin_binding::registry::{
-    live_count, purge_for_plugin_with_ports, registered_count_for, PTYS,
+    live_count, purge_for_plugin_with_ports, registered_count_for, EXIT_READ_WINDOW, PTYS,
 };
 use crate::plugin_binding::registry::{quota_of, register_quota, EVENT_EXIT, NOT_OWNER};
 use crate::{PtyEngineConfig, PtyRing};
@@ -1062,11 +1062,11 @@ fn is_running_verdict_covers_all_four_states() {
     assert!(!running_verdict(false, true), "两路都终结 → false");
 }
 
-/// 正例 + 状态迁移：进程存活期 is-running=true，自然退出后句柄被摘除且不再可寻址
+/// 正例 + 状态迁移：进程存活期 is-running=true，自然退出后句柄最终摘除且不再可寻址
 ///
 /// 判据组合本身见 [`is_running_verdict_covers_all_four_states`]；本用例验端到端
-/// 的两端确定态：alive=true，退出后退出监听摘除句柄（票 04「exit 即摘除」）⇒
-/// `Err(not found)`。
+/// 的两端确定态：alive=true，退出后句柄在只读窗口内仍可寻址（#12A：退出处理器
+/// 取尾段），窗口到期由延迟任务摘除 ⇒ `Err(not found)`。
 #[cfg(target_os = "linux")]
 #[test]
 fn is_running_true_while_alive_and_handle_retired_after_natural_exit() {
@@ -1078,17 +1078,60 @@ fn is_running_true_while_alive_and_handle_retired_after_natural_exit() {
         "阻塞在 read 的进程应为 running"
     );
 
-    // 解锁 → shell 自然退出 → 终态事件 → 句柄摘除
+    // 解锁 → shell 自然退出 → 终态事件 → 只读窗口 → 窗口到期句柄摘除
     pty_write(ctx.ports(), owner, &pty_id, b"go\n").expect("write");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + EXIT_READ_WINDOW + Duration::from_secs(5);
     while is_registered(&pty_id) {
         if Instant::now() >= deadline {
-            panic!("自然退出后句柄必须被退出监听摘除，不得永久在册");
+            panic!("窗口到期后句柄必须被延迟任务摘除，不得永久在册");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     let err = pty_is_running(ctx.ports(), owner, &pty_id).unwrap_err();
     assert!(err.contains("not found"), "摘除后必须不可寻址，got: {err}");
+}
+
+/// #12A 回归：自然退出后、只读窗口内，环尾段必须仍可 fetch（退出事件先发布、
+/// 环后释放）。修复前退出监听先摘环再发布，退出处理器的尾帧 fetch 必然
+/// `pty handle not found`，最后一段输出（含 50ms 限频窗口内的最后一批）永久丢失。
+#[cfg(target_os = "linux")]
+#[test]
+fn ring_tail_readable_during_exit_read_window() {
+    let owner = "pty-test.exit-window";
+    let ctx = TestCtx::new();
+    ctx.grant(owner, &[PERMISSION_PTY_SPAWN, PERMISSION_PTY_IO]);
+    let events = subscribe(&ctx, &exit_topic(owner));
+    // 先产出后退出：sleep 保证读线程已把字节搬进环再 EOF，不与事件投递赛跑
+    let pty_id = pty_spawn(
+        ctx.ports(),
+        owner,
+        r#"{"command":"/bin/sh","args":["-c","echo tail-marker-12; sleep 0.2; exit 0"]}"#,
+    )
+    .expect("spawn");
+    let event = wait_event(&events).expect("自然退出必须发出退出事件");
+    assert_eq!(
+        event["payload"]["ptyId"].as_str(),
+        Some(pty_id.as_str()),
+        "事件必须寻址到本句柄: {event}"
+    );
+
+    // 窗口内：句柄在册（配额计数已排除窗口期条目）+ 尾段可读
+    assert!(is_registered(&pty_id), "只读窗口内句柄必须在册");
+    let tail = pty_ring_fetch(ctx.ports(), owner, &pty_id, 0, 4096)
+        .expect("窗口内 ring-fetch 必须成功")
+        .expect("环内必须有尾段字节");
+    assert!(
+        String::from_utf8_lossy(&tail.data).contains("tail-marker-12"),
+        "尾段必须含进程最后输出: {:?}",
+        String::from_utf8_lossy(&tail.data)
+    );
+
+    // 窗口到期：句柄最终摘除（不永久在册）
+    let deadline = Instant::now() + EXIT_READ_WINDOW + Duration::from_secs(5);
+    while is_registered(&pty_id) {
+        assert!(Instant::now() < deadline, "窗口到期后句柄必须被摘除");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 // ==================== 限额与背压（票 05） ====================

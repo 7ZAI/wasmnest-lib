@@ -24,6 +24,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 
 use crate::wire::owned_topic;
 use wasmnest_server_base::constants::PLUGIN_PTY_MAX_SESSIONS_PER_PLUGIN;
@@ -42,7 +43,17 @@ pub(crate) const HANDLE_PREFIX: &str = "pty-";
 /// 生命周期事件名（topic = `<owner>::pty:exit`，事件名段与 SDK `PTY_EXIT` 常量逐字一致）
 pub(crate) const EVENT_EXIT: &str = "pty:exit";
 
-/// 句柄不在册的拒绝文案（kill / 退出事件摘除后，句柄立即不可寻址）
+/// 退出事件发布后的**只读窗口**：句柄在册、环仍可 fetch（属主退出处理器取尾段），
+/// 窗口到期由延迟任务最终摘除。
+///
+/// 为什么需要：退出事件经宿主事件泵**异步**投递，发布返回 ≠ 处理器已跑完——
+/// 先摘环会让退出处理器必然 `pty handle not found`，最后未被 drain 的字节（含
+/// 50ms 限频窗口内的最后一批）永久丢失（#12A）。窗口只需覆盖投递 + 一次尾帧
+/// fetch 链，取 3s；期间进程已死，写类操作在会话层自然失败（不新增门禁分支）。
+pub(crate) const EXIT_READ_WINDOW: Duration = Duration::from_secs(3);
+
+/// 句柄不在册的拒绝文案（kill 摘除后立即不可寻址；自然退出有只读窗口，
+/// 见 [`EXIT_READ_WINDOW`]）
 pub(crate) fn not_found(pty_id: &str) -> String {
     format!("pty handle not found: {pty_id}")
 }
@@ -55,6 +66,11 @@ pub(crate) struct PtyEntry {
     /// 进程存活性的持有者：`PtySession` 最后一次引用被 drop 即杀子进程
     pub(crate) session: PtySession,
     pub(crate) ring: Arc<Mutex<PtyRing>>,
+    /// 退出事件已发布（**发布权认领位**）：置位后句柄进入只读窗口
+    ///（[`EXIT_READ_WINDOW`]），环仍可 fetch 供退出处理器取尾段；回收路径
+    /// 见位跳过重复发布（单一发布者不变量的判据，替代「谁 remove 成功」）。
+    /// 配额计数（[`registered_count_for`]）不含已置位条目——窗口期不得吃配额
+    pub(crate) exit_published: bool,
 }
 
 /// 全局插件 PTY 注册表（句柄 → 条目；跨插件按 owner 隔离）
@@ -86,11 +102,15 @@ pub(crate) fn quota_of(plugin_id: &str) -> usize {
 }
 
 /// 某插件当前在册 PTY 条数（配额判据与副作用断言共用）
+///
+/// **不含已发布退出事件的窗口期条目**（`exit_published`）：自然退出后句柄在
+/// 只读窗口内仍在册，但进程已死、不再占用会话档位——计入会让连开连关的
+/// 会话提前顶到配额上限。
 pub(crate) fn registered_count_for(plugin_id: &str) -> usize {
     PTYS.lock()
         .unwrap_or_else(|e| e.into_inner())
         .values()
-        .filter(|entry| entry.owner == plugin_id)
+        .filter(|entry| entry.owner == plugin_id && !entry.exit_published)
         .count()
 }
 
@@ -191,12 +211,16 @@ fn reclaim_handles(ports: &Arc<dyn PtyPorts>, handles: Vec<String>) -> usize {
             // 进程此时多已自行结束，kill 失败属可恢复；仍摘除并补发事件（不泄漏句柄）
             tracing::warn!(plugin_id = %owner, pty_id = %pty_id, error = %e, "PTY 回收 kill 降级");
         }
-        // 会话与环的最后一次引用在**发布事件之前**释放（进程此时确已退出并被回收）：
+        // 会话的最后一次引用在**发布事件之前**释放（进程此时确已退出并被回收）：
         // 顺序与迁移前逐字一致——事件一旦发出，属主插件可能立刻起新 PTY，旧句柄的
         // 会话句柄不该还挂在收尾路径上
         drop(entry.session);
         drop(entry.ring);
-        publish_pty_exit(ports, &owner, &pty_id, "killed", None);
+        // 退出监听已发布过（自然退出的只读窗口期内被回收）：不重复发
+        //（单一发布者判据 = `exit_published` 认领位，与退出监听的「谁先置位」一致）
+        if !entry.exit_published {
+            publish_pty_exit(ports, &owner, &pty_id, "killed", None);
+        }
         reclaimed += 1;
     }
     reclaimed
