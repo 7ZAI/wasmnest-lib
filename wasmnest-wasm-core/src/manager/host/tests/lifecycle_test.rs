@@ -457,6 +457,106 @@ async fn test_service_leases_released_on_deactivate_activation_failure_and_error
     assert!(!snapshot[0].running, "Error 态不得继续对外提供服务");
 }
 
+/// `backgroundTransport`：运行期租约跟**启动**走，不跟界面走。
+///
+/// 正例：声明 + 启动链路内已注册 WS 端点 → 启动成功后 acquire，停用回收；
+/// 反例：未声明 / 声明但没有端点 / 本端未装配传输面 → 都不建租（fail-visible
+/// 只留日志，不影响激活本身）。
+#[tokio::test(flavor = "multi_thread")]
+async fn test_background_transport_lease_follows_activation_not_surface() {
+    use wasmnest_server_base::service::{ScopedService, ServiceRegistry, TRANSPORT_SERVICE_KEY};
+
+    let host = setup_host().await;
+    let probe = Arc::new(LeaseProbe {
+        key: TRANSPORT_SERVICE_KEY,
+        starts: AtomicUsize::new(0),
+        stops: AtomicUsize::new(0),
+    });
+    let registry = Arc::new(ServiceRegistry::new());
+    registry
+        .register(probe.clone() as Arc<dyn ScopedService>)
+        .unwrap();
+    host.wasm_host_ctx()
+        .set_service_registry(Some(registry.clone()));
+
+    // 带 ws:server 权限 + 声明式端点的插件（端点登记在启动链路内完成）
+    let declared_plugin = || {
+        let mut plugin = make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Loaded);
+        plugin.manifest.permissions.push("ws:server".to_string());
+        plugin.manifest.background_transport = true;
+        plugin.manifest.contributes.ws_endpoints =
+            vec![crate::manifest::WsEndpointContribution::Path(
+                "echo".to_string(),
+            )];
+        plugin
+    };
+
+    // ① 声明 + 端点：启动成功后 acquire；停用（release_all_for）回收
+    host.plugins
+        .write()
+        .await
+        .insert(TEST_PLUGIN_ID.to_string(), declared_plugin());
+    host.activate_plugin(TEST_PLUGIN_ID, false).await.unwrap();
+    assert_eq!(
+        probe.starts.load(Ordering::SeqCst),
+        1,
+        "声明 backgroundTransport 的应用启动成功后必须持有传输租约"
+    );
+    assert!(registry.snapshot().await[0].running);
+    host.deactivate_plugin(TEST_PLUGIN_ID, false).await.unwrap();
+    assert_eq!(
+        probe.stops.load(Ordering::SeqCst),
+        1,
+        "停用必须回收运行期租约（release_all_for 兜底）"
+    );
+
+    // ② 未声明：不建租（既有界面租约行为不被改变）
+    host.plugins.write().await.insert(
+        TEST_PLUGIN_ID.to_string(),
+        make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Loaded),
+    );
+    host.activate_plugin(TEST_PLUGIN_ID, false).await.unwrap();
+    assert_eq!(
+        probe.starts.load(Ordering::SeqCst),
+        1,
+        "未声明 backgroundTransport 的应用不得在启动时持有传输面"
+    );
+    host.deactivate_plugin(TEST_PLUGIN_ID, false).await.unwrap();
+
+    // ③ 声明但没有任何 HTTP/WS 端点：不建租（不制造空壳对外广播）
+    let mut endpointless = declared_plugin();
+    endpointless.manifest.contributes.ws_endpoints.clear();
+    host.plugins
+        .write()
+        .await
+        .insert(TEST_PLUGIN_ID.to_string(), endpointless);
+    host.activate_plugin(TEST_PLUGIN_ID, false).await.unwrap();
+    assert_eq!(
+        probe.starts.load(Ordering::SeqCst),
+        1,
+        "无端点的 backgroundTransport 应用不得拉起传输面"
+    );
+    host.deactivate_plugin(TEST_PLUGIN_ID, false).await.unwrap();
+
+    // ④ 本端未装配传输面（移动形态）：声明被跳过且不影响激活
+    let mobile_host = setup_host().await;
+    mobile_host
+        .wasm_host_ctx()
+        .set_service_registry(Some(Arc::new(ServiceRegistry::new())));
+    mobile_host
+        .plugins
+        .write()
+        .await
+        .insert(TEST_PLUGIN_ID.to_string(), declared_plugin());
+    mobile_host
+        .activate_plugin(TEST_PLUGIN_ID, false)
+        .await
+        .expect("本端没有 net.transport 时不得把 backgroundTransport 当激活失败");
+
+    // 全局端点表在测试进程内共享：清掉本用例登记的声明端点
+    wasmnest_server_websocket::endpoint::purge_for_plugin(TEST_PLUGIN_ID);
+}
+
 /// 内核生命周期只经通用服务租约释放，不再点名 peer 域（service-leases §4.2）。
 #[test]
 fn kernel_lifecycle_owns_no_peer_owner_hooks() {

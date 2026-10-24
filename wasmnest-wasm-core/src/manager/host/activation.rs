@@ -98,11 +98,79 @@ impl PluginHost {
         // activate() 里已经取用了服务、随后才失败；不回收就会留下「插件未激活、
         // 服务仍在运行 / 仍在广播」的孤儿引用。释放是幂等的（未持有即 no-op）。
         let result = self.activate_plugin_inner(plugin_id, persist).await;
-        if result.is_err() {
+        if result.is_ok() {
+            // 启动**成功**后按 manifest 声明建运行期传输租约（服务端型应用）：
+            // 界面挂载 / 卸载不参与，停用 / Error 由 `release_services_for` 回收。
+            self.acquire_background_transport(plugin_id).await;
+        } else {
             self.release_services_for(plugin_id, "activation failed")
                 .await;
         }
         result
+    }
+
+    /// 运行期传输租约：manifest `backgroundTransport: true` 的应用在启动成功后
+    /// 持有 `net.transport`（WS + HTTP + mDNS 广播）。
+    ///
+    /// 三条前置，缺一不建租：
+    /// 1. 本端装配了传输面（`ServiceRegistry::has`；移动端没有该服务 → 跳过，
+    ///    这是装配形态差异，不是静默降级——清单语义本就是桌面运行期属性）；
+    /// 2. 清单显式 opt-in（加载期已校验「必须与入站权限位同声明」）；
+    /// 3. 启动链路内已注册 HTTP/WS 端点——没有对外面时不制造「广播了却连不上」
+    ///    的空壳设备（端点应在 activate 内注册完毕）。
+    ///
+    /// 启动失败（端口占用等）只记错误：应用本地功能仍可用、只是不对外可达，
+    /// 不把插件打成 Error（重开应用或改端口后自然恢复）。
+    async fn acquire_background_transport(&self, plugin_id: &str) {
+        let declared = {
+            let plugins = self.plugins.read().await;
+            plugins
+                .get(plugin_id)
+                .map(|loaded| loaded.manifest.background_transport)
+                .unwrap_or(false)
+        };
+        if !declared {
+            return;
+        }
+        let Some(registry) = self.wasm_host_ctx.service_registry() else {
+            return;
+        };
+        if !registry.has(wasmnest_server_base::service::TRANSPORT_SERVICE_KEY) {
+            tracing::debug!(
+                plugin_id = %plugin_id,
+                "backgroundTransport declared, but net.transport is not assembled on this host \
+                 (mobile has no transport surface); no runtime lease"
+            );
+            return;
+        }
+        let uses_transport = wasmnest_server_http::registry::count_by_owner(plugin_id) > 0
+            || wasmnest_server_websocket::endpoint::count_by_owner(plugin_id) > 0;
+        if !uses_transport {
+            tracing::warn!(
+                plugin_id = %plugin_id,
+                "backgroundTransport declared but no HTTP/WS endpoint registered at startup; \
+                 transport lease not acquired (不制造空壳对外广播)"
+            );
+            return;
+        }
+        match registry
+            .acquire(
+                wasmnest_server_base::service::TRANSPORT_SERVICE_KEY,
+                plugin_id,
+            )
+            .await
+        {
+            Ok(outcome) => tracing::info!(
+                plugin_id = %plugin_id,
+                outcome = ?outcome,
+                "background transport lease follows plugin runtime"
+            ),
+            Err(error) => tracing::error!(
+                plugin_id = %plugin_id,
+                error = %error,
+                "background transport lease acquire failed; plugin runs without outbound surface"
+            ),
+        }
     }
 
     /// 释放插件持有的全部应用作用域服务租约（停用 / 激活失败 / Error 态共用）

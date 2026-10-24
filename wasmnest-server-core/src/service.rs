@@ -4,7 +4,8 @@
 //! [`wasmnest_server_base::service::ScopedService`]：0→1 启动 Actix（WS + HTTP
 //! 同一端口）+ mDNS 广播 + 防休眠 + 指标采样，1→0 全部关停。
 //!
-//! 键由本 crate 导出，宿主只 import 常量，不另写字符串。
+//! 键由 `wasmnest-server-base` 定义（内核按 manifest 声明 acquire 时不能依赖
+//! 本 crate 的 actix 实现），本 crate 再导出；宿主只 import 常量，不另写字符串。
 
 use std::sync::Arc;
 
@@ -13,8 +14,9 @@ use wasmnest_server_base::service::{ScopedService, ServiceError, ServiceRegistry
 
 use crate::supervisor::ServerSupervisor;
 
-/// 传输面服务键（机制词汇：WS + HTTP 单端口 + mDNS 广播 + 防休眠 + 指标采样）
-pub const TRANSPORT_SERVICE_KEY: &str = "net.transport";
+/// 传输面服务键（真源 = [`wasmnest_server_base::service::TRANSPORT_SERVICE_KEY`]；
+/// 机制词汇：WS + HTTP 单端口 + mDNS 广播 + 防休眠 + 指标采样）
+pub use wasmnest_server_base::service::TRANSPORT_SERVICE_KEY;
 
 /// 传输面服务实现：只做「怎么起、怎么停」，记账在注册表模板里。
 pub struct TransportService {

@@ -13,6 +13,14 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 
+/// 传输面服务键（机制词汇：WS + HTTP 单端口 + mDNS 广播 + 防休眠 + 指标采样）
+///
+/// **真源住本模块**（与 [`ServiceRegistry`] 同处）：机制内核（wasm-core）按
+/// manifest `backgroundTransport` 声明在插件启动成功后 acquire 该槽位，而内核
+/// 不能依赖 `wasmnest-server-core`（传输实现 + actix）；实现 crate 再导出本常量，
+/// 宿主与实现侧的 import 路径不变。
+pub const TRANSPORT_SERVICE_KEY: &str = "net.transport";
+
 /// 应用作用域共享服务的机制契约。
 ///
 /// 记账 / 幂等 / 回滚 / 串行化 / 顺序 / 日志全部由 [`ServiceRegistry`] 模板方法完成；
@@ -137,6 +145,15 @@ impl ServiceRegistry {
         );
         tracing::info!(service_key = key, "scoped service registered");
         Ok(())
+    }
+
+    /// 该服务键是否已注册（按端装配差异判定可用性）
+    ///
+    /// 用途：机制内核按 manifest 声明 acquire 某服务前先判「本端是否装配了它」——
+    /// 例如传输面只在桌面端装配，移动端同一份内核不应把「本端没有该服务」当成
+    /// 启动失败。未注册与「注册了但没启动」是两件事，后者看 [`Self::snapshot`]。
+    pub fn has(&self, key: &str) -> bool {
+        self.slots.read().unwrap_or_else(|e| e.into_inner()).contains_key(key)
     }
 
     fn slot(&self, key: &str) -> Result<Arc<Slot>, ServiceError> {
@@ -552,6 +569,19 @@ mod tests {
         assert!(reports[0].outcome.is_ok());
         assert_eq!(fake.stops(), 1);
         assert!(!reg.snapshot().await[0].running);
+    }
+
+    /// `has` 只回答「注册表里有没有这个槽位」：未注册与注册未启动必须可区分
+    #[tokio::test]
+    async fn has_distinguishes_unregistered_from_registered_not_running() {
+        let fake = FakeService::new("test.presence");
+        let reg = registry_with(&[fake.clone()]);
+
+        assert!(reg.has("test.presence"));
+        assert!(!reg.has("test.absent"));
+        // 注册但零 holder：仍是「已装配」（与 unknown key 不同）
+        assert!(!reg.snapshot().await[0].running);
+        assert!(reg.has("test.presence"));
     }
 
     #[tokio::test]

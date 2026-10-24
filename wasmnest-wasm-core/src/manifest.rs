@@ -101,12 +101,38 @@ pub struct PluginManifest {
     /// 实例生命周期策略：`persistent`（常驻，缺省）/ `ephemeral`（即用即弃）
     #[serde(default, skip_serializing_if = "InstanceLifecycle::is_persistent")]
     pub lifecycle: InstanceLifecycle,
+    /// 运行期传输租约声明（manifest `backgroundTransport`，桌面服务端型应用）
+    ///
+    /// `true` = 应用**运行期间**（启动成功 → 停用 / 进入 Error）持有宿主传输面
+    /// 服务（`net.transport`：WS + HTTP 同端口 + mDNS 广播）的应用作用域租约：
+    /// 启动成功后 acquire，离开运行态由 `release_all_for` 统一回收。
+    /// **界面挂载 / 卸载不再是这类应用传输面的生死开关**——服务端属性跟着应用
+    /// 启动走，不跟某个界面槽走。
+    ///
+    /// 代价是该应用整段运行期传输面持续对外可达（局域网可发现、端口可连），
+    /// 因此必须清单显式 opt-in，并声明入站权限位（`ws:server` /
+    /// `network:http` 至少一个）——加载期校验（`manager/validation.rs`），缺权限
+    /// 即拒绝装载；构建期同规则（桌面 SDK `bin/manifest-validate.js`）。
+    ///
+    /// 缺省 `false` = 既有行为：界面打开（`plugin_surface_open`）才 acquire，
+    /// 关闭最后一个界面即停播。桌面专属语义：移动端没有 `net.transport` 服务
+    /// （对等节点由应用原语 `host-peer.start-node` 自持），该声明不产生租约。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub background_transport: bool,
     /// 启用前预授权目录（移动 manifest 专属；桌面形态不产出该 key，与桌面 SDK JSON 形状一致）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preauth_dirs: Vec<String>,
     /// 外网访问预授权 URL 声明（移动 manifest 专属；桌面形态不产出该 key，与桌面 SDK JSON 形状一致）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preauth_urls: Vec<String>,
+}
+
+/// `skip_serializing_if` 辅助：布尔 `false` 不写入序列化输出
+///
+/// 让新增的 opt-in 布尔位对旧端 wire 形状零变化（序列化结果与未声明逐字一致），
+/// 反序列化侧靠 `#[serde(default)]` 补回 `false`。
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// 缺省产物形态（与桌面 SDK 同一真源语义：`pluginType` 缺省 = ts-only）
@@ -744,7 +770,7 @@ mod drift_lock {
     /// plugin.json 的字段名/命名规则不得漂移（SDK 是 guest 面 wire 真源）。
     #[test]
     fn neutral_manifest_json_shape_matches_desktop_sdk() {
-        let sdk = wasmnest_plugin_api::PluginManifest {
+        let mut sdk = wasmnest_plugin_api::PluginManifest {
             id: "com.wasmnest.drift".to_string(),
             name: "Drift".to_string(),
             version: "1.0.0".to_string(),
@@ -755,6 +781,22 @@ mod drift_lock {
             serde_json::to_value(&sdk).unwrap(),
             serde_json::to_value(&neutral).unwrap(),
             "中性 manifest 与桌面 SDK 的 JSON 形状漂移——改一侧必须双侧同步"
+        );
+
+        // opt-in 形态：`backgroundTransport` 的字段名与省略规则也必须双侧同形
+        sdk.background_transport = true;
+        let neutral = from_sdk_json::<_, PluginManifest>(&sdk);
+        assert_eq!(
+            serde_json::to_value(&sdk).unwrap(),
+            serde_json::to_value(&neutral).unwrap(),
+            "backgroundTransport 的 wire 形状漂移（中性 manifest 与桌面 SDK 不一致）"
+        );
+        assert!(
+            serde_json::to_value(&neutral)
+                .unwrap()
+                .get("backgroundTransport")
+                .is_some(),
+            "opt-in 声明必须出现在 wire 形状里"
         );
     }
 }

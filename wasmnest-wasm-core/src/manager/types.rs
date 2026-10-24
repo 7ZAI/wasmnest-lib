@@ -77,6 +77,13 @@ pub struct HostPluginInfo {
     /// 装配角色（L1 基础服务 / L2 内部业务 / L3 应用）；缺省 = L3
     #[serde(default)]
     pub kind: PluginKind,
+    /// 运行期传输租约声明（manifest `backgroundTransport`，桌面服务端型应用）
+    ///
+    /// `true` = 应用运行期间持有 `net.transport`（界面挂载不再是其生死开关）；
+    /// 宿主编排层据此在启动成功后 acquire、停用时由生命周期统一回收。
+    /// 缺省 `false` 不写入前端投影（与既有 wire 形状逐字一致）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub background_transport: bool,
     /// WASM 模块文件名（仅 rust-ts 类型插件使用）
     pub rust_library: String,
     pub permissions: Vec<String>,
@@ -95,6 +102,11 @@ pub struct HostPluginInfo {
     pub installed_at: Option<i64>,
 }
 
+/// `skip_serializing_if` 辅助：默认 `false` 的机制位不写入前端投影
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl From<&LoadedPlugin> for HostPluginInfo {
     fn from(p: &LoadedPlugin) -> Self {
         HostPluginInfo {
@@ -106,6 +118,7 @@ impl From<&LoadedPlugin> for HostPluginInfo {
             main: p.manifest.main.clone(),
             plugin_type: p.manifest.plugin_type.clone(),
             kind: p.manifest.kind,
+            background_transport: p.manifest.background_transport,
             rust_library: p.manifest.rust_library.clone(),
             permissions: p.manifest.permissions.clone(),
             state: p.state.clone(),
@@ -211,6 +224,10 @@ mod tests {
         assert_eq!(info.main, "index.ts");
         assert_eq!(info.plugin_type, PluginType::RustTs);
         assert_eq!(info.kind, PluginKind::BusinessApp);
+        assert!(
+            !info.background_transport,
+            "缺省 manifest（未 opt-in）不得透传出运行期传输租约"
+        );
         assert_eq!(info.rust_library, "wasmnest_test.wasm");
         assert_eq!(info.permissions, vec!["broadcast", "storage"]);
         assert_eq!(info.state, PluginState::Activated);
@@ -253,6 +270,25 @@ mod tests {
         legacy.as_object_mut().unwrap().remove("kind");
         let legacy_info: HostPluginInfo = serde_json::from_value(legacy).unwrap();
         assert_eq!(legacy_info.kind, PluginKind::BusinessApp);
+    }
+
+    /// 运行期传输租约声明随清单透传；缺省 `false` 不写入前端投影（wire 零变化）
+    #[test]
+    fn test_host_info_background_transport_projection() {
+        let mut plugin = sample_loaded(PluginSource::Wasm);
+        plugin.manifest.background_transport = true;
+        let info = HostPluginInfo::from(&plugin);
+        assert!(info.background_transport);
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["backgroundTransport"], true);
+
+        // 缺省 false：投影里没有该键（旧前端 / 旧载荷按「未声明」解读）
+        plugin.manifest.background_transport = false;
+        let info = HostPluginInfo::from(&plugin);
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(json.get("backgroundTransport").is_none());
+        let decoded: HostPluginInfo = serde_json::from_value(json).unwrap();
+        assert!(!decoded.background_transport);
     }
 
     /// icon 有值时透传并在序列化中保留

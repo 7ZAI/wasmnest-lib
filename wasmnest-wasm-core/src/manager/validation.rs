@@ -51,6 +51,8 @@ pub fn validate_manifest_required(manifest: &PluginManifest) -> crate::Result<()
     // 装载期经 `DomainHooks::on_manifest_load` 由 `wasmnest-pty-engine` 自解析、自仲裁，
     // 越界即拒绝装载（`Err` ⇒ 不装载）——内核不再解释该字段（AGENTS §5.1 B6）。
     // 本函数只保住两处入口（目录扫描 / zip 安装）共用的结构性必填字段。
+    // 运行期传输租约的 opt-in 必须与入站权限位同声明（两侧入口同口径）。
+    validate_background_transport(manifest)?;
     // 生命周期 / preopen 校验为桌面 manifest 专属面（移动 manifest 无这两个字段，
     // fork 票 17 §3.2）——随桌面装配面门控（`desktop-assembly`）
     #[cfg(feature = "desktop-assembly")]
@@ -60,6 +62,37 @@ pub fn validate_manifest_required(manifest: &PluginManifest) -> crate::Result<()
         validate_platform(manifest)?;
     }
     Ok(())
+}
+
+/// 校验运行期传输租约声明（manifest `backgroundTransport`）与入站权限位的搭配
+///
+/// `backgroundTransport: true` 的语义是「应用整段运行期对外可达」——传输面
+/// （端口监听 + mDNS 广播）随应用启动拉起、随停用回收。这个待遇必须与真实
+/// 的入站权限位绑定：没有 `ws:server` / `network:http` 的应用既注册不出端点，
+/// 也不该仅凭一个布尔位换到「持续对外广播」。
+///
+/// 权限词汇真源 = 各端 SDK `permission.rs`；此处只比对 wire 字面（内核不反向
+/// 依赖端 SDK crate，与 `manager` 其余权限门同形）。**不夹取、不降级**：声明
+/// 与权限不配套即拒绝装载，错误点名字段、缺失项与替代做法。
+pub fn validate_background_transport(manifest: &PluginManifest) -> crate::Result<()> {
+    if !manifest.background_transport {
+        return Ok(());
+    }
+    const SERVER_PERMISSIONS: [&str; 2] = ["ws:server", "network:http"];
+    if manifest
+        .permissions
+        .iter()
+        .any(|permission| SERVER_PERMISSIONS.contains(&permission.as_str()))
+    {
+        return Ok(());
+    }
+    Err(crate::AppError::Plugin(
+        "plugin.json backgroundTransport=true 但 permissions 未声明入站权限位\
+         （ws:server / network:http 至少一个）：运行期持有传输租约 = 应用整段运行期\
+         对外可达（端口 + mDNS 广播），必须与对应的服务端权限一起声明。\
+         只在界面打开时供服的应用请删去该字段（界面挂载会按需 acquire）"
+            .to_string(),
+    ))
 }
 
 /// 校验 manifest 的平台适配声明覆盖**桌面端**（`platform` 必填面之行为契约）
@@ -532,6 +565,59 @@ mod tests {
         assert!(
             parse("linux").is_err(),
             "未知 platform 取值必须失败，不得回落缺省"
+        );
+    }
+
+    /// `backgroundTransport` opt-in 必须与入站权限位同声明（应用整段运行期对外可达）
+    ///
+    /// 变异判据：把 `validate_background_transport` 从 `validate_manifest_required`
+    /// 摘掉，反例全部转红（只有布尔位、没有服务端权限的 manifest 会静默装载，
+    /// 运行期却拿不到任何端点，作者会以为「声明生效了」）。
+    #[test]
+    fn background_transport_requires_inbound_server_permission() {
+        let with = |extra: &str| -> crate::Result<PluginManifest> {
+            parse_manifest_json(&format!(
+                r#"{{"id":"com.wasmnest.srv","name":"srv","version":"1.0.0","platform":"both"{extra}}}"#
+            ))
+        };
+
+        // 缺省 / 显式 false：既有 manifest 零迁移
+        assert!(!with("").expect("未声明").background_transport);
+        assert!(
+            !with(r#","backgroundTransport":false"#)
+                .expect("显式 false")
+                .background_transport
+        );
+
+        // true + 任一入站权限位 → 放行
+        for permission in ["ws:server", "network:http"] {
+            let manifest = with(&format!(
+                r#","backgroundTransport":true,"permissions":["{permission}"]"#
+            ))
+            .unwrap_or_else(|e| panic!("{permission} 应放行: {e}"));
+            assert!(manifest.background_transport);
+        }
+
+        // true 但无入站权限位（只有出站 ws:client / 只有存储 / 空清单）→ 加载期拒绝
+        for permissions in [r#"["storage"]"#, r#"["ws:client"]"#, r#"[]"#] {
+            let err = with(&format!(
+                r#","backgroundTransport":true,"permissions":{permissions}"#
+            ))
+            .err()
+            .unwrap_or_else(|| panic!("backgroundTransport 无入站权限位必须拒绝: {permissions}"));
+            let text = err.to_string();
+            assert!(
+                text.contains("backgroundTransport")
+                    && text.contains("ws:server")
+                    && text.contains("network:http"),
+                "错误必须点名字段与缺失权限位，got: {text}"
+            );
+        }
+
+        // 形态非法（非布尔）在反序列化期拒绝，不得静默回落 false
+        assert!(
+            with(r#","backgroundTransport":"true""#).is_err(),
+            "backgroundTransport 只接受布尔值"
         );
     }
 
