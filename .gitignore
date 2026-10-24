@@ -28,3 +28,6 @@ temp/
 *.tmp
 *.bak
 *.backup
+
+# 会话临时 scratch（不入库）
+.scratch/
