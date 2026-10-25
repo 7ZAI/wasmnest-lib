@@ -1,0 +1,29 @@
+# ==================== wasmnest-cli-engine：CLI 能力域机制骨架 ====================
+# 抽根票据：7ZAI/wasmnest-lib#9（spec：.scratch/2026-10-25-cli-module/spec.md，会话产物）。
+#
+# 定位：命令目录 / argv 解析 / 帮助与补全 / 本机 IPC wire 契约的**纯机制**。CLI 前端
+# （REPL / TUI）、无头宿主 bin、命令执行 handler、socket 传输循环全部住宿主装配侧；
+# 本 crate 不假设任何运行时上下文——移动宿主不引用它，即天然「只有骨架、没有实现」。
+#
+# 依赖纪律（AGENTS §3.1「能力域默认形态 = 纯引擎 + 端口抽象」的收严版）：
+# - 零 WIT（无 wit/ 目录，同 crypto-engine 先例——本域没有 guest 面：插件命令复用
+#   内核既有 `command` 导出与分发，一期零契约变更零 bump）；
+# - 零 wasm / 零异步运行时（目录与解析是纯函数；socket accept 等异步面住装配侧）；
+# - 内部依赖仅 server-base（错误信封 AppError；`default-features = false` 关掉
+#   tauri-compat——CLI 前端是普通可执行文件，不能经依赖传递被拖进 GUI 框架）。
+
+[package]
+name = "wasmnest-cli-engine"
+version = "0.0.1"
+description = "WasmNest CLI 能力域机制骨架：内建命令目录（词汇真源）+ argv 解析 + 帮助与补全 + 本机 IPC wire 帧契约。默认形态 = 纯机制（零 WIT / 零 wasm / 零异步运行时），CLI 前端与执行 handler 住宿主装配侧"
+authors = ["binblink"]
+license = "MIT"
+repository = "https://github.com/7ZAI/wasmnest-lib"
+edition = "2021"
+
+[dependencies]
+# 错误信封（WireError 的提取源；关 tauri-compat 的原因见文件头注）
+wasmnest-server-base = { path = "../wasmnest-server-base", default-features = false }
+# wire 帧 / 目录元数据的序列化（JSON 行分帧 + manifest cli 段解析）
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -5632,6 +5632,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmnest-cli-engine"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wasmnest-server-base",
+]
+
+[[package]]
 name = "wasmnest-crypto-engine"
 version = "0.0.1"
 dependencies = [
@@ -5667,6 +5676,7 @@ name = "wasmnest-headless-host-probe"
 version = "0.0.1"
 dependencies = [
  "serde_json",
+ "wasmnest-cli-engine",
  "wasmnest-discovery-engine",
  "wasmnest-pty-engine",
  "wasmnest-server-base",

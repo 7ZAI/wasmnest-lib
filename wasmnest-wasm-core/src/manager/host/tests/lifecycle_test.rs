@@ -100,6 +100,7 @@ async fn test_deactivate_plugin_flow() {
                 id: "test.cmd".into(),
                 title: "T".into(),
                 icon: None,
+                cli: None,
             }],
         )
         .await;

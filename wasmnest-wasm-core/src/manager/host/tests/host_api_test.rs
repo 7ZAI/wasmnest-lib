@@ -268,6 +268,7 @@ async fn test_should_lazy_activate_rules() {
             id: "test.cmd".into(),
             title: "T".into(),
             icon: None,
+            cli: None,
         }],
         ..Default::default()
     };
@@ -310,6 +311,7 @@ async fn test_should_lazy_activate_rules() {
             id: "test.cmd".into(),
             title: "T".into(),
             icon: None,
+            cli: None,
         }],
         ..Default::default()
     };

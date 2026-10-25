@@ -242,6 +242,7 @@ mod tests {
             id: id.to_string(),
             title: title.to_string(),
             icon: icon.map(|s| s.to_string()),
+            cli: None,
         }
     }
 

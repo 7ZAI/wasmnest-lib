@@ -16,6 +16,9 @@ wasmnest-server-http = { path = "../wasmnest-server-http" }
 wasmnest-server-websocket = { path = "../wasmnest-server-websocket" }
 wasmnest-server-peer-net = { path = "../wasmnest-server-peer-net" }
 wasmnest-pty-engine = { path = "../wasmnest-pty-engine" }
+# CLI 能力域（默认形态 = 纯机制：命令目录 / 解析 / 帮助 / wire 契约；CLI 前端与
+# 执行 handler 住装配侧——本 crate 只引用其默认形态钉「零 wasm / 零异步运行时」）
+wasmnest-cli-engine = { path = "../wasmnest-cli-engine" }
 # server 基础层（wire 契约：`BusMessage` 自持副本——能力域脱绑 P5）
 wasmnest-server-base = { path = "../wasmnest-server-base" }
 # server 传输无关内核（已脱绑 crate，纯引擎）

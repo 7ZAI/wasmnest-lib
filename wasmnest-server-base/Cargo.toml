@@ -43,8 +43,11 @@ wasmnest-link-crypto = { path = "../link-crypto" }
 wasmnest-host-api-core = { path = "../wasmnest-host-api-core" }
 # error_boundary（futures FutureExt::catch_unwind）
 futures-util = "0.3"
-# 服务租约：槽位互斥（service::ServiceRegistry 持锁跨 await）
-tokio = { version = "1", features = ["sync"] }
+# 服务租约：槽位互斥（service::ServiceRegistry 持锁跨 await）。
+# "rt" 是本 crate 自身代码所需（error_boundary 的 spawn / JoinHandle、ports 的
+# runtime::Handle）——此前未声明，靠消费图里其他 crate 的特性并集救场；任何
+# 消费方单独成图（如 CLI 域默认形态）即编译失败。特性是可加的，既有消费方零影响。
+tokio = { version = "1", features = ["sync", "rt"] }
 # ports：异步 trait
 async-trait = "0.1"
 # ports：MdnsPort（peer-net 发现守护接入，ServiceDaemon 类型）

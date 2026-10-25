@@ -14,6 +14,7 @@ async fn test_register_manifest_contributions() {
             id: "test.hello".into(),
             title: "Hello".into(),
             icon: None,
+            cli: None,
         }],
         views: vec![crate::manifest::ViewContribution {
             id: "test.view".into(),
@@ -48,6 +49,7 @@ fn all_contributions() -> PluginContributes {
             id: "test.hello".into(),
             title: "Hello".into(),
             icon: None,
+            cli: None,
         }],
         views: vec![crate::manifest::ViewContribution {
             id: "test.view".into(),

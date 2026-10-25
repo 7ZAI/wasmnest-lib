@@ -480,6 +480,13 @@ pub struct CommandContribution {
     /// 图标（可选）
     #[serde(default)]
     pub icon: Option<String>,
+    /// CLI 呈现声明（可选；opaque 透传——严格解析真源在能力仓 CLI 域 crate）
+    ///
+    /// 内核不解释段内容（namespace / help / visibility / args 的形状校验在 CLI
+    /// 目录构建侧做，畸形段在那里 fail-visible 点名命令 id）：本字段只保证
+    /// 「有则保留、无则缺省」，避免内核与 CLI 域出现第二份段结构真源。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli: Option<serde_json::Value>,
 }
 
 /// 视图扩展点声明
@@ -798,5 +805,52 @@ mod drift_lock {
                 .is_some(),
             "opt-in 声明必须出现在 wire 形状里"
         );
+    }
+}
+
+#[cfg(test)]
+mod cli_segment_tests {
+    //! `CommandContribution.cli` 段的兼容性面：旧 manifest 零回归 + opaque 透传 +
+    //! 序列化不产新 key（段的严格形状真源在能力仓 CLI 域 crate，这里只测内核职责）。
+    use super::CommandContribution;
+
+    /// 旧 manifest（无 cli 段）解析不受影响，字段为 None
+    #[test]
+    fn command_without_cli_segment_parses_as_none() {
+        let old: CommandContribution =
+            serde_json::from_str(r#"{ "id": "demo.run", "title": "跑一把" }"#).unwrap();
+        assert_eq!(old.id, "demo.run");
+        assert!(old.icon.is_none());
+        assert!(old.cli.is_none(), "无段 manifest 必须解析为 None");
+    }
+
+    /// 有段时 opaque 值原样保留（内核不做形状校验）
+    #[test]
+    fn cli_segment_value_passthrough() {
+        let segment = serde_json::json!({
+            "namespace": "overridden",
+            "args": [{ "name": "path", "type": "string", "required": true }]
+        });
+        let cmd: CommandContribution = serde_json::from_value(serde_json::json!({
+            "id": "demo.run",
+            "title": "跑一把",
+            "cli": segment.clone()
+        }))
+        .unwrap();
+        assert_eq!(cmd.cli.as_ref(), Some(&segment));
+    }
+
+    /// 序列化：无段不产 `cli` key（wire 形状与旧版逐字一致）
+    #[test]
+    fn serialization_omits_absent_cli_key() {
+        let cmd = CommandContribution {
+            id: "demo.run".to_string(),
+            title: "跑一把".to_string(),
+            icon: None,
+            cli: None,
+        };
+        let value = serde_json::to_value(&cmd).unwrap();
+        assert!(value.get("cli").is_none(), "无段不得产出 cli key");
+        assert_eq!(value.get("id"), Some(&serde_json::json!("demo.run")));
     }
 }
