@@ -143,7 +143,8 @@ use wasmtime::Engine;
 ///
 /// 形态与版本**正交**：`abi-form.form` 走独立接口（桌面 cap 导出），语义是
 /// 「component 形态 vs core 形态」的加载路径判别，故原样保留：
-/// - 桌面：`form = Some(FORM_COMPONENT)`（`wasmnest_plugin_api::form::FORM_COMPONENT`）
+/// - 桌面：`form = Some(FORM_COMPONENT)`（本模块 [`FORM_COMPONENT`] 常量；SDK
+///   guest 面持同值拷贝）
 /// - 移动：`form = None`（移动 WIT 无 `abi-form` 导出，不要求）
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FormPolicy {
@@ -168,6 +169,17 @@ impl Default for AbiPolicy {
         Self::UNCONSTRAINED
     }
 }
+
+/// `abi-form.form()` 的组件形态判别值（WIT `abi-form` 接口导出值）
+///
+/// **只管形态，不管版本**（ADR 0051 D2）：迁移阶段 C 后组件是唯一形态，
+/// `FORM_CORE = 0` 已随该阶段删除；保留常量 1 是为了挡住未来误引入 0 值导致
+/// 加载路径回退。移动 WIT 无 `abi-form` 导出（`form = None` 不比较），本值对
+/// 移动装配无意义。
+///
+/// 批 2 自桌面 SDK 收口上提（平台仓 issue #36）：宿主装配 [`FormPolicy::form`]
+/// 与 SDK guest 宏各持同值拷贝，一致性由跨端 wire 漂移锁断言。
+pub const FORM_COMPONENT: u32 = 1;
 
 /// 从 catch_unwind 的 panic 载荷提取人类可读消息（统一 panic 诊断文案）
 pub fn panic_payload_to_string(panic: &Box<dyn std::any::Any + Send>) -> String {

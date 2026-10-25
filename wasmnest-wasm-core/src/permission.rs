@@ -140,6 +140,14 @@ pub const PERMISSION_CRYPTO_KDF: &str = "crypto:kdf";
 ///
 /// 数据面**只含计数与 plugin_id**，不含会话文本 / 文件内容 / 凭据。
 pub const PERMISSION_METRICS_READ: &str = "metrics:read";
+/// 系统通知与提醒反馈（共享域契约 `host-notify`，ADR 0052 D3）：通知 / 震动 / 声音
+/// 是用户打扰面（高频弹通知或狂震会骚扰用户），独立成位、fail-closed。
+/// 无前端 API 面（WASM-only 权限，宿主在 host fn 层仲裁）。
+///
+/// **双端口径**（批 2 自移动 SDK 收口上提，平台仓 issue #36）：移动宿主
+/// `plugin/notify.rs` 域函数入口为本位的门禁落点；桌面 host-notify 实现暂无
+/// 独立权限门（缺口已记录，随批 2 遗留跟进）。
+pub const PERMISSION_NOTIFY: &str = "notify";
 
 /// 权限词汇反射表：`(常量标识符, 权限串)`
 ///
@@ -197,6 +205,7 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
     (stringify!(PERMISSION_CRYPTO_ASYM), PERMISSION_CRYPTO_ASYM),
     (stringify!(PERMISSION_CRYPTO_KDF), PERMISSION_CRYPTO_KDF),
     (stringify!(PERMISSION_METRICS_READ), PERMISSION_METRICS_READ),
+    (stringify!(PERMISSION_NOTIFY), PERMISSION_NOTIFY),
 ];
 
 /// 合法权限集合 — 桌面端权限词汇的**唯一真源**（由 [`PERMISSION_VOCABULARY`] 派生）
@@ -466,5 +475,98 @@ impl PermissionManager {
 impl Default for PermissionManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ==================== 退役权限位（fail-visible 形态③） ====================
+
+/// 已退役权限位（票 2026-10-10 批次 C2；**移动壳**退役表）
+///
+/// 宿主壳改纯 surface 形态后，`ui.registerToolboxPage` / `ui.registerNavTab` /
+/// `ui.registerTerminalToolbarItem` / `ui.registerTerminalView` 四个旧嵌入扩展点
+/// 在**移动壳**整面退役，对应的 `ui:toolbox` / `ui:navtab` / `ui:input` 三个权限位
+/// 在移动侧随之失效。**桌面壳仍保留 toolbox / input 活面**（桌面 VALID 与 API_MAP
+/// 未退役），故本表只由移动装载链消费——桌面 loader 不得接本表。
+///
+/// 为什么必须显式登记而不是「从 VALID_PERMISSIONS 删掉就算」：权限位不在白名单时
+/// `grant_permissions` 会**静默丢弃**——旧插件声明了退役位却照常加载、只是能力
+/// 凭空消失，排查时看到的是「功能莫名不好使」而非「这个位已经没了」。
+/// 登记在此 + 装载期显式报错（§5.1.3 fail-visible 形态③），断链才可见。
+///
+/// 批 2 自移动 SDK 收口上提（平台仓 issue #36）：机制归机制层；移动 SDK 侧副本
+/// 已删（guest 面本无此 API）。
+pub static RETIRED_PERMISSIONS: &[(&str, &str)] = &[
+    ("ui:toolbox", "registerToolboxPage"),
+    ("ui:navtab", "registerNavTab"),
+    (
+        "ui:input",
+        "registerTerminalToolbarItem / registerTerminalView",
+    ),
+];
+
+/// 校验清单未声明退役权限位；命中即返回指名错误
+///
+/// 供宿主装载期调用（`wasmnest-mobile/src-tauri/src/plugin/loader.rs`）。
+/// 返回 `Err` 而非 bool：调用方需要把「哪个位、为什么、迁移到哪」原样写进错误，
+/// 静默的 bool 只会退化成又一处静默降级。
+pub fn check_retired_permissions(plugin_id: &str, permissions: &[String]) -> Result<(), String> {
+    for (perm, retired_api) in RETIRED_PERMISSIONS {
+        if permissions.iter().any(|p| p == perm) {
+            return Err(format!(
+                "plugin '{plugin_id}' declares retired permission '{perm}' \
+                 (retired extension point: ui.{retired_api}). \
+                 The host shell now loads apps only through ui.registerSurface — \
+                 replace it with registerSurface, and use registerRoute + openPage for in-app sub-pages."
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod retired_permissions_tests {
+    use super::*;
+
+    #[test]
+    fn retired_permissions_rejected_at_load() {
+        // 票 2026-10-10 C2 fail-visible 形态③：清单声明退役权限位必须装载期报错，
+        // 而不是「不在白名单 → grant 静默丢弃 → 功能凭空消失」
+        for (perm, _) in RETIRED_PERMISSIONS {
+            let err = check_retired_permissions("p", &[perm.to_string()])
+                .expect_err("退役权限位应被判退");
+            assert!(err.contains(perm), "报错应指名权限位: {err}");
+            assert!(err.contains("registerSurface"), "报错应给出迁移出路: {err}");
+        }
+    }
+
+    #[test]
+    fn retired_permissions_allow_clean_manifest() {
+        // 反例面：只用存活权限位的清单不得被误伤
+        assert!(check_retired_permissions(
+            "p",
+            &[
+                "session:read".to_string(),
+                "ui:route".to_string(),
+                "storage".to_string()
+            ]
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn retired_table_is_mobile_scoped() {
+        // 本表是移动壳退役表：toolbox / input 在桌面仍是活词汇（桌面 VALID 含它们），
+        // 断言本表成员「桌面侧仍合法」防止有人把本表误当双端退役表接进桌面 loader
+        assert!(VALID_PERMISSIONS.contains(&"ui:toolbox"));
+        assert!(VALID_PERMISSIONS.contains(&"ui:input"));
+        // navtab 是移动专属位（桌面词汇从来没有过）
+        assert!(!VALID_PERMISSIONS.contains(&"ui:navtab"));
+    }
+
+    #[test]
+    fn notify_vocabulary_registered() {
+        // 批 2 收口（issue #36）：notify 位进双端真源；门禁落点 = 移动宿主
+        // notify.rs（跨端词汇锁扫描面已扩移动宿主源码）
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_NOTIFY));
     }
 }
