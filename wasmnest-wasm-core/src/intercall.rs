@@ -42,7 +42,7 @@ pub fn next_host_request_id() -> String {
 /// 调插件互调 api：构造 JSON-RPC 请求 → 发布等待 → 解码 reply → 取 `result`
 ///
 /// `api` 是**全限定** api 名 `<plugin-id>.<method>`（如
-/// `com.wasmnest.terminal-session.session-list`）；JSON-RPC 的 `method` 字段取短名
+/// `com.wasmnest.bedcode.session-list`）；JSON-RPC 的 `method` 字段取短名
 /// （插件侧宏按短名分派，同 SDK client 约定）。
 ///
 /// 失败面全部 `Err`（不回退成「空结果」）：传输失败 / reply 非法 JSON / 错误信封

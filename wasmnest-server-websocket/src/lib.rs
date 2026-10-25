@@ -7,7 +7,7 @@
 //! **终态（websocket 业务下沉票 08）**：本 crate 只剩通用传输能力——连接生命周期、
 //! 认证策略、帧过滤、限流、端点/连接注册表与按属主回收；旧 `/ws/event` 与
 //! `/ws/terminal/session/{id}` 业务路由、宿主 `Message` 业务枚举、会话/终端服务、
-//! 输出订阅器与终端协议模块已整体删除（协议归 `com.wasmnest.terminal-session` 插件，
+//! 输出订阅器与终端协议模块已整体删除（协议归 `com.wasmnest.bedcode` 插件，
 //! 宿主只转原始 text/binary 帧）。
 //!
 //! 依赖方向：只**向下**依赖 `wasmnest-server-core`（过滤器链 / 链路加密 / 指标 /

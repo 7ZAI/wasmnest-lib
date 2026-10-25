@@ -194,7 +194,7 @@ pub fn reset() {
 /// 合法且必须的（两个用例都以整个测试体为临界区）；permit 不是锁守卫。
 ///
 /// **纪律：任何会写这张表的用例都要持闸门**——不只是「读它并断言裁决」的用例。
-/// 真实中心产物（`com.wasmnest.terminal-session` v32）的 guest `activate` 会
+/// 真实中心产物（`com.wasmnest.bedcode` v32）的 guest `activate` 会
 /// `auth-center-register`、`deactivate` 会 `auth-center-unregister`，故任何加载
 /// 该产物并停用它的用例都在清台。漏登记的表现是**别的**用例偶发红（2026-09-29：
 /// `a03_p1b` / `ws_e2e` ×3 / `perf_ws_terminal_output_throughput` 的 deactivate 曾把
@@ -318,11 +318,11 @@ mod tests {
     #[test]
     fn test_register_success_and_shape() {
         let mut state = local_state();
-        let id = register_inner(&mut state, "com.wasmnest.terminal-session", methods4()).unwrap();
+        let id = register_inner(&mut state, "com.wasmnest.bedcode", methods4()).unwrap();
         assert!(id.starts_with("authc-"), "句柄形态 authc-<uuid>: {id}");
         assert_eq!(
             state.as_ref().unwrap().owner,
-            "com.wasmnest.terminal-session"
+            "com.wasmnest.bedcode"
         );
         assert_eq!(state.as_ref().unwrap().center_id, id);
     }
@@ -332,7 +332,7 @@ mod tests {
         let mut state = local_state();
         register_inner(
             &mut state,
-            "com.wasmnest.terminal-session",
+            "com.wasmnest.bedcode",
             ["qr", "biometric", "qr", "jwt"]
                 .iter()
                 .map(|s| s.to_string())
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn test_duplicate_register_rejected_with_owner_named() {
         let mut state = local_state();
-        register_inner(&mut state, "com.wasmnest.terminal-session", methods4()).unwrap();
+        register_inner(&mut state, "com.wasmnest.bedcode", methods4()).unwrap();
         let err = register_inner(
             &mut state,
             "com.wasmnest.agent-hub",
@@ -357,7 +357,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            err.contains("com.wasmnest.terminal-session"),
+            err.contains("com.wasmnest.bedcode"),
             "重复注册必须点名在册属主, got: {err}"
         );
         assert!(
@@ -367,7 +367,7 @@ mod tests {
         // 原中心不受影响
         assert_eq!(
             state.as_ref().unwrap().owner,
-            "com.wasmnest.terminal-session"
+            "com.wasmnest.bedcode"
         );
     }
 
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn test_empty_methods_rejected() {
         let mut state = local_state();
-        let err = register_inner(&mut state, "com.wasmnest.terminal-session", vec![]).unwrap_err();
+        let err = register_inner(&mut state, "com.wasmnest.bedcode", vec![]).unwrap_err();
         assert!(err.contains("at least one method"), "got: {err}");
         assert!(state.is_none());
     }
@@ -384,13 +384,13 @@ mod tests {
     #[test]
     fn test_unregister_owner_checked() {
         let mut state = local_state();
-        register_inner(&mut state, "com.wasmnest.terminal-session", methods4()).unwrap();
+        register_inner(&mut state, "com.wasmnest.bedcode", methods4()).unwrap();
         // 非属主拒绝
         let err = unregister_inner(&mut state, "com.wasmnest.agent-hub").unwrap_err();
         assert!(err.contains("not owner"), "got: {err}");
         assert!(state.is_some(), "非属主注销不影响在册中心");
         // 属主成功
-        unregister_inner(&mut state, "com.wasmnest.terminal-session").unwrap();
+        unregister_inner(&mut state, "com.wasmnest.bedcode").unwrap();
         assert!(state.is_none());
         // 无中心 + 任意属主 → 幂等成功（停用路径不卡）
         unregister_inner(&mut state, "com.wasmnest.agent-hub").unwrap();
@@ -400,18 +400,18 @@ mod tests {
     #[test]
     fn test_purge_for_plugin_only_touches_owner() {
         let mut state = local_state();
-        register_inner(&mut state, "com.wasmnest.terminal-session", methods4()).unwrap();
+        register_inner(&mut state, "com.wasmnest.bedcode", methods4()).unwrap();
         // 非属主 purge：不回收（只碰本人）
         purge_inner(&mut state, "com.wasmnest.agent-hub");
         assert_eq!(
             state.as_ref().unwrap().owner,
-            "com.wasmnest.terminal-session"
+            "com.wasmnest.bedcode"
         );
         // 属主 purge：回收
-        purge_inner(&mut state, "com.wasmnest.terminal-session");
+        purge_inner(&mut state, "com.wasmnest.bedcode");
         assert!(state.is_none());
         // 无中心时 purge 幂等
-        purge_inner(&mut state, "com.wasmnest.terminal-session");
+        purge_inner(&mut state, "com.wasmnest.bedcode");
         assert!(state.is_none());
     }
 

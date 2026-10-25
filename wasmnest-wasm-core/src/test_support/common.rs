@@ -196,14 +196,14 @@ pub fn build_host_ctx_at(db_path: Option<&std::path::Path>) -> Arc<WasmHostConte
 }
 
 /// 无头测试的插件私有库根目录（`aot_cache_dir` 同模式：进程级固定路径，
-/// 供需要用真实私有库的用例定位/清理 `com.wasmnest.terminal-session/plugin.db`）
+/// 供需要用真实私有库的用例定位/清理 `com.wasmnest.bedcode/plugin.db`）
 pub fn plugin_db_root() -> PathBuf {
     std::env::temp_dir().join(format!("wasmnest_plugin_dbs_{}", std::process::id()))
 }
 
 /// 会话中心「插件私有库」用例串行锁：`plugin_db_root()` 是**进程级**路径
 /// （`aot_cache_dir` 同模式），所有 `activate()` 会话中心的用例共用同一份
-/// `com.wasmnest.terminal-session/plugin.db`，于是两类竞态都会把断言变成 flaky：
+/// `com.wasmnest.bedcode/plugin.db`，于是两类竞态都会把断言变成 flaky：
 /// - 配置面用例先 `remove_dir_all` 清库再断言「legacy 两条全部迁入」，而任何一次
 ///   并发 `activate()` 都会写入 `config.migrated_at` marker → 本方读到 0 行；
 /// - tick 按时间条件批量改行（超宽限的 pending → missed），并发用例注入的

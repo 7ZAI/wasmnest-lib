@@ -5,7 +5,7 @@
 //!
 //! **宿主只存引擎级配置**（网络 / UI 偏好 / PTY 引擎 / channel 容量 / 日志）。
 //! 业务配置不落本目录：会话默认值（默认环境/工作目录/命令/超时）真源在
-//! `com.wasmnest.terminal-session` 插件存储（`session.formDefaults`，前端
+//! `com.wasmnest.bedcode` 插件存储（`session.formDefaults`，前端
 //! 2026-09-21 已收敛删除）；内核输出环 / 会话状态广播 / 终端输出通道
 //! （合并/批次/订阅者水位/history_start_mode）随会话下沉退役，相应键已删
 //! （2026-09-25）。新增业务配置一律进对应插件域，禁止回到宿主。

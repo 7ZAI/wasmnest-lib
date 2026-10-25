@@ -121,7 +121,7 @@ fn collect_retired_domain_rs_files() -> Vec<(std::path::PathBuf, String)> {
 ///
 /// 票 11 删除了 `src/session/` 整个目录（`SessionManager` / `SessionConfigManager` /
 /// `SessionOutputManager` / `GlobalOutputManager` / `SessionInfoRegistry` / 环与
-/// 订阅者实现）。这不是「换了个位置放」——会话真源在 `com.wasmnest.terminal-session`
+/// 订阅者实现）。这不是「换了个位置放」——会话真源在 `com.wasmnest.bedcode`
 /// 登记域，宿主只剩 `host-pty`（引擎）+ `host-connection`（连接清单）+ `session_gateway`
 /// （互调窄转发层）。谁把内核会话对象加回来，谁就要先推翻票 11 的裁定。
 ///

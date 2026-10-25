@@ -321,7 +321,7 @@ impl PluginHost {
 
     // 票 03 删除的两条输入侧管道：
     // - `process_terminal_input`（逐帧修饰链）——宿主不再修改用户键入的字节；
-    //   终端输入由 `com.wasmnest.terminal-session` 经 `host-pty.write` 原样写入。
+    //   终端输入由 `com.wasmnest.bedcode` 经 `host-pty.write` 原样写入。
     // - `process_input_submitted`（提交行观察分发）——行重建与任务域分发都在插件内。
     // 输出侧 `process_terminal_output` / `has_terminal_handlers` 暂留：它服务的是
     // 业务输出环（`session/session_output.rs`），随内核会话目录在票 11 一并退役。
@@ -398,9 +398,9 @@ mod tests {
     #[test]
     fn business_marker_passthrough_code_and_params() {
         let err = plugin_command_error(
-            "com.wasmnest.terminal-session",
+            "com.wasmnest.bedcode",
             "session.input",
-            r#"{"__wasmnest_error__":true,"code":"com.wasmnest.terminal-session.session.error.sessionNotFound","params":{"sessionId":"s-1"}}"#,
+            r#"{"__wasmnest_error__":true,"code":"com.wasmnest.bedcode.session.error.sessionNotFound","params":{"sessionId":"s-1"}}"#,
         );
         let AppError::UserFacing {
             code,
@@ -412,7 +412,7 @@ mod tests {
         };
         assert_eq!(
             code,
-            "com.wasmnest.terminal-session.session.error.sessionNotFound"
+            "com.wasmnest.bedcode.session.error.sessionNotFound"
         );
         assert_eq!(params, serde_json::json!({ "sessionId": "s-1" }));
         assert!(

@@ -10,7 +10,7 @@ pub const JWT_ISSUER: &str = "WasmNest";
 
 /// 配对码有效期缺省（秒）
 ///
-/// 真源与策略在 `com.wasmnest.terminal-session` 插件；宿主这边只剩一个用途：
+/// 真源与策略在 `com.wasmnest.bedcode` 插件；宿主这边只剩一个用途：
 /// `host-auth` 记录面的 `pairing_code_ttl` 设置缺省（`host_impl/config.rs`），
 /// 与插件侧 `pairing/code.rs::PAIRING_CODE_TTL_SECS` 同值对齐。
 pub const PAIRING_CODE_TTL_SECS: u64 = 60;
@@ -25,7 +25,7 @@ pub const PAIRING_CODE_TTL_SECS: u64 = 60;
 /// 可见性由插件自己经 `host-events` / `host-bus` 发布。
 ///
 /// 票 07（websocket 业务下沉）删除 `DEVICE_CONNECTED` / `DEVICE_DISCONNECTED`：
-/// 设备在线事件由 `com.wasmnest.terminal-session` 插件自发布（SDK
+/// 设备在线事件由 `com.wasmnest.bedcode` 插件自发布（SDK
 /// `EVENT_DEVICE_CONNECTED` = `device:connected`，经 host-events.emit），
 /// 宿主不再持有设备业务事件名。
 /// 生命周期：应用启动完成
@@ -273,7 +273,7 @@ pub const PLUGIN_PTY_RING_BYTES: u64 = 256 * 1024;
 /// `PLUGIN_PTY_SESSIONS_CEILING_PER_PLUGIN` = 64 条）下的上界 640 MiB 由「条数 ×
 /// 容量」共同约束，且环**按需增长**（空闲会话不占容量）。
 ///
-/// 2026-10-15 由 4 MiB 提到 10 MiB：消费端（`com.wasmnest.terminal-session`）按
+/// 2026-10-15 由 4 MiB 提到 10 MiB：消费端（`com.wasmnest.bedcode`）按
 /// 本上限声明会话环，10 MiB 用于承载「页面不在场期间的产出留存 + fresh subscribe
 /// 整段重放窗口」（移动端整段重放受解析速率驱动，环深直接决定回看深度）。
 pub const PLUGIN_PTY_RING_MAX_BYTES: u64 = 10 * 1024 * 1024;

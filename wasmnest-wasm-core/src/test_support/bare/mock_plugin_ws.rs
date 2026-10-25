@@ -1,6 +1,6 @@
 //! 假插件端点夹具（专项票 01 P0：基线与假插件端点夹具；spec §3.2/§3.3）
 //!
-//! 本地 WS server，模拟桌面插件 `com.wasmnest.terminal-session` 的两个 WS 端点：
+//! 本地 WS server，模拟桌面插件 `com.wasmnest.bedcode` 的两个 WS 端点：
 //! `session-control`（常驻事件通道）与 `terminal`（终端流）。在不依赖真实桌面的
 //! 前提下复现两端点的帧协议，供移动端 Rust 单测（crate 内 `#[path]` 引入）与
 //! `src-tauri/tests/` 集成测试复用（票 03 事件通道 / 票 05 终端流 / 票 07 闭环）。
@@ -51,7 +51,7 @@ use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
 // ==================== 常量（端点 / 帧形状锚点） ====================
 
 /// 桌面插件 ID（契约恒定，移动端 URL 常量独一出处见 system/constants/connection.rs 跟进）
-pub const PLUGIN_ID: &str = "com.wasmnest.terminal-session";
+pub const PLUGIN_ID: &str = "com.wasmnest.bedcode";
 
 /// `session-control` 端点（常驻事件通道；spec §3.2）
 pub const ENDPOINT_SESSION_CONTROL: &str = "session-control";
@@ -60,7 +60,7 @@ pub const ENDPOINT_SESSION_CONTROL: &str = "session-control";
 pub const ENDPOINT_TERMINAL: &str = "terminal";
 
 /// 插件端点 URL 基础路径（与桌面宿主路由 `/ws/plugin/{plugin-id}/{path}` 一致）
-pub const WS_BASE_PATH: &str = "/ws/plugin/com.wasmnest.terminal-session";
+pub const WS_BASE_PATH: &str = "/ws/plugin/com.wasmnest.bedcode";
 
 /// 认证首帧 type（spec §3.2/§3.3 握手；送审时首帧必须为此形状）
 pub const TYPE_AUTH: &str = "auth";
@@ -631,7 +631,7 @@ fn close_frame(code: u16, reason: &str) -> CloseFrame<'static> {
 
 // ==================== 其它 ====================
 
-/// 端点完整路径（`/ws/plugin/com.wasmnest.terminal-session/{endpoint}`；URL 唯一构造点）
+/// 端点完整路径（`/ws/plugin/com.wasmnest.bedcode/{endpoint}`；URL 唯一构造点）
 pub fn endpoint_path(endpoint: &str) -> String {
     format!("{WS_BASE_PATH}/{endpoint}")
 }

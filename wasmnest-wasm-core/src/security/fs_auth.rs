@@ -44,7 +44,7 @@
 //! 旧实现按 `.claude/` **子串**匹配，对**所有**带 `fs:read` 的插件生效：任意位置的
 //! 同名目录段（`/tmp/attacker-controlled/.claude/x`）都免弹窗，等于把「访问未授权
 //! 目录按需弹窗」的兜底架空；而它的真实消费者只有两个第一方插件（agent-hub 分发
-//! 技能到 `~/.claude/skills`、terminal-session 写项目集成目录）。改造后：
+//! 技能到 `~/.claude/skills`、bedcode 写项目集成目录）。改造后：
 //! 第三方 `fs:read` 插件读 `~/.claude/**` 必须过弹窗（红测断言），第一方按归属清单免弹窗。
 //!
 //! ## 不在本校验器里的事
@@ -1448,7 +1448,7 @@ mod tests {
                 ],
             ),
             (
-                "test.terminal-session",
+                "test.bedcode",
                 vec![
                     TrustedDir::ProjectSegment(".claude"),
                     TrustedDir::ProjectSegment(".codex"),
@@ -1539,7 +1539,7 @@ mod tests {
         );
     }
 
-    /// 第一方按归属清单免弹窗：terminal-session 写项目集成目录（段名形态）
+    /// 第一方按归属清单免弹窗：bedcode 写项目集成目录（段名形态）
     #[tokio::test]
     async fn first_party_project_integration_dirs_stay_silent() {
         let checker = first_party_checker().await;
@@ -1552,7 +1552,7 @@ mod tests {
                 .to_string();
             assert!(
                 checker
-                    .check_batch("test.terminal-session", &[path.clone()], FsOps::WRITE)
+                    .check_batch("test.bedcode", &[path.clone()], FsOps::WRITE)
                     .await,
                 "会话启动前写项目集成目录是本插件的产品面，不得弹窗: {path}"
             );
@@ -1561,7 +1561,7 @@ mod tests {
 
     /// 收紧的另一半：第一方插件**清单外**的路径不再任意放行
     ///
-    /// 旧「插件白名单 = 任意路径免弹窗」把 terminal-session / file-transfer 变成
+    /// 旧「插件白名单 = 任意路径免弹窗」把 bedcode / file-transfer 变成
     /// 全盘可读可写；改造后它们与第三方一样只覆盖到具名目录，其余走弹窗 + 记住。
     #[tokio::test]
     async fn first_party_outside_declared_dirs_requires_grant() {
@@ -1571,7 +1571,7 @@ mod tests {
             .join("secrets.env")
             .to_string_lossy()
             .to_string();
-        for plugin in ["test.terminal-session", "test.agent-hub"] {
+        for plugin in ["test.bedcode", "test.agent-hub"] {
             assert!(
                 !checker
                     .check_batch(plugin, &[outside.clone()], FsOps::READ)
@@ -1661,7 +1661,7 @@ mod tests {
         let claude = base.join("proj").join(".claude").join("settings.json");
         assert_eq!(
             checker
-                .decide_without_dialog("test.terminal-session", &claude, FsOps::WRITE)
+                .decide_without_dialog("test.bedcode", &claude, FsOps::WRITE)
                 .await,
             NoDialogDecision::Allowed(FsGrantLayer::FirstPartyDir)
         );
@@ -1753,14 +1753,14 @@ mod tests {
         // ProjectSegment 形态：段名全等，非子串
         assert!(first_party_dir_matches_with_home(
             &table,
-            "test.terminal-session",
+            "test.bedcode",
             &p("/srv/proj/.claude/hooks/x.py"),
             None
         ));
         assert!(
             first_party_dir_matches_with_home(
                 &table,
-                "test.terminal-session",
+                "test.bedcode",
                 &p("/srv/proj/.claude"),
                 None
             ),
@@ -1769,7 +1769,7 @@ mod tests {
         assert!(
             !first_party_dir_matches_with_home(
                 &table,
-                "test.terminal-session",
+                "test.bedcode",
                 &p("/srv/proj/.claudex/a"),
                 None
             ),
@@ -1777,7 +1777,7 @@ mod tests {
         );
         assert!(!first_party_dir_matches_with_home(
             &table,
-            "test.terminal-session",
+            "test.bedcode",
             &p("/srv/proj/x.claude/a"),
             None
         ));
@@ -1785,7 +1785,7 @@ mod tests {
         assert!(
             !first_party_dir_matches_with_home(
                 &table,
-                "test.terminal-session",
+                "test.bedcode",
                 &p("/srv/proj/src/main.rs"),
                 None
             ),
@@ -2255,7 +2255,7 @@ mod tests {
         assert!(
             checker
                 .is_granted(
-                    "test.terminal-session",
+                    "test.bedcode",
                     &std::env::temp_dir()
                         .join("proj/.claude/settings.json")
                         .to_string_lossy(),
@@ -2267,7 +2267,7 @@ mod tests {
         assert!(
             !checker
                 .is_granted(
-                    "test.terminal-session",
+                    "test.bedcode",
                     &std::env::temp_dir().to_string_lossy(),
                     FsOps::READ
                 )
@@ -2619,7 +2619,7 @@ mod tests {
         // 第一方清单覆盖的目录：撤销前免弹窗（否则本用例恒真）
         assert!(
             checker
-                .check("test.terminal-session", &target_s, FsOp::Write)
+                .check("test.bedcode", &target_s, FsOp::Write)
                 .await,
             "前置：第一方集成目录本来免弹窗"
         );
@@ -2627,7 +2627,7 @@ mod tests {
         checker
             .auth_records()
             .deny(
-                "test.terminal-session",
+                "test.bedcode",
                 AuthResource::Fs,
                 &claude.to_string_lossy(),
                 AuthRecordSource::UserDeny,
@@ -2637,13 +2637,13 @@ mod tests {
 
         assert!(
             !checker
-                .check("test.terminal-session", &target_s, FsOp::Write)
+                .check("test.bedcode", &target_s, FsOp::Write)
                 .await,
             "硬拒绝记录必须优先于第一方免询问目录（撤销后访问被直接拒绝）"
         );
         assert!(
             !checker
-                .check("test.terminal-session", &target_s, FsOp::Read)
+                .check("test.bedcode", &target_s, FsOp::Read)
                 .await,
             "deny 是整目标硬拒绝：读同样被拒"
         );
@@ -2651,7 +2651,7 @@ mod tests {
         assert!(
             !checker
                 .check(
-                    "test.terminal-session",
+                    "test.bedcode",
                     &sibling.to_string_lossy(),
                     FsOp::Read
                 )
@@ -2684,18 +2684,18 @@ mod tests {
         // 撤销：走与界面完全相同的写面（`revoke` = 删 allow + 落 deny）
         assert!(
             checker
-                .check("test.terminal-session", &target_s, FsOp::Read)
+                .check("test.bedcode", &target_s, FsOp::Read)
                 .await,
             "前置：第一方集成目录本来免弹窗"
         );
         checker
             .auth_records()
-            .revoke("test.terminal-session", AuthResource::Fs, &dir_s)
+            .revoke("test.bedcode", AuthResource::Fs, &dir_s)
             .await
             .expect("revoke");
         assert!(
             !checker
-                .check("test.terminal-session", &target_s, FsOp::Read)
+                .check("test.bedcode", &target_s, FsOp::Read)
                 .await,
             "撤销后该目录被硬拒绝"
         );
@@ -2703,7 +2703,7 @@ mod tests {
         // 另一出口：移除撤销记录 → 回到「第一方免询问」层（而非落到弹窗）
         let removed = checker
             .auth_records()
-            .remove_deny("test.terminal-session", AuthResource::Fs, &dir_s)
+            .remove_deny("test.bedcode", AuthResource::Fs, &dir_s)
             .await
             .expect("remove deny");
         assert_eq!(
@@ -2712,14 +2712,14 @@ mod tests {
         );
         assert_eq!(
             checker
-                .decide_without_dialog("test.terminal-session", &target, FsOps::READ)
+                .decide_without_dialog("test.bedcode", &target, FsOps::READ)
                 .await,
             NoDialogDecision::Allowed(FsGrantLayer::FirstPartyDir),
             "移除撤销记录后第一方免询问必须恢复（档位 / 记录层都不是它）"
         );
         assert!(
             checker
-                .check("test.terminal-session", &target_s, FsOp::Read)
+                .check("test.bedcode", &target_s, FsOp::Read)
                 .await
         );
         std::fs::remove_dir_all(&project).ok();
@@ -2998,10 +2998,10 @@ mod tests {
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(&target, b"{}").unwrap();
 
-        set_fs_strategy(&checker, "test.terminal-session", AuthStrategy::AlwaysAsk).await;
+        set_fs_strategy(&checker, "test.bedcode", AuthStrategy::AlwaysAsk).await;
         assert_eq!(
             checker
-                .decide_without_dialog("test.terminal-session", &target, FsOps::WRITE)
+                .decide_without_dialog("test.bedcode", &target, FsOps::WRITE)
                 .await,
             NoDialogDecision::Allowed(FsGrantLayer::FirstPartyDir),
             "第一方集成目录在总是询问档下仍免弹窗"
@@ -3009,7 +3009,7 @@ mod tests {
         assert!(
             checker
                 .check(
-                    "test.terminal-session",
+                    "test.bedcode",
                     &target.to_string_lossy(),
                     FsOp::Write
                 )

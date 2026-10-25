@@ -161,7 +161,7 @@ impl TerminalHandler for PassthroughHandler {}
 ///
 /// **票 03 起本用例只覆盖输出侧**：输入侧的逐帧修饰链（`process_terminal_input`）与
 /// 提交行观察分发（`process_input_submitted`）已随宿主观察面退役——用户键入的字节
-/// 现在由 `com.wasmnest.terminal-session` 经 `host-pty.write` 原样写入，宿主不再介入。
+/// 现在由 `com.wasmnest.bedcode` 经 `host-pty.write` 原样写入，宿主不再介入。
 #[tokio::test(flavor = "multi_thread")]
 async fn test_terminal_output_pipeline() {
     let host = setup_host().await;

@@ -1070,7 +1070,7 @@ fn find_duplicate_id_claim(
 /// 回复道 sender 校验口径一致。与 HTTP 前缀别名（`legacy_http_alias`）同一决策；
 /// 窗口关闭（全量更新后）时删除本条即可。
 const LEGACY_API_PLUGIN_ALIASES: &[(&str, &str)] =
-    &[("com.wasmnest.terminal-session", "com.wasmnest.session")];
+    &[("com.wasmnest.bedcode", "com.wasmnest.session")];
 
 /// 为新 plugin_id 的 api 清单附加旧名别名；无别名命中时原样返回。
 ///
@@ -1175,17 +1175,17 @@ mod tests {
     #[test]
     fn aliases_latest_renamed_plugin_apis() {
         let out = with_api_aliases(
-            "com.wasmnest.terminal-session",
+            "com.wasmnest.bedcode",
             &apis(&[
-                "com.wasmnest.terminal-session.pairing-code-generate",
-                "com.wasmnest.terminal-session.config-list",
+                "com.wasmnest.bedcode.pairing-code-generate",
+                "com.wasmnest.bedcode.config-list",
             ]),
         );
         assert_eq!(
             out,
             apis(&[
-                "com.wasmnest.terminal-session.pairing-code-generate",
-                "com.wasmnest.terminal-session.config-list",
+                "com.wasmnest.bedcode.pairing-code-generate",
+                "com.wasmnest.bedcode.config-list",
                 "com.wasmnest.session.pairing-code-generate",
                 "com.wasmnest.session.config-list",
             ])
@@ -1196,16 +1196,16 @@ mod tests {
     #[test]
     fn aliases_dedupe_explicit_old_name() {
         let out = with_api_aliases(
-            "com.wasmnest.terminal-session",
+            "com.wasmnest.bedcode",
             &apis(&[
-                "com.wasmnest.terminal-session.trust-list",
+                "com.wasmnest.bedcode.trust-list",
                 "com.wasmnest.session.trust-list",
             ]),
         );
         assert_eq!(
             out,
             apis(&[
-                "com.wasmnest.terminal-session.trust-list",
+                "com.wasmnest.bedcode.trust-list",
                 "com.wasmnest.session.trust-list",
             ]),
             "显式旧名不得重复"
@@ -1222,16 +1222,16 @@ mod tests {
         assert_eq!(out, apis(&["com.wasmnest.file-transfer.list-remote"]));
         // 前缀必须精确命中改名插件 id（不得把其它 id 误当改名者）
         let out = with_api_aliases(
-            "com.wasmnest.terminal-session-extra",
-            &apis(&["com.wasmnest.terminal-session-extra.x"]),
+            "com.wasmnest.bedcode-extra",
+            &apis(&["com.wasmnest.bedcode-extra.x"]),
         );
-        assert_eq!(out, apis(&["com.wasmnest.terminal-session-extra.x"]));
+        assert_eq!(out, apis(&["com.wasmnest.bedcode-extra.x"]));
     }
 
     /// 空清单：返回空（不生成无意义别名）
     #[test]
     fn aliases_empty_list_stays_empty() {
-        let out = with_api_aliases("com.wasmnest.terminal-session", &[]);
+        let out = with_api_aliases("com.wasmnest.bedcode", &[]);
         assert!(out.is_empty());
     }
 }

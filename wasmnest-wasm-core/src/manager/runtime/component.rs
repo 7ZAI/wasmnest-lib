@@ -54,7 +54,7 @@ use wasmtime::Store;
 // v27（票 10 删除的 `impl wasmnest::plugin::host_session::Host`）：
 // 12 条原语（list-sessions / get / create-with-spec / lifecycle-register /
 // input-register / close / remove / rename / resize / annotate / connections-list
-// 别名 / output-ring-fetch）整块退役。会话真源在 `com.wasmnest.terminal-session`
+// 别名 / output-ring-fetch）整块退役。会话真源在 `com.wasmnest.bedcode`
 // 登记域，宿主侧不再有「会话」这一原语域的对外能力面。
 
 // host-process（v8）/ host-app（v8）/ host-timer（v6）已迁宿主（票 02 批次 05，

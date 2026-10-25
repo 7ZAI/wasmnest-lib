@@ -2,7 +2,7 @@
 
 -- 2026-09-22 认证记录下沉（v24）：`pairings` / `connection_history` / `session_configs`
 -- 三表退役——认证记录（配对设备 / 连接历史）与会话配置真源已下沉
--- `com.wasmnest.terminal-session` 插件私有库。2026-09-23 用户裁定不再兼容旧版本
+-- `com.wasmnest.bedcode` 插件私有库。2026-09-23 用户裁定不再兼容旧版本
 -- 存量用户：宿主侧 legacy 迁移链（auth_records / quick_actions / session_db /
 -- task_data 四迁移）整体退役，旧库滞留表不读不迁不清理。
 -- 内核主库只保留配置与引擎原语。

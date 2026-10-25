@@ -24,7 +24,7 @@
 //!
 //! 引擎只接受调用方**算好的 argv**（`portable_pty::CommandBuilder`）——不做 shell
 //! 包装 / WSL 路径转换 / 业务环境注入。shell 包装与业务环境注入在消费侧
-//! （业务会话 = 插件 `com.wasmnest.terminal-session` 的 `launch.rs`；插件私有 PTY =
+//! （业务会话 = 插件 `com.wasmnest.bedcode` 的 `launch.rs`；插件私有 PTY =
 //! 插件自己）。业务输出汇实现亦不在引擎面（调用方自备 `PtyOutputSink`；本 crate 的
 //! 限频通知装饰器是机制，不是业务汇）。
 //!

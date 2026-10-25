@@ -75,7 +75,7 @@ fn fallback_os_ip_name() -> String {
 
 /// 本地 IPv4 地址列表（排除回环与链路本地）——**引擎事实**
 ///
-/// 宿主命令面 `get_local_ip_addresses` 已注销（产品面归 `com.wasmnest.terminal-session`
+/// 宿主命令面 `get_local_ip_addresses` 已注销（产品面归 `com.wasmnest.bedcode`
 /// 的 `session.network.info`，其下是 ABI v19 原语 `host-platform.local-ipv4-addresses`）；
 /// 本函数只服务宿主引擎自身：设备名兜底、启动提示与 [`SystemInfo`] 采集。
 /// 口径与 `host_impl/platform.rs::platform_local_ipv4_addresses` 一致。

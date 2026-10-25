@@ -299,7 +299,7 @@ pub const PLUGIN_ID_MAX_LEN: usize = 100;
 ///
 /// 规则：小写字母/数字开头的小写段，以 `.` 分段（至少两段），
 /// 段内可含连字符（不允许首尾连字符、连续点、下划线、大写）。
-/// 如 `com.wasmnest.terminal-session` ✓，`Com.WasmNest.X` ✗，`my_plugin` ✗。
+/// 如 `com.wasmnest.bedcode` ✓，`Com.WasmNest.X` ✗，`my_plugin` ✗。
 pub fn validate_plugin_id(id: &str) -> bool {
     if id.is_empty() || id.len() > PLUGIN_ID_MAX_LEN {
         return false;
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn test_valid_ids() {
         for id in [
-            "com.wasmnest.terminal-session",
+            "com.wasmnest.bedcode",
             "com.wasmnest.file-transfer",
             "com.wasmnest.ai-chatbox",
             "com.example.plugin",
@@ -694,17 +694,17 @@ mod tests {
     #[test]
     fn test_dir_binding() {
         assert!(validate_dir_binding(
-            "com.wasmnest.terminal-session",
-            "com.wasmnest.terminal-session"
+            "com.wasmnest.bedcode",
+            "com.wasmnest.bedcode"
         ));
         // 目录名与 id 不一致：伪造/复制目录
         assert!(!validate_dir_binding(
             "com.wasmnest.evil",
-            "com.wasmnest.terminal-session"
+            "com.wasmnest.bedcode"
         ));
         assert!(!validate_dir_binding(
             "session",
-            "com.wasmnest.terminal-session"
+            "com.wasmnest.bedcode"
         ));
     }
 }

@@ -69,7 +69,7 @@ pub(super) async fn setup_host() -> PluginHost {
     wasm_runtime.fs_auth().set_monitor(wasm_runtime.monitor());
     // 网络侧同一机制（票 06）：与生产同形注入，无头用例可断言网络记录的容量计数
     wasm_host_ctx.net_auth().set_monitor(wasm_runtime.monitor());
-    // v24 认证记录下沉：认证中心（terminal-session）配对/历史真源在插件私有库。
+    // v24 认证记录下沉：认证中心（bedcode）配对/历史真源在插件私有库。
     // 无头测试无 AppHandle，注入进程级临时根使激活建表/播种/断言可达私有库
     // （auth-policy 闭环等依赖）
     wasm_host_ctx.set_plugin_db_root(Some(std::env::temp_dir().join(format!(

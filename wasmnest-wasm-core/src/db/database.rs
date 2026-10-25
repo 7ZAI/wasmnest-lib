@@ -640,10 +640,10 @@ CREATE TABLE plugin_auth_records (\n    plugin_id   TEXT NOT NULL,\n    target  
             db.init_schema().expect("init schema");
             for (owner, key, value) in [
                 ("host", "jwt.key", "aa"),
-                ("com.wasmnest.terminal-session", "jwt.key", "bb"),
-                ("com.wasmnest.terminal-session", "jwt.keyring", "cc"),
+                ("com.wasmnest.bedcode", "jwt.key", "bb"),
+                ("com.wasmnest.bedcode", "jwt.keyring", "cc"),
                 // B-downsink 前的宿主托管生物公钥（v24–v33 期间属主 = 插件）
-                ("com.wasmnest.terminal-session", "biometric:fp-abc", "dd"),
+                ("com.wasmnest.bedcode", "biometric:fp-abc", "dd"),
                 ("host", "biometric:fp-xyz", "ee"),
             ] {
                 db.conn()
@@ -679,7 +679,7 @@ CREATE TABLE plugin_auth_records (\n    plugin_id   TEXT NOT NULL,\n    target  
             // v34：宿主托管的生物公钥行（不论属主）必须被清掉
             assert!(
                 !remaining.contains(&(
-                    "com.wasmnest.terminal-session".to_string(),
+                    "com.wasmnest.bedcode".to_string(),
                     "biometric:fp-abc".to_string()
                 )),
                 "B-downsink 后宿主不得再托管生物公钥（插件属主行）: {remaining:?}"
@@ -689,8 +689,8 @@ CREATE TABLE plugin_auth_records (\n    plugin_id   TEXT NOT NULL,\n    target  
                 "B-downsink 后宿主不得再托管生物公钥（host 属主行）: {remaining:?}"
             );
             for keep in [
-                ("com.wasmnest.terminal-session", "jwt.key"),
-                ("com.wasmnest.terminal-session", "jwt.keyring"),
+                ("com.wasmnest.bedcode", "jwt.key"),
+                ("com.wasmnest.bedcode", "jwt.keyring"),
             ] {
                 assert!(
                     remaining.contains(&(keep.0.to_string(), keep.1.to_string())),

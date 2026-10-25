@@ -30,8 +30,7 @@
 - **最小改动**：只改任务必要文件；禁止顺手重构相邻代码、擅自升级依赖、批量重排格式；设计取舍不猜，先问用户。
 - **项目阶段（内部研发起步期）**：版本线自 `0.0.1` 重开，无对外 ABI 兼容义务——破坏性变更可直接进行，但跨仓契约按**精确 tag** 钉住（§2.2 / §5「发版钉平台指针」）；退役面必须 **fail-visible**（点名缺失 + 给出路），禁止静默降级成「查不到就返回空」。
 - **本仓 CI = `.github/workflows/ci.yml`**（2026-10-24 票 7 落地：PR / dev 推送触发，fmt --check + 按 crate 遍历 `cargo test`；`wasmnest-wasm-core` 的 test 因未发布 SDK 版本依赖登记为例外，经平台仓宿主装配测试，见 workflow 注释）、无文档面：唯一人读文档是本文件（`.md` 白名单之外不新增文档，除非用户明确要求）；验证 = 本地命令实跑 + CI + 平台仓 / 测试仓相关锁（§7）。
-- **四仓通用规范（git 提交 / 注释命名 / 测试与验证 / 版本号管理 / issue 管理 / LayerFS 开发流程）真源在 `../wasmnest`/`docs/public/`**（`git.md` / `commenting.md` / `testing.md` / `versioning.md` / `issues.md` / `layerfs.md`），与本文件硬约束同级；通用内容不在此复制，本文件只留仓特有增量（§6.4 / §6.5）。
-- **LayerFS 强制工作面（2026-10-24）**：本仓项目文件（代码 / 文档 / 配置）的一切读写与命令一律走 LayerFS MCP（`layerfs_*`）；流程与门禁真源 = `../wasmnest/docs/public/layerfs.md`。工具不可用（无工具 / `layerfs_status` 失败 / `sudo` 被 no_new_privs 阻断）⇒ **停手报告**，禁止回退宿主 Edit/Write。唯一例外：该规范自身的 bootstrap 与工具配置；落地同步只允许按 public 文档 §6 执行。
+- **四仓通用规范（git 提交 / 注释命名 / 测试与验证 / 版本号管理 / issue 管理）真源在 `../wasmnest`/`docs/public/`**（`git.md` / `commenting.md` / `testing.md` / `versioning.md` / `issues.md`），与本文件硬约束同级；通用内容不在此复制，本文件只留仓特有增量（§6.4 / §6.5）。
 
 ---
 
@@ -405,7 +404,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 | 平台仓治理锁（形态 / 语义 / 整核 / 纯净性） | `../wasmnest/wasmnest-{desktop,mobile}/src-tauri/tests/`（按 §2.4 表点名） |
 | WIT 组合与产物重建 | 平台仓 `scripts/compose-wit.mjs`、`wasmnest-{desktop,mobile}/packages/plugin-sdk-*/compose.json` |
 | 跨仓版本 / 发布 | `../wasmnest/release-manifest.json`、`../wasmnest/scripts/check-release-manifest.mjs`、`../wasmnest/package.json`（`check:wit` / `check:manifest`） |
-| 四仓通用规范（git 提交 / 注释命名 / 测试验证 / 版本号管理 / issue 管理 / LayerFS 开发流程） | `../wasmnest`/`docs/public/{git,commenting,testing,versioning,issues,layerfs}.md` |
+| 四仓通用规范（git 提交 / 注释命名 / 测试验证 / 版本号管理 / issue 管理） | `../wasmnest`/`docs/public/{git,commenting,testing,versioning,issues}.md` |
 | crate 历史索引（旧单仓时期，代码冻结） | 旧仓 `BedCode` 的留守分支 `marker/bedcode-pre-lib-split-20261016`：`packages/README.md`（crate 作用索引）、`docs/adr/`、`docs/knowledge/build-process.md`（target 治理与历史事故） |
 
 > 本文件与真源冲突时，以真源 + 可执行锁为准，并回来修正本文件。

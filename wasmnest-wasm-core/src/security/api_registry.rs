@@ -230,20 +230,20 @@ mod tests {
     fn owner_of_matches_contains_semantics() {
         let reg = ApiRegistry::new();
         reg.register(
-            "com.wasmnest.terminal-session",
-            &["com.wasmnest.terminal-session.pair".to_string()],
+            "com.wasmnest.bedcode",
+            &["com.wasmnest.bedcode.pair".to_string()],
         )
         .unwrap();
         assert_eq!(
-            reg.owner_of("com.wasmnest.terminal-session.pair")
+            reg.owner_of("com.wasmnest.bedcode.pair")
                 .as_deref(),
-            Some("com.wasmnest.terminal-session")
+            Some("com.wasmnest.bedcode")
         );
-        assert_eq!(reg.owner_of("com.wasmnest.terminal-session.nope"), None);
+        assert_eq!(reg.owner_of("com.wasmnest.bedcode.nope"), None);
         // 注销后两者同时失效
-        reg.unregister("com.wasmnest.terminal-session");
-        assert_eq!(reg.owner_of("com.wasmnest.terminal-session.pair"), None);
-        assert!(!reg.contains("com.wasmnest.terminal-session.pair"));
+        reg.unregister("com.wasmnest.bedcode");
+        assert_eq!(reg.owner_of("com.wasmnest.bedcode.pair"), None);
+        assert!(!reg.contains("com.wasmnest.bedcode.pair"));
     }
 
     /// 同名 api 被**拒绝**抢占：属主解析保持首个声明方（S-01 fail-closed）

@@ -419,7 +419,7 @@ mod tests {
     use super::l2_auth_center_unready;
     use crate::manifest::PluginKind;
 
-    const SESSION: &str = "com.wasmnest.terminal-session";
+    const SESSION: &str = "com.wasmnest.bedcode";
 
     /// C-1（正例）：L2 激活完但注册表空 → 未就位（fail-closed 全拒，必须点名）
     #[test]
@@ -474,7 +474,7 @@ mod tests {
     fn owner_match_is_exact_not_prefix() {
         for owner in [
             "com.wasmnest.terminal-sessio",
-            "com.wasmnest.terminal-session-2",
+            "com.wasmnest.bedcode-2",
             "com.wasmnest.terminal",
         ] {
             assert!(

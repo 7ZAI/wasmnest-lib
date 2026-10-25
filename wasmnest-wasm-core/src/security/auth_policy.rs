@@ -1514,22 +1514,22 @@ mod tests {
                 value: ".wasmnest/agent-hub/runs",
             },
             crate::security::fs_auth::FirstPartyDirEntry {
-                plugin_id: "test.terminal-session",
+                plugin_id: "test.bedcode",
                 kind: "project-segment",
                 value: ".claude",
             },
             crate::security::fs_auth::FirstPartyDirEntry {
-                plugin_id: "test.terminal-session",
+                plugin_id: "test.bedcode",
                 kind: "project-segment",
                 value: ".codex",
             },
             crate::security::fs_auth::FirstPartyDirEntry {
-                plugin_id: "test.terminal-session",
+                plugin_id: "test.bedcode",
                 kind: "project-segment",
                 value: ".pi",
             },
             crate::security::fs_auth::FirstPartyDirEntry {
-                plugin_id: "test.terminal-session",
+                plugin_id: "test.bedcode",
                 kind: "project-segment",
                 value: ".opencode",
             },
@@ -1555,7 +1555,7 @@ mod tests {
         );
 
         let session = store
-            .overview("test.terminal-session", "Terminal Session", projection)
+            .overview("test.bedcode", "Terminal Session", projection)
             .await
             .unwrap();
         assert_eq!(
@@ -1570,7 +1570,7 @@ mod tests {
                 ("project-segment", ".pi"),
                 ("project-segment", ".opencode"),
             ],
-            "terminal-session 的是项目目录段形态"
+            "bedcode 的是项目目录段形态"
         );
 
         let third_party = store

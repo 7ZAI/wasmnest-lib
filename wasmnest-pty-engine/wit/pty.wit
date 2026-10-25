@@ -4,7 +4,7 @@ package wasmnest:plugin@0.0.1;
 ///
 /// **与宿主业务会话线的边界（终态，v27 + v28 后）**：本接口是**宿主侧唯一的 PTY 出口**，
 /// 而业务会话本身就是一个本接口的句柄（会话 id 由插件自产，登记 / 状态机 / 输入输出编排
-/// 全在 `com.wasmnest.terminal-session` 私有域）。宿主**不再持有任何会话对象**：内核会话目录
+/// 全在 `com.wasmnest.bedcode` 私有域）。宿主**不再持有任何会话对象**：内核会话目录
 /// `src-tauri/src/session/` 整目录删除，`host-session` 与 `host-terminal` 两个 interface
 /// 随 v27 退役，PTY 引擎只有本接口这一张注册表（无 SessionManager、无业务输出总线、
 /// 引擎不注入 `WASMNEST_SESSION_ID`）。**v28 起宿主也不再直读任何插件 PTY 的输出环**

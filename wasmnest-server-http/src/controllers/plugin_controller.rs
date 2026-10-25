@@ -504,7 +504,7 @@ mod tests {
 
         // 无身份、无对端地址（TestRequest 默认）→ anonymous，且不带设备上下文
         let req = actix_web::test::TestRequest::get()
-            .uri("/api/plugin/com.wasmnest.terminal-session/task-status")
+            .uri("/api/plugin/com.wasmnest.bedcode/task-status")
             .to_http_request();
         assert_eq!(
             caller_identity(&req),
@@ -514,19 +514,19 @@ mod tests {
 
         // 无身份但对端是环回 → localhost（hook 脚本可被插件区分）
         let req = actix_web::test::TestRequest::get()
-            .uri("/api/plugin/com.wasmnest.terminal-session/task-status")
+            .uri("/api/plugin/com.wasmnest.bedcode/task-status")
             .peer_addr("127.0.0.1:54321".parse().expect("loopback addr"))
             .to_http_request();
         assert_eq!(caller_identity(&req), (HttpCaller::Localhost, None));
 
         // 非环回对端同样落 anonymous（IPv6 环回则算本机）
         let req = actix_web::test::TestRequest::get()
-            .uri("/api/plugin/com.wasmnest.terminal-session/task-status")
+            .uri("/api/plugin/com.wasmnest.bedcode/task-status")
             .peer_addr("192.168.1.7:54321".parse().expect("lan addr"))
             .to_http_request();
         assert_eq!(caller_identity(&req).0, HttpCaller::Anonymous);
         let req = actix_web::test::TestRequest::get()
-            .uri("/api/plugin/com.wasmnest.terminal-session/task-status")
+            .uri("/api/plugin/com.wasmnest.bedcode/task-status")
             .peer_addr("[::1]:54321".parse().expect("ipv6 loopback addr"))
             .to_http_request();
         assert_eq!(caller_identity(&req).0, HttpCaller::Localhost);
@@ -538,7 +538,7 @@ mod tests {
             fingerprint: Some("fp-secret".to_string()),
         };
         let req = actix_web::test::TestRequest::get()
-            .uri("/api/plugin/com.wasmnest.terminal-session/task-status")
+            .uri("/api/plugin/com.wasmnest.bedcode/task-status")
             .peer_addr("192.168.1.7:54321".parse().expect("lan addr"))
             .to_http_request();
         req.extensions_mut().insert(identity);
@@ -561,7 +561,7 @@ mod tests {
     /// 这种最可能的写错方式不会被测到。
     #[actix_web::test]
     async fn unauthenticated_response_is_http_401_with_both_remedies_named() {
-        let resp = plugin_http_unauthenticated_response("/api/plugin/com.wasmnest.terminal-session/task-queue/add");
+        let resp = plugin_http_unauthenticated_response("/api/plugin/com.wasmnest.bedcode/task-queue/add");
         assert_eq!(
             resp.status(),
             actix_web::http::StatusCode::UNAUTHORIZED,
@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(json["code"], CODE_PLUGIN_AUTH_FAILED as u64);
         let message = json["message"].as_str().unwrap_or_default();
         assert!(
-            message.contains("/api/plugin/com.wasmnest.terminal-session/task-queue/add"),
+            message.contains("/api/plugin/com.wasmnest.bedcode/task-queue/add"),
             "文案须点名被拒端点: {message}"
         );
         assert!(
@@ -584,7 +584,7 @@ mod tests {
     /// 属主解析：只认前缀自身——已激活 → 本人应答；未激活 → None
     #[test]
     fn http_owner_only_serves_activated_prefix() {
-        let plugin = "com.wasmnest.terminal-session";
+        let plugin = "com.wasmnest.bedcode";
         assert_eq!(resolve_http_owner(plugin, true), Some(plugin));
         assert_eq!(resolve_http_owner(plugin, false), None);
         assert_eq!(
