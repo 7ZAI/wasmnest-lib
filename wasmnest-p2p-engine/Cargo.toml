@@ -1,0 +1,51 @@
+# ==================== wasmnest-p2p-engine：libp2p 机制引擎 ====================
+# libp2p 能力包（feat/p2p-engine 批次）：为替换文件传输底层传输栈做准备——
+# 现役 `wasmnest-server-peer-net` 的 base/{transport,tls,cert}（自管 TcpListener +
+# tokio-rustls + rcgen 自签证书）在后续批次换到本引擎的 swarm/流上，
+# host-peer WIT 面、信任列表语义、`peer:*` 事件词汇零变化。
+#
+# 依赖纪律（本 crate 的存在意义，对齐 `wasmnest-ws-client-engine` 先例）：
+# 纯机制引擎形态——默认 = 零 WIT / 零 SDK / 零平台依赖 / **零内部 crate 依赖**
+# （端口 trait 本 crate 自持，不引 server-base，任何宿主可直接引用）；只允许
+# 机制级依赖，边界由 src/boundary_lock.rs（crate 内单测）钉死。
+
+[package]
+name = "wasmnest-p2p-engine"
+version = "0.0.1"
+description = "WasmNest libp2p 机制引擎：节点身份桥（node_id↔PeerId）+ swarm 生命周期 + 入站准入闸门 + 流协议名注册表。默认形态 = 纯引擎机制 + 端口抽象（零 WIT / 零 SDK / 零平台依赖 / 零内部 crate 依赖），任何宿主可直接引用"
+authors = ["binblink"]
+license = "MIT"
+repository = "https://github.com/7ZAI/wasmnest-lib"
+edition = "2021"
+
+[dependencies]
+# libp2p 机制引擎本体（2026-10-25 定版 0.57.1，MSRV Rust 1.88，本机 1.98.1 满足）。
+# feature 显式收窄（default-features = false 去掉默认 dns——LAN 场景拨 IP 字面量
+# 不需要 hickory 解析器；后续票据若需域名拨号再显式加回）：
+# - tokio/tcp：异步运行时与 TCP 传输（socket2，Android 交叉编译无额外构建链）
+# - noise/yamux：传输加密（snow，纯 Rust）与流多路复用——**不启用 tls/quic**：
+#   那两个 feature 才会拉 rustls/quinn；当前 feature 集经 `cargo tree` 核验，
+#   normal 与 aarch64-linux-android 目标树里 rustls / quinn / aws-lc / openssl-sys
+#   均为零（Android 禁 aws-lc-rs 的全仓纪律在 peer-net Cargo.toml 有先例注释）
+# - ping：连接保活 + 对端静默死亡探测（对齐现役栈 socket2 keepalive 的意图）
+# - macros：`#[derive(NetworkBehaviour)]` 组合行为
+# - ed25519：节点身份密钥类型（node_id 派生强制 ed25519，非 ed25519 对端显性拒绝）
+# 注意：**不启用 identify**——它会在连接建立即自动交换元信息，破坏「准入闸门放行前
+# 零上层协议流量」的语义（现役栈闸门位在 TLS 握手后、协议分发前）；外部地址学习
+# 属后续票据（QUIC/打洞批次）再评估引入。
+libp2p = { version = "0.57.1", default-features = false, features = ["tokio", "tcp", "noise", "yamux", "ping", "macros", "ed25519"] }
+# 异步运行时（事件泵 / 准入确认任务 / 测试；spawn 在本 crate 编译单元可用——
+# ws-client 与 peer-net 引擎同款先例）
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+# 事件泵驱动 swarm 的 Stream（select_next_some）
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# node_id = hex(SHA-256(raw ed25519 公钥 32B))——与 peer-net base/identity.rs 的
+# 派生字节序逐字一致（跨 crate 线上不变量，identity_bridge 头注有对齐说明）
+sha2 = "0.10"
+hex = "0.4"
+# 准入端口的 async trait（dyn 兼容；确认闸门要能挂起等宿主弹窗应答）
+async-trait = "0.1"
+# 机制级日志
+tracing = "0.1"
+# 引擎错误枚举
+thiserror = "1"

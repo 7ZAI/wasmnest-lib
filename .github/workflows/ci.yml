@@ -1,6 +1,6 @@
 # 能力仓 CI（7ZAI/wasmnest-lib#7）：fmt --check + 按 crate 遍历 cargo test。
 #
-# 仓形态约束（AGENTS.md §1 / §4）：无根 workspace——16 个顶层 crate 平铺仓根、
+# 仓形态约束（AGENTS.md §1 / §4）：无根 workspace——17 个顶层 crate 平铺仓根、
 # 各自 Cargo.toml / Cargo.lock，一个 crate 一个 cargo 调用；不存在「仓级 cargo
 # test」。夹具 crate（wasmnest-host-kit/fixtures/*、wasmnest-wasm-core/fixtures/*）
 # 在二层目录，不入 `*/Cargo.toml` 顶层遍历面，也不入 CI（wasm 夹具另需目标端
@@ -44,7 +44,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: cargo fmt --check（按 crate 遍历，覆盖全部 16 个顶层 crate）
+      - name: cargo fmt --check（按 crate 遍历，覆盖全部 17 个顶层 crate）
         run: |
           set -eu
           for d in */Cargo.toml; do

@@ -8,7 +8,7 @@
 **本仓定位**：三仓（应用仓 / 平台仓 / 能力仓）里唯一的**应用无关引擎仓**。提供四类东西：
 
 1. **插件机制**：`wasmnest-wasm-core`（运行期整核）+ `wasmnest-host-kit`（装配期内核）+ `wasmnest-host-api-core`（域实现层）；
-2. **能力域引擎**：`wasmnest-{discovery,pty,ws-client,crypto,notify}-engine` + 五个 `wasmnest-server-*`（传输面与内核）；
+2. **能力域引擎**：`wasmnest-{discovery,pty,ws-client,crypto,notify,p2p}-engine` + 五个 `wasmnest-server-*`（传输面与内核）；
 3. **共享底座**：`link-crypto`（链路加密协议）；对等网络底座机制（身份/TLS/信任/mDNS 注册/传输会话引擎原语）拆分并入 `wasmnest-server-peer-net` 的 `base/` 子模块（2026-10-22 peer-net-dissolve，原 `wasmnest-peer-net` crate 已删除）；
 4. **契约真源**：`wasmnest-contract` crate（`src/lib.rs`）与各 `wit/<domain>.wit`——`wasmnest:plugin@0.0.1` 包名/版本只在本仓手写。
 
@@ -45,7 +45,7 @@ wasmnest-lib/
 ├─ wasmnest-host-kit/                     # 装配期机制内核（tests/ 与 fixtures/ 在此）
 ├─ wasmnest-host-api-core/                # host_api 无 WIT 域实现层
 ├─ wasmnest-server-{base,core,http,websocket,peer-net}/
-├─ wasmnest-{discovery,pty,crypto,ws-client,notify}-engine/
+├─ wasmnest-{discovery,pty,crypto,ws-client,notify,p2p}-engine/
 ├─ link-crypto/                           # 包名 wasmnest-link-crypto（唯一目录名≠包名例外）
 └─ wasmnest-headless-host-probe/          # 默认形态可引用性的长期门禁
 ```
@@ -83,6 +83,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 | `wasmnest-ws-client-engine` | WS **出站客户端**能力域：句柄表 / 双任务 / 心跳 / 退避重连 / 停用回收 | 无 feature | `wit/ws.wit` | 移动宿主、测试仓 |
 | `wasmnest-crypto-engine` | 中性加密算法原语（aes_gcm/chacha/hybrid/kdf/rsa/x25519）+ 名称寻址注册表 | 无 feature | —（WIT 面在宿主 `plugin/crypto.rs`） | 桌面宿主、server-core |
 | `wasmnest-notify-engine` | 通知域**契约房**：只持 WIT + 端口词汇（当前无端口），零实现 | 无 feature | `wit/notify.wit` | 双端 `compose.json` 组合——**无 Rust 消费者** |
+| `wasmnest-p2p-engine` | **libp2p 机制引擎**：节点身份桥（node_id↔PeerId 互验）/ swarm 生命周期 / 入站准入闸门 / 流协议名注册表——文件传输底层换轨的传输引擎（P0 无消费者） | 无 feature | —（P1 由 peer-net 接入，流协议名自持 `stream_proto`） | `wasmnest-server-peer-net`（P1 起） |
 | `link-crypto`（`wasmnest-link-crypto`） | 链路报文加密协议核心：HTTP 信封 / WS 握手 IKM / 二进制帧 | 无 feature | — | wasm-core（`link_crypto`）、双端宿主 |
 | `wasmnest-headless-host-probe` | 无头宿主探针：以非桌面形态引用全部能力域，钉「默认形态任何宿主可引用」 | 无 feature（永不开 `common-host`）、零 dev-deps | — | 仅门禁——**不得进任何宿主依赖清单** |
 
@@ -196,6 +197,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 - `wasmnest-pty-engine`：引擎面（跨平台、零 wasm）+ 能力域（句柄表 / 配额仲裁 / 退出事件 / 限频通知 / 6 原语）；只接受调用方算好的 argv，**不做 shell 包装**；输出走环形缓冲 + 水印通知。
 - `wasmnest-ws-client-engine`：`host-websocket` 客户端子集 5 原语 + 停用回收；平台差（权限门 / 投递 / 后台任务 / jwt 代发 / 退避）全经 `WsClientPorts` 注入；生产清单零内部 crate 依赖（锁钉死）。
 - `wasmnest-notify-engine`：契约房，只持 WIT，零实现；平台不支持项（桌面无震动等）**静默忽略写死在契约文档**，实现端不得改成报错。
+- `wasmnest-p2p-engine`：libp2p 机制引擎（2026-10-25 新建，P0 无消费者）——同一 ed25519 密钥派生 node_id（信任层标识，派生式与 peer-net `base/identity.rs` 逐字一致，金向量钉稳定）与 PeerId（swarm 层标识）；入站准入闸门常量（30s / 8 pending）孪生 peer-net `base/transport.rs`；**零 mDNS**（发现红线：继续走 discovery-engine 共享守护经端口注入，禁用 libp2p mdns）；零内部 crate 依赖（ws-client-engine 同型，crate 内 `boundary_lock.rs` 钉死）；libp2p 定版 0.57.1（tokio/tcp/noise/yamux/ping/macros/ed25519——**不开** tls/quic/identify：前两者拉 rustls/quinn，identify 破坏「闸门放行前零上层协议流量」）。P1 = peer-net `base/{transport,tls,cert}` 换轨到本引擎，host-peer WIT 面不动。
 - 对等网络底座机制（原 `wasmnest-peer-net` crate，2026-10-22 peer-net-dissolve 拆分并入 `wasmnest-server-peer-net` 的 `base/`）：重装即新身份（与设备身份刻意分离）；证书公钥即节点公钥、指纹即身份（`node_id = hex(SHA-256(raw ed25519 key))`）；未信任拨入停应用层确认闸门；`_wasmnest-peer._tcp.local.` 与终端链路旧 `_wasmnest._tcp` 完全独立。
 - `link-crypto`：只做纯字节协议（配置域 / 身份落盘 / 过滤器接线留宿主）；常量与算法**是协议兼容性表面**，与移动 TS 实现逐字节一致——改常量 = 跨端破坏性变更，先读头注的兼容性清单。
 
