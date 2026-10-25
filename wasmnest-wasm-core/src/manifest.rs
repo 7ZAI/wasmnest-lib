@@ -66,7 +66,7 @@ pub struct PluginManifest {
     /// 扩展点声明
     #[serde(default)]
     pub contributes: PluginContributes,
-    /// 插件类型：rust / rust-ts / ts-only / wasm
+    /// 插件产物形态：frontend / backend / full（语言无关三档，见 [`PluginType`]）
     #[serde(default = "default_plugin_type")]
     pub plugin_type: PluginType,
     /// WASM 库文件名（不含路径，相对于插件目录）
@@ -135,9 +135,9 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// 缺省产物形态（与桌面 SDK 同一真源语义：`pluginType` 缺省 = ts-only）
+/// 缺省产物形态（与双端 SDK 同一真源语义：`pluginType` 缺省 = 纯前端）
 fn default_plugin_type() -> PluginType {
-    PluginType::TsOnly
+    PluginType::Frontend
 }
 
 /// 单插件 Store 资源上限覆盖请求（manifest `resourceOverrides`；真源 =
@@ -146,18 +146,72 @@ pub use crate::config::ResourceOverrides;
 
 // ==================== 枚举词汇 ====================
 
-/// 插件产物形态类型
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// 插件产物形态（语言无关三形态，2026-10-26 语义重定义，wasmnest-apps#21）
+///
+/// 词汇只表达**形态**（是否携带 wasm 后端 / 前端产物），不表达后端语言——
+/// 形态是宿主与装配真正消费的判据（是否实例化 wasm、是否有页面产物），语言
+/// 不是。Go 后端（SDK Go 壳）与 Rust 后端共用同一词汇。
+///
+/// 旧值（rust / rust-ts / ts-only / wasm）已退役：研发起步期无兼容读入义务，
+/// 反序列化**点名拒绝并给出迁移出路**（fail-visible，不静默降级）。本枚举与
+/// 桌面 SDK `types/state.rs`、移动 SDK `types.rs` 的同形定义**逐字对齐**
+/// （三处独立 crate，无共享依赖，漂移面以文本一致纪律维护）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PluginType {
-    /// 纯 Rust 插件，无前端组件
-    Rust,
-    /// Rust + TypeScript 插件
-    RustTs,
-    /// 纯 TypeScript 插件
-    TsOnly,
-    /// WASM 插件（移动 SDK 有该形态；桌面 `plugin_type` 词汇缺省面为 ts-only）
-    Wasm,
+    /// 纯前端（原 ts-only）：仅前端产物，无 wasm 后端
+    Frontend,
+    /// 纯后端（原 rust）：wasm 后端、无页面产物（worker / ephemeral 声明限此形态）
+    Backend,
+    /// 前后端（原 rust-ts；移动端原 `wasm` 形态按是否携带前端核定归属）
+    Full,
+}
+
+impl PluginType {
+    /// wire 值（错误文案 / 对比用；与 serde rename 同源）
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Frontend => "frontend",
+            Self::Backend => "backend",
+            Self::Full => "full",
+        }
+    }
+
+    /// 是否携带 wasm 后端（授权读模型 / guest 生命周期 / 事件派发共用的
+    /// 「有实例」判据——原桌面 `RustTs` 过滤与移动 `Wasm` 匹配的统一语义）
+    pub const fn has_backend(&self) -> bool {
+        matches!(self, Self::Backend | Self::Full)
+    }
+}
+
+impl<'de> Deserialize<'de> for PluginType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "frontend" => Ok(Self::Frontend),
+            "backend" => Ok(Self::Backend),
+            "full" => Ok(Self::Full),
+            "ts-only" => Err(retired_plugin_type::<D::Error>("ts-only", "frontend")),
+            "rust" => Err(retired_plugin_type::<D::Error>("rust", "backend")),
+            "rust-ts" => Err(retired_plugin_type::<D::Error>("rust-ts", "full")),
+            "wasm" => Err(serde::de::Error::custom(
+                "pluginType 'wasm' 已退役（形态三档重定义，2026-10-26，wasmnest-apps#21）：携带前端产物用 'full'，纯后端 worker 用 'backend'（移动端逐 app 核定）",
+            )),
+            other => Err(serde::de::Error::custom(format!(
+                "pluginType '{other}' 不是合法形态值（frontend / backend / full）"
+            ))),
+        }
+    }
+}
+
+/// 退役值 → 迁移出路的错误构造（点名旧值，不静默）
+fn retired_plugin_type<E: serde::de::Error>(old: &str, new: &str) -> E {
+    E::custom(format!(
+        "pluginType '{old}' 已退役（形态三档重定义，2026-10-26，wasmnest-apps#21）：改用 '{new}'——词汇只表达形态，不表达后端语言"
+    ))
 }
 
 impl Default for PluginType {
@@ -173,7 +227,7 @@ impl Default for PluginType {
 ///
 /// `Default` 取 `Both` **仅服务测试夹具与合成清单**（wire 层该字段必填、无 serde
 /// 缺省）：合成清单对两端都可装载，不把测试夹具钉死在某一个端。端名（desktop /
-/// mobile）在此是**双端共享的 wire 词汇**（与 pluginType 的 wasm 同档）——不是按
+/// mobile）在此是**双端共享的 wire 词汇**——不是按
 /// 端分叉的机制（ADR 0047 D2 判据只针对自持标识符的声明位，wire 取值不在此列）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]

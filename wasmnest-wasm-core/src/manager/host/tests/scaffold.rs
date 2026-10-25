@@ -122,7 +122,7 @@ pub(super) fn make_plugin(id: &str, source: PluginSource, state: PluginState) ->
             version: "1.0.0".to_string(),
             main: "index.ts".to_string(),
             permissions: vec!["storage".to_string(), "terminal:input".to_string()],
-            plugin_type: PluginType::TsOnly,
+            plugin_type: PluginType::Frontend,
             // 余下字段取 Default，避免 SDK 追加可选字段时本夹具编译红（票 14）
             ..Default::default()
         },
@@ -150,7 +150,7 @@ fn synthetic_manifest() -> wasmnest_plugin_api::PluginManifest {
         id: SYNTHETIC_STATIC_ID.to_string(),
         name: "Synthetic Static".to_string(),
         version: "0.1.0".to_string(),
-        plugin_type: wasmnest_plugin_api::PluginType::Rust,
+        plugin_type: wasmnest_plugin_api::PluginType::Backend,
         // 余下字段取 Default，避免 SDK 追加可选字段时本夹具编译红（票 14）
         ..Default::default()
     }

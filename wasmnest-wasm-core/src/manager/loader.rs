@@ -214,14 +214,11 @@ impl PluginLoader {
 
                     let extension_path = strip_verbatim_prefix(&path.to_string_lossy());
 
-                    // TS-only 插件强制设置 plugin_type
+                    // 纯前端插件的形态缺省与 main 必填判据在 load_manifest 收口
+                    // （历史遗留空块，随 2026-10-26 形态三档重定义清理语义注释）
 
                     let manifest = manifest;
-
-                    if manifest.plugin_type == PluginType::TsOnly && !manifest.main.is_empty() {
-
-                        // 保留 manifest 中的 plugin_type，若未指定则默认 TsOnly
-                    }
+                    let _ = &manifest;
 
                     // 非核心能力域的装载期回调（票 02 批次 02 / 批次 03）：manifest
                     // **原文**下发，解析权与**声明仲裁权**都在能力域——内核不解释
@@ -334,11 +331,11 @@ impl PluginLoader {
         // 解析与必填字段校验走唯一真源（票 11 第 6 项）
         let manifest = crate::manager::validation::parse_manifest_json(&content)?;
 
-        // TS-only 插件必须有 main 字段（目录扫描入口独有的一道）
+        // 纯前端插件必须有 main 字段（目录扫描入口独有的一道）
 
-        if manifest.plugin_type == PluginType::TsOnly && manifest.main.is_empty() {
+        if manifest.plugin_type == PluginType::Frontend && manifest.main.is_empty() {
             return Err(crate::AppError::Plugin(
-                "TS-only plugin.json missing main field".to_string(),
+                "frontend plugin.json missing main field".to_string(),
             ));
         }
 
