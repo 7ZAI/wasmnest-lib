@@ -1,0 +1,50 @@
+package wasmnest:plugin@0.0.1;
+// ======================================================================
+// WebSocket 客户端能力域自持契约分片（ADR 0052 D2/D4）
+//
+// 本文件是 `wasmnest-ws-client-engine` 持有的**共享契约真源**（world `cap-ws`
+// 只 import 客户端域 `host-websocket`）：双端 `compose.json` 的 caps.ws 直接指向
+// 本文件（pty 先例）——契约与移动侧实现（同一 crate 的引擎）同属一处。
+//
+// 桌面侧客户端实现暂留 `wasmnest-server-websocket`（common-host 绑定，契约源
+// 同为本文件；ADR 0041 D1 的已知双轨，收敛另行立项）；服务端域
+// （原 `host-websocket-server`，10 函数）是桌面扩展，声明真源在桌面
+// `plugin-sdk-desktop/rust/wit-src/cap-ws.wit`（world `cap-ws-server`），不在本文件。
+//
+// 端生成物由 `scripts/compose-wit.mjs` 拼装（本文件与 core.wit 及其余 cap 分片
+// 同 package 同版本）。分片只换绑定源、不换装配语义：`impl Host` / `HostModule` /
+// `MODULE_*` / `DESC` 与 WIT 契约的函数集逐字一致。
+// ======================================================================
+
+/// WebSocket 基础能力（v14 起；双端交集切片 = 客户端域 5 函数）
+///
+/// 桌面独有服务端域（入站端点 10 函数，v14/v28 追加）拆入
+/// [`host-websocket-server`]（cap-ws 分片，移动端不跑 WS 服务器、不跟演）；
+/// 本接口只剩双端交集（出站连接域）。
+///
+/// 事件投递（双端偏离见各端 cap 注释）：状态事件经 host-bus 属主私有 topic
+/// 推送（`<owner>::ws:open|error|close`），消息帧经可选导出 events-ws 回调。
+interface host-websocket {
+    /// 建立出站 WS 连接：**同步阻塞至握手完成**（上限 connect-timeout-secs，
+    /// 与 host-http 非流式模式同款 block_on 语义）。
+    /// config-json（camelCase）纯引擎参数：
+    /// `{ url, headers?, protocols?, connect-timeout-secs?, max-message-bytes? }`
+    /// url **仅接受 `ws://`**（`wss://` 本期不支持，返回明确错误）。
+    /// 成功 → 返回连接句柄 `wsc-<uuid>` 并发布 `<owner>::ws:open`；
+    /// 失败 → 错误上抛且**不发布任何事件**（无句柄可寻址）。
+    connect: func(config-json: string) -> result<string, string>;
+    /// 发送文本帧（UTF-8）；连接不存在/已关闭/发送队列满 → 错误
+    send-text: func(handle: string, text: string) -> result<_, string>;
+    /// 发送二进制帧；错误语义同 send-text
+    send-binary: func(handle: string, payload: list<u8>) -> result<_, string>;
+    /// 主动关闭连接（close-json：`{ code?, reason? }`，缺省 1000）；返回是否命中。
+    /// 该连接的 `ws:close.<owner>` 随即上报（wasClean=true 当且仅当 code ∈ {1000,1001}）
+    close: func(handle: string, close-json: string) -> result<bool, string>;
+    /// 查询连接是否处于 open 态（握手完成且未关闭）；仅属主可查。
+    /// 供插件在丢失状态事件后自愈
+    is-connected: func(handle: string) -> result<bool, string>;
+}
+
+world cap-ws {
+    import host-websocket;
+}

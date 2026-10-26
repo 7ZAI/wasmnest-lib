@@ -1,0 +1,98 @@
+[package]
+name = "wasmnest-server-peer-net"
+version = "0.0.1"
+license = "MIT"
+description = "WasmNest 桌面对等网络引擎域：节点身份/节点与发现守护生命周期/host-peer 引擎转发 + host-peer 能力域的插件绑定层（server-lib-split 票 06 / wasm-core-lib-split 票 05）。默认形态 = 纯引擎机制 + 端口抽象（零 WIT 依赖，仅保留 base 契约的 BusMessage 类型依赖——P4 记录），任何宿主可直接引用；`common-host` feature 装配 WIT 绑定层（bindgen!/HostModule/inventory/impl Host）——能力域脱绑 P4"
+authors = ["binblink"]
+edition = "2021"
+
+[features]
+# 默认 = 纯引擎（任何宿主可引用：移动端 / 无头测试宿主 / 第三方宿主）
+default = []
+# 桌面宿主 WIT 绑定层（bindgen!/HostModule/inventory::submit!/impl Host）；
+# 语义 = 装配桌面 WIT 依赖，行为与开 feature 前逐字不变
+# （ABI / WIT / 权限位 / 事件形状 / inventory 注册零变化）。
+common-host = ["dep:wasmnest-host-kit", "dep:wasmtime", "dep:wit-bindgen", "dep:inventory"]
+
+[dependencies]
+# 异步运行时（节点运行时 tokio::Mutex/Semaphore、会话表 watch/mpsc、派生任务、
+# mDNS 重查节流 sleep、下载目录 mkdir、TCP 监听读地址）
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net"] }
+# DTO 形状（PeerNodeStatus / TrustedPeerDto / DialPeerResultDto / 引擎事件载荷）
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 引擎事件与生命周期日志
+tracing = { version = "0.1", features = ["attributes"] }
+# service：ScopedService 异步 trait（原仅 dev-dep，租约适配转普通依赖）
+async-trait = "0.1"
+# 首连确认弹窗请求 id / 发送 batch id
+uuid = { version = "1", features = ["v4"] }
+# BusMessageHandler::on_message 的 anyhow::Result（生产代码里的 trait 签名）
+anyhow = "1"
+# 基础层（AppError/Result、常量、错误边界 spawn、端口 traits 与全局注册表）
+wasmnest-server-base = { path = "../wasmnest-server-base" }
+# ==================== 对等网络底座机制（原 wasmnest-peer-net 拆分并入，2026-10-22） ====================
+# 依赖随模块平移自 wasmnest-peer-net，版本原样（双端锁步纪律：rustls 0.23 ring /
+# tokio-rustls 0.26 ring / mdns-sd 0.20 async / flume 0.12 / ed25519-dalek 2 /
+# rcgen 0.13 / x509-parser 0.17 —— 与两端宿主既有 lock 零漂移）。
+# 节点身份密钥（Ed25519）；rand_core feature 启用 SigningKey::generate
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+# OsRng：节点身份首启纯随机生成（决策 D2 重装即新身份，不做设备标识派生）
+rand_core = { version = "0.6", features = ["getrandom"] }
+# node_id 指纹哈希
+sha2 = "0.10"
+hex = "0.4"
+# 自签 TLS 证书（证书公钥即节点公钥，决策 D4 关键点）
+rcgen = "0.13"
+# 绑定校验侧：从证书 DER 提取 SPKI 原始公钥
+x509-parser = "0.17"
+# 主版本与两端宿主一致（均为 1.x），宿主 map_err 时错误链兼容
+thiserror = "1"
+# 虚拟网卡过滤的接口枚举（两端宿主均已有 0.6，无版本漂移）
+local-ip-address = "0.6"
+# 可信对端元数据时间戳（added_at）；两端宿主均已有 0.4，无版本漂移
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+# --- TLS 直连栈（ticket 02；crypto provider 显式锁定 ring：aws-lc-rs 在 Android
+# 需 CMake/NDK 构建链；配置构建时显式传 rustls::crypto::ring::default_provider()，
+# 不用全局 install_default()）---
+# rt：spawn 类 API（accept 循环 / mDNS 事件循环）在 crate 自身编译单元可用；
+# macros：transport.rs 的 tokio::select! 同理
+# （注：与下方现有 tokio 依赖合并 feature 并集）
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+# TCP keepalive 探测参数（拨号/接听即设）：对端静默死亡（WiFi 骤断等无 FIN
+# 场景）在探测窗口内以读错误浮现，会话常驻等待语义依赖此机制收敛
+socket2 = "0.6"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# TLS 1.3 CertificateVerify 的真实 Ed25519 签名验证直用 ring（安全约束）
+ring = "0.17"
+# --- 传输应用层加密（Offer/Decision 自定义头协商）：x25519 ECDH / HKDF-SHA256 /
+# AES-256-GCM 数据块。纯 Rust 实现，Android 构建链无额外要求；版本对齐两端宿主 ---
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+aes-gcm = "0.10"
+# --- mDNS 节点发现（_wasmnest-peer._tcp.local.，与终端链路 _wasmnest._tcp 并存）---
+# async feature：事件循环全异步（recv_async_timeout 可被 select! 组合）
+mdns-sd = { version = "0.20", features = ["async"] }
+# 浏览订阅通道类型（PeerMdnsBrowse::receiver）+ 事件循环退出原因判别
+flume = "0.12"
+# ==================== 插件绑定层（host-peer 能力域，wasm-core-lib-split 票 05） ====================
+# 全部 optional：只随 `common-host` feature 进编译图（能力域脱绑 P4）——
+# 无 feature 时 `cargo tree` 不出现以下 crate（纯引擎形态）。
+# 机制内核：插件实例状态（`add_to_linker::<S,D>` 的单态 S 必须在本 crate 可命名）
+wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true }
+# WIT 契约绑定（`bindgen!` 在 src/plugin_binding.rs，本 crate 自带 provider 侧生成）
+# —— 与 ws 域同款：宿主自己的 `wasmnest` 模块是 **guest 视角**（import 是调用函数，
+# 不是 `Host` trait + `add_to_linker`），能力 crate 要自己装配就必须跑 provider 侧
+# `bindgen!`。两侧生成的是同名但**不同类型**的 trait，故宿主必须同时删掉自己的
+# peer `Host` impl（否则同一 interface 被注册两次 → 装配期 `defined twice`）。
+wit-bindgen = { version = "=0.60.0", features = ["macros"], optional = true }
+# `Linker` / `HasSelf` / `add_to_linker::<S,D>` 的宿主侧类型与函数；
+# 版本随两端宿主锁版（ADR 0019）
+wasmtime = { version = "48", features = ["component-model"], optional = true }
+# 能力模块自报（`inventory::submit!` 展开为 inventory 静态提交）
+inventory = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+# 可信条目 DTO 用例以 Utc::now() 造 added_at、MdnsPort 的 shared_daemon 返回
+# mdns-sd 守护句柄类型——普通依赖已并入 chrono / mdns-sd，dev 侧无需重复声明

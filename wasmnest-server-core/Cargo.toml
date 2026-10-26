@@ -1,0 +1,41 @@
+[package]
+name = "wasmnest-server-core"
+version = "0.0.1"
+license = "MIT"
+description = "WasmNest 桌面 server 内核层：生命周期/流量过滤链/链路加密/指标/组合装配（TransportFace+serve）——server-lib-split 票 03"
+authors = ["binblink"]
+edition = "2021"
+
+[dependencies]
+# Actix Web（HTTP + WS 单端口组合）
+actix-web = "4"
+actix-cors = "0.7"
+# BoxService（face 中间件链式组合的装箱类型）
+actix-service = "2"
+# 异步
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 日志
+tracing = { version = "0.1", features = ["attributes"] }
+# 指标采集（supervisor / metrics）
+sysinfo = "0.33"
+# 链路加密 DB 配置读写（rusqlite 连接由宿主传入）
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+# 加密引擎（link_crypto 算法 + 注册表）
+wasmnest-crypto-engine = { path = "../wasmnest-crypto-engine" }
+# 链路报文加密协议核心（link_crypto `use wasmnest_link_crypto as proto`）
+wasmnest-link-crypto = { path = "../link-crypto" }
+# 共享基础（错误/常量/端口 traits/服务租约模板）
+wasmnest-server-base = { path = "../wasmnest-server-base" }
+# service：ScopedService 异步 trait
+async-trait = "0.1"
+# 测试/内部使用
+base64 = "0.22"
+hex = "0.4"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

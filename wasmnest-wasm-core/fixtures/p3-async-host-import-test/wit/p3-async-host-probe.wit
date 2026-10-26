@@ -1,0 +1,26 @@
+package wasmnest:p3-async-host-probe@0.1.0;
+
+// P3 async host import 机制探针（测试专用 world，生产 `plugin` world 零变更）。
+//
+// 签名与生产 host-* import 同形态（同步 `func`）：本票要验证的是**宿主实现侧**
+// 的 async 化——同一份 WIT 契约下，宿主把 import 实现注册为原生 async
+// （`func_wrap_async` + 真 `.await`），长等待期间宿主执行线程应当被归还给
+// Tokio，而不是像 `block_on_async` 桥那样占住整条线程。
+//
+// 为什么不把 import 声明成 `async func`：见 issue 01 `## Findings` —— 当前
+// pinned 工具链下 async-lowered import 需要 async-lifted 导出配合（同步导出
+// 调用它会 trap `cannot block a synchronous task before returning`），而
+// async-lifted 导出在 wit-bindgen 0.60 的 `start_task` 断言上 abort。
+
+interface host-probe {
+  invoke: func(mode: string) -> result<string, string>;
+}
+
+interface guest-probe {
+  run: func(mode: string) -> result<string, string>;
+}
+
+world p3-async-host-probe {
+  import host-probe;
+  export guest-probe;
+}

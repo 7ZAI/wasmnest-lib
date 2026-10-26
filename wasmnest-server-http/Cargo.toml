@@ -1,0 +1,75 @@
+[package]
+name = "wasmnest-server-http"
+version = "0.0.1"
+license = "MIT"
+description = "WasmNest 桌面 HTTP 传输面：动态端点注册表/协议网关/插件代理控制器/认证与流量过滤中间件/DTO 形状锚点 + host-http 能力域的插件绑定层（入站 2 + 出站 1 原语，wasm-core-lib-split 票 06）。默认形态 = 纯引擎机制 + 端口抽象（零 WIT 依赖），任何宿主可直接引用；`common-host` feature 装配 WIT 绑定层（bindgen!/HostModule/inventory/impl Host）——能力域脱绑 P1"
+authors = ["binblink"]
+edition = "2021"
+
+[features]
+# 默认 = 纯引擎（任何宿主可引用：移动端 / 无头测试宿主 / 第三方宿主）
+default = []
+# 桌面宿主 WIT 绑定层（bindgen!/HostModule/inventory::submit!/impl Host）；
+# 语义 = 装配桌面 WIT 依赖，行为与开 feature 前逐字不变
+# （ABI / WIT / 权限位 / 事件形状 / inventory 注册零变化）。
+common-host = ["dep:wasmnest-host-kit", "dep:wasmtime", "dep:wit-bindgen", "dep:inventory"]
+
+[dependencies]
+# Actix Web（HTTP 路由 + 中间件 + 测试 harness）
+actix-web = "4"
+# TransportFace::wrap 的 BoxService 装箱契约（类型与 wasmnest-server-core 同源）
+actix-service = "2"
+# 异步（背景图端点 tokio::fs；测试 harness）
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time"] }
+# 端点句柄 uuid
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = { version = "0.1", features = ["attributes"] }
+# http_filter 的 LocalBoxFuture
+futures-util = "0.3"
+# 认证档位词汇 EndpointAuth / 权限位 PERMISSION_NETWORK_HTTP 为本 crate 自持副本
+# （src/wire.rs + 漂移锁；能力域脱绑 P1——能力域默认零桌面 SDK 依赖）。
+# 桌面 SDK wasmnest-plugin-api 不再被本 crate 依赖。
+# 基础层（AppError/Result、常量、NetworkConfig、端口 traits 与全局注册表）
+wasmnest-server-base = { path = "../wasmnest-server-base" }
+# 内核层（流量过滤链 TrafficFilterChain/Direction/FilterContext/TrafficChannel、
+# 链路加密 NEGOTIATION_HEADER、supervisor 状态）
+wasmnest-server-core = { path = "../wasmnest-server-core" }
+# ==================== 插件绑定层（host-http 能力域，wasm-core-lib-split 票 06） ====================
+# 全部 optional：只随 `common-host` feature 进编译图（能力域脱绑 P1）——
+# 无 feature 时 `cargo tree` 不出现以下任何 crate（纯引擎形态）。
+# 机制内核：插件实例状态（`add_to_linker::<S,D>` 的单态 S 必须在本 crate 可命名）
+wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true }
+# WIT 契约绑定（`bindgen!` 在 src/plugin_binding.rs，本 crate 自带 provider 侧生成）
+# —— spec D8「能力 crate 不自带 generate!」的前提在本 crate 不成立：宿主侧 `wasmnest`
+# 模块是 **guest 视角**（import 是调用函数，不是 `Host` trait + `add_to_linker`），
+# 能力 crate 要自己装配就必须跑 provider 侧 `bindgen!`。两侧生成的 `Host` trait
+# **同名但不同类型**，故宿主必须同时删掉自己的 http `Host` impl（否则重复注册）。
+wit-bindgen = { version = "=0.60.0", features = ["macros"], optional = true }
+# `Linker` / `HasSelf` / `add_to_linker::<S,D>` 的宿主侧类型与函数；
+# 版本随两端宿主锁版（ADR 0019）
+wasmtime = { version = "48", features = ["component-model"], optional = true }
+# 能力模块自报（`submit_module!` 展开为 inventory 静态提交）
+inventory = { version = "0.3", optional = true }
+# 出站 HTTP 客户端（版本与宿主 `src-tauri/Cargo.toml` 同锁 0.12；随出站域一并搬入
+# 本 crate，编译成本不变——见 spec §7 D10）
+# **必须 `default-features = false`**：默认集含 `default-tls`（native-tls → openssl-sys），
+# 会经 feature 合并传染给移动宿主，导致 `aarch64-linux-android` 交叉编译在 openssl-sys
+# 构建脚本处失败（2026-10-13 移动 dev 实测）。TLS 后端由各端宿主声明：桌面默认集 =
+# native-tls，移动显式 `rustls-tls`；本 crate 只保留后端无关的 `stream`。
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+# 出站执行层的错误类型（`anyhow::anyhow!` 错误串逐字保留）
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+# 出站域的本地 TCP 夹具（mock / 计数 / 302 / 分块流）需要 `tokio::net::TcpListener`
+# 与 `AsyncRead/WriteExt`；生产出站路径走 reqwest 自带栈，这两个 feature 只进测试
+tokio = { version = "1", features = ["net", "io-util"] }
+# http_filter 的 01 完成事件日志用例需要捕获式 subscriber（fmt layer + MakeWriter）
+tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
+# 无任何 dev-only 内部 crate 依赖：跨 crate 集成测试（票 08 链路加密 HTTP 全链路等）
+# 一律住宿主 `src-tauri/tests/`——那里全部依赖都是生产依赖，本 crate 不再为此开
+# `tests/` 目录（它原本的 dev-only `wasmnest-crypto-engine` / `base64` 即为此役而设）。
+# 防复发见 `src-tauri/tests/capability_crates_unit_tests_only.rs`。

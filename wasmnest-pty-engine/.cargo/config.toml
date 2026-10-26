@@ -1,0 +1,17 @@
+# ==================== 能力 crate 共享 target 目录 ====================
+# 与 `wasmnest-host-kit` / `wasmnest-discovery-engine` 共用**本仓根**
+# `target/host-kits`：三者同属「机制内核 + 能力域」一族，依赖图（wasmtime +
+# wasmtime-wasi + tokio）高度重叠，分开落点要把这份巨型依赖图再编一遍（实测 wasmtime
+# 栈单个桶 14G 量级）。
+#
+# 本 crate 此前**没有**本文件（迁根前落 `桌面 packages/wasmnest-pty-engine`
+# 时同样没有），产物默认写进 crate 根 `target/`——即为本 crate 单独再编一份 wasmtime。
+# 2026-10-07「能力域 lib 迁根」时补齐。**注意相对路径随 crate 深度变化**：
+# 平台仓切 sibling 布局后本 crate 位于 `<WASMNEST>/wasmnest-lib/wasmnest-pty-engine`，
+# 旧的 `../../target/host-kits` 会静默落到三仓共同父目录，故改为一层 `..`。
+# 改这一行后必须核验：
+#   cd wasmnest-pty-engine && cargo metadata --no-deps --format-version 1
+# 其 `target_directory` 应为 `<wasmnest-lib>/target/host-kits`（写成 `../target/host-kits`；
+# 多写一个 `..` 会静默落到本仓**上级**目录——ADR 0035「落点与纪律」的同款坑）。
+[build]
+target-dir = "../target/host-kits"

@@ -1,0 +1,7 @@
+# wasmnest-wasm-core target 治理：本仓根 target/host-kits（与机制内核/能力域同族共享）
+# 相对本 crate 根（wasmnest-lib/wasmnest-wasm-core）解析为 `<wasmnest-lib>/target/host-kits`；
+# 旧写法 `../../target/host-kits` 是按 `<平台>/packages/<crate>` 的两层深度写的，
+# sibling 布局后同样两层 `..` 会落到三仓共同父目录 `<WASMNEST>/target/host-kits`（静默漂移）。
+# 改这一行后核验：cargo metadata --no-deps --format-version 1 的 `target_directory`。
+[build]
+target-dir = "../target/host-kits"

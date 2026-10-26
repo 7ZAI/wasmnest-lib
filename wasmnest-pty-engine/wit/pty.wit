@@ -1,0 +1,80 @@
+package wasmnest:plugin@0.0.1;
+// ======================================================================
+/// 插件私有伪终端（host-pty，v16）：裸 PTY 引擎原语，零业务语义（ADR 0022）
+///
+/// **与宿主业务会话线的边界（终态，v27 + v28 后）**：本接口是**宿主侧唯一的 PTY 出口**，
+/// 而业务会话本身就是一个本接口的句柄（会话 id 由插件自产，登记 / 状态机 / 输入输出编排
+/// 全在 `com.wasmnest.bedcode` 私有域）。宿主**不再持有任何会话对象**：内核会话目录
+/// `src-tauri/src/session/` 整目录删除，`host-session` 与 `host-terminal` 两个 interface
+/// 随 v27 退役，PTY 引擎只有本接口这一张注册表（无 SessionManager、无业务输出总线、
+/// 引擎不注入 `WASMNEST_SESSION_ID`）。**v28 起宿主也不再直读任何插件 PTY 的输出环**
+/// （`hostBroadcastSessionId` 只读订阅声明已删除，详见下方版本说明）——输出只经属主
+/// 插件的 `ring-fetch` 游标拉取。
+///
+/// 约定与红线：
+/// - **属主隔离**：句柄 `pty-<uuid>` 仅创建者插件可调，他人 → `not owner of pty handle`；
+///   插件停用时宿主回收其全部 PTY（kill + 摘注册表 + 补发 `pty:exit`）
+/// - **输出纯拉取**（无 push 回调）：宿主为每个 PTY 维护有界环形缓冲，插件按
+///   自己的节奏以游标拉取；慢插件只损失自己的历史（淘汰最旧 + `truncated`），
+///   背压绝不回传到 PTY 读取端
+/// - **环的消费者只有属主插件一个**：曾允许 `spawn` 声明 `hostBroadcastSessionId`
+///   把本句柄挂进宿主侧的「会话 id → pty 句柄」只读映射、供宿主 server 直读同进程
+///   `PtyRing`。该字段与宿主直读路径均已删除（PTY 引擎不再知道 session id），
+///   输出只能经本接口 `ring-fetch` 拉取
+/// - **并发拉取**：游标由调用方自持、拉取本身是纯读（不消费、不推进全局状态）；
+///   淘汰由**产出量**驱动（环满即淘汰最旧），读取不释放空间，慢消费者落后于
+///   驻留起点即 `truncated`（环容量需覆盖最慢消费者的滞后）
+/// - **生命周期事件**：仅 `<owner>::pty:exit` 一条（host-bus 订阅，属主私有命名空间，
+///   跨属主订阅被宿主拒绝）。payload `{ ptyId, reason, exitCode? }`（camelCase），
+///   `reason = "stopped" | "killed" | "error"`。**须在 activate 期订阅**：宿主不缓冲、
+///   不重放，晚订阅期间的丢失靠 `is-running` 快照自愈。事件发出即摘除注册表与环，
+///   插件应先消费完输出（`ring-fetch` 的 `next-offset` 不再前进）再等退出事件
+/// - **明确不做**（业务语义归插件层）：shell 包装（bash -lic / PowerShell -Command /
+///   CMD /K）、WSL 路径转换、危险字符校验、默认 shell 探测、特殊键 API、close/reopen
+///
+/// 权限两域（可独立授予/审计）：`pty:spawn`（spawn / kill——任意命令执行的高风险面）、
+/// `pty:io`（write / resize / ring-fetch / is-running——数据面）。
+interface host-pty {
+    /// 一次拉取的返回（游标语义见 `ring-fetch`）
+    record ring-fetch-result {
+        /// `[实际起点, next-offset)` 区间的原始字节（未解码，可能是非 UTF-8）
+        data: list<u8>,
+        /// 下一次拉取应传的游标
+        next-offset: u64,
+        /// `from-offset` 落后于环驻留起点（中间字节已被淘汰）→ 调用方按 resync 重建上下文
+        truncated: bool,
+    }
+
+    /// 创建裸 PTY：成功返回句柄 `pty-<uuid>` 并登记属主；失败只回错误且
+    /// **不发布任何事件**（无句柄可寻址）。
+    /// config-json（camelCase，纯引擎参数，宿主不做 shell 解析）：
+    /// `{ command, args?, env?, workingDir?, cols?, rows?, ringBytes? }`
+    /// （参数数组 exec 天然免注入；`env` 为追加进继承环境的键值；尺寸缺省取宿主终端配置
+    /// `terminal.default_cols` / `default_rows`，与业务线同源；`ringBytes` 是本条 PTY
+    /// 的输出环容量，缺省取宿主默认，超宿主上限或超出每插件在册条数上限一律 `Err`
+    /// ——配额类失败可见，不静默降级也不静默淘汰既有句柄）。
+    spawn: func(config-json: string) -> result<string, string>;
+    /// 写入输入字节（分块语义宿主内建；超单次上限 → Err）
+    write: func(pty-id: string, data: list<u8>) -> result<_, string>;
+    /// 调整终端尺寸（TUI 程序全屏刷新依赖）
+    resize: func(pty-id: string, cols: u16, rows: u16) -> result<_, string>;
+    /// 终止并销毁（优雅 Ctrl-C → 兜底强杀）；随后发布 `<owner>::pty:exit`（reason=killed）
+    kill: func(pty-id: string) -> result<_, string>;
+    /// 按游标拉取输出历史
+    /// - `Ok(None)`：游标已追平产出端，无新字节
+    /// - `Ok(Some)`：自游标起的字节（单次不超 `max-bytes`），`next-offset` 续拉不重复
+    /// - `truncated = true`：`from-offset` 落后于环驻留起点，返回的是现存最早段
+    /// - `Err`：句柄不存在 / 非属主 / 权限缺失
+    ///
+    /// **并发拉取**：游标由调用方自持、互不干扰（`from-offset` 只描述本次拉取的窗口，
+    /// 拉取不消费不改变全局偏移）；淘汰按产出量全局计，任一读取都不为他人保留历史，
+    /// 落后于驻留起点即 `truncated`。（消费者只有属主插件自己。）
+    ring-fetch: func(pty-id: string, from-offset: u64, max-bytes: u32) -> result<option<ring-fetch-result>, string>;
+    /// 进程是否仍在运行（丢失 `pty:exit` 事件后的自愈快照查询）
+    is-running: func(pty-id: string) -> result<bool, string>;
+}
+// 本分片供能力域 crate（pty-engine）自持 bindgen；端生成物由 compose-wit.mjs
+// 收集到 `plugin-sdk-desktop/rust/wit/` 与共享核心同 package 拼装。
+world cap-pty {
+    import host-pty;
+}

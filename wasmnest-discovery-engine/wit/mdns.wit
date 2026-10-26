@@ -1,0 +1,45 @@
+package wasmnest:plugin@0.0.1;
+// ======================================================================
+// mDNS 能力域自持契约分片（ADR 0052 D2/D3）
+//
+// 本文件是 `wasmnest-discovery-engine` 持有的**共享契约真源**（world `cap-mdns`
+// 只 import 浏览/广播域 `host-mdns`）：双端 `compose.json` 的 caps.mdns 直接指向
+// 本文件（pty 先例）——契约与实现同属一处，端组合不再经 core.wit 间接消费。
+//
+// 端生成物由 `scripts/compose-wit.mjs` 拼装（本文件与 core.wit 及其余 cap 分片
+// 同 package 同版本）。分片只换绑定源、不换装配语义：`impl Host` / `HostModule` /
+// `MODULE_*` / `DESC` 与 WIT 契约的函数集逐字一致。
+// ======================================================================
+
+/// mDNS 浏览纯能力（ADR 0022 v2）：browse-only，发现/离开事件原样透传
+///
+/// 发现/离开经消息总线**属主私有 topic** 推送（host-bus 订阅）：
+/// `<owner>::mdns:found` / `<owner>::mdns:lost`（构造用 SDK `mdns_event_topic`，
+/// 跨属主订阅被宿主拒绝），
+/// payload 原样透传：`{ instanceName, addresses: string[], port, txtRecords:
+/// Record<string,string> }`，宿主不做任何加工。设备列表（去重/TTL 过期/展示名
+/// 解读）是发现事件的派生视图，由消费插件自建缓存。
+///
+/// 自我广播（register/advertise）不进本接口：「本机是谁」与宿主 TLS 监听器
+/// 同生共死，留在 peer-net 启动流程自动完成；无插件激活时主机照样可被发现。
+interface host-mdns {
+    /// 浏览某服务类型，返回 browser 句柄；重复浏览同一类型允许（各自独立生命周期）。
+    /// 事件定向投递到 `<plugin-id>::mdns:found` / `<plugin-id>::mdns:lost`（宿主实现）
+    browse: func(service-type: string) -> result<string, string>;
+    /// 停止浏览并回收句柄（返回是否存在该句柄）；仅属主可停（跨插件拒绝）；
+    /// 插件停用时宿主自动回收其全部句柄
+    stop-browse: func(browser-id: string) -> result<bool, string>;
+
+    /// 广播某服务类型（v2 新增）：返回 advertise 句柄。
+    /// config-json 为纯引擎参数（服务类型 / 实例名 / 端口 / TXT 键值），
+    /// 宿主零业务拼装；实例名省略时宿主按 `{plugin}-{短指纹}` 默认。
+    advertise: func(config-json: string) -> result<string, string>;
+    /// 停止广播并回收句柄（返回是否存在该句柄）；仅属主可停；
+    /// 插件停用时宿主自动回收其全部广播句柄。
+    stop-advertise: func(advertise-id: string) -> result<bool, string>;
+    /// 查询广播状态（返回是否存在该句柄）；仅属主可查。
+    is-advertising: func(advertise-id: string) -> result<bool, string>;
+}
+world cap-mdns {
+    import host-mdns;
+}

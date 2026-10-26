@@ -1,0 +1,28 @@
+# ==================== wasmnest-host-api-core：host_api 共享实现核 ====================
+# 票 18（.scratch/2026-10-07-mobile-wasm-core-refactor/ticket-18-host-api-shared-implementation.md）
+# ADR 0040 选项 C 第二步：双端 host_api 中**不依赖 WIT bindgen trait / 任何一端独有
+# 类型**的机制实现层抽到这里，每域拆「实现层（机制语义）+ 各端 adapter（端口接入）」
+# 两层。桌面 packages/wasmnest-wasm-core 与移动端退役 fork 同名 crate
+# 各自保留 WIT 绑定层与 adapter；机制修复一次生效，消灭双份漂移税。
+#
+# 依赖纪律（本 crate 的存在意义）：只允许 serde_json / tracing 这类**机制级**依赖；
+# 禁止 SDK（wasmnest_plugin_api*）、双端 wasm-core、宿主平台（tauri）、运行时（tokio）
+# ——边界由 tests/boundary_lock.rs 钉住（票 18 §6 门禁）。
+
+[package]
+name = "wasmnest-host-api-core"
+version = "0.0.1"
+description = "WasmNest host_api 共享实现核：无 WIT 依赖域的机制实现层（双端 wasm-core 各持 adapter）"
+authors = ["binblink"]
+license = "MIT"
+repository = "https://github.com/7ZAI/BedCode"
+edition = "2021"
+
+[dependencies]
+# 键值 / JSON 载荷的规范形（wire 真值；WIT 字符串形由各端 adapter 转换）
+serde_json = "1"
+# 机制级日志；拒绝 warn 等结构化落点由各端 adapter 自持（AGENTS §8）
+tracing = "0.1"
+# host-database 实现层：SQLite 执行封装 + 语句超时护栏
+# （hooks feature：progress handler 是插件库超时护栏的引擎层机制，机制级依赖）
+rusqlite = { version = "0.32", features = ["hooks"] }

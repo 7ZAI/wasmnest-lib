@@ -1,0 +1,30 @@
+[package]
+name = "wasmnest-crypto-engine"
+version = "0.0.1"
+license = "MIT"
+description = "WasmNest 加密引擎：算法实现（x25519/aes_gcm/chacha/hkdf/rsa/hybrid）+ 名称寻址注册表（provider/registry）——server-lib-split 票 02（D5）"
+authors = ["binblink"]
+edition = "2021"
+
+[dependencies]
+# 对称 AEAD（AES-256-GCM）
+aes-gcm = "0.10"
+# 备选对称 AEAD（性能不依赖 AES-NI）
+chacha20poly1305 = "0.10"
+# 椭圆曲线 Diffie-Hellman（ECDH）
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+# 密钥派生（HKDF-SHA256）
+hkdf = "0.12"
+sha2 = "0.10"
+# 常规非对称加密（RSA-OAEP / PSS 签名）
+rsa = { version = "0.9", features = ["sha2", "pem"] }
+# 随机数（密钥生成）
+rand = "0.8"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 错误类型（AppError/Result 由 server-base 提供）
+wasmnest-server-base = { path = "../wasmnest-server-base" }
+
+[dev-dependencies]
+tempfile = "3"

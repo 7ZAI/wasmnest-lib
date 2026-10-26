@@ -1,0 +1,53 @@
+[package]
+name = "wasmnest-discovery-engine"
+version = "0.0.1"
+description = "WasmNest 组播发现能力域：mDNS 共享守护 + 浏览/广播句柄表。默认形态 = 纯引擎机制 + 端口抽象（零 WIT 依赖），任何宿主可直接引用；`common-host` feature 装配 WIT 绑定层（bindgen!/HostModule/inventory/impl Host）——能力域脱绑 P2"
+authors = ["binblink"]
+license = "MIT"
+repository = "https://github.com/7ZAI/BedCode"
+edition = "2021"
+
+[features]
+# 默认 = 纯引擎（任何宿主可引用：移动端 / 无头测试宿主 / 第三方宿主）
+default = []
+# 桌面宿主 WIT 绑定层（bindgen!/HostModule/inventory::submit!/impl Host）；
+# 语义 = 装配桌面 WIT 依赖，行为与开 feature 前逐字不变
+# （ABI / WIT / 权限位 / 事件形状 / inventory 注册零变化）。
+common-host = ["dep:wasmnest-host-kit", "dep:wasmtime", "dep:wit-bindgen", "dep:inventory"]
+
+[dependencies]
+# 虚拟网卡过滤的接口枚举（共享守护初始化一次；mDNS 机制随守护归位本 crate，
+# 2026-10-22 peer-net-dissolve；版本 0.6 对齐两端宿主既有依赖）
+local-ip-address = "0.6"
+# 组播 DNS 协议；版本严格对齐两端宿主 Cargo.lock（0.20.x），避免同进程版本分叉
+mdns-sd = { version = "0.20", features = ["async"] }
+# 类型中枢的订阅通道 / 控制通道（mdns-sd listener 的 Receiver 就是它 re-export 的
+# `flume::Receiver`，故两端同源同版——中间不引入任何转换层）
+flume = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+# re-announce 周期定时 + 自播面状态锁（`advertiser::MdnsAdvertiser` 的 tokio RwLock）
+# time：中枢泵任务的合并窗定时（`sleep_until`）；macros：泵任务三路 `select!` 同
+# peer-net `transport.rs` 的用法（那边也是为 select! 开 macros）
+tokio = { version = "1", features = ["time", "sync", "macros"] }
+# ==================== 插件绑定层（WIT 绑定，common-host feature） ====================
+# 全部 optional：只随 `common-host` feature 进编译图（能力域脱绑 P2）——
+# 无 feature 时 `cargo tree` 不出现以下任何 crate（纯引擎形态）。
+# 机制内核：插件实例状态（`add_to_linker::<S,D>` 的单态 S 必须在此 crate 可命名）
+wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true }
+# WIT 契约绑定（`bindgen!` 在 src/lib.rs，本 crate 自带 provider 侧生成）
+# —— spec D8「不自带 generate!」的前提在本 crate 不成立：宿主侧 `wasmnest` 模块是
+# **guest 视角**（import 是调用函数，不是 `Host` trait + `add_to_linker`），
+# 能力 crate 要自己装配就必须跑 provider 侧 `bindgen!`。两侧生成的是同名但
+# **不同类型**的 trait，故宿主必须同时删掉自己的 mdns `Host` impl（否则重复注册）。
+wit-bindgen = { version = "=0.60.0", features = ["macros"], optional = true }
+# `Linker` / `HasSelf` / `add_to_linker::<S,D>` 的宿主侧类型与函数；
+# 版本随两端宿主锁版（ADR 0019）
+wasmtime = { version = "48", features = ["component-model"], optional = true }
+# 能力模块自报（`submit_module!` 展开为 inventory 静态提交）
+inventory = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }

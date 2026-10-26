@@ -1,0 +1,13 @@
+{
+  "id": "com.wasmnest.wasip3-test",
+  "name": "wasip3-test",
+  "version": "0.1.0",
+  "platform": "desktop",
+  "description": "wasip3 async 机制测试插件（A0-3 前置探针；仅供能力仓测试套件使用）",
+  "author": "WasmNest",
+  "main": "index.js",
+  "sandbox": "inline",
+  "pluginType": "wasm",
+  "rustLibrary": "wasmnest_plugin_wasip3_test",
+  "permissions": []
+}

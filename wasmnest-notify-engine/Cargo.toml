@@ -1,0 +1,9 @@
+[package]
+name = "wasmnest-notify-engine"
+version = "0.0.1"
+license = "MIT"
+edition = "2021"
+description = "WasmNest 通知域契约房（只持 WIT 契约，零实现）— 双端 host-notify 的唯一真源"
+
+# 契约房 crate：无生产依赖（实现按端住宿主，见 src/lib.rs 模块文档）
+[dependencies]

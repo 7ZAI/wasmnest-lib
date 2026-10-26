@@ -1,0 +1,36 @@
+# ==================== wasmnest-ws-client-engine：WS 出站连接能力域 ====================
+# 抽根票据：.scratch/2026-10-09-ws-client-engine-crate/spec.md（ADR 0041 D1「条件触发转 B」的
+# 落地 + ADR 0043）。自移动端退役 fork 同名 crate 的
+# `manager/runtime/host_impl/ws.rs`（1,350 行）抽出：句柄表 / reader-writer 双任务 / 心跳 /
+# 自动重连 / 帧信封 / 停用回收等**全部机制**住本 crate，移动端只剩薄适配器 + 端口实现。
+#
+# 依赖纪律（本 crate 的存在意义，AGENTS §0「能力域默认形态 = 纯引擎 + 端口抽象」）：
+# 只允许机制级依赖（tokio / tokio-tungstenite / serde / uuid / tracing / async-trait）；
+# 禁止 SDK（wasmnest_plugin_api*）、双端 wasm-core、宿主平台（tauri）、机制内核
+# （wasmnest-host-kit）与桌面服务端栈——边界由 src/boundary_lock.rs（crate 内单测）钉住，
+# 且生产清单零内部 crate 依赖（受桌面 capability_crates_unit_tests_only 锁管辖）。
+
+[package]
+name = "wasmnest-ws-client-engine"
+version = "0.0.1"
+description = "WasmNest WS 出站连接能力域：主句柄表 + reader/writer 双任务 + 心跳 + 退避重连 + 帧信封 + 停用回收。默认形态 = 纯引擎机制 + 端口抽象（零 WIT / 零 SDK / 零平台依赖），任何宿主可直接引用"
+authors = ["binblink"]
+license = "MIT"
+repository = "https://github.com/7ZAI/BedCode"
+edition = "2021"
+
+[dependencies]
+# 异步运行时原语（任务派生经端口交宿主运行时；本 crate 不假设自身处于 runtime 上下文）
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync", "time", "macros"] }
+# WS 协议（客户端形态；只连 ws://，不启 TLS——与移动端现役链路一致，ADR 0041 D5）
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+# 句柄铸号（`wsc-<uuid>`）
+uuid = { version = "1", features = ["v4"] }
+# config / close-json / 事件载荷的规范形（wire 真值；WIT 字符串形由各端适配层转换）
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 机制级日志（目标模块名经 target 交由宿主过滤）
+tracing = "0.1"
+# 端口 trait 的 async 方法（dyn 兼容；重连策略面）
+async-trait = "0.1"

@@ -1,0 +1,231 @@
+/// WasmNest 插件 Component Model 契约——**内核机制能力（single source of truth）**
+///
+/// 本文件是 wasm-core 单一 crate 的核心 WIT 真源（ADR 0037 / ADR 0052 D1）：
+/// **core 只收内核自己实现、双端同源、且为内核机制必需 / 全部插件共同需要的
+/// interface**（storage / plugin-database / log / config / events / bus / fs /
+/// platform + 三个导出 + events-binary）。
+///
+/// 业务能力契约（设备发现 / 对等网络 / 出站 HTTP / WS 客户端 / 通知 / 终端流…）
+/// **不落 core**：双端功能级交集住能力域 crate 的 `wit/<domain>.wit`（契约与实现
+/// 同处，ADR 0052 D2/D3），只有一端有的功能住该端 `cap-*.wit`（ADR 0052 D4）。
+/// 端生成物由 `scripts/compose-wit.mjs` 按 `compose.json` 将 core 与各 cap 分片
+/// 同 package **同版本**拼装（版本不一致即拼装失败——wasmtime 的 `include` 要求
+/// package 同名同版本）。
+///
+/// 迁移约定（与桌面端原 wasmnest.wit 头注释一致）：
+/// - `serde_json` 载荷保留：结构化参数/结果一律用 `string` 承载 JSON
+/// - 错误一律 `result<T, string>`，错误内容为宿主侧可读的 UTF-8 消息
+/// - 宿主能力 import 接口前缀 `host-`，插件导出接口为普通名字
+/// - 端内版本演进历史不在此复制（复制即漂移源）：逐版语义台账在
+///   `CHANGELOG.md` / `CHANGELOG_zh.md`「契约演进台账（整数 ABI）」节
+///   （记账去处 = ADR 0051 D5；整数 ABI 已随 wit 包版本化退役，
+///   台账自此为**只读历史**，不再随契约变更追加），各端 `cap-*.wit` 头注释保全迁移说明
+///
+/// 组合方式（端生成物 `wit/` 目录，由 `scripts/compose-wit.mjs` 拼装）：
+/// `world plugin { include core; include cap-…; }` —— **import** 名带版本
+/// （`wasmnest:plugin@<version>/<interface>`，版本取自仓根
+/// `contracts/wasmnest-plugin-package.rs`）；
+/// **导出**名不带包版本（实例级 `interface#function`），故运行期按名探测导出不受版本影响。
+package wasmnest:plugin@0.0.1;
+/// 插件 KV 存储（原 storage.rs：storage_get/set/delete）
+interface host-storage {
+    get: func(key: string) -> result<option<string>, string>;
+    set: func(key: string, value: string) -> result<_, string>;
+    delete: func(key: string) -> result<_, string>;
+}
+/// 事件（原 events.rs：emit_event；broadcast-sync 随 websocket 业务下沉
+/// 退役——插件事件走 bus/emit，宿主不再持同步广播面）
+///
+/// 双端交集切片：原桌面独有 `notify` 已按功能级交集统一进共享域契约
+/// `host-notify`（真源 `packages/wasmnest-notify-engine/wit/notify.wit`，ADR 0052 D3；
+/// 桌面 `host-events-desktop` 随之退役），本接口只剩双端交集 `emit`。
+interface host-events {
+    emit: func(event-name: string, payload-json: string);
+}
+/// 消息总线（原 bus.rs：bus_publish/subscribe/unsubscribe）
+///
+/// ## topic 命名空间（总线是强制边界，不只是约定）
+///
+/// - **私有命名空间** `<plugin-id>::<name>`：某插件的收件箱。宿主按属主定向投递
+///   生命周期事件（`<owner>::pty:exit`、`<owner>::ws:*`、`<owner>::mdns:found|lost`）。
+///   **只有属主能订阅、只有属主与宿主能发布**——跨命名空间的订阅/伪发布在 Rust 端
+///   显式拒绝（错误透传给 guest，不静默丢弃）。分隔符 `::` 为保留字：插件 id 字符集
+///   是 `[a-z0-9-]` 分段，`:` 不可能出现，故属主判定无歧义且不依赖激活态/安装态。
+///   边界由**串形态**决定（机制 B），而非「解析 owner 段 + 查插件表」（机制 A）——
+///   后者的判定会随属主是否已激活/是否已安装而漏。
+/// - **公开 topic**（不含 `::`）：插件间广播道（`task:*` / `peer:*` /
+///   `wasmnest.api.*`），任何已激活插件可订阅可发布。
+/// - **互调回复道** `wasmnest.api.reply.<caller>.<request-id>`：caller 的收件箱但
+///   刻意留在公开道形态（响应者是他人，必须能发布进来）。窃听由「订阅面 host-only」
+///   堵（回复订阅由宿主在 `host-api-call` 内静态注册），抢答由「宿主校验回复 `sender`
+///   == api 声明属主」堵（`sender` 由宿主按 Caller state 落章，guest 不可自报）。
+///
+/// 载荷格式：
+/// - `publish`（JSON 文本，v1 起）：结构化载荷，现有订阅方零回归；
+/// - `publish-binary`（字节列，v11 起）：零 JSON 编解码，可传非 UTF-8
+///   与大载荷（MB 级）。订阅方以 `subscribe-binary` 声明二进制格式偏好，
+///   格式不匹配的投递被宿主拒绝（不进入订阅者队列）并告警
+interface host-bus {
+    publish: func(topic: string, payload-json: string) -> result<_, string>;
+    /// 二进制载荷发布（字节列原样透传，零 JSON 编解码，可传非 UTF-8 与大载荷）
+    publish-binary: func(topic: string, payload: list<u8>) -> result<_, string>;
+    subscribe: func(topic: string) -> result<_, string>;
+    /// 以二进制格式偏好订阅——只接收 publish-binary 投递，
+    /// JSON 消息对其按格式不匹配拒绝
+    subscribe-binary: func(topic: string) -> result<_, string>;
+    unsubscribe: func(topic: string) -> result<_, string>;
+}
+/// 通用平台能力域（ADR 0022 v2）：系统对话框/授权等与领域无关的平台交互
+///
+/// 双端交集切片：桌面独有 `wsl-distros` / `local-ipv4-addresses` /
+/// `reveal-in-dir` 拆入 [`host-platform-desktop`]（cap-desktop 分片），
+/// 本接口承载双端交集的 `pick-files` / `pick-folders`，外加双端全等的
+/// `platform`（宿主平台标识探测）。
+///
+/// **目录选择已按功能级统一**（2026-10-13，ADR 0052 D3）：原 `pick-folder`
+/// （单目录字符串，双端）与桌面 `host-platform-desktop.pick-folders`
+/// （多目录 JSON）是同一功能的两种形状 → 统一为本接口的 `pick-folders`
+/// （`string[]` JSON；移动 SAF 目录树选择器为单选语义，返回 0/1 项）。
+interface host-platform {
+    /// 系统多文件选择器 → string[] JSON（用户取消为空数组）。
+    ///
+    /// **权限 `fs:pick`（manifest 必须单独声明）**：未声明即 `Err`，且**不弹对话框**
+    /// ——「能调起选择器」与「能读写任意路径」是两种权力，合成一位会让只想让用户
+    /// 挑一个文件的插件被动获得全盘读取面（权限位判据见 SDK `PERMISSION_FS_PICK`）。
+    ///
+    /// **浏览面不设限、结果面设门**：系统原生对话框（Windows IFileDialog /
+    /// Linux xdg-desktop-portal）允许用户浏览**任意**位置——浏览由用户在系统
+    /// 对话框里驱动，宿主不读任何数据；选择结束后宿主才对**选中的路径**做
+    /// `fs_auth` 授权校验（见下）。
+    ///
+    /// **选择后的授权校验**（本原语契约的另一半，缺一不可）：
+    /// - 选中路径命中**已授权目录**前缀（或第一方归属目录）→ 静默放行，不再弹框；
+    /// - 存在未授权路径 → 就未授权部分弹**一次**授权框（多路径合并一次询问）；
+    /// - 用户拒绝 / 超时 / 无弹窗通道（无头上下文）→ `Err`，**不回传任何路径**
+    ///   （fail-visible：不得把「弹了框被拒」降级成空数组）。
+    /// 「记住」按**所在目录**落账（文件 → 父目录，目录 → 自身），使同目录下的
+    /// 后续选择免弹。
+    ///
+    /// 授权只交付「可访问用户亲手选中的路径」这一层；实际读 / 写仍分别要
+    /// `fs:read` / `fs:write`（`pick-*` 不隐含读写位）。
+    pick-files: func() -> result<string, string>;
+    /// 系统文件夹选择器（多选）→ string[] JSON；用户取消返回空数组。
+    /// 权限 `fs:pick` + 选择后授权校验（授权落账到所选目录本身），口径同
+    /// `pick-files`。移动端为 SAF 目录树选择器（单选语义），返回 0/1 个
+    /// 树 URI。
+    pick-folders: func() -> result<string, string>;
+    /// 宿主平台标识探测（双端全等；**无权限门**——平台事实不是能力，ADR 0022 裁剪线）。
+    ///
+    /// 取值由各端宿主定义（当前约定：桌面 `desktop` / 移动 `mobile`）；guest 用于
+    /// 运行期平台分支——双端共享 wasm 产物（如 file-transfer 单产物，规格
+    /// `.scratch/2026-10-13-file-transfer-single-wasm/spec.md`）据此在同一 trait
+    /// 的双实现间选择，无需双份产物。空/未知取值时 guest 侧按 fail-visible
+    /// 处理（显性报错，不猜默认平台——猜错会把桌面分支静默跑在移动宿主上）。
+    platform: func() -> string;
+}
+/// 文件系统访问（原 fs.rs：fs_read/write/copy/delete/exists；双端交集 6 函数）
+///
+/// 双端交集切片：桌面独有 `read-dir` / `canonicalize` / `stat`
+/// （文件浏览域）拆入 [`host-fs-desktop`]（cap-desktop 分片），移动端独有
+/// `save-to-document` / `write-media-downloads` 拆入 [`host-fs-mobile`]
+/// （cap-mobile 分片），本接口只剩双端交集。
+interface host-fs {
+    read: func(path: string) -> result<option<string>, string>;
+    write: func(path: string, data: string) -> result<_, string>;
+    copy: func(src: string, dst: string) -> result<_, string>;
+    delete: func(path: string) -> result<_, string>;
+    exists: func(path: string) -> result<bool, string>;
+    /// 批量请求目录授权：未授权路径合并为一次用户弹窗，阻塞等待答复
+    /// （paths-json 为 JSON 字符串数组；返回是否全部同意）
+    request-auth: func(paths-json: string) -> result<bool, string>;
+}
+/// 宿主日志与插件状态上报（原 log.rs + status.rs）
+interface host-log {
+    info: func(message: string);
+    debug: func(message: string);
+    warn: func(message: string);
+    error: func(message: string);
+    mark-plugin-error: func(error: string);
+}
+/// 宿主配置读取（原 config.rs：config_get，key 为 ConfigKey::as_str 的字符串）
+interface host-config {
+    get: func(key: string) -> result<option<string>, string>;
+}
+/// 运行监控（core-monitor）：只读运行时指标快照
+///
+/// **权限 `metrics:read`（manifest 必须单独声明）**：未声明即 `Err`。
+/// 返回 JSON 字符串，形状与内核 `MetricsRegistry::snapshot()` 逐字一致：
+/// `{ "plugins": { "<plugin_id>": {...} }, "<source>": {...} }`——每插件段含
+/// 内存 current/peak、调用次数/在飞数、燃料总量、耗时 total/max/直方图、
+/// trap 原因分布、生命周期计数与最近时间、授权决策、总线背压、配额上限。
+///
+/// 语义边界：
+/// - **只读**：不重置任何计数器，不影响被观测插件；
+/// - **无业务内容**：只有数值计数与 plugin_id / 枚举键，不含会话文本、文件内容、
+///   凭据或任何应用数据；
+/// - **全局可见**：授权一次即可读**所有已加载插件**的聚合指标（监控用途所需），
+///   因此可据此推断其他应用的活跃度（侧信道）——权限描述已写明；
+/// - 快照源未装配（无头 / 测试上下文）时 `Err`（fail-visible，不返回空对象冒充）。
+interface host-metrics {
+    snapshot: func() -> result<string, string>;
+}
+/// 插件独立数据库（原 database.rs：plugin_db_*）
+interface host-plugin-database {
+    execute: func(sql: string) -> result<u32, string>;
+    query: func(sql: string) -> result<option<string>, string>;
+    execute-params: func(sql: string, params-json: string) -> result<u32, string>;
+    query-params: func(sql: string, params-json: string) -> result<option<string>, string>;
+    /// 事务内顺序执行多语句（sqls-json 为 SQL 字符串数组），返回受影响行数合计
+    execute-batch: func(sqls-json: string) -> result<u32, string>;
+}
+/// 命令入口（原 invoke_command，JSON 载荷保留）
+interface command {
+    invoke: func(name: string, args-json: string) -> string;
+}
+/// 生命周期（原 activate/deactivate/on_startup/on_shutdown）
+///
+/// 四个导出均携带结果（v8）：启动初始化/清理的成败由导出返回值如实上抛，
+/// 宿主据此区分 Activated / Degraded，不再依赖「调用没抛错」推断成功
+interface lifecycle {
+    activate: func() -> result<_, string>;
+    deactivate: func() -> result<_, string>;
+    on-startup: func() -> result<_, string>;    // 补全：携带启动初始化结果
+    on-shutdown: func() -> result<_, string>;   // 补全：携带清理结果（可观测性）
+}
+/// 二进制消息接收（可选导出，**不进 `plugin` world 的必选导出列表**）
+///
+/// 宿主在实例化后动态探测 `events-binary#on-message-binary`：
+/// - 未导出本接口的插件 → 探测为 None，只接收 JSON 消息；二进制消息对其
+///   按「格式不匹配」拒绝，不影响加载；
+/// - 导出者由 `wasm_entry!` 宏无条件导出（默认空实现），订阅方以
+///   `host-bus.subscribe-binary` 声明偏好后即可接收二进制投递
+///
+/// 无返回值（观察型回调，语义同 terminal-hooks）：guest 内部处理失败经
+/// host-log 记录，不打断宿主投递链；host 侧仅 trap 会上抛
+interface events-binary {
+    on-message-binary: func(topic: string, sender: string, payload: list<u8>);
+}
+/// 插件 manifest（原 __wasmnest_manifest，JSON 字符串）
+interface manifest {
+    get: func() -> string;
+}
+
+// 核心 world：只含内核机制能力（9 import + 3 必选导出；events-binary 是可选出
+// 导出面，不在 world 内）。合成 package 的每端 world plugin 由 include core 并入
+// 这些成员，其余端成员由各端 cap-*.wit 的 world 并入；业务能力交集由双端
+// compose.json 直接消费能力域 crate 的 `wit/<domain>.wit`（ADR 0052 D2）。
+world core {
+    import host-storage;
+    import host-events;
+    import host-bus;
+    import host-platform;
+    import host-fs;
+    import host-log;
+    import host-config;
+    import host-plugin-database;
+    import host-metrics;
+
+    export command;
+    export lifecycle;
+    export manifest;
+}

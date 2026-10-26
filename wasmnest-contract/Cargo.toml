@@ -1,0 +1,11 @@
+[package]
+name = "wasmnest-contract"
+version = "0.0.1"
+license = "MIT"
+edition = "2021"
+description = "WasmNest 插件契约常量（包名 / 版本唯一手写真源）——零依赖，只装常量、不装 WIT"
+
+# 契约 crate：零生产依赖。它必须能被任何宿主 / 工具单独依赖而不拖入
+# wasmtime / tauri / actix 这类重依赖（平台仓两处 node 脚本也用正则读本 crate
+# 源文件，见 src/lib.rs 的「文本形状」说明）。
+[dependencies]
