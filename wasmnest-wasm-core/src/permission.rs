@@ -506,7 +506,7 @@ pub static RETIRED_PERMISSIONS: &[(&str, &str)] = &[
 
 /// 校验清单未声明退役权限位；命中即返回指名错误
 ///
-/// 供宿主装载期调用（`wasmnest-mobile/src-tauri/src/plugin/loader.rs`）。
+/// 供宿主装载期调用（移动宿主 `plugin/loader.rs`）。
 /// 返回 `Err` 而非 bool：调用方需要把「哪个位、为什么、迁移到哪」原样写进错误，
 /// 静默的 bool 只会退化成又一处静默降级。
 pub fn check_retired_permissions(plugin_id: &str, permissions: &[String]) -> Result<(), String> {
