@@ -1,0 +1,39 @@
+[package]
+name = "wasmnest-host-kit"
+version = "0.0.1"
+description = "WasmNest 插件宿主机制内核：能力模块契约 + 插件实例状态 + 自动注册表（双端共享锚点）"
+authors = ["binblink"]
+license = "MIT"
+repository = "https://github.com/7ZAI/BedCode"
+edition = "2021"
+
+[features]
+# 无 feature：`WasmPluginState` 的 WASI 槽（ctx / table + `WasiView`）**常编译**。
+# 票 06 批次 02 的 `wasi-store` 形态门控已退役（用户裁决 2026-10-12）：WASI 面
+# 双端同源、默认全开，开/关改由运行期配置（wasm-core `CoreConfig::wasi`）定，
+# 编译期不再表达「桌面有 WASI / 移动无」——共享状态类型不绑端形态的初衷由此
+# 直接达成，且不需要每个消费者记住开 feature。
+
+[dependencies]
+# 自动注册（linker-section 静态提交/收集）：能力 crate 自报、宿主一次收集。
+# 版本随宿主锁定 0.3.24（src-tauri/Cargo.toml 同款）。
+inventory = "0.3"
+# 版本与两端宿主锁版一致（ADR 0019 双端 48）；feature 只需组件模型面：
+# `Linker` / `Store` / `TypedFunc` / `ResourceTable` / `ResourceLimiter`
+wasmtime = { version = "48", features = ["component-model"] }
+# WASI p3（宿主 `manager::runtime::wasi` 注册的预览 3 版本；本 crate 只持有
+# ctx/table 与 `WasiView` 实现，不做目录/网络授权——那仍归宿主引擎）。
+# 无条件依赖（用户裁决 2026-10-12）：ctx/table 双端常编译，开/关在运行期配置面
+wasmtime-wasi = { version = "48", features = ["p3"] }
+# StoreLimits 的运行期覆盖快照序列化（内核配置读写，见 core-config）
+serde = { version = "1", features = ["derive"] }
+# ResourceLimiter 拒绝路径的 warn 埋点（AGENTS §8 结构化字段）
+tracing = "0.1"
+
+[dev-dependencies]
+# 强制链接实证探针（wasm-core-lib-split 票 09 第 2 项）：它自报一个空壳能力模块，
+# 而**是否被引用**决定它会不会进最终二进制。两个集成测试各占一个二进制——本
+# 探针被引用（`tests/forced_link.rs`）与不被引用（`tests/forced_link_absent.rs`）
+# 各钉一侧，证明「强制引用行漏掉 ⇒ 注册丢失」是真实失效模式而非理论担忧。
+# dev-dep 环（kit --dev--> probe --> kit）Cargo 允许（同 serde/serde_derive）。
+wasmnest-cap-forced-link-probe = { path = "fixtures/forced-link-probe" }

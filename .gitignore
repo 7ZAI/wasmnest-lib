@@ -1,0 +1,33 @@
+# 能力仓（wasmnest-lib）：只有 Rust crate，无 JS 工程。
+# 各 crate 自带 Cargo.lock（可执行探针 / 夹具需要可复现构建），随仓库跟踪。
+
+# Rust 构建产物
+**/target/
+*.pdb
+*.stackdump
+
+# IDE / 编辑器
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+*.iml
+*.codebuddy
+
+# OS
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+# 日志与临时文件
+*.log
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# 会话临时 scratch（不入库）
+.scratch/

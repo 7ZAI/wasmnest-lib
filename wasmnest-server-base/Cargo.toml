@@ -1,0 +1,64 @@
+[package]
+name = "wasmnest-server-base"
+version = "0.0.1"
+license = "MIT"
+description = "WasmNest 桌面 server 基础层：错误/常量/错误边界/系统信息/网络配置形状/连接身份/端口 traits（server-lib-split 票 02）"
+authors = ["binblink"]
+edition = "2021"
+
+[features]
+# `tauri-compat`（默认开）：只为 `From<tauri::Error> for AppError` 一个 impl 而存在。
+#
+# 为什么不无条件依赖 tauri（ADR 0035 D6 的通用性要求）：本 crate 是 server 各面的
+# **叶子地基**，`crypto-engine` / `-core` / 两个传输面全部经它传递性取依赖。一个
+# GUI 框架出现在地基里，意味着任何非 Tauri 宿主（无头服务 / CLI / 嵌入式）都拉不动
+# 本 crate —— 而它们要的只是错误类型、常量与端口 traits。故 tauri 转 optional：
+# 非 Tauri 消费方 `default-features = false`，地基层就真的与框架无关。
+#
+# **代价（已知且接受）**：`impl From<tauri::Error> for AppError` 受孤儿规则约束必须住
+# 在定义 `AppError` 的本 crate 内，下游**无法**自己补写。故关掉本 feature 后，调用方
+# 须在边界处显式 `map_err(|e| AppError::Internal(e.to_string()))`，不能靠 `?`。
+# 桌面端全部消费方走默认 feature，行为零变化。
+default = ["tauri-compat"]
+tauri-compat = ["dep:tauri"]
+
+[dependencies]
+# 错误类型（AppError：Serialize 信封 + thiserror）
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+# new_request_id / Serialize 信封的日志副作用
+tracing = { version = "0.1", features = ["attributes"] }
+# AppError::Database(#[from] rusqlite::Error)
+rusqlite = { version = "0.32", features = ["bundled"] }
+# From<tauri::Error>：见 [features].tauri-compat（唯一消费点是 error.rs 的一个 From impl）
+tauri = { version = "2", features = [], optional = true }
+# From<notify::Error>（文件监听错误映射）
+notify = "6"
+# From<wasmnest_link_crypto::LinkCryptoError>（链路加密共享 crate）
+wasmnest-link-crypto = { path = "../link-crypto", version = "0.0.1" }
+# host-database 执行护栏常量真源（票 18 批次 3：PLUGIN_DB_* 四常量上移共享核，
+# 本 crate 经 re-export 保既有 `wasmnest_server_base::constants::*` 路径）
+wasmnest-host-api-core = { path = "../wasmnest-host-api-core", version = "0.0.1" }
+# error_boundary（futures FutureExt::catch_unwind）
+futures-util = "0.3"
+# 服务租约：槽位互斥（service::ServiceRegistry 持锁跨 await）
+tokio = { version = "1", features = ["sync"] }
+# ports：异步 trait
+async-trait = "0.1"
+# ports：MdnsPort（peer-net 发现守护接入，ServiceDaemon 类型）
+mdns-sd = "0.20"
+# ports：MdnsTypeSubscription 类型中枢订阅通道（版本与 peer-net / mdns-sd 传递依赖同源，spec §0.4）
+flume = "0.12"
+# info：SystemInfo 采集
+sysinfo = "0.33"
+local-ip-address = "0.6"
+# 测试
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["fmt", "registry", "ansi"] }
+# service 模块单测：#[tokio::test] 运行时（sync feature 由普通依赖提供）
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

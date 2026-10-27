@@ -1,0 +1,220 @@
+# ==================== wasmnest-wasm-core：插件机制整核（可复用 crate） ====================
+# 桌面端 wasm_core 整核抽出（.scratch/2026-10-06-wasm-core-whole-crate/spec.md）：
+# 插件核心机制（manager/security/host_api/bus/config/monitor/permission/
+# runtime_util/intercall/storage）+ 引擎面（db/pty/enums）+ 宿主胶水
+# （system/{config,opener,process}、auth_center、session_gateway、HostBusPort）
+# 从 bin crate 整体迁出。任何 Tauri 宿主可直接 path 依赖本 crate 获得插件机制。
+#
+# 位置（仓库根 packages/，2026-10-08 由 桌面 packages/ 迁根）：
+# **双端单一 wasm-core、单一形态**（ADR 0045 D1 + ADR 0049 D1，2026-10-13 收口）：
+# 运行时壳 / 机制 / core 绑定层一份，双端共用；端差异（cap 域实现 / 权限门 /
+# 事件词汇 / ABI 规格 / 端事实）全部住各端宿主，经 `HostModule` 自报、
+# `GuestEventDispatcher` 与 `AbiPolicy` / `HostFactsPort` 注入组装。
+# 桌面专属装配面（PluginHost 等）在 `desktop-assembly` feature；移动宿主
+# `default-features = false` 不开。双端共享锚点是仓库根 packages/wasmnest-host-kit。
+#
+# 依赖图脱桌面进行中（wasm-core 纯净性收口票 02，.scratch/2026-10-09-wasm-core-single-crate/）：
+# 批次 02 已移出 pty——`wasmnest-pty-engine` 依赖与 `portable-pty` 不再出现在本 crate，
+# host-pty 的端口 adapter / 强制引用行 / 白名单条目都住在宿主
+# （`桌面宿主 src-tauri/src/plugin/pty.rs`，经 host-kit 装配自报面接入）。
+
+[package]
+name = "wasmnest-wasm-core"
+version = "0.0.1"
+description = "WasmNest 插件机制整核（单一形态，2026-10-13 起无 common/bare 之分）：wasmtime 组件模型宿主 + host-* 原语 + 安全闸门 + 引擎面（pty/db）"
+authors = ["binblink"]
+license = "MIT"
+repository = "https://github.com/7ZAI/BedCode"
+edition = "2021"
+
+[features]
+# ==================== 单形态（2026-10-13 用户裁决：wasm-core 无端之分） ====================
+#
+# `common-host` / `bare-host` 形态 feature 已退役（.scratch/2026-10-13-runtime-single-form）：
+# 运行时壳（Engine/Linker/Store + 导出调用骨架）无条件一份（桌面形态），端差异（cap
+# 域实现 / 权限门 / 事件词汇）全部由各端宿主 `HostModule` 自报组装。
+#
+# `desktop-assembly` = **桌面专属装配面**（非形态维度，移动不开）：PluginHost /
+# api_bridge / watcher / intercall / auth_center / 能力域端口装配 / WS 帧回灌窄端口。
+# 移动宿主不开它，用自有 PluginManager / host_domains 组装（互调走宿主侧面）。
+# 端事实（平台标识 / 入站服务器端口）不在 feature 里：经 `HostFactsPort` 由各端
+# 宿主实现并装配期注入（内核零端名、零端 `#[cfg]` 分支）。
+#
+# WASI 装配面不在任何 feature 里：`wasmtime-wasi` 无条件依赖 + `manager::runtime::wasi`
+# 常编译，双端同源、默认全开，开/关由运行期配置 `CoreConfig::wasi` 定（用户裁决
+# 2026-10-12；为将来 worker 类别插件预备，ADR 0034 L3.b）。
+default = ["desktop-assembly"]
+desktop-assembly = [
+    # 桌面 SDK（wasmnest-plugin-api）：桌面 Rust 插件体系（PluginCommand /
+    # WasmNestPluginEntry / TerminalHandler，manager::host）+ intercall 词汇
+    #（API_TOPIC_PREFIX）+ 桌面夹具测试的 wire 形状——桌面专属装配面，移动不开。
+    # **verify_abi 不再引用它**（AbiPolicy 由宿主注入，wasm-core 零端 ABI）。
+    "dep:wasmnest-plugin-api",
+]
+# 测试支持面（test_support：无头装配 / 转发面 / 移动宿主消费的 mock 面；wasm-core
+# 测试与两端宿主集成测试消费）
+# 票 08 批次三：夹具组件构建器（原 `wit-component` 消费方）已随夹具 crate 迁平台仓，
+# 本 feature 不再关联任何构建器依赖。
+test-support = []
+
+[dependencies]
+# ==================== 宿主平台（D2：保留 tauri 依赖，不做零-tauri 反转） ====================
+# tauri 内部对各 target 的 webview 后端 cfg 正确（Linux 桌面 = webkit2gtk /
+# Android = 系统 WebView），不构成 Android 撞车点。
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "test"] }
+# 文件选择对话框（host-platform `fs:pick` 引擎面；与 lib 同版本锁步）。
+# 票 03：`platform` 域随 core 绑定层常编译化 ⇒ 依赖无条件（可选化只为形态门控，
+# 而 dialog 本身是 tauri 插件，移动/无头宿主同样可链接）。
+tauri-plugin-dialog = { version = "2" }
+
+# ==================== WASM 运行时（wasmtime 48，双端锁版 ADR 0019） ====================
+wasmtime = { version = "48", features = ["component-model"] }
+# WASI p2/p3 装配面（linker 注册 + 预打开上下文；真源 `manager::runtime::wasi`）。
+# **无条件依赖**（用户裁决 2026-10-12）：双端都编译、默认全开，开/关走运行期配置
+# `CoreConfig::wasi`——形态 feature 不再表达「桌面有 WASI / 移动无」。
+wasmtime-wasi = { version = "48", features = ["p3"] }
+
+# ==================== 异步 / 并发 ====================
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process", "test-util"] }
+
+# ==================== 插件机制内核 + 能力域（前作资产，不搬不重写） ====================
+# 契约常量（包名 / 版本唯一手写真源）：普通 crate 依赖 + `use`，不再跨目录
+# `include!`——`cargo package` 的归档只含 crate 目录内文件，跨目录 include 会让
+# 验证构建必失败，且 rust-analyzer / 增量重编都看不见这条依赖边。
+wasmnest-contract = { path = "../wasmnest-contract", version = "0.0.1" }
+# 机制内核（仓库根，双端共享锚点）：HostModule / WasmPluginState / HostPorts / 注册表
+wasmnest-host-kit = { path = "../wasmnest-host-kit", version = "0.0.1" }
+# host_api 共享实现核（票 18：无 WIT 依赖域的实现层；本 crate 只持各域 adapter）
+wasmnest-host-api-core = { path = "../wasmnest-host-api-core", version = "0.0.1" }
+# 桌面基础层（错误/常量/错误边界/系统信息/网络配置/连接身份/端口 traits）。
+# 票 06 裁决：**双端共享基础层，无条件保留**——移动 fork 自持的 error.rs 是
+# fork 漂移（ADR 0040 D1 收缩面），批次 03 机制面合一正向对齐本 crate 真源
+wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1" }
+# 三个能力域 crate（实现 + 插件绑定层 + 自动注册）——单形态起**无条件**：
+# - server-websocket / server-http / server-peer-net 的 HostModule 自报进最终二进制
+#   （统一壳 IN_CRATE_HOST_MODULES 白名单条目），且内核常编译消费其引擎面
+#   （ws 帧投递窄端口 / PeerCtx / HttpUnitExecutor）——移动宿主同样链接（纯 Rust，
+#   无桌面 target 依赖），其自报模块不 import 即惰性无害。
+# - **server crate 的 `common-host`（绑定层/自报）由桌面宿主开启**（桌面
+#   `src-tauri/Cargo.toml` 依赖时带 feature；桌面宿主 `plugin/{http,ws,peer}.rs`
+#   有 `use <crate> as _;` 强制引用 + `expect_host_module!`）——移动宿主不开（用
+#   自有 `host_domains/{http,ws,peer,mdns}` 实现，能力域 crate 仅引擎面）。
+# - 第四域 discovery 自票 02 批次 03 起宿主直接依赖（adapter 在 src/plugin/mdns.rs）；
+#   ws-client-engine（ADR 0043 移动 host-websocket 客户端域引擎）由移动宿主直接
+#   依赖——本 crate 对两者零引用（票 05 起已实证），2026-10-13 随单形态一并摘除。
+wasmnest-server-websocket = { path = "../wasmnest-server-websocket", version = "0.0.1" }
+wasmnest-server-http = { path = "../wasmnest-server-http", version = "0.0.1" }
+# 对等网络上下文装配端口（统一宿主上下文 `PeerCtxProvider` 的载体，票 02 B5）：
+# `PeerCtxProvider` 类型别名引 `wasmnest_server_peer_net::PeerCtx` ⇒ 无条件（与
+# server-websocket / server-http 同批，双端编译）。
+wasmnest-server-peer-net = { path = "../wasmnest-server-peer-net", version = "0.0.1" }
+# 桌面 SDK（wasmnest-plugin-api，desktop-assembly feature；桌面 Rust 插件体系与
+# intercall 词汇的唯一来源——wasm-core 无条件面对其零引用，见 lib.rs facade）
+#
+# 三仓拆分 L2/E2a-B（票 07）：**path 依赖 → 已发布版本依赖**。Cargo 在 manifest
+# 装载期即要求 path 依赖的路径存在（即使本 optional 依赖未启用）⇒ 原 path 写法使
+# 能力仓单克隆（无平台仓在场）连 `cargo metadata` 都失败；改为版本依赖后，未启用
+# desktop-assembly 的消费者（移动宿主 / cross-end 两进程模式）零解析，启用的消费者
+# （桌面宿主 / cross-end 单进程）由各自 manifest 的 `[patch.crates-io]` 指回本地
+# SDK，单克隆场景由 crates.io 发布版本解析。
+#
+# **架构债**：本方案与 ADR 0047（wasm-core 零端名）/ 0049（绑定归位端宿主）相悖——
+# 内核出现对端 SDK 的反向版本依赖；终态由票 10（E2a-A：desktop-assembly 整体迁
+# 桌面宿主、本依赖随之删除）清偿，见 `.scratch/2026-10-16-three-repo-split/`。
+# **版本对齐**：此处 `version` 必须与平台仓
+# `桌面 packages/plugin-sdk-desktop/rust/Cargo.toml` 的 `version` 逐字
+# 一致；升级流程 = 先发布 SDK 新版本（`docs/knowledge/sdk-publish.md` 流程）→ 同票
+# 更新本声明 + 两处宿主 `[patch.crates-io]`（版本不匹配时 patch 不生效、解析失败）。
+wasmnest-plugin-api = { version = "0.0.1", optional = true }
+# 测试组件编码（core module → 组件）依赖随夹具构建器迁平台仓（票 08 批次三）；
+# 能力仓自持夹具均直出组件（wasip2 直出 / wit-bindgen 直出），不再需要本依赖。
+# 对等网络共享基础设施（节点身份 + 自签证书）——双端共享（移动 fork 同依赖）
+# 2026-10-22 peer-net-dissolve：`wasmnest-peer-net` 已拆分并入
+# `wasmnest-server-peer-net`（本 crate 的 PeerCtx 消费链本就指向后者），此死依赖删除
+# 链路报文加密协议核心（link_crypto 算法）——双端共享
+wasmnest-link-crypto = { path = "../link-crypto", version = "0.0.1" }
+
+# 能力模块自报（inventory::submit! / collect!）
+inventory = "0.3"
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+# 日期/时间
+chrono = { version = "0.4", features = ["serde"] }
+# 日志
+tracing = { version = "0.1", features = ["attributes"] }
+# 错误处理
+anyhow = "1"
+thiserror = "1"
+# 文件监听（dev watcher）
+notify = "6"
+# 正则
+regex = "1"
+# 异步 trait（dyn 兼容）
+async-trait = "0.1"
+# WebSocket（host-ws 引擎面）
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+# 目录定位
+dirs = "6.0.0"
+# HTTP 客户端（host-http 出站代理）——双端共有（移动 http_engine 同用）
+# **必须 `default-features = false`**：reqwest 默认集含 `default-tls`（= native-tls
+# → openssl-sys），而交叉编译到 Android（aarch64-linux-android）时 openssl-sys 找不到
+# 目标侧 OpenSSL，构建脚本直接失败（2026-10-13 移动 dev 实测；本 crate 是共享 crate，
+# 它开的 feature 会经 feature 合并钉死两端）。
+# TLS 后端**由各端宿主声明**（合并后生效）：桌面 `src-tauri/Cargo.toml` 的 reqwest
+# 用默认集 = native-tls（Linux 有系统 OpenSSL）；移动宿主显式开 `rustls-tls`（可交叉
+# 编译，与退役 fork crate `移动 fork packages/wasmnest-wasm-core` 的原声明同形）。
+# 本 crate 只保留与后端无关的 `stream`（body 流类型），不锁任何 TLS 后端。
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+# 数据库
+rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
+# 用户插件 zip 解压安装
+zip = "4.6"
+# 随机数 / 编码（通用原语，随整核保留）
+rand = "0.8"
+# 编码
+base64 = "0.22"
+hex = "0.4"
+encoding_rs = "0.8"
+# 进程组信号（Android 同有 libc，无条件保留无害）
+libc = "0.2"
+
+sha2 = "0.10"
+
+# Windows：文件定位 COM API（opener）+ 电源唤醒监听
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Registry", "Win32_System_LibraryLoader"] }
+
+# Linux 桌面：systemd-logind 休眠抑制 + webkit 类型引用。
+# 票 06 批次 01（spec D5）：Android 与桌面同 `target_os = "linux"`——不加
+# `not(target_os = "android")` 会在 Android 编译时拉入桌面库（唯一撞车点；
+# tauri 自身的 webview target cfg 正确，见上）
+[target.'cfg(all(target_os = "linux", not(target_os = "android")))'.dependencies]
+dbus = "0.9"
+webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
+
+[dev-dependencies]
+tempfile = "3"
+# 测试 harness（§4.5）宿主已随模块删除（host_harness.rs 真死，2026-10）——
+# 原 harness 起 HTTP+WS 服务器消费 wasmnest-server-core；无消费方后该 dev-dep
+# 边摘除（依赖图门禁 `--edges no-dev` 口径不受影响）
+actix-web = "4"
+# 票 08 批次三：原 `flume` 夹具构建 deb-dep（manager/runtime/fixture_build.rs）
+# 随构建器迁平台仓一并摘除。
+# 三个能力域 crate 的 `common-host`（WIT 绑定层 + HostModule 自报 + **DomainHooks
+# 停用回收钩子**）**仅测试编译开启**（dev-deps feature 并集）：wasm-core lib test
+# 需要 server-websocket 的 HOOKS（`deactivate` 的 ws 端点清理经
+# `DomainHooksRegistry::collected().on_plugin_purge`），而生产移动形态不能有
+# server 自报（与移动 host_domains 实现 defined-twice 冲突，见
+# `.scratch/2026-10-13-runtime-single-form/spec.md`）。生产特征由两端宿主各自
+# 开启（桌面 src-tauri Cargo 带 common-host；移动不开）。
+wasmnest-server-websocket = { path = "../wasmnest-server-websocket", features = ["common-host"] }
+wasmnest-server-http = { path = "../wasmnest-server-http", features = ["common-host"] }
+wasmnest-server-peer-net = { path = "../wasmnest-server-peer-net", features = ["common-host"] }
+
+[profile.release]
+# 与 src-tauri 同口径：panic 可被 catch_unwind 捕获（错误边界）
+panic = "unwind"

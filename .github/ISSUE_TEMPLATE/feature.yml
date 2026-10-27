@@ -1,0 +1,42 @@
+name: 功能 / 任务
+description: 新机制、新引擎、新端口请求。必填：需求 / 归属三问 / 验收条件。
+title: "[feat] "
+labels: ["kind:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 归属裁决（能力仓 §3.5 三问，顺序不可颠倒）
+        ① 这是机制还是产品语义？（产品语义 → 应用仓；机制 → 本仓；端差异 / 装配 → 平台仓）
+        ② 谁需要它？（双端都要 → 共享 crate；仅一端 → 平台仓该端宿主；仅测试观测 → 测试仓）
+        ③ 可复用形态是哪一种？（纯引擎 + 端口 / 契约房 / 机制内核 / 传输面）
+  - type: textarea
+    id: need
+    attributes:
+      label: 需求描述
+      description: 要解决什么问题、给谁用
+    validations:
+      required: true
+  - type: textarea
+    id: adjudication
+    attributes:
+      label: 归属三问结论
+      description: 三问逐条回答；答不上来先停下问用户，不硬开
+      placeholder: "① 机制 / 产品？② 谁需要？③ 形态？"
+  - type: input
+    id: crate
+    attributes:
+      label: 落点 crate
+      description: 目录 = 包名 wasmnest-<域>；新 crate 需登记 SPLIT_CRATES 并过平台侧清单
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收条件
+      description: 可验证的完成标准：锁 / 单测 / 命令；新增能力域须自持至少一条漂移单测
+    validations:
+      required: true
+  - type: textarea
+    id: related
+    attributes:
+      label: 相关契约与锁
+      description: WIT / 端口 trait / 跨仓锁 / 相关 issue（owner/repo#n）

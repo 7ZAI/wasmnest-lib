@@ -1,0 +1,27 @@
+[package]
+name = "wasmnest-headless-host-probe"
+version = "0.0.1"
+license = "MIT"
+description = "无头测试宿主探针：以非桌面宿主形态默认引用全部能力域 crate（不开 common-host feature），钉死「能力域默认形态任何宿主可直接引用、零 WIT / 零桌面 SDK 依赖」——能力域脱绑 P6 验证矩阵的长期载体（P1–P5 落地）"
+authors = ["binblink"]
+edition = "2021"
+
+[dependencies]
+# 五个带桌面 WIT 绑定面的能力域（默认形态 = 纯引擎；本 crate 永不开 common-host）。
+# 任一行开回桌面绑定依赖（feature 传递 / optional 依赖收不干净）都会在本 crate 的
+# `cargo tree` 门禁里现形：wasmtime / wit-bindgen / inventory / wasmnest-host-kit /
+# wasmnest-plugin-api 出现即违规。
+wasmnest-discovery-engine = { path = "../wasmnest-discovery-engine", version = "0.0.1" }
+wasmnest-server-http = { path = "../wasmnest-server-http", version = "0.0.1" }
+wasmnest-server-websocket = { path = "../wasmnest-server-websocket", version = "0.0.1" }
+wasmnest-server-peer-net = { path = "../wasmnest-server-peer-net", version = "0.0.1" }
+wasmnest-pty-engine = { path = "../wasmnest-pty-engine", version = "0.0.1" }
+# server 基础层（wire 契约：`BusMessage` 自持副本——能力域脱绑 P5）
+wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1" }
+# server 传输无关内核（已脱绑 crate，纯引擎）
+wasmnest-server-core = { path = "../wasmnest-server-core", version = "0.0.1" }
+# smoke 断言用（BusMessage roundtrip；外部 crate，不违反零内部 dev-deps 纪律）
+serde_json = "1"
+
+# 刻意零 dev-dependencies：本 crate 是「非桌面宿主最小引用面」的形态锚——
+# 任何内部 dev 边都会污染「能力域纯引擎形态自足」的证明力。

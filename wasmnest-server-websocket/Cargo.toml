@@ -1,0 +1,59 @@
+[package]
+name = "wasmnest-server-websocket"
+version = "0.0.1"
+license = "MIT"
+description = "WasmNest 桌面 WebSocket 传输面：连接骨架/插件端点通道/连接与端点注册表/生命周期与优雅停机 + host-websocket 能力域的插件绑定层（server-lib-split 票 05 / wasm-core-lib-split 票 04）。默认形态 = 纯引擎机制 + 端口抽象（零 WIT 依赖），任何宿主可直接引用；`common-host` feature 装配 WIT 绑定层（bindgen!/HostModule/inventory/impl Host）——能力域脱绑 P3"
+authors = ["binblink"]
+edition = "2021"
+
+[features]
+# 默认 = 纯引擎（任何宿主可引用：移动端 / 无头测试宿主 / 第三方宿主）
+default = []
+# 桌面宿主 WIT 绑定层（bindgen!/HostModule/inventory::submit!/impl Host）；
+# 语义 = 装配桌面 WIT 依赖，行为与开 feature 前逐字不变
+# （ABI / WIT / 权限位 / 事件形状 / inventory 注册零变化）。
+common-host = ["dep:wasmnest-host-kit", "dep:wasmtime", "dep:wit-bindgen", "dep:inventory"]
+
+[dependencies]
+# Actix：WS actor（conn 骨架）、actix-web-actors 握手、actix-rt 独立 runtime 线程
+actix-web = "4"
+actix = "0.13"
+actix-web-actors = "4"
+actix-rt = "2"
+# 异步运行时（注册表/管理器的 RwLock、broadcast、oneshot；出站连接还需 net/io-util）
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+# BusMessageHandler 端口的 async trait
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = { version = "0.1", features = ["attributes"] }
+# 基础层（AppError/Result、常量、端口 traits 与全局注册表、生命周期事件）
+wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1" }
+# 内核层（流量过滤链 / 链路加密 / 指标 / 组合装配 serve + TransportFace）
+wasmnest-server-core = { path = "../wasmnest-server-core", version = "0.0.1" }
+# ==================== 插件绑定层（host-websocket 能力域，wasm-core-lib-split 票 04） ====================
+# 全部 optional：只随 `common-host` feature 进编译图（能力域脱绑 P3）——
+# 无 feature 时 `cargo tree` 不出现以下任何 crate（纯引擎形态）。
+# 机制内核：插件实例状态（`add_to_linker::<S,D>` 的单态 S 必须在本 crate 可命名）
+wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true, version = "0.0.1" }
+# WIT 契约绑定（`bindgen!` 在 src/plugin_binding.rs，本 crate 自带 provider 侧生成）
+# —— spec D8「不自带 generate!」的前提在本 crate 不成立：宿主侧 `wasmnest` 模块是
+# **guest 视角**（import 是调用函数，不是 `Host` trait + `add_to_linker`），
+# 能力 crate 要自己装配就必须跑 provider 侧 `bindgen!`。两侧生成的是同名但
+# **不同类型**的 trait，故宿主必须同时删掉自己的 ws `Host` impl（否则重复注册）。
+wit-bindgen = { version = "=0.60.0", features = ["macros"], optional = true }
+# `Linker` / `HasSelf` / `add_to_linker::<S,D>` 的宿主侧类型与函数；
+# 版本随两端宿主锁版（ADR 0019）
+wasmtime = { version = "48", features = ["component-model"], optional = true }
+# 能力模块自报（`submit_module!` 展开为 inventory 静态提交）
+inventory = { version = "0.3", optional = true }
+# 出站连接：客户端握手 + 帧收发（版本与宿主 `src-tauri/Cargo.toml` 同锁 0.24；
+# 不启用 TLS feature —— `wss://` 在域函数里显式拒绝，见 plugin_binding 模块头 D7）
+tokio-tungstenite = "0.24"
+# 帧流的 `Sink`/`Stream` 扩展（读写任务）
+futures-util = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

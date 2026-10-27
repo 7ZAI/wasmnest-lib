@@ -1,0 +1,93 @@
+# 能力仓 CI（7ZAI/wasmnest-lib#7）：fmt --check + 按 crate 遍历 cargo test。
+#
+# 仓形态约束（AGENTS.md §1 / §4）：无根 workspace——16 个顶层 crate 平铺仓根、
+# 各自 Cargo.toml / Cargo.lock，一个 crate 一个 cargo 调用；不存在「仓级 cargo
+# test」。夹具 crate（wasmnest-host-kit/fixtures/*、wasmnest-wasm-core/fixtures/*）
+# 在二层目录，不入 `*/Cargo.toml` 顶层遍历面，也不入 CI（wasm 夹具另需目标端
+# 工具链，随平台仓 / 测试仓侧构建）。
+#
+# 编译时长大头（CI 时长预估）：wasmnest-host-kit 默认形态**非可选**依赖
+# wasmtime 48 + wasmtime-wasi(p3)（数 GB 级编译产物，单 crate 冷编译十分钟级）；
+# server-core / server-http / server-websocket 拉 actix 栈；server-base 默认
+# tauri-compat 拉 tauri 2（Linux 需 webkit2gtk 系统库，见下方 apt 步骤）；其余
+# crate 分钟级。5 个能力域 crate（discovery / pty / http / websocket / peer-net）
+# 的 wasmtime 是 optional 依赖且 default = []，默认形态不参与编译。缓解措施：
+# sccache——仓根 .cargo/config.toml 强制 rustc-wrapper，按其注释口径在 CI 用
+# mozilla/sccache-action 安装并压小缓存（2GiB），跨 crate / 跨 run 复用同一份
+# 依赖图缓存。
+#
+# 锁口径：各 crate Cargo.lock 随仓库跟踪，但部分残留旧内部版本号（AGENTS §4.4 /
+# §8 已知状态），CI **不加 --locked**——首次解析自动刷新仅在 run 内生效不入库；
+# 待全量刷新收口后可再收紧（见票 7 遗留）。
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [dev] # 集成分支 = 默认分支 dev（仓唯一常驻远端分支）
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check（按 crate 遍历，覆盖全部 16 个顶层 crate）
+        run: |
+          set -eu
+          for d in */Cargo.toml; do
+            echo "== cargo fmt --check ${d%/Cargo.toml}"
+            cargo fmt --manifest-path "$d" --check
+          done
+          # fmt 覆盖 wasmnest-wasm-core：cargo fmt 不做依赖解析，独立克隆可跑
+          #（与 test job 的例外登记不同，见该 job 注释）。
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # 仓根 .cargo/config.toml [env] 注释口径：CI 压小 sccache 缓存（2GiB，
+      # force=false 时外部值优先生效）
+      SCCACHE_CACHE_SIZE: "2147483648"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla/sccache-action@v0.0.7
+      # tauri 2（server-base 默认 tauri-compat）Linux 编译前置系统库
+      - name: 安装 tauri Linux 构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: cargo test（按 crate 遍历）
+        run: |
+          set -eu
+          for d in */Cargo.toml; do
+            crate="${d%/Cargo.toml}"
+            if [ "$crate" = "wasmnest-wasm-core" ]; then
+              # 登记例外（fail-visible，非静默跳过）：desktop-assembly（默认
+              # feature）依赖未发布的桌面 SDK crate wasmnest-plugin-api 0.0.1
+              #（registry 不存在），独立克隆无法解析依赖图；本仓内测试唯一合法
+              # 向量是 §4.2 逃生阀（--config 把补丁指回平台仓工作树 SDK，依赖
+              # R1 sibling 检出——CI 单仓检出无此路径；且平台装配 `-p` 测试亦
+              # 不可行：非 workspace 成员 + dev-deps 被 cargo 拒绝，2026-10-27
+              # 实测）。该 crate 单测经开发侧逃生阀覆盖；结构不变量由平台仓
+              # 读源码锁钉住；本仓 fmt 门禁仍覆盖它。
+              echo "::warning::skip cargo test: $crate（未发布 SDK 版本依赖无法独立解析；单测经开发侧逃生阀覆盖，AGENTS §4.2）"
+              continue
+            fi
+            echo "== cargo test $crate"
+            cargo test --manifest-path "$d"
+          done

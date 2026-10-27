@@ -1,0 +1,17 @@
+// 测试专用 world（能力仓自持夹具，票 08 批次三）——wasip2/p3 探针组件形态的
+// 最小扩展：`core` 世界（契约真源 `wit/core.wit`）+ 可选导出面 `events-binary`。
+//
+// 为什么需要本文件：`events-binary` 是契约里的**可选导出**，刻意不在 `core` world
+// 内（未导出它的插件照常加载）；而 async store 探针要验证「原生 TypedFunc 探测路径
+// 的可选导出在 async store 下可调」，必须让夹具真的导出它 ⇒ 声明一个 test-only
+// world 是唯一办法。
+//
+// world 本体住独立 package（`wasmnest:fixture-wasip3`），成员全部 `include` /
+// `export` 契约真源 package：产物里的 import/export 名仍逐字等于生产契约
+// （`wasmnest:plugin@0.0.1/...`），故组件可被内核壳原样实例化。
+package wasmnest:fixture-wasip3@0.0.1;
+
+world wasip3-fixture {
+    include wasmnest:plugin/core@0.0.1;
+    export wasmnest:plugin/events-binary@0.0.1;
+}
