@@ -37,10 +37,10 @@ tauri = { version = "2", features = [], optional = true }
 # From<notify::Error>（文件监听错误映射）
 notify = "6"
 # From<wasmnest_link_crypto::LinkCryptoError>（链路加密共享 crate）
-wasmnest-link-crypto = { path = "../link-crypto" }
+wasmnest-link-crypto = { path = "../link-crypto", version = "0.0.1" }
 # host-database 执行护栏常量真源（票 18 批次 3：PLUGIN_DB_* 四常量上移共享核，
 # 本 crate 经 re-export 保既有 `wasmnest_server_base::constants::*` 路径）
-wasmnest-host-api-core = { path = "../wasmnest-host-api-core" }
+wasmnest-host-api-core = { path = "../wasmnest-host-api-core", version = "0.0.1" }
 # error_boundary（futures FutureExt::catch_unwind）
 futures-util = "0.3"
 # 服务租约：槽位互斥（service::ServiceRegistry 持锁跨 await）

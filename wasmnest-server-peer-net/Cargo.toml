@@ -30,7 +30,7 @@ uuid = { version = "1", features = ["v4"] }
 # BusMessageHandler::on_message 的 anyhow::Result（生产代码里的 trait 签名）
 anyhow = "1"
 # 基础层（AppError/Result、常量、错误边界 spawn、端口 traits 与全局注册表）
-wasmnest-server-base = { path = "../wasmnest-server-base" }
+wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1" }
 # ==================== 对等网络底座机制（原 wasmnest-peer-net 拆分并入，2026-10-22） ====================
 # 依赖随模块平移自 wasmnest-peer-net，版本原样（双端锁步纪律：rustls 0.23 ring /
 # tokio-rustls 0.26 ring / mdns-sd 0.20 async / flume 0.12 / ed25519-dalek 2 /
@@ -79,7 +79,7 @@ flume = "0.12"
 # 全部 optional：只随 `common-host` feature 进编译图（能力域脱绑 P4）——
 # 无 feature 时 `cargo tree` 不出现以下 crate（纯引擎形态）。
 # 机制内核：插件实例状态（`add_to_linker::<S,D>` 的单态 S 必须在本 crate 可命名）
-wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true }
+wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true, version = "0.0.1" }
 # WIT 契约绑定（`bindgen!` 在 src/plugin_binding.rs，本 crate 自带 provider 侧生成）
 # —— 与 ws 域同款：宿主自己的 `wasmnest` 模块是 **guest 视角**（import 是调用函数，
 # 不是 `Host` trait + `add_to_linker`），能力 crate 要自己装配就必须跑 provider 侧

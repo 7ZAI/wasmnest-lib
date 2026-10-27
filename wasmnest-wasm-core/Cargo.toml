@@ -81,15 +81,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 # 契约常量（包名 / 版本唯一手写真源）：普通 crate 依赖 + `use`，不再跨目录
 # `include!`——`cargo package` 的归档只含 crate 目录内文件，跨目录 include 会让
 # 验证构建必失败，且 rust-analyzer / 增量重编都看不见这条依赖边。
-wasmnest-contract = { path = "../wasmnest-contract" }
+wasmnest-contract = { path = "../wasmnest-contract", version = "0.0.1" }
 # 机制内核（仓库根，双端共享锚点）：HostModule / WasmPluginState / HostPorts / 注册表
-wasmnest-host-kit = { path = "../wasmnest-host-kit" }
+wasmnest-host-kit = { path = "../wasmnest-host-kit", version = "0.0.1" }
 # host_api 共享实现核（票 18：无 WIT 依赖域的实现层；本 crate 只持各域 adapter）
-wasmnest-host-api-core = { path = "../wasmnest-host-api-core" }
+wasmnest-host-api-core = { path = "../wasmnest-host-api-core", version = "0.0.1" }
 # 桌面基础层（错误/常量/错误边界/系统信息/网络配置/连接身份/端口 traits）。
 # 票 06 裁决：**双端共享基础层，无条件保留**——移动 fork 自持的 error.rs 是
 # fork 漂移（ADR 0040 D1 收缩面），批次 03 机制面合一正向对齐本 crate 真源
-wasmnest-server-base = { path = "../wasmnest-server-base" }
+wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1" }
 # 三个能力域 crate（实现 + 插件绑定层 + 自动注册）——单形态起**无条件**：
 # - server-websocket / server-http / server-peer-net 的 HostModule 自报进最终二进制
 #   （统一壳 IN_CRATE_HOST_MODULES 白名单条目），且内核常编译消费其引擎面
@@ -102,12 +102,12 @@ wasmnest-server-base = { path = "../wasmnest-server-base" }
 # - 第四域 discovery 自票 02 批次 03 起宿主直接依赖（adapter 在 src/plugin/mdns.rs）；
 #   ws-client-engine（ADR 0043 移动 host-websocket 客户端域引擎）由移动宿主直接
 #   依赖——本 crate 对两者零引用（票 05 起已实证），2026-10-13 随单形态一并摘除。
-wasmnest-server-websocket = { path = "../wasmnest-server-websocket" }
-wasmnest-server-http = { path = "../wasmnest-server-http" }
+wasmnest-server-websocket = { path = "../wasmnest-server-websocket", version = "0.0.1" }
+wasmnest-server-http = { path = "../wasmnest-server-http", version = "0.0.1" }
 # 对等网络上下文装配端口（统一宿主上下文 `PeerCtxProvider` 的载体，票 02 B5）：
 # `PeerCtxProvider` 类型别名引 `wasmnest_server_peer_net::PeerCtx` ⇒ 无条件（与
 # server-websocket / server-http 同批，双端编译）。
-wasmnest-server-peer-net = { path = "../wasmnest-server-peer-net" }
+wasmnest-server-peer-net = { path = "../wasmnest-server-peer-net", version = "0.0.1" }
 # 桌面 SDK（wasmnest-plugin-api，desktop-assembly feature；桌面 Rust 插件体系与
 # intercall 词汇的唯一来源——wasm-core 无条件面对其零引用，见 lib.rs facade）
 #
@@ -132,7 +132,7 @@ wasmnest-plugin-api = { version = "0.0.1", optional = true }
 # 2026-10-22 peer-net-dissolve：`wasmnest-peer-net` 已拆分并入
 # `wasmnest-server-peer-net`（本 crate 的 PeerCtx 消费链本就指向后者），此死依赖删除
 # 链路报文加密协议核心（link_crypto 算法）——双端共享
-wasmnest-link-crypto = { path = "../link-crypto" }
+wasmnest-link-crypto = { path = "../link-crypto", version = "0.0.1" }
 
 # 能力模块自报（inventory::submit! / collect!）
 inventory = "0.3"

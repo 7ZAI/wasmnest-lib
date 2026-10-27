@@ -25,11 +25,11 @@ sysinfo = "0.33"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 # 加密引擎（link_crypto 算法 + 注册表）
-wasmnest-crypto-engine = { path = "../wasmnest-crypto-engine" }
+wasmnest-crypto-engine = { path = "../wasmnest-crypto-engine", version = "0.0.1" }
 # 链路报文加密协议核心（link_crypto `use wasmnest_link_crypto as proto`）
-wasmnest-link-crypto = { path = "../link-crypto" }
+wasmnest-link-crypto = { path = "../link-crypto", version = "0.0.1" }
 # 共享基础（错误/常量/端口 traits/服务租约模板）
-wasmnest-server-base = { path = "../wasmnest-server-base" }
+wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1" }
 # service：ScopedService 异步 trait
 async-trait = "0.1"
 # 测试/内部使用
