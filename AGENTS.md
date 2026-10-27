@@ -29,7 +29,7 @@
 - **文档字面 ≠ 事实**：引用任何路径 / 命令 / 锁名 / 版本前先用 `ls` / `rg` / `cargo metadata` 核对；与实际不符先修文档再继续。
 - **最小改动**：只改任务必要文件；禁止顺手重构相邻代码、擅自升级依赖、批量重排格式；设计取舍不猜，先问用户。
 - **项目阶段（内部研发起步期）**：版本线自 `0.0.1` 重开，无对外 ABI 兼容义务——破坏性变更可直接进行，但跨仓契约按**精确 tag** 钉住（§2.2 / §5「发版钉平台指针」）；退役面必须 **fail-visible**（点名缺失 + 给出路），禁止静默降级成「查不到就返回空」。
-- **本仓 CI = `.github/workflows/ci.yml`**（2026-10-24 票 7 落地：PR / dev 推送触发，fmt --check + 按 crate 遍历 `cargo test`；`wasmnest-wasm-core` 的 test 因未发布 SDK 版本依赖登记为例外，经平台仓宿主装配测试，见 workflow 注释）、无文档面：唯一人读文档是本文件（`.md` 白名单之外不新增文档，除非用户明确要求）；验证 = 本地命令实跑 + CI + 平台仓 / 测试仓相关锁（§7）。
+- **本仓 CI = `.github/workflows/ci.yml`**（2026-10-24 票 7 落地：PR / dev 推送触发，fmt --check + 按 crate 遍历 `cargo test`；`wasmnest-wasm-core` 的 test 因未发布 SDK 版本依赖登记为例外——CI 单仓检出无法指回 SDK，该 crate 单测由开发侧逃生阀覆盖（§4.2），结构不变量由平台仓读源码锁钉住；见 workflow 注释）、无文档面：唯一人读文档是本文件（`.md` 白名单之外不新增文档，除非用户明确要求）；验证 = 本地命令实跑 + CI + 平台仓 / 测试仓相关锁（§7）。
 - **四仓通用规范（git 提交 / 注释命名 / 测试与验证 / 版本号管理 / issue 管理）真源在 `../wasmnest`/`docs/public/`**（`git.md` / `commenting.md` / `testing.md` / `versioning.md` / `issues.md`），与本文件硬约束同级；通用内容不在此复制，本文件只留仓特有增量（§6.4 / §6.5）。
 
 ---
@@ -225,22 +225,19 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 
 ### 4.2 `wasmnest-wasm-core` 的独立克隆解析限制（重要）
 
-`desktop-assembly`（默认开）依赖 `wasmnest-plugin-api = "0.0.1"`，该 SDK **未发布到 registry**；独立克隆里直接 `cargo test` / `cargo metadata` 会报 `no matching package named wasmnest-plugin-api found`（即使 `--no-default-features` 或删 lock 条目也一样——Cargo 会解析声明了的可选依赖）。两条合法路径：
+`desktop-assembly`（默认开）依赖 `wasmnest-plugin-api = "0.0.1"`，该 SDK **未发布到 registry**；独立克隆里直接 `cargo test` / `cargo metadata` 会报 `no matching package named wasmnest-plugin-api found`（即使 `--no-default-features` 或删 lock 条目也一样——Cargo 会解析声明了的可选依赖）。
 
-1. **平台装配（首选，与生产同图）**：
-   ```bash
-   cd ../wasmnest/wasmnest-{desktop}/src-tauri
-   cargo test -p wasmnest-wasm-core --offline          # 宿主 manifest 的 [patch.crates-io] 生效
-   cargo test -p wasmnest-wasm-core --lib --offline    # 只跑单元测试
-   ```
-   （测试仓 `../wasmnest-test/cross-end-tests` 也有自己的 `[patch.crates-io]`。）
-2. **独立克隆逃生阀（仅本地开发）**：用 `--config` 临时把补丁指回工作树 SDK——
-   ```bash
-   cd wasmnest-wasm-core
-   cargo test --offline \
-     --config 'patch.crates-io.wasmnest-plugin-api.path="../wasmnest/wasmnest-{desktop}/packages/plugin-sdk-desktop/rust"'
-   ```
-   补丁路径版本必须与 SDK `Cargo.toml` 的 `version` 逐字一致。**不要把补丁写进任何 `Cargo.toml`**（那会破坏独立克隆 / 发布装配）。
+**当前（2026-10-27 cargo 1.98 实测）唯一可用的本仓内测试路径 = 独立克隆逃生阀**：
+
+```bash
+cd wasmnest-wasm-core
+cargo test --offline \
+  --config 'patch.crates-io.wasmnest-plugin-api.path="../../wasmnest/wasmnest-{desktop}/packages/plugin-sdk-desktop/rust"'
+```
+
+- 补丁路径版本必须与 SDK `Cargo.toml` 的 `version` 逐字一致。**不要把补丁写进任何 `Cargo.toml`**（那会破坏独立克隆 / 发布装配）。
+- 命令在 crate 目录执行；花括号先展开为平台仓端目录真名（§0）。`--offline` 依赖本机 registry 索引缓存：报 `failed to download` 时先不带 `--offline` 跑一次补齐索引（实测不扰动本仓 `Cargo.lock`）。
+- **平台装配不能跑 wasm-core 自身测试**：wasm-core 对宿主是 path 依赖而非 workspace 成员，cargo 对「非成员 + dev-dependencies」的 `-p` test 直接拒绝（`requires dev-dependencies and is not a member of the workspace`）。宿主 src-tauri 的运行价值 = 编译同图 + 宿主集成测试 + 读本仓源码的结构锁（§2.4），不含 wasm-core 的测试目标——勿再按 `cargo test -p wasmnest-wasm-core` 寻路。测试仓 `../wasmnest-test/cross-end-tests` 的 `[patch.crates-io]` 也只服务它自己 workspace 成员的目标。
 
 其余 15 个 crate 独立克隆可直接构建测试。
 
@@ -361,7 +358,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 
 **当前口径（用户 2026-10-18，研发起步期 + 迁移收口）**：不逐项跑全量集成回归；日常改动至少跑**针对性单测 + 所在面相关锁**，并贴出实际命令与结果；无法运行要说明原因与风险。（通用验证底线——无 CI 门禁口径、实跑贴结果、钩子跳过 ≠ 通过——真源 `../wasmnest`/`docs/public/testing.md` §5。）以下按改动类型执行：
 
-- **改任一 crate 代码** → 该 crate `cargo test --offline` 全绿（`wasmnest-wasm-core` 走 §4.2 的两种路径之一）；改动涉及默认形态 → 无头探针门禁（§4.3）。
+- **改任一 crate 代码** → 该 crate `cargo test --offline` 全绿（`wasmnest-wasm-core` 走 §4.2 逃生阀）；改动涉及默认形态 → 无头探针门禁（§4.3）。
 - **改 WIT / 契约版本** → 全仓 `@0.0.1` 字面量已同步；平台 `compose-wit.mjs --all` + `check:wit` 通过；受影响插件产物重建成功；`check:manifest --print-hash` 后的 manifest 通过 `check:manifest`。
 - **改 wire 副本** → 平台 SDK 侧已同步（或本仓侧逐字跟改）；`wire_drift_locks` 全绿。
 - **改权限词汇** → SDK 生成物重出；`permission_vocabulary_lock` 全绿；涉及应用 manifest 的改动在应用仓同步（本仓不代改）。
@@ -383,7 +380,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 4. **（已收口 2026-10-20）`target-dir` 落点漂移**：10 个 crate 已统一改为 `../target/<bucket>`，独立克隆落本仓根；旧落点 `${WASMNEST}/target/{host-kits,server-libs}` 为漂移产物（无活引用，可整删），本仓 `target/host-kits` 的历史残留即当前活跃桶。核查方法见 §4.4。
 5. **（已收口 2026-10-21）平台治理锁滞后于拆分**：平台仓 `capability_crates_no_product_ids` 的 `crate_dir()` 已对 `wasmnest-componentize` 单独解析 `tools/componentize`（目录存在，不会 panic）；`capability_crates_unit_tests_only` 的 `CRATE_TEST_DIR_EXCEPTIONS` 已登记 `wasmnest-wasm-core/tests/platform_reference_registry_lock.rs`。两把锁在平台仓实测全绿：`cargo test --offline --test capability_crates_no_product_ids --test capability_crates_unit_tests_only` → 6 + 5 passed。
 6. **wasm-core 两处产品 id 泄漏**：`security/fs_auth.rs` 的 `FIRST_PARTY_TRUSTED_DIRS`、`manager/host/activation.rs` 的 `LEGACY_API_PLUGIN_ALIASES`——由独立票据处置；平台语义锁因此暂不扫 `wasm-core`。
-7. （已收口 2026-10-24，票 7）**本仓 CI 落地**：`.github/workflows/ci.yml`（fmt --check + 按 crate cargo test）；`wasmnest-wasm-core` 的 test 为登记例外（未发布 SDK 版本依赖无法独立克隆解析，AGENTS §4.2），经平台仓宿主装配测试。验证 = 本地命令 + CI + 跨仓锁。
+7. （已收口 2026-10-24，票 7）**本仓 CI 落地**：`.github/workflows/ci.yml`（fmt --check + 按 crate cargo test）；`wasmnest-wasm-core` 的 test 为登记例外（未发布 SDK 版本依赖无法独立克隆解析，AGENTS §4.2）。~~经平台仓宿主装配测试~~（2026-10-27 修正：平台装配 `-p` 测试不可行——非 workspace 成员 + dev-deps 被 cargo 拒绝；单测由开发侧逃生阀覆盖，见 §4.2）。验证 = 本地命令 + CI + 跨仓锁。
 8. 平台仓桌面 SDK 的 `README.md` / `template/` 仍与 ADR 0057 挂载包形态不一致（dev-shell 已于 2026-10-21 对齐；属平台仓侧漂移，本仓不代改；跟踪 `7ZAI/wasmnest#1`）。
 
 ---
