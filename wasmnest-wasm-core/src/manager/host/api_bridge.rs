@@ -741,12 +741,15 @@ pub async fn plugin_auth_remove_record(
 
 /// 从本地 zip 分发包安装插件（dev 合入）
 ///
-/// 仅接收已下载的本地文件路径：解压与身份/路径校验在 Rust 端完成
+/// 仅接收已下载的本地文件路径：解压与身份/路径校验在 Rust 端完成。
+/// `upgrade`（应用版本更新链路，缺省 false）：对同 id **用户安装**插件就地升级
+/// （保数据换代码，运行中 / 非 user-installed 拒绝，见 `install.rs::install_from_zip`）。
 #[tauri::command]
 pub async fn plugin_install_from_file(
     webview: tauri::Webview,
     path: String,
     credential: String,
+    upgrade: Option<bool>,
     plugin_host: State<'_, Arc<PluginHost>>,
 ) -> crate::Result<String> {
     require_host_surface(
@@ -756,8 +759,9 @@ pub async fn plugin_install_from_file(
         &credential,
         "plugin installation must be requested by the host frontend",
     )?;
-    tracing::info!("[API] plugin_install_from_file: {}", path);
-    let result = plugin_host.install_from_zip(&path).await;
+    let upgrade = upgrade.unwrap_or(false);
+    tracing::info!(path = %path, upgrade, "[API] plugin_install_from_file");
+    let result = plugin_host.install_from_zip(&path, upgrade).await;
     if let Err(ref e) = result {
         tracing::error!(error = %e, "[API] plugin_install_from_file failed");
     }
