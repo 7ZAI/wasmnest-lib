@@ -6396,6 +6396,8 @@ dependencies = [
 [[package]]
 name = "wasmnest-plugin-api"
 version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dfbb6d62dc0504c43a96de143f3839bcece1f8987f24a27f67335d8098ffdb5"
 dependencies = [
  "anyhow",
  "inventory",
