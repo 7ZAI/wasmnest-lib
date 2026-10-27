@@ -235,8 +235,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            reg.owner_of("com.wasmnest.bedcode.pair")
-                .as_deref(),
+            reg.owner_of("com.wasmnest.bedcode.pair").as_deref(),
             Some("com.wasmnest.bedcode")
         );
         assert_eq!(reg.owner_of("com.wasmnest.bedcode.nope"), None);

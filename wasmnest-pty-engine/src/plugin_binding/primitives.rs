@@ -59,7 +59,7 @@ use crate::plugin_binding::output::OutputNotifySink;
 use crate::plugin_binding::ports::{block_on, BoxedTask, PtyPorts};
 use crate::plugin_binding::registry::{
     exit_reason_of, publish_pty_exit, quota_of, registered_count_for, session_of, with_entry,
-    EXIT_READ_WINDOW, PtyEntry, HANDLE_PREFIX, PTYS,
+    PtyEntry, EXIT_READ_WINDOW, HANDLE_PREFIX, PTYS,
 };
 use crate::{PtyOutputSink, PtyRing, PtyRingFetch, PtyRingSink, PtySession, PtyTerminated};
 
@@ -423,7 +423,11 @@ async fn reap_and_publish(
         "pty_exit_read_window",
         Box::pin(async move {
             tokio::time::sleep(EXIT_READ_WINDOW).await;
-            if let Some(entry) = PTYS.lock().unwrap_or_else(|e| e.into_inner()).remove(&pty_id) {
+            if let Some(entry) = PTYS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&pty_id)
+            {
                 drop(entry);
                 tracing::debug!(pty_id = %pty_id, "host-pty: 退出只读窗口到期，句柄已摘除");
             }
