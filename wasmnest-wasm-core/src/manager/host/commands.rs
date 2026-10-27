@@ -410,10 +410,7 @@ mod tests {
         else {
             panic!("应为 UserFacing，实际: {err}");
         };
-        assert_eq!(
-            code,
-            "com.wasmnest.bedcode.session.error.sessionNotFound"
-        );
+        assert_eq!(code, "com.wasmnest.bedcode.session.error.sessionNotFound");
         assert_eq!(params, serde_json::json!({ "sessionId": "s-1" }));
         assert!(
             detail.contains("session.input"),

@@ -702,9 +702,6 @@ mod tests {
             "com.wasmnest.evil",
             "com.wasmnest.bedcode"
         ));
-        assert!(!validate_dir_binding(
-            "session",
-            "com.wasmnest.bedcode"
-        ));
+        assert!(!validate_dir_binding("session", "com.wasmnest.bedcode"));
     }
 }
