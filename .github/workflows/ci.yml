@@ -79,10 +79,13 @@ jobs:
             if [ "$crate" = "wasmnest-wasm-core" ]; then
               # 登记例外（fail-visible，非静默跳过）：desktop-assembly（默认
               # feature）依赖未发布的桌面 SDK crate wasmnest-plugin-api 0.0.1
-              #（registry 不存在），独立克隆无法解析依赖图（AGENTS §4.2）——该
-              # crate 的测试经平台仓宿主装配跑（[patch.crates-io] 指回工作树
-              # SDK）；本仓 fmt 门禁仍覆盖它。
-              echo "::warning::skip cargo test: $crate（未发布 SDK 版本依赖无法独立解析；经平台仓宿主装配测试，AGENTS §4.2）"
+              #（registry 不存在），独立克隆无法解析依赖图；本仓内测试唯一合法
+              # 向量是 §4.2 逃生阀（--config 把补丁指回平台仓工作树 SDK，依赖
+              # R1 sibling 检出——CI 单仓检出无此路径；且平台装配 `-p` 测试亦
+              # 不可行：非 workspace 成员 + dev-deps 被 cargo 拒绝，2026-10-27
+              # 实测）。该 crate 单测经开发侧逃生阀覆盖；结构不变量由平台仓
+              # 读源码锁钉住；本仓 fmt 门禁仍覆盖它。
+              echo "::warning::skip cargo test: $crate（未发布 SDK 版本依赖无法独立解析；单测经开发侧逃生阀覆盖，AGENTS §4.2）"
               continue
             fi
             echo "== cargo test $crate"
