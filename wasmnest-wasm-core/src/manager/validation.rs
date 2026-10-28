@@ -21,6 +21,7 @@ use crate::manifest::InstanceLifecycle;
 use crate::manifest::PluginManifest;
 
 use crate::security::auth_policy::AuthStrategy;
+use std::path::Path;
 
 /// 校验 manifest 必填字段
 ///
@@ -53,6 +54,10 @@ pub fn validate_manifest_required(manifest: &PluginManifest) -> crate::Result<()
     // 本函数只保住两处入口（目录扫描 / zip 安装）共用的结构性必填字段。
     // 运行期传输租约的 opt-in 必须与入站权限位同声明（两侧入口同口径）。
     validate_background_transport(manifest)?;
+    // worker 声明的结构面（name 唯一 / file 形状）：双端同机制（ADR 0059），
+    // 不随端装配面门控；file 存在性需要插件目录上下文，挂装载入口
+    // [`validate_worker_files`]（与 ptyQuota 的「安装期可通过、装载期拒绝」同款分层）。
+    validate_worker_declarations(manifest)?;
     // 生命周期 / preopen 校验为桌面 manifest 专属面（移动 manifest 无这两个字段，
     // fork 票 17 §3.2）——随桌面装配面门控（`desktop-assembly`）
     #[cfg(feature = "desktop-assembly")]
@@ -162,6 +167,75 @@ pub fn validate_preopen_category(manifest: &PluginManifest) -> crate::Result<()>
              目录经 fs_request_auth / preauth 授权并持久化），见 ADR 0034"
                 .to_string(),
         ));
+    }
+    Ok(())
+}
+
+/// 校验 manifest 声明的内嵌 worker 条目的结构面（worker 机制 / ADR 0059，双端同机制）
+///
+/// - **name 在同一清单内唯一**：`host-worker.submit(worker)` 按名寻址，重名会让
+///   第二个声明永远不可达——静默忽略重名等于让作者以为两个 worker 都存在；
+/// - **name / file 非空**：空 name 无法寻址、空 file 无法定位，均为结构性必填；
+/// - **file 不得含路径分隔符 / `..`**：worker wasm 固定住插件包 `worker/` 目录，
+///   `file` 只是文件名——带分隔符的声明是路径注入面（借 `worker/` 前缀逃逸出
+///   插件目录），一律拒绝。
+///
+/// **file 存在性不在本函数**（需要插件目录上下文），挂装载入口
+/// [`validate_worker_files`]——zip 安装入口按「结构性必填」口径不查（与 ptyQuota
+/// 同款分层：安装期可通过、装载期拒绝）。
+pub fn validate_worker_declarations(manifest: &PluginManifest) -> crate::Result<()> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for worker in &manifest.workers {
+        if worker.name.is_empty() {
+            return Err(crate::AppError::Plugin(
+                "plugin.json workers[] 含空 name：worker 名是 host-worker.submit 的寻址键，\
+                 必须非空"
+                    .to_string(),
+            ));
+        }
+        if worker.file.is_empty() {
+            return Err(crate::AppError::Plugin(format!(
+                "plugin.json workers[{}] 缺 file：worker wasm 文件名必须非空\
+                 （相对插件包 worker/ 目录，不含路径）",
+                worker.name
+            )));
+        }
+        if worker.file.contains('/') || worker.file.contains('\\') || worker.file.contains("..") {
+            return Err(crate::AppError::Plugin(format!(
+                "plugin.json workers[{}] file=\"{}\" 含路径分隔符或 \"..\"：worker wasm \
+                 固定在插件包 worker/ 目录下，file 只写文件名（路径注入面，拒绝装载）",
+                worker.name, worker.file
+            )));
+        }
+        if !seen.insert(worker.name.as_str()) {
+            return Err(crate::AppError::Plugin(format!(
+                "plugin.json workers[] name=\"{}\" 重复：worker 名在同一清单内必须唯一\
+                 （重名的第二个声明永远不可达）",
+                worker.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// 校验 manifest 声明的 worker wasm 文件在插件包 `worker/` 目录下存在（装载入口调用）
+///
+/// 结构校验（[`validate_worker_declarations`]，无目录上下文）已过之后的一道：
+/// `plugin_dir/worker/<file>` 必须是存在文件。静默跳过缺失文件的声明会让
+/// `submit` 到运行期才以「worker 名不存在」报错——目录扫描 / zip 解压时就能
+/// 确认的事，不该拖到并行调用路径上（fail-visible 提前量）。
+pub fn validate_worker_files(manifest: &PluginManifest, plugin_dir: &Path) -> crate::Result<()> {
+    for worker in &manifest.workers {
+        let path = plugin_dir.join("worker").join(&worker.file);
+        if !path.is_file() {
+            return Err(crate::AppError::Plugin(format!(
+                "plugin.json workers[{}] file=\"{}\" 在插件包 worker/ 目录下不存在\
+                 （期望 {}）：worker 声明必须有对应 wasm 产物",
+                worker.name,
+                worker.file,
+                path.display()
+            )));
+        }
     }
     Ok(())
 }
@@ -689,6 +763,101 @@ mod tests {
                 AuthStrategy::AlwaysAllow.as_str()
             ]
         );
+    }
+
+    /// worker 声明的结构面（worker 机制 / ADR 0059，双端同机制，不随端装配面门控）
+    ///
+    /// 变异判据：把 `validate_worker_declarations` 从 `validate_manifest_required`
+    /// 摘掉，重名 / 路径注入 / 空字段形态全部静默装载（转红）——重名会让第二个
+    /// 声明永远不可达，路径注入可借 `worker/` 前缀逃逸出插件目录。
+    #[test]
+    fn worker_declarations_are_structurally_validated() {
+        let with = |workers: &str| -> crate::Result<PluginManifest> {
+            parse_manifest_json(&format!(
+                r#"{{"id":"com.wasmnest.wk","name":"wk","version":"1.0.0","platform":"both","workers":{workers}}}"#
+            ))
+        };
+
+        // 正例：单一最小条目照常装载（wasmHash 缺省 = 不校验）
+        let ok = with(r#"[{"name":"n","file":"n.wasm"}]"#).expect("最小条目合法");
+        assert_eq!(ok.workers.len(), 1);
+        assert_eq!(ok.workers[0].wasm_hash, "");
+
+        // 反例：name 重复（重名的第二个声明永远不可达）
+        let err = with(r#"[{"name":"n","file":"a.wasm"},{"name":"n","file":"b.wasm"}]"#)
+            .err()
+            .expect("重名必须拒绝");
+        assert!(
+            err.to_string().contains("重复"),
+            "错误必须点名重名，got: {err}"
+        );
+
+        // 反例：file 带路径分隔符 / `..`（路径注入面）。用 serde_json 构造而
+        // 不是 format! 直拼：`sub\n.wasm` 的反斜杠在 JSON 文本里必须写成
+        // `\\`，直拼会被解析成换行转义，测的就不是路径分隔符了。
+        for file in ["../escape.wasm", "sub/n.wasm", "sub\\n.wasm"] {
+            let workers = serde_json::json!([{ "name": "n", "file": file }]).to_string();
+            let err = with(&workers)
+                .err()
+                .unwrap_or_else(|| panic!("路径形态 file 必须拒绝: {file}"));
+            assert!(
+                err.to_string().contains("路径分隔符"),
+                "错误必须点名路径注入面，got: {err}"
+            );
+        }
+
+        // 反例：空 name / 空 file（结构性必填）
+        assert!(
+            with(r#"[{"name":"","file":"n.wasm"}]"#).is_err(),
+            "空 name 必须拒绝"
+        );
+        assert!(
+            with(r#"[{"name":"n","file":""}]"#).is_err(),
+            "空 file 必须拒绝"
+        );
+    }
+
+    /// worker wasm 文件存在性在**装载入口**校验（`validate_worker_files`）
+    ///
+    /// 变异判据：把 loader 的 `validate_worker_files` 接线摘掉，缺文件声明会一路
+    /// 活到运行期 `submit` 才以「worker 名不存在」暴露——目录扫描时就能确认的事
+    /// 不该拖到并行调用路径上（fail-visible 提前量）。
+    #[test]
+    fn worker_files_must_exist_under_worker_dir() {
+        use std::fs;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plugin_dir = tmp.path().join("com.wasmnest.wk");
+        fs::create_dir_all(plugin_dir.join("worker")).unwrap();
+        fs::write(plugin_dir.join("worker").join("n.wasm"), b"wasm").unwrap();
+
+        let manifest = |file: &str| -> PluginManifest {
+            parse_manifest_json(&format!(
+                r#"{{"id":"com.wasmnest.wk","name":"wk","version":"1.0.0","platform":"both",
+                "workers":[{{"name":"n","file":"{file}"}}]}}"#
+            ))
+            .expect("结构面合法")
+        };
+
+        // 正例：worker/n.wasm 在场
+        validate_worker_files(&manifest("n.wasm"), &plugin_dir).expect("在场文件放行");
+
+        // 反例：缺文件点名 worker 名、文件名与 worker/ 目录
+        let err = validate_worker_files(&manifest("missing.wasm"), &plugin_dir)
+            .err()
+            .expect("缺文件必须拒绝");
+        let text = err.to_string();
+        assert!(
+            text.contains('n') && text.contains("missing.wasm") && text.contains("worker"),
+            "错误必须点名 worker、文件与 worker/ 目录，got: {text}"
+        );
+
+        // 未声明 workers：零迁移（空清单直接放行）
+        let bare = parse_manifest_json(
+            r#"{"id":"com.wasmnest.wk","name":"wk","version":"1.0.0","platform":"both"}"#,
+        )
+        .unwrap();
+        validate_worker_files(&bare, &plugin_dir).expect("无 worker 声明零影响");
     }
 
     #[test]

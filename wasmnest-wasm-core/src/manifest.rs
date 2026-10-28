@@ -98,6 +98,15 @@ pub struct PluginManifest {
     /// 单插件在册 `host-pty` 句柄数上限声明（会话引擎下沉 P1 / H1）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pty_quota: Option<usize>,
+    /// 内嵌 worker 声明（worker 机制，ADR 0059；spec `.scratch/2026-10-28-worker-mechanism/`）
+    ///
+    /// 每项是一个即用即弃纯计算 wasm 子资源：wasm 放插件包 `worker/` 目录，
+    /// 主插件（仍 `persistent`）经 `host-worker.submit` 调用。worker **私属于
+    /// 声明插件**，不可跨插件 submit。结构校验（name 唯一 / file 形状）在
+    /// `validation::validate_worker_declarations`，file 存在性在装载入口
+    /// `validation::validate_worker_files`。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workers: Vec<WorkerDecl>,
     /// 实例生命周期策略：`persistent`（常驻，缺省）/ `ephemeral`（即用即弃）
     #[serde(default, skip_serializing_if = "InstanceLifecycle::is_persistent")]
     pub lifecycle: InstanceLifecycle,
@@ -143,6 +152,27 @@ fn default_plugin_type() -> PluginType {
 /// 单插件 Store 资源上限覆盖请求（manifest `resourceOverrides`；真源 =
 /// `crate::config::ResourceOverrides`，本模块再导出供 manifest 词汇统一）
 pub use crate::config::ResourceOverrides;
+
+/// 内嵌 worker 声明条目（manifest `workers` 数组元素；worker 机制 / ADR 0059）
+///
+/// worker 与主插件不同 world（零宿主 import，仅 WASI 内建；`wit/worker.wit`），
+/// 导出 `wasmnest:plugin/worker@<version>` 的 `run: func(input: string) -> string`
+/// （JSON in/out）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerDecl {
+    /// worker 名（`host-worker.submit(worker)` 的寻址键；同一清单内唯一，加载期校验）
+    pub name: String,
+    /// worker wasm 文件名（不含路径，相对插件包 `worker/` 目录；存在性加载期校验）
+    pub file: String,
+    /// worker wasm 内容 SHA-256（小写十六进制；缺省空串 = 不校验，语义与主 [`PluginManifest::wasm_hash`] 一致）
+    #[serde(default)]
+    pub wasm_hash: String,
+    /// 单 worker 资源覆盖请求（缺省继承缺省档：内存 128 MiB、燃料与主插件同基数；
+    /// 六字段可逐 worker 覆盖，与主插件 `resourceOverrides` 同形）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_overrides: Option<ResourceOverrides>,
+}
 
 // ==================== 枚举词汇 ====================
 
@@ -798,5 +828,69 @@ mod drift_lock {
                 .is_some(),
             "opt-in 声明必须出现在 wire 形状里"
         );
+    }
+}
+
+/// workers 块 wire 形状（worker 机制契约面，issue #10）
+///
+/// 未声明 = 零迁移（wire 形状不出现 `workers` 键，与既有 manifest 逐字一致，
+/// 也保住上方漂移锁的双侧同形——桌面 SDK 类型尚无本字段，空值省略是两侧相等
+/// 的前提）；声明 = camelCase 字段名 + 可选字段（`wasmHash` 空串缺省、
+/// `resourceOverrides` 缺省省略）+ 反序列化回读等价。
+#[cfg(test)]
+mod workers_wire_shape {
+    use super::*;
+
+    #[test]
+    fn workers_block_uses_camel_case_and_skips_defaults() {
+        // 未声明：wire 形状零变化
+        let bare = PluginManifest {
+            id: "com.wasmnest.worker".to_string(),
+            name: "w".to_string(),
+            version: "1.0.0".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            serde_json::to_value(&bare)
+                .unwrap()
+                .get("workers")
+                .is_none(),
+            "未声明 workers 不得出现在 wire 形状里（漂移锁双侧同形的前提）"
+        );
+
+        // 完整条目：camelCase 字段名 + 缺省省略
+        let declared = PluginManifest {
+            workers: vec![WorkerDecl {
+                name: "hasher".to_string(),
+                file: "hasher.wasm".to_string(),
+                wasm_hash: "deadbeef".to_string(),
+                resource_overrides: None,
+            }],
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&declared).unwrap();
+        let entry = &value["workers"][0];
+        assert_eq!(entry["name"], "hasher");
+        assert_eq!(entry["file"], "hasher.wasm");
+        assert_eq!(entry["wasmHash"], "deadbeef");
+        assert!(
+            entry.get("resourceOverrides").is_none(),
+            "缺省资源覆盖不得出现在 wire 形状里"
+        );
+
+        // 反序列化回读等价（显式声明的字段保形）
+        let roundtrip: PluginManifest = serde_json::from_value(value).unwrap();
+        assert_eq!(roundtrip.workers, declared.workers);
+
+        // 最小条目：wasmHash 缺省空串（= 不校验，与主 wasmHash 同语义）、
+        // 资源覆盖缺省 None（继承缺省档）
+        let minimal: PluginManifest = serde_json::from_str(
+            r#"{"id":"com.wasmnest.worker","name":"w","version":"1.0.0","platform":"both",
+                "workers":[{"name":"n","file":"n.wasm"}]}"#,
+        )
+        .expect("最小 worker 条目应可解析");
+        assert_eq!(minimal.workers.len(), 1);
+        assert_eq!(minimal.workers[0].wasm_hash, "");
+        assert!(minimal.workers[0].resource_overrides.is_none());
     }
 }
