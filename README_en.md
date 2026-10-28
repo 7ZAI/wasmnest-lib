@@ -14,7 +14,7 @@ English | [简体中文](README.md)
 ## 1. Project Shape
 
 - **No root workspace**: 17 independent crates (each with its own `Cargo.toml` and tracked `Cargo.lock`) plus 4 fixture crates. All commands run inside a crate directory; there is no repository-level `cargo test`.
-- **Version line**: every crate restarts at `0.0.1`; the contract version `wasmnest:plugin@0.0.1` has a single handwritten source of truth in `wasmnest-contract`.
+- **Version line**: every crate restarts at `0.0.1`; the contract version `wasmnest:plugin@0.0.2` has a single handwritten source of truth in `wasmnest-contract`.
 - **Consumption**: the platform's two hosts and the test repo depend on this working tree directly through sibling paths (no copies, no registry publication). The only exception is `wasmnest-wasm-core`'s `desktop-assembly` dependency on the published desktop SDK `wasmnest-plugin-api`, which consumers redirect back to the SDK working tree with `[patch.crates-io]`.
 
 ## 2. Dependency Layering

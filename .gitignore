@@ -29,5 +29,6 @@ temp/
 *.bak
 *.backup
 
-# 会话临时 scratch（不入库）
-.scratch/
+# 会话临时 scratch（不入库；设计定稿的 spec 目录按目录放行，供 issue 引用）
+.scratch/*
+!.scratch/2026-10-28-worker-mechanism/

@@ -10,7 +10,7 @@
 1. **插件机制**：`wasmnest-wasm-core`（运行期整核）+ `wasmnest-host-kit`（装配期内核）+ `wasmnest-host-api-core`（域实现层）；
 2. **能力域引擎**：`wasmnest-{discovery,pty,ws-client,crypto,notify}-engine` + 五个 `wasmnest-server-*`（传输面与内核）；
 3. **共享底座**：`link-crypto`（链路加密协议）；对等网络底座机制（身份/TLS/信任/mDNS 注册/传输会话引擎原语）拆分并入 `wasmnest-server-peer-net` 的 `base/` 子模块（2026-10-22 peer-net-dissolve，原 `wasmnest-peer-net` crate 已删除）；
-4. **契约真源**：`wasmnest-contract` crate（`src/lib.rs`）与各 `wit/<domain>.wit`——`wasmnest:plugin@0.0.1` 包名/版本只在本仓手写。
+4. **契约真源**：`wasmnest-contract` crate（`src/lib.rs`）与各 `wit/<domain>.wit`——`wasmnest:plugin@0.0.2` 包名/版本只在本仓手写。
 
 **边界一句话**：产品语义（会话 / 终端 / 文件传输 / AI / Agent）住应用仓；端差异与装配（宿主薄壳、SDK、WIT 组合、权限门落点）住平台仓；本仓只做**可复用机制 + 端口抽象 + 契约**，不读平台/应用源码、不做产品判断。
 
@@ -70,7 +70,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 | 目录（包名） | 定位（一句话） | 形态 / feature | WIT 真源 | 主要消费方 |
 | --- | --- | --- | --- | --- |
 | `wasmnest-contract` | **契约常量**：`PACKAGE` / `PACKAGE_NAME` / `PACKAGE_VERSION` 唯一手写真源；零依赖、不装 WIT | 无 feature | — | wasm-core（`use` 后派生）、平台仓脚本与锁（正则读源文件） |
-| `wasmnest-wasm-core` | 插件机制**整核**：wasmtime 组件宿主运行时壳 + host_api adapter + 安全闸门 + 主库/引擎面 | `default = ["desktop-assembly"]`；`test-support` | `wit/core.wit` | 平台双端宿主（桌面默认开 / 移动 `default-features = false`）、测试仓 |
+| `wasmnest-wasm-core` | 插件机制**整核**：wasmtime 组件宿主运行时壳 + host_api adapter + 安全闸门 + 主库/引擎面 | `default = ["desktop-assembly"]`；`test-support` | `wit/core.wit` + `wit/worker.wit`（worker world 自持分片，双端同源） | 平台双端宿主（桌面默认开 / 移动 `default-features = false`）、测试仓 |
 | `wasmnest-host-kit` | 装配期机制内核：`WasmPluginState` / `HostModule` 契约 / 自动注册表 / limits / metrics | 无 feature | — | 双端宿主、全部 `common-host` 能力域、wasm-core |
 | `wasmnest-host-api-core` | host_api 无 WIT 域**实现层**：gate / storage / bus / database / log / events / fs | 无 feature | — | wasm-core adapter、server-base（re-export 护栏常量） |
 | `wasmnest-server-base` | server **叶子地基**：错误信封 / 常量 / 系统信息 / 网络配置形状 / 连接身份 / 端口 traits / wire | `tauri-compat`（默认开） | — | 几乎全仓 + 双端宿主 + 测试仓 |
@@ -114,9 +114,9 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 
 - **包名 / 版本唯一手写真源** = `wasmnest-contract/src/lib.rs`（`PACKAGE_NAME` / `PACKAGE_VERSION` / `PACKAGE`，零依赖 crate）。三条使用路径：① `wasm-core` 以普通 crate 依赖 `use` 后运行期拼导出名（`contract::export_item`）；② 能力域在 `const` / `static` 位置写导出名字面量（`inventory` 自报要求编译期常量；跨 crate **纯拷贝**可行，但版本嵌在串中段的组合名无 const 插值机制——锁钉的正是组合串）；③ 平台仓 `scripts/compose-wit.mjs` 与发布清单锁正则读该 crate 源文件。
 - **文本形状是跨语言契约**：常量必须保持 `pub const <NAME>: &str = "<值>";` 精确形态（含 `: &str`、无 macro、无 `env!` / `concat!`）——平台仓两处 node 解析器按此形状取值，改成 `concat!` / `env!` 会静默打穿拼装与清单门禁。
-- **WIT 分片**：`wasmnest-wasm-core/wit/core.wit`（**内核唯一合法绑定**，只收机制必需面）+ 各能力域 `wit/<domain>.wit`（域自持，`world cap-<domain>`）+ 端 cap（平台仓 `wit-src/cap-*.wit`）。本仓**不做 union world**；端组合在平台仓 `compose.json` 驱动。
+- **WIT 分片**：`wasmnest-wasm-core/wit/core.wit`（**内核唯一合法绑定**，只收机制必需面）+ `wasmnest-wasm-core/wit/worker.wit`（worker world 自持分片，零宿主 import，一期不被 compose 消费）+ 各能力域 `wit/<domain>.wit`（域自持，`world cap-<domain>`）+ 端 cap（平台仓 `wit-src/cap-*.wit`）。本仓**不做 union world**；端组合在平台仓 `compose.json` 驱动。
 - **bump 政策**：任何 WIT 变更（含函数级追加）→ patch；interface 增删 / 签名变 → minor。bump 流程（跨仓，缺一步就断链）：
-  1. 改本仓 `wasmnest-contract/src/lib.rs` 的 `PACKAGE_*` + 同步所有硬编码 `@0.0.1` 字面量（`wasmnest-discovery-engine/src/{routing.rs,lib.rs}` 的 `EXPORTS` / `MODULE_INTERFACES`、其余域 `plugin_binding.rs` 的 `MODULE_INTERFACES`；值层由平台仓 `wit_package_version_lock.rs` 与内核 `manager::capability` 对偶锁钉住）；
+  1. 改本仓 `wasmnest-contract/src/lib.rs` 的 `PACKAGE_*` + 同步所有硬编码 `@0.0.2` 字面量（`wasmnest-discovery-engine/src/{routing.rs,lib.rs}` 的 `EXPORTS` / `MODULE_INTERFACES`、其余域 `plugin_binding.rs` 的 `MODULE_INTERFACES`；值层由平台仓 `wit_package_version_lock.rs` 与内核 `manager::capability` 对偶锁钉住）；
   2. 平台仓重拼生成物：`node scripts/compose-wit.mjs --all` → `pnpm run check:wit`；
   3. **重建全部插件产物**（版本进入 import 名，宿主与 guest 版本不等即实例化失败）；
   4. `node scripts/check-release-manifest.mjs --print-hash` 更新 `contract.witSha256` → `pnpm run check:manifest`。
@@ -152,7 +152,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 | 本仓 · `wasmnest-wasm-core/tests/platform_reference_registry_lock.rs` | 仓根全文零平台仓目录名字面量（唯二豁免见 §0） |
 | 平台仓 · `wasmnest-{desktop}/src-tauri/tests/capability_crates_unit_tests_only.rs` | 治理 crate 根不得有 `tests/`/`benches/`/`examples/` 与内部 dev-dependencies（豁免：`wasmnest-host-kit`；`wasm-core/tests/platform_reference_registry_lock.rs` 已按文件登记在 `CRATE_TEST_DIR_EXCEPTIONS`） |
 | 平台仓 · `capability_crates_no_product_ids.rs` | 能力 crate 生产代码零产品插件 id / 零退役宿主面词汇（按 `SCANNED_CRATES` 登记；`wasm-core` 暂不在面内，见 §8） |
-| 平台仓 · `host_module_desc_noun_lock.rs`（双端）/ `wasm_core_whole_crate_lock.rs` / `l2_gating_lock.rs` / `wit_package_version_lock.rs` | 描述符零产品名词 / 整核垫片形态 / L2 反向依赖白名单 / 契约版本字面量（`@0.0.1`） |
+| 平台仓 · `host_module_desc_noun_lock.rs`（双端）/ `wasm_core_whole_crate_lock.rs` / `l2_gating_lock.rs` / `wit_package_version_lock.rs` | 描述符零产品名词 / 整核垫片形态 / L2 反向依赖白名单 / 契约版本字面量（`@0.0.2`） |
 | 平台仓 · `wasmnest-{mobile}/src-tauri/tests/{mobile_wasm_core_purity_lock, kernel_schema_single_truth_lock, peer_engine_consolidation_lock, mobile_host_websocket_client_domain_lock, retired_*}.rs` | 内核纯净性七判据 / 主库 schema / 引擎集中化 / 客户端域边界 / fork 与退役面不复活 |
 | 测试仓 · `cross-end-tests/tests/{wire_drift_locks, permission_vocabulary_lock, command_vocabulary_lock, mdns_browse_singleton_lock, bedcode_app_identity_lock, file_transfer_wiring_lock}.rs` | wire / 权限 / 命令面词汇 / mDNS 单 browse 出口 / 身份与接线不变量 |
 
@@ -289,7 +289,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 
 | 任务 | 动手前必读 |
 | --- | --- |
-| 改 WIT / 契约包版本 | §2.2 + `wasmnest-contract/src/lib.rs` + `wit/core.wit` / 域 WIT；同步全仓 `@0.0.1` 字面量；平台 `compose-wit.mjs` / `check:wit` / `check:manifest --print-hash` + 重建插件产物 |
+| 改 WIT / 契约包版本 | §2.2 + `wasmnest-contract/src/lib.rs` + `wit/core.wit` / 域 WIT；同步全仓 `@0.0.2` 字面量；平台 `compose-wit.mjs` / `check:wit` / `check:manifest --print-hash` + 重建插件产物 |
 | 改权限词汇 | `wasmnest-wasm-core/src/permission.rs`（真源）→ 平台 SDK 重出生成物（`pnpm run gen:permissions`）→ 测试仓 `permission_vocabulary_lock`；同步 §2.3 副本中的权限常量 |
 | 改 wire 词汇 / 事件名 / topic | §2.3；先确认真源（平台 SDK），逐字同步副本，跑 `wire_drift_locks`；**不要改副本定义块内注释** |
 | 改主库 schema / 迁移 | `wasmnest-wasm-core/src/db/{schema.sql,database.rs}`（真源 + 幂等迁移）；平台移动侧 `kernel_schema_single_truth_lock`（五表定义与 `init_schema` 接线）；禁止手改生产库、禁止宿主自持 DDL 副本 |
@@ -326,7 +326,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 
 ### 6.3 契约与版本
 
-- 包名 / 版本只改 `wasmnest-contract/src/lib.rs` 一处；其余 `@0.0.1` 字面量是同批同步副本，由平台锁断言。
+- 包名 / 版本只改 `wasmnest-contract/src/lib.rs` 一处；其余 `@0.0.2` 字面量是同批同步副本，由平台锁断言。
 - `wasmnest-contract` **不登记 `SPLIT_CRATES`**：该表同时驱动「宿主清单声明全部拆分产物」的对偶断言，登记会要求宿主直接声明契约 crate；而契约只允许经 `wasmnest-wasm-core` 的 re-export 消费。它是新建契约 crate，不是宿主 bin 拆分产物，结构管辖在平台仓 crate 结构锁 + 能力 crate 语义锁。
 - WIT 变更必须 bump（含函数级追加）+ 重拼 + 重建产物（§2.2）；禁止手改平台端生成物 `rust/wit/`。
 - 权限词汇不得自造；主库 DDL 只在 `db/schema.sql`；迁移必须幂等且失败显性。
@@ -359,7 +359,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 **当前口径（用户 2026-10-18，研发起步期 + 迁移收口）**：不逐项跑全量集成回归；日常改动至少跑**针对性单测 + 所在面相关锁**，并贴出实际命令与结果；无法运行要说明原因与风险。（通用验证底线——无 CI 门禁口径、实跑贴结果、钩子跳过 ≠ 通过——真源 `../wasmnest`/`docs/public/testing.md` §5。）以下按改动类型执行：
 
 - **改任一 crate 代码** → 该 crate `cargo test --offline` 全绿（`wasmnest-wasm-core` 走 §4.2 逃生阀）；改动涉及默认形态 → 无头探针门禁（§4.3）。
-- **改 WIT / 契约版本** → 全仓 `@0.0.1` 字面量已同步；平台 `compose-wit.mjs --all` + `check:wit` 通过；受影响插件产物重建成功；`check:manifest --print-hash` 后的 manifest 通过 `check:manifest`。
+- **改 WIT / 契约版本** → 全仓 `@0.0.2` 字面量已同步；平台 `compose-wit.mjs --all` + `check:wit` 通过；受影响插件产物重建成功；`check:manifest --print-hash` 后的 manifest 通过 `check:manifest`。
 - **改 wire 副本** → 平台 SDK 侧已同步（或本仓侧逐字跟改）；`wire_drift_locks` 全绿。
 - **改权限词汇** → SDK 生成物重出；`permission_vocabulary_lock` 全绿；涉及应用 manifest 的改动在应用仓同步（本仓不代改）。
 - **改 host-kit / 能力域注册面** → host-kit `cargo test`（含 `forced_link` / `forced_link_absent`）+ 平台 `host_module_desc_noun_lock`（双端）；若新增能力域，无头探针引用行与平台 `SCANNED_CRATES` 已补。
@@ -393,7 +393,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 | 主库 schema / 迁移 / 护栏常量 | `wasmnest-wasm-core/src/db/schema.sql`、`db/{database,operations,models}.rs`、`host_api/database.rs` |
 | 权限词汇真源 | `wasmnest-wasm-core/src/permission.rs` |
 | 契约包名 / 版本真源 | `wasmnest-contract/src/lib.rs` |
-| 核心 WIT / 域 WIT | `wasmnest-wasm-core/wit/core.wit`、各能力域 `wit/<domain>.wit`（mdns / pty / http / peer / ws / notify） |
+| 核心 WIT / 域 WIT | `wasmnest-wasm-core/wit/core.wit` + `wit/worker.wit`、各能力域 `wit/<domain>.wit`（mdns / pty / http / peer / ws / notify） |
 | 机制内核契约 / 注册表 / 描述符判据 | `wasmnest-host-kit/src/{module,registry,route,assembly,lifecycle}.rs` + `tests/forced_link*.rs` |
 | 能力域默认形态 / 端口纪律 | `wasmnest-host-api-core/src/boundary_lock.rs`、`wasmnest-ws-client-engine/src/boundary_lock.rs`、各域 `ports.rs` |
 | 跨仓路径解析 / 测试仓接入口 | `../wasmnest-test/cross-end-tests/{Cargo.toml,tests/common/repo_paths.rs}` |
