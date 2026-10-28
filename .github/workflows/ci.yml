@@ -24,8 +24,10 @@ name: ci
 
 on:
   pull_request:
-  push:
-    branches: [dev] # 集成分支 = 默认分支 dev（仓唯一常驻远端分支）
+  # **push 不触发**（用户 2026-10-28 定：四仓 `dev` 推送一律不跑 GitHub CI）。本仓唯一
+  # 常驻远端分支就是 `dev`，所以等于没有 push 触发；验证靠本地（逐 crate `cargo fmt --check`
+  # + `cargo test`）+ 显式手跑。
+  workflow_dispatch:
 
 permissions:
   contents: read
