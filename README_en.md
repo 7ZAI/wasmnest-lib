@@ -39,7 +39,7 @@ desktop / mobile host src-tauri/src/ (composition root · thin shell) — platfo
 | Directory (package) | Positioning (one line) | Shape / features | WIT source | Main consumers |
 | --- | --- | --- | --- | --- |
 | `wasmnest-contract` | **Contract constants**: the single handwritten source of `PACKAGE` / `PACKAGE_NAME` / `PACKAGE_VERSION`; zero dependencies, no WIT | no features | — | wasm-core (derives after `use`), platform scripts and locks (read the source with regexes) |
-| `wasmnest-wasm-core` | Complete plugin mechanism: wasmtime component host runtime shell + host_api adapters + security gates + main library / engine face | `default = ["desktop-assembly"]`; `test-support` | `wit/core.wit` | platform hosts (desktop on by default / mobile with `default-features = false`), test repo |
+| `wasmnest-wasm-core` | Complete plugin mechanism: wasmtime component host runtime shell + host_api adapters + security gates + main library / engine face | `default = ["desktop-assembly"]`; `test-support` | `wit/core.wit` + `wit/worker.wit` (self-contained worker world shard, shared by both ends) | platform hosts (desktop on by default / mobile with `default-features = false`), test repo |
 | `wasmnest-host-kit` | Assembly-time mechanism core: `WasmPluginState` / `HostModule` contracts / automatic registry / limits / metrics | no features | — | both hosts, every `common-host` domain, wasm-core |
 | `wasmnest-host-api-core` | host_api **implementation layer** for WIT-free domains: gate / storage / bus / database / log / events / fs | no features | — | wasm-core adapters, server-base (re-export guard constants) |
 | `wasmnest-server-base` | server **leaf foundation**: error envelope / constants / system info / network config shapes / connection identity / port traits / wire | `tauri-compat` (on by default) | — | almost the whole repo + both hosts + test repo |
@@ -97,7 +97,7 @@ Default shape = **pure engine mechanisms + port abstractions**, with zero WIT / 
 ## 5. Fixture Crates (not in the list above, not published)
 
 - `wasmnest-host-kit/fixtures/forced-link-probe`: forced-link proof — link-time attributes cannot be both "present" and "absent" in one process, so it maps to two independent test binaries (`forced_link` / `forced_link_absent`).
-- `wasmnest-wasm-core/fixtures/{wasi-test,wasip3-test,p3-async-host-import-test}`: self-contained WASI / WASI p3 / async host-import fixtures bound to this crate's `wit/core.wit`, with zero SDK dependencies.
+- `wasmnest-wasm-core/fixtures/{wasi-test,wasip3-test,p3-async-host-import-test}`: self-contained WASI / WASI p3 / async host-import fixtures bound to this crate's `wit/` (core.wit contract source; the wasip3 fixture loads the directory), with zero SDK dependencies.
 
 ## 6. Four-repo Collaboration
 
@@ -139,7 +139,7 @@ cd ../wasmnest-headless-host-probe && cargo test
 | --- | --- |
 | Development navigation and hard constraints | [AGENTS.md](./AGENTS.md) |
 | Contract package name / version source | `wasmnest-contract/src/lib.rs` |
-| Core / domain WIT | `wasmnest-wasm-core/wit/core.wit` and each domain's `wit/<domain>.wit` (mdns / pty / http / peer / ws / notify) |
+| Core / domain WIT | `wasmnest-wasm-core/wit/core.wit` + `wit/worker.wit` and each domain's `wit/<domain>.wit` (mdns / pty / http / peer / ws / notify) |
 | Permission vocabulary source | `wasmnest-wasm-core/src/permission.rs` |
 | Main database schema | `wasmnest-wasm-core/src/db/schema.sql` |
 | Cross-repo locks (wire / permissions / mDNS) | Test repo `cross-end-tests/tests/{wire_drift_locks,permission_vocabulary_lock,mdns_browse_singleton_lock}.rs` |

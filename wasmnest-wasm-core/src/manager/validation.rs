@@ -848,8 +848,10 @@ mod tests {
             .expect("缺文件必须拒绝");
         let text = err.to_string();
         assert!(
-            text.contains('n') && text.contains("missing.wasm") && text.contains("worker"),
-            "错误必须点名 worker、文件与 worker/ 目录，got: {text}"
+            text.contains("workers[n]")
+                && text.contains("missing.wasm")
+                && text.contains("worker/"),
+            "错误必须点名 worker 名、文件与 worker/ 目录，got: {text}"
         );
 
         // 未声明 workers：零迁移（空清单直接放行）

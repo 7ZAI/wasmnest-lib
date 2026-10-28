@@ -3,7 +3,7 @@
 /// 本文件是 wasm-core 单一 crate 的核心 WIT 真源（ADR 0037 / ADR 0052 D1）：
 /// **core 只收内核自己实现、双端同源、且为内核机制必需 / 全部插件共同需要的
 /// interface**（storage / plugin-database / log / config / events / bus / fs /
-/// platform + 三个导出 + events-binary）。
+/// platform / metrics / worker + 三个导出 + events-binary / events-worker）。
 ///
 /// 业务能力契约（设备发现 / 对等网络 / 出站 HTTP / WS 客户端 / 通知 / 终端流…）
 /// **不落 core**：双端功能级交集住能力域 crate 的 `wit/<domain>.wit`（契约与实现

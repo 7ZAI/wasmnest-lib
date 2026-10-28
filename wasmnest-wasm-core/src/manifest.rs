@@ -892,5 +892,10 @@ mod workers_wire_shape {
         assert_eq!(minimal.workers.len(), 1);
         assert_eq!(minimal.workers[0].wasm_hash, "");
         assert!(minimal.workers[0].resource_overrides.is_none());
+
+        // 空 wasmHash 在 wire 里显式为空串（与主 wasmHash 的既有行为一致——
+        // 2026-10-28 审核裁决保持该形状；T4 SDK 类型照此对齐）
+        let serialized = serde_json::to_value(&minimal).unwrap();
+        assert_eq!(serialized["workers"][0]["wasmHash"], "");
     }
 }

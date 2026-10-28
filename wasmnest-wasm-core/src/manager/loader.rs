@@ -434,8 +434,8 @@ mod tests {
             .expect("缺 worker wasm 必须装载期拒绝");
         let text = err.to_string();
         assert!(
-            text.contains('n') && text.contains("worker"),
-            "错误必须点名 worker 与 worker/ 目录，got: {text}"
+            text.contains("workers[n]") && text.contains("n.wasm") && text.contains("worker/"),
+            "错误必须点名 worker 名、文件与 worker/ 目录，got: {text}"
         );
 
         fs::write(plugin_dir.join("worker").join("n.wasm"), b"wasm").unwrap();

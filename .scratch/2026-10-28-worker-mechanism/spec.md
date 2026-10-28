@@ -2,8 +2,9 @@
 
 > **设计真源**：2026-10-28 会话 grill，两轮 14 决策用户逐项确认（第一轮 Q1–Q10
 > 「按推进的来做」，第二轮 Q11–Q14「按推荐来做」）。本文件是实施 issue 的引用
-> 真源，另一个会话不读原对话也能据此实施。状态：**设计定稿，实施未开始**。
-> 相关：ADR 0059（平台仓 `docs/adr/`，管道语义三裁决）。
+> 真源，另一个会话不读原对话也能据此实施。状态：**设计定稿；T1 契约面（#10）已
+> 实施入库，运行时（#11 / #12）待实施**。
+> 相关：ADR 0059（平台仓 ADR，管道语义三裁决）。
 
 ## 1. 背景与目标
 
@@ -102,7 +103,11 @@ CPU 级并行。这是 ADR 0032/0034 预留的 worker 方向的落地，但形�
 - §2.2 bump 全流程：`PACKAGE_VERSION` 0.0.1 → 0.0.2 + 全仓 `@0.0.1` 字面量同步
   （discovery-engine `routing.rs`/`lib.rs`、各域 `plugin_binding.rs`
   `MODULE_INTERFACES`）+ 平台 `compose-wit.mjs --all` + `check:wit` + 全部插件
-  产物重建 + `check:manifest --print-hash`。整数 ABI 版本已随 wit 包版本化退役
+  产物重建 + `check:manifest --print-hash`。**号段裁决（2026-10-28）**：AGENTS
+  §2.2 的通用规则写「interface 增删 → minor」，本票新增的 `host-worker` /
+  `events-worker` / `worker` 均为纯增量面（既有签名零变、worker world 独立且一期
+  不进 compose），用户裁决**按本 spec 的 patch（0.0.2）执行**并在此留档。
+  整数 ABI 版本已随 wit 包版本化退役
   （ADR 0051 D2），无需 ABI 数字 bump。
 
 ### 3.6 目标与装配
@@ -166,11 +171,11 @@ CPU 级并行。这是 ADR 0032/0034 预留的 worker 方向的落地，但形�
 | T6 移动端接线与验证 | wasmnest（协调票内子任务） | [#39](https://github.com/7ZAI/wasmnest/issues/39) | T3（#12）+ T4 |
 | 协调 issue | wasmnest | [#39](https://github.com/7ZAI/wasmnest/issues/39)（kind:feature + cross-repo） | — |
 
-ADR 0059 已落平台仓 `docs/adr/0059-worker-pipeline-semantics.md`（索引同提交，`c72d7fc`）。spec 本文件未提交，随实施分支入库。
+ADR 0059 已落平台仓 ADR 目录（索引同提交，`c72d7fc`）。spec 本文件已随实施分支入库（`.scratch/2026-10-28-worker-mechanism/spec.md`）。
 
 ## 8. 参考
 
-- ADR 0059（平台仓 `docs/adr/`）：worker 管道语义三裁决（背压 / 事件直载 /
+- ADR 0059（平台仓 ADR）：worker 管道语义三裁决（背压 / 事件直载 /
   不复用 task 引擎）。
 - ADR 0032（旧仓冻结）：实例生命周期策略预留；ADR 0034：wasiPreopenDirs
   worker 类别预留。

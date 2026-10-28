@@ -14,7 +14,7 @@ body:
     id: source
     attributes:
       label: 真源位置与版本
-      description: wasmnest-contract/src/lib.rs；当前线 @wasmnest:plugin@0.0.1
+      description: wasmnest-contract/src/lib.rs；当前线 @wasmnest:plugin@0.0.2
     validations:
       required: true
   - type: textarea
