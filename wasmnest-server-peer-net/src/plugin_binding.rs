@@ -611,7 +611,7 @@ use wasmtime::component::{bindgen, Linker};
 pub const MODULE_NAME: &str = "peer-net";
 
 /// 本域提供的 WIT 接口（必须与 `wasmnest.wit` 逐字一致；改错即 guest import 失配）
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.1/host-peer"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.2/host-peer"];
 
 /// 本域的权限位（必须与 `wasmnest.wit` / SDK 权限表逐字一致）
 pub const MODULE_PERMISSIONS: &[&str] = &["peer"];

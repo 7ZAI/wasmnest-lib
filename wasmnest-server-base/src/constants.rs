@@ -323,6 +323,32 @@ pub const PLUGIN_TASK_CALLBACK_QUEUE_DEPTH: usize = 64;
 /// status 终态结果保留条数上限：超出只留计数（大结果别靠 status 兜底，spec §7）
 pub const PLUGIN_TASK_STATUS_RESULTS_MAX: usize = 64;
 
+// ==================== host-worker（worker 机制，spec `.scratch/2026-10-28-worker-mechanism/`） ====================
+
+/// worker 输入字节上限（JSON 字符串长度）：`submit` 同步校验，超限 `Err`
+///
+/// WIT 传参走 `string` 承载 JSON；超大输入显性报错，文件路径留给 preopen 阶段
+/// （ADR 0059）。取值 1 MiB 与 task 单元结果上限（`PLUGIN_TASK_UNIT_RESULT_MAX_BYTES`）
+/// 同档：worker 回调事件直载输出（无结果暂存仓库），上限把事件载荷与 guest 内存
+/// 拷贝量一起兜住。
+pub const PLUGIN_WORKER_INPUT_MAX_BYTES: usize = 1024 * 1024;
+
+/// worker 输出字节上限（JSON 字符串长度）：超限按运行期失败处理（终态 `failed` 事件）
+pub const PLUGIN_WORKER_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
+
+/// worker 等待队列深度（全局共享）：submit 受理语义——队列未满即 `Ok`（受理，
+/// 运行期失败经终态事件呈现），溢出同步 `Err`（ADR 0059 裁决 A）
+pub const PLUGIN_WORKER_QUEUE_DEPTH: usize = 64;
+
+/// worker 全局并发上限（同时在飞的 worker job 数）
+///
+/// 一线程一 worker、用完即弃；与 task 池线程数（`PLUGIN_TASK_POOL_THREADS`）同量级，
+/// 不与 task 池 / tokio blocking 池共享线程。
+pub const PLUGIN_WORKER_MAX_CONCURRENT_GLOBAL: usize = 8;
+
+/// per-plugin worker 并发上限（单个声明插件同时在飞的 worker job 数）
+pub const PLUGIN_WORKER_MAX_CONCURRENT_PER_PLUGIN: usize = 4;
+
 // ==================== 服务器 / WebSocket / HTTP ====================
 
 /// 默认服务器端口

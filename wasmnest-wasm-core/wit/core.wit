@@ -26,7 +26,7 @@
 /// （`wasmnest:plugin@<version>/<interface>`，版本取自仓根
 /// `contracts/wasmnest-plugin-package.rs`）；
 /// **导出**名不带包版本（实例级 `interface#function`），故运行期按名探测导出不受版本影响。
-package wasmnest:plugin@0.0.1;
+package wasmnest:plugin@0.0.2;
 /// 插件 KV 存储（原 storage.rs：storage_get/set/delete）
 interface host-storage {
     get: func(key: string) -> result<option<string>, string>;
@@ -209,11 +209,50 @@ interface events-binary {
 interface manifest {
     get: func() -> string;
 }
+/// worker 调度（主插件经宿主中介调用内嵌 worker 子资源，ADR 0059）
+///
+/// **权限 `worker:run`（manifest 必须单独声明）**：未声明即 `Err`——「占用宿主
+/// 并行资源」的准入门（一线程一 worker，per-plugin 并发 4 / 全局 8），与
+/// `task:run` 同款判据（并发能力与数据访问解耦授权）。
+///
+/// worker 本体是声明插件的**私属**子资源：插件包 `worker/` 目录 + manifest
+/// `workers` 块声明（`[{name, file, wasmHash?, resourceOverrides?}]`），world
+/// 本体在 `wit/worker.wit`（零宿主 import，仅 WASI 内建）。每次运行 = 全新
+/// Store，零共享状态；worker 间通信只能走主插件编排。
+///
+/// - `submit` 受理语义：同步校验（worker 名不存在 / 输入超限 / 队列满）→ `Err`；
+///   受理成功返回 job id（1 submit = 1 run，fan-out = 连发 N 个 submit）。
+///   运行期失败（实例化 / trap / 燃料耗尽）→ [`events-worker`] 终态事件。
+/// - `cancel` 语义 = 标记取消（非强杀）：燃料自然终结、结果丢弃，不承诺强杀
+///   （与 task 审计票 09 裁决同立场）。
+/// - 传参 JSON string（输入 / 输出上限 1 MiB，真源 server-base constants）；
+///   超大输入显性报错，文件路径留给 preopen 阶段。
+interface host-worker {
+    submit: func(worker: string, input: string) -> result<string, string>;
+    cancel: func(job-id: string) -> result<_, string>;
+}
+/// worker 终态事件（可选导出，**不进 `plugin` world 的必选导出列表**，探测范式同
+/// `events-binary`）
+///
+/// 宿主在实例化后动态探测 `events-worker#on-worker-event`：未导出本接口的插件
+/// 照常 submit（事件无消费方）；导出者每 job 只收**终态**一条（无 queued/running
+/// 过程事件），事件 JSON 直载输出（无结果暂存仓库）：
+///
+/// `{ "jobId": "...", "state": "succeeded|failed|canceled", "output"?: "<json>", "error"?: "<仅 failed>" }`
+///
+/// 回调队列满载 = 背压阻塞（完成线程等待，消费即放行；**不走 task 式丢弃**——
+/// 事件直载输出无 status 快照可回退，丢弃 = 结果永久丢失，ADR 0059）。
+/// 无返回值（观察型回调，语义同 events-binary）：guest 内部处理失败经
+/// host-log 记录，不打断宿主投递链。
+interface events-worker {
+    on-worker-event: func(event: string);
+}
 
-// 核心 world：只含内核机制能力（9 import + 3 必选导出；events-binary 是可选出
-// 导出面，不在 world 内）。合成 package 的每端 world plugin 由 include core 并入
-// 这些成员，其余端成员由各端 cap-*.wit 的 world 并入；业务能力交集由双端
-// compose.json 直接消费能力域 crate 的 `wit/<domain>.wit`（ADR 0052 D2）。
+// 核心 world：只含内核机制能力（10 import + 3 必选导出；events-binary /
+// events-worker 是可选导出面，不在 world 内）。合成 package 的每端 world plugin
+// 由 include core 并入这些成员，其余端成员由各端 cap-*.wit 的 world 并入；业务
+// 能力交集由双端 compose.json 直接消费能力域 crate 的 `wit/<domain>.wit`
+//（ADR 0052 D2）。
 world core {
     import host-storage;
     import host-events;
@@ -224,6 +263,7 @@ world core {
     import host-config;
     import host-plugin-database;
     import host-metrics;
+    import host-worker;
 
     export command;
     export lifecycle;

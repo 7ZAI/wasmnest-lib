@@ -1,0 +1,38 @@
+package wasmnest:plugin@0.0.2;
+
+/// worker 计算接口（worker 组件的唯一导出；1 submit = 1 run）
+///
+/// JSON in/out（WIT `string` 承载 UTF-8 JSON）；输入 / 输出 1 MiB 上限的真源在
+/// `wasmnest-server-base` constants（`PLUGIN_WORKER_INPUT_MAX_BYTES` /
+/// `PLUGIN_WORKER_OUTPUT_MAX_BYTES`），宿主侧执行闸门——guest 侧超限同样由宿主
+/// 在受理 / 投递时拒绝，本接口不做形状约定（纯 string 透传）。
+interface worker {
+    run: func(input: string) -> string;
+}
+
+/// worker world（自持分片，双端同源）——worker 机制契约面（ADR 0059）
+///
+/// worker = 插件内嵌的即用即弃纯计算 wasm 子资源：主插件（persistent）经宿主
+/// `host-worker.submit` 中介调用，宿主一线程一实例、用完即弃（见 core.wit 的
+/// `host-worker` import 与 manifest `workers` 块）。
+///
+/// **为什么不是 core.wit 的一个 world 成员**：worker 与主插件是两种组件形状——
+/// 主插件（world core / world plugin）要宿主 import + 3 必选导出，worker 零宿主
+/// import（仅 WASI 内建，装配面按 `CoreConfig::wasi` 注入，与主插件同源）、唯一
+/// 导出只有本文件的 `worker.run`。同 package 同版本（版本真源 = `wasmnest-contract`），
+/// 但 world 各自独立；worker world **一期不被 compose 消费**（平台 SDK worker 构建
+/// 链接手，T4）。
+///
+/// **world 名 `worker-guest` 而非 `worker`**：WIT 同 package 内 interface 与 world
+/// 共享名字空间（同名即 `duplicate item named` 解析失败），导出接口名必须是契约名
+/// `worker`，故 world 侧取「guest 组件世界」语义的后缀。
+///
+/// 一期 wasip2 only（p3 有真实需求再放行，只改文档不改装配）；worker 组件版本
+/// 不匹配 = 实例化失败（版本进 import/export 名，fail-visible）。
+///
+/// 排版约束：本文件的 `package` 行必须保持文件首个非空白内容——与 core.wit
+/// 同目录合成同一 package 时，wit-parser 只允许一处 package 带文档注释（`//`
+/// 也会被归入 docs），文件级说明因此并入本块。
+world worker-guest {
+    export worker;
+}

@@ -34,7 +34,7 @@
 //!   + 导出调用契约（GuestEventDispatcher 注入）+ ABI 支持版本（AbiPolicy 注入）
 //!         ↓ 消费本 crate 的纯机制 + 统一运行时壳（Engine/Linker/Store/导出调用骨架）
 //! wasm-core（packages/wasmnest-wasm-core）
-//!   机制核心 + core.wit 机制绑定层（manager/runtime/core_binding.rs，8 import +
+//!   机制核心 + core.wit 机制绑定层（manager/runtime/core_binding.rs，10 import +
 //!   3 必选导出；业务能力交集由各端 caps 消费能力域 crate 的 `wit/<domain>.wit`，ADR 0052 D1/D2）
 //!         ↑ cap 与端差异由各端 `HostModule` 自报汇入同一个 Linker
 //! SDK 层（plugin-sdk-{desktop,mobile}）

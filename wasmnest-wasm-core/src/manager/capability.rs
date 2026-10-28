@@ -38,7 +38,7 @@ use wasmnest_host_kit::WasmPluginState;
 
 // ==================== 能力名与导出探测表 ====================
 
-/// host-storage 能力（WIT `wasmnest:plugin@0.0.1/host-storage`，装配框架首条路由能力）
+/// host-storage 能力（WIT `wasmnest:plugin@<version>/host-storage`，装配框架首条路由能力）
 ///
 /// 内建可路由行（见 [`routable_capabilities`] 与 [`storage_exports`]）：它的端口与真源都在内核/宿主内
 /// （`host_api/sqlite_ports.rs`），故词汇由内核自持。**能力域侧的能力一律自报**
@@ -945,7 +945,7 @@ mod tests {
         let mut out: Vec<String> = export_literals(src)
             .into_iter()
             .map(|lit| {
-                // 先剥版本段（`…browse@0.0.1` → `…browse`），再取点号后的函数名；
+                // 先剥版本段（`…browse@<version>` → `…browse`），再取点号后的函数名；
                 // 顺序反了会被版本的点号（`0.2.0`）切成 `0`
                 let without_version = lit.split('@').next().expect("字面量非空");
                 without_version

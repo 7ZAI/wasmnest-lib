@@ -125,6 +125,13 @@ pub const PERMISSION_PTY_IO: &str = "pty:io";
 /// `fs:write` / `process:run` / `network:http`），仅授本权限不授域权限的插件所有
 /// 单元都会失败——并发能力与数据访问能力解耦授权、解耦审计。
 pub const PERMISSION_TASK_RUN: &str = "task:run";
+/// 内嵌 worker 调度域（host-worker，worker 机制 / ADR 0059）：`submit` / `cancel`
+///
+/// 「占用宿主并行资源」的准入门（一线程一 worker、per-plugin 并发 4 / 全局 8），
+/// 与 `task:run` 同款判据：并发能力与数据访问能力解耦授权。worker 本体是声明
+/// 插件的私属子资源（manifest `workers` 块 + 插件包 `worker/` 目录），经宿主
+/// 中介调用、终态经 `events-worker` 回调；submit / cancel 同门。
+pub const PERMISSION_WORKER_RUN: &str = "worker:run";
 /// 宿主加密引擎·AEAD 域（host-crypto，v26，desktop 独有双端偏离）：加解密 / 密钥 / nonce
 pub const PERMISSION_CRYPTO_AEAD: &str = "crypto:aead";
 /// 宿主加密引擎·非对称/密钥交换域（host-crypto，v26）：X25519（rsa 按需扩展）
@@ -201,6 +208,7 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
     (stringify!(PERMISSION_PTY_SPAWN), PERMISSION_PTY_SPAWN),
     (stringify!(PERMISSION_PTY_IO), PERMISSION_PTY_IO),
     (stringify!(PERMISSION_TASK_RUN), PERMISSION_TASK_RUN),
+    (stringify!(PERMISSION_WORKER_RUN), PERMISSION_WORKER_RUN),
     (stringify!(PERMISSION_CRYPTO_AEAD), PERMISSION_CRYPTO_AEAD),
     (stringify!(PERMISSION_CRYPTO_ASYM), PERMISSION_CRYPTO_ASYM),
     (stringify!(PERMISSION_CRYPTO_KDF), PERMISSION_CRYPTO_KDF),
@@ -399,6 +407,9 @@ pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
     // 运行监控（WASM-only：宿主 `host-metrics.snapshot`，无前端调用点）。
     // 门禁落点 = `manager/runtime/core_binding.rs` 的 Host impl 首行。
     (PERMISSION_METRICS_READ, &["metrics.snapshot"]),
+    // 内嵌 worker 调度（WASM-only：宿主 `host-worker.submit/cancel`，无前端调用点）。
+    // 门禁落点 = `manager/runtime/core_binding.rs` 的 Host impl 首行（同 metrics 范式）。
+    (PERMISSION_WORKER_RUN, &["worker.submit", "worker.cancel"]),
 ];
 
 /// 权限管理器
@@ -568,5 +579,18 @@ mod retired_permissions_tests {
         // 批 2 收口（issue #36）：notify 位进双端真源；门禁落点 = 移动宿主
         // notify.rs（跨端词汇锁扫描面已扩移动宿主源码）
         assert!(VALID_PERMISSIONS.contains(&PERMISSION_NOTIFY));
+    }
+
+    #[test]
+    fn worker_vocabulary_registered() {
+        // worker 机制契约面（issue #10 / ADR 0059）：worker:run 进双端真源，
+        // submit / cancel 同门；门禁落点 = `manager/runtime/core_binding.rs`
+        // 的 host-worker Host impl 首行（API 映射登记审计名 worker.submit/cancel）
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_WORKER_RUN));
+        let entry = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_WORKER_RUN)
+            .expect("worker:run 应在 API 映射表内");
+        assert_eq!(entry.1, &["worker.submit", "worker.cancel"][..]);
     }
 }
