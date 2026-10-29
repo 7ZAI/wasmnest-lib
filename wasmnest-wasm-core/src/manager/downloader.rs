@@ -207,6 +207,44 @@ impl PluginDownloader {
             }
         }
 
+        // 4b. worker 产物摘要：`workers[].wasmHash` 与主 `wasmHash` **同语义**——
+        // 声明即校验、缺省跳过（spec §3.7「wasmHash 语义与主 wasm 一致」）。
+        // 只校验声明了摘要的条目：未声明时按「安装期只保结构性必填、文件存在性
+        // 交装载入口」的分层**不查**（与 ptyQuota 同款，见 install_zip 头注）；
+        // 声明了就无法跳过——读不到文件等于摘要无从比对，直接拒绝并点名。
+        //
+        // 落在这里而不是装载入口：主 wasm 的摘要校验就在这里，两处同一入口才有
+        // 「语义一致」可言；装载入口（`validate_worker_files`）只保文件存在性。
+        for worker in &manifest.workers {
+            if worker.wasm_hash.trim().is_empty() {
+                continue;
+            }
+            let wasm_path = temp_dir.join("worker").join(&worker.file);
+            if !wasm_path.is_file() {
+                Self::cleanup_temp_dir(&temp_dir);
+                return Err(crate::AppError::Plugin(format!(
+                    "Plugin package missing worker WASM: worker/{}\
+                     （workers[{}] 声明了 wasmHash，摘要校验需要文件在场）",
+                    worker.file, worker.name
+                )));
+            }
+            let actual = match Self::sha256_file(&wasm_path) {
+                Ok(hash) => hash,
+                Err(e) => {
+                    Self::cleanup_temp_dir(&temp_dir);
+                    return Err(e);
+                }
+            };
+            if !actual.eq_ignore_ascii_case(worker.wasm_hash.trim()) {
+                Self::cleanup_temp_dir(&temp_dir);
+                return Err(crate::AppError::Plugin(format!(
+                    "Plugin package worker WASM content mismatch for worker/{} (workers[{}]): \
+                     manifest declares {}, actual {}",
+                    worker.file, worker.name, worker.wasm_hash, actual
+                )));
+            }
+        }
+
         // 5. 写来源标记（供 dev 副本刷新/未来磁盘审计区分安装来源）
         let marker = temp_dir.join(PLUGIN_SOURCE_MARKER);
         std::fs::write(&marker, SOURCE_FILE_INSTALL).map_err(|e| {
@@ -486,6 +524,98 @@ mod tests {
         }
         writer.finish().unwrap();
         zip_path
+    }
+
+    /// 构造一个带 worker 声明的插件 zip（`worker/hasher.wasm` + `workers[]`）
+    ///
+    /// `declared_hash` 直接写进 manifest（`None` = 未声明）。
+    fn build_worker_zip(
+        dir: &Path,
+        id: &str,
+        declared_hash: Option<&str>,
+        payload: &[u8],
+    ) -> PathBuf {
+        let zip_path = dir.join(format!("{}.zip", id));
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+
+        let mut worker = serde_json::json!({ "name": "hasher", "file": "hasher.wasm" });
+        if let Some(hash) = declared_hash {
+            worker["wasmHash"] = serde_json::Value::String(hash.to_string());
+        }
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": "Worker Plugin",
+            "version": "1.0.0",
+            "platform": "both",
+            "pluginType": "wasm",
+            "workers": [worker],
+            "permissions": [],
+            "contributes": {}
+        })
+        .to_string();
+        writer
+            .start_file(
+                PLUGIN_MANIFEST_FILE,
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        writer.write_all(manifest.as_bytes()).unwrap();
+        writer
+            .start_file(
+                "worker/hasher.wasm",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        writer.write_all(payload).unwrap();
+        writer.finish().unwrap();
+        zip_path
+    }
+
+    /// worker 产物摘要与主 `wasmHash` 同入口校验（worker 机制 spec §3.7）
+    ///
+    /// 变异判据：摘掉 `install_zip` 的 4b 段，摘要不符的包会静默安装成功——声明了
+    /// 摘要却不校验，等于把完整性声明当装饰。三条覆盖：不符拒绝 / 相符放行 /
+    /// 未声明跳过（缺省不校验 = 与主 wasm 同语义）。
+    #[test]
+    fn install_checks_worker_wasm_hash() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        let payload = b"worker-wasm-bytes";
+
+        // 反例：摘要不符 → 拒绝，且错误点名 worker 名与文件名
+        let id = "com.test.worker-bad";
+        let zip = build_worker_zip(tmp.path(), id, Some("deadbeef"), payload);
+        let err =
+            PluginDownloader::install_from_file(zip.to_str().unwrap(), &plugins_dir).unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("worker WASM content mismatch")
+                && text.contains("worker/hasher.wasm")
+                && text.contains("hasher"),
+            "摘要不符必须点名 worker 与文件，got: {text}"
+        );
+        assert!(!plugins_dir.join(id).exists(), "拒绝后不得留下半个插件目录");
+
+        // 正例：摘要相符 → 安装成功，worker 产物落在插件包 worker/ 下
+        let id = "com.test.worker-ok";
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        let real = format!("{:x}", hasher.finalize());
+        assert_eq!(real.len(), 64, "sha256 十六进制摘要定长");
+        let zip = build_worker_zip(tmp.path(), id, Some(&real), payload);
+        PluginDownloader::install_from_file(zip.to_str().unwrap(), &plugins_dir).unwrap();
+        assert!(plugins_dir
+            .join(id)
+            .join("worker")
+            .join("hasher.wasm")
+            .is_file());
+
+        // 未声明摘要 → 跳过校验（缺省不校验，与主 wasm 同语义）
+        let id = "com.test.worker-nohash";
+        let zip = build_worker_zip(tmp.path(), id, None, payload);
+        PluginDownloader::install_from_file(zip.to_str().unwrap(), &plugins_dir).unwrap();
     }
 
     #[test]

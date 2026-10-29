@@ -349,6 +349,13 @@ pub const PLUGIN_WORKER_MAX_CONCURRENT_GLOBAL: usize = 8;
 /// per-plugin worker 并发上限（单个声明插件同时在飞的 worker job 数）
 pub const PLUGIN_WORKER_MAX_CONCURRENT_PER_PLUGIN: usize = 4;
 
+/// 单个 manifest 可声明的 worker 条目数上限（装载期结构校验）
+///
+/// 每个条目都是一个独立 Store 的潜在实例化目标（默认 128 MiB 档、per-plugin 并发 4），
+/// 条数不设上限等于把宿主资源面交给清单——装载期挡在实例化之前，取值留出
+/// 「并发档位 × 2」的池化余量。
+pub const PLUGIN_WORKER_DECLARATIONS_MAX: usize = 8;
+
 // ==================== 服务器 / WebSocket / HTTP ====================
 
 /// 默认服务器端口

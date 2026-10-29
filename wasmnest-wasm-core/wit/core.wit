@@ -23,9 +23,11 @@
 ///
 /// 组合方式（端生成物 `wit/` 目录，由 `scripts/compose-wit.mjs` 拼装）：
 /// `world plugin { include core; include cap-…; }` —— **import** 名带版本
-/// （`wasmnest:plugin@<version>/<interface>`，版本取自仓根
-/// `contracts/wasmnest-plugin-package.rs`）；
-/// **导出**名不带包版本（实例级 `interface#function`），故运行期按名探测导出不受版本影响。
+/// （`wasmnest:plugin@<version>/<interface>`，版本取自 `wasmnest-contract` crate 的
+/// `PACKAGE_VERSION`/`PACKAGE`）；
+/// **导出**实例的键同样带版本（`ns:pkg/<iface>@<version>`，实例内函数名按平名），
+/// 故运行期探测导出必须用 `contract::export_item` / `interface_path` 派生带版本的
+/// 名字——平名或漏版本的写法对版本化产物恒不命中。
 package wasmnest:plugin@0.0.2;
 /// 插件 KV 存储（原 storage.rs：storage_get/set/delete）
 interface host-storage {

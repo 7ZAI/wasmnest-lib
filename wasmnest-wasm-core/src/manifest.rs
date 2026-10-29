@@ -102,9 +102,14 @@ pub struct PluginManifest {
     ///
     /// 每项是一个即用即弃纯计算 wasm 子资源：wasm 放插件包 `worker/` 目录，
     /// 主插件（仍 `persistent`）经 `host-worker.submit` 调用。worker **私属于
-    /// 声明插件**，不可跨插件 submit。结构校验（name 唯一 / file 形状）在
-    /// `validation::validate_worker_declarations`，file 存在性在装载入口
-    /// `validation::validate_worker_files`。
+    /// 声明插件**，不可跨插件 submit。结构校验（name 唯一 / file 形状 / 条数上限）
+    /// 在 `validation::validate_worker_declarations`，file 存在性在装载入口
+    /// `validation::validate_worker_files`，`wasmHash` 在安装入口（与主 wasm 同一处）。
+    ///
+    /// **wire 形状的已知边界**：桌面 SDK 的 `PluginManifest` 类型尚无本字段，
+    /// 经 `from_sdk_json`（静态注册插件的绑定层往返）会把声明丢掉；文件插件只经
+    /// 本中性类型解析，不受影响。SDK 侧补类型随 worker 构建链（T4）——在那之前
+    /// 不要让静态注册插件依赖本字段。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workers: Vec<WorkerDecl>,
     /// 实例生命周期策略：`persistent`（常驻，缺省）/ `ephemeral`（即用即弃）
@@ -165,7 +170,11 @@ pub struct WorkerDecl {
     pub name: String,
     /// worker wasm 文件名（不含路径，相对插件包 `worker/` 目录；存在性加载期校验）
     pub file: String,
-    /// worker wasm 内容 SHA-256（小写十六进制；缺省空串 = 不校验，语义与主 [`PluginManifest::wasm_hash`] 一致）
+    /// worker wasm 内容 SHA-256（小写十六进制；缺省空串 = 不校验，语义与主
+    /// [`PluginManifest::wasm_hash`] 一致）
+    ///
+    /// 校验落点与主 `wasmHash` 相同：安装入口（`manager::downloader::install_zip`）
+    /// 读盘比对；装载入口只保文件存在性，不重复算摘要。
     #[serde(default)]
     pub wasm_hash: String,
     /// 单 worker 资源覆盖请求（缺省继承缺省档：内存 128 MiB、燃料与主插件同基数；

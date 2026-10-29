@@ -214,6 +214,13 @@ impl wasmnest::plugin::host_metrics::Host for WasmPluginState {
 // 显性 `Err` 而非静默无操作。权限门在**调用点首行**（词汇漂移锁按 `PERMISSION_*`
 // 引用还原门禁落点，与 host-metrics 同范式）；submit / cancel 同门
 // （`worker:run`，WIT 头注的准入门判据）。
+//
+// 桩的 Err 文案是 **guest 面词汇**：只说明「调度未启用、此路不通」，票据号与实施
+// 阶段进 host-log——guest 拿到的是稳定可判的错误，不随内部排期漂移。
+
+/// 桩的统一 guest 面错误（两条调用同文案：都走到同一个未接线的调度器）
+const WORKER_NOT_WIRED: &str =
+    "worker 调度未启用：宿主 host-worker 未接线（submit / cancel 暂不可用）";
 
 impl wasmnest::plugin::host_worker::Host for WasmPluginState {
     fn submit(&mut self, worker: String, input: String) -> Result<String, String> {
@@ -228,11 +235,13 @@ impl wasmnest::plugin::host_worker::Host for WasmPluginState {
                 PERMISSION_WORKER_RUN
             ));
         }
-        let _ = (worker, input);
-        Err(
-            "host-worker 尚未接线：worker 调度器随 worker 运行时端到端票落地（当前仅契约面）"
-                .to_string(),
-        )
+        tracing::warn!(
+            plugin_id = %self.plugin_id,
+            worker = %worker,
+            input_bytes = input.len(),
+            "[host-worker] submit 命中未接线桩（调度器随 worker 运行时端到端票 #11 落地）"
+        );
+        Err(WORKER_NOT_WIRED.to_string())
     }
 
     fn cancel(&mut self, job_id: String) -> Result<(), String> {
@@ -247,11 +256,12 @@ impl wasmnest::plugin::host_worker::Host for WasmPluginState {
                 PERMISSION_WORKER_RUN
             ));
         }
-        let _ = job_id;
-        Err(
-            "host-worker 尚未接线：worker 调度器随 worker 运行时端到端票落地（当前仅契约面）"
-                .to_string(),
-        )
+        tracing::warn!(
+            plugin_id = %self.plugin_id,
+            job_id = %job_id,
+            "[host-worker] cancel 命中未接线桩（调度器随 worker 运行时端到端票 #11 落地）"
+        );
+        Err(WORKER_NOT_WIRED.to_string())
     }
 }
 
@@ -450,13 +460,15 @@ pub(crate) fn abi_form(
 /// 与宿主 / 能力域自报的 cap interface **合流到同一个 `Linker`**：`Linker` 按
 /// interface 全名（`wasmnest:plugin@<version>/host-*`，版本化契约下为含版本全名）索引，
 /// 重名注册才报 `defined twice`。
-/// core 8 与各端 cap 域天然不重叠，故两端宿主只需照常自报自己的域，本函数不必知道
+/// core 10 与各端 cap 域天然不重叠，故两端宿主只需照常自报自己的域，本函数不必知道
 /// 它们的存在。
 ///
 /// 每接口一个 `add_to_linker`（`HasSelf<T>` 让 getter 返回 `&mut T`）。
 ///
 /// **不在 linker 中注册对端能力无副作用**：linker 中无对应 import 的注册是惰性的，
-/// 所以按交集注册不会让「只导入子集」的插件失败，反之少注册才会报缺失。
+/// 所以按交集注册不会让「只导入子集」的插件失败，反之少注册才会报缺失——`world core`
+/// 的每个 import 都必须在此列一行，漏一行就是「编译面全绿、全部插件实例化报缺
+/// import」的静默断链（`host_worker_is_registered_by_add_to_linker` 逐条兜住）。
 pub(crate) fn add_to_linker(linker: &mut Linker<WasmPluginState>) -> crate::Result<()> {
     type D = wasmtime::component::HasSelf<WasmPluginState>;
     for iface in [
@@ -469,6 +481,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<WasmPluginState>) -> crate::Resu
         wasmnest::plugin::host_bus::add_to_linker::<WasmPluginState, D>,
         wasmnest::plugin::host_platform::add_to_linker::<WasmPluginState, D>,
         wasmnest::plugin::host_metrics::add_to_linker::<WasmPluginState, D>,
+        wasmnest::plugin::host_worker::add_to_linker::<WasmPluginState, D>,
     ] {
         iface(linker, |s| s).map_err(|e| {
             AppError::Plugin(format!(
@@ -478,4 +491,43 @@ pub(crate) fn add_to_linker(linker: &mut Linker<WasmPluginState>) -> crate::Resu
         })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `world core` 的每个 import 都必须被 [`add_to_linker`] 注册（worker 契约面
+    /// 审核收口）
+    ///
+    /// 为什么需要这条：`component::tests::linker` 的两条用例只断言「注册过程不报错」，
+    /// 漏注册一个 interface 时它们全绿——而 `world core` 的 import 是**每个插件都
+    /// 导入**的，漏一个就是「编译面全绿、全部插件实例化报缺 import」的静默断链。
+    /// 这里用「同一接口重复注册必报 defined twice」反证宿主接口确实已进 linker：
+    /// 把清单里的 `host_worker` 摘掉，本用例即转红。
+    #[test]
+    fn host_worker_is_registered_by_add_to_linker() {
+        use wasmtime::component::HasSelf;
+        use wasmtime::Engine;
+
+        let core_config = crate::config::CoreConfig::default();
+        let config = crate::manager::runtime::engine::build_engine_config(
+            &core_config,
+            crate::config::plugin_debug_mode(),
+        );
+        let engine = Engine::new(&config).expect("create test engine");
+        let mut linker = Linker::new(&engine);
+
+        add_to_linker(&mut linker).expect("register core interfaces");
+
+        let err = wasmnest::plugin::host_worker::add_to_linker::<
+            WasmPluginState,
+            HasSelf<WasmPluginState>,
+        >(&mut linker, |s| s)
+        .expect_err("host-worker 已被 add_to_linker 注册，重复注册必须报 defined twice");
+        assert!(
+            err.to_string().contains("defined twice"),
+            "重复注册 host-worker 必须报 defined twice，got: {err}"
+        );
+    }
 }

@@ -173,25 +173,34 @@ pub fn validate_preopen_category(manifest: &PluginManifest) -> crate::Result<()>
 
 /// 校验 manifest 声明的内嵌 worker 条目的结构面（worker 机制 / ADR 0059，双端同机制）
 ///
+/// - **条目数上限**：`PLUGIN_WORKER_DECLARATIONS_MAX`——每个条目都是一个独立 Store
+///   的潜在实例化目标（默认 128 MiB 档），条数不设上限等于把宿主资源面交给清单；
 /// - **name 在同一清单内唯一**：`host-worker.submit(worker)` 按名寻址，重名会让
 ///   第二个声明永远不可达——静默忽略重名等于让作者以为两个 worker 都存在；
 /// - **name / file 非空**：空 name 无法寻址、空 file 无法定位，均为结构性必填；
-/// - **file 不得含路径分隔符 / `..`**：worker wasm 固定住插件包 `worker/` 目录，
-///   `file` 只是文件名——带分隔符的声明是路径注入面（借 `worker/` 前缀逃逸出
-///   插件目录），一律拒绝。
+/// - **file 必须是单一普通文件名**：worker wasm 固定住插件包 `worker/` 目录，
+///   `file` 只是文件名——带分隔符 / 盘符 / `..` 的声明是路径注入面（借 `worker/`
+///   前缀逃逸出插件目录），一律拒绝。
 ///
 /// **file 存在性不在本函数**（需要插件目录上下文），挂装载入口
-/// [`validate_worker_files`]——zip 安装入口按「结构性必填」口径不查（与 ptyQuota
-/// 同款分层：安装期可通过、装载期拒绝）。
+/// [`validate_worker_files`]；**`wasmHash` 也不在本函数**，挂在安装入口
+/// （`manager::downloader::install_zip`，与主 `wasmHash` 同一入口）。
 pub fn validate_worker_declarations(manifest: &PluginManifest) -> crate::Result<()> {
+    let max = crate::system::constants::PLUGIN_WORKER_DECLARATIONS_MAX;
+    if manifest.workers.len() > max {
+        return Err(crate::AppError::Plugin(format!(
+            "plugin.json workers[] 共 {} 条，超过上限 {max}：每个 worker 都是一次独立 \
+             Store 的实例化目标（默认 128 MiB 档），条数必须收敛",
+            manifest.workers.len()
+        )));
+    }
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for worker in &manifest.workers {
+    for (index, worker) in manifest.workers.iter().enumerate() {
         if worker.name.is_empty() {
-            return Err(crate::AppError::Plugin(
-                "plugin.json workers[] 含空 name：worker 名是 host-worker.submit 的寻址键，\
-                 必须非空"
-                    .to_string(),
-            ));
+            return Err(crate::AppError::Plugin(format!(
+                "plugin.json workers[{index}] 含空 name：worker 名是 host-worker.submit \
+                 的寻址键，必须非空"
+            )));
         }
         if worker.file.is_empty() {
             return Err(crate::AppError::Plugin(format!(
@@ -200,10 +209,23 @@ pub fn validate_worker_declarations(manifest: &PluginManifest) -> crate::Result<
                 worker.name
             )));
         }
-        if worker.file.contains('/') || worker.file.contains('\\') || worker.file.contains("..") {
+        // 跨平台同一口径（清单会被另一端装载，判据不能只在当前 OS 成立）：`/` 与
+        // `\` 一律拒（另一端的分隔符），`:` 拒（Windows 盘符前缀 `C:n.wasm`——
+        // `Path::push` 对带 prefix 的路径会**整体替换**掉 `worker/` 前缀；也是
+        // NTFS 备用数据流语法），再按路径段兜住 `.` / `..` / 多段 / 根路径。
+        // 逐字符查 `".."` 会误杀合法文件名（`a..b.wasm`），故按段判。
+        let mut components = Path::new(&worker.file).components();
+        let single_normal_name = matches!(components.next(), Some(std::path::Component::Normal(_)))
+            && components.next().is_none();
+        if !single_normal_name
+            || worker.file.contains('/')
+            || worker.file.contains('\\')
+            || worker.file.contains(':')
+        {
             return Err(crate::AppError::Plugin(format!(
-                "plugin.json workers[{}] file=\"{}\" 含路径分隔符或 \"..\"：worker wasm \
-                 固定在插件包 worker/ 目录下，file 只写文件名（路径注入面，拒绝装载）",
+                "plugin.json workers[{}] file=\"{}\" 不是单一文件名：worker wasm \
+                 固定在插件包 worker/ 目录下，file 只写文件名、不含路径分隔符 / 盘符 / \"..\"\
+                 （路径注入面，拒绝装载）",
                 worker.name, worker.file
             )));
         }
@@ -224,6 +246,9 @@ pub fn validate_worker_declarations(manifest: &PluginManifest) -> crate::Result<
 /// `plugin_dir/worker/<file>` 必须是存在文件。静默跳过缺失文件的声明会让
 /// `submit` 到运行期才以「worker 名不存在」报错——目录扫描 / zip 解压时就能
 /// 确认的事，不该拖到并行调用路径上（fail-visible 提前量）。
+///
+/// **摘要不在这里**：`wasmHash` 与主 `wasmHash` 同语义，校验落在安装入口
+/// （`manager::downloader::install_zip`）——装载入口不重复读盘算哈希。
 pub fn validate_worker_files(manifest: &PluginManifest, plugin_dir: &Path) -> crate::Result<()> {
     for worker in &manifest.workers {
         let path = plugin_dir.join("worker").join(&worker.file);
@@ -792,19 +817,38 @@ mod tests {
             "错误必须点名重名，got: {err}"
         );
 
-        // 反例：file 带路径分隔符 / `..`（路径注入面）。用 serde_json 构造而
-        // 不是 format! 直拼：`sub\n.wasm` 的反斜杠在 JSON 文本里必须写成
-        // `\\`，直拼会被解析成换行转义，测的就不是路径分隔符了。
-        for file in ["../escape.wasm", "sub/n.wasm", "sub\\n.wasm"] {
+        // 反例：file 不是「单一普通文件名」（路径注入面，跨平台同一口径）。用
+        // serde_json 构造而不是 format! 直拼：`sub\n.wasm` 的反斜杠在 JSON 文本里
+        // 必须写成 `\\`，直拼会被解析成换行转义，测的就不是分隔符了。
+        //
+        // `C:n.wasm` 是必须挡住的一条：它不含任何分隔符，但 `Path::push` 对带
+        // prefix 的路径会**整体替换**——`worker/` 前缀被吃掉，文件落到盘符相对
+        // 路径上（Windows 专用逃逸面，Linux 上靠 `:` 判据同口径拒绝）。
+        for file in [
+            "../escape.wasm",
+            "sub/n.wasm",
+            "sub\\n.wasm",
+            "C:n.wasm",
+            "C:/abs.wasm",
+            ".",
+            "..",
+        ] {
             let workers = serde_json::json!([{ "name": "n", "file": file }]).to_string();
             let err = with(&workers)
                 .err()
                 .unwrap_or_else(|| panic!("路径形态 file 必须拒绝: {file}"));
+            // 空 file 走「缺 file」判据，其余走「不是单一文件名」
             assert!(
-                err.to_string().contains("路径分隔符"),
-                "错误必须点名路径注入面，got: {err}"
+                err.to_string().contains("不是单一文件名") || err.to_string().contains("缺 file"),
+                "错误必须点名路径注入面，got: {err}（file={file}）"
             );
         }
+
+        // 正例：文件名里带 `..` 但仍是单一普通段（旧判据 contains("..") 会误杀）
+        assert!(
+            with(r#"[{"name":"n","file":"a..b.wasm"}]"#).is_ok(),
+            "合法文件名 a..b.wasm 不得被路径判据误杀"
+        );
 
         // 反例：空 name / 空 file（结构性必填）
         assert!(
@@ -814,6 +858,19 @@ mod tests {
         assert!(
             with(r#"[{"name":"n","file":""}]"#).is_err(),
             "空 file 必须拒绝"
+        );
+
+        // 反例：条目数超过上限（把宿主资源面交给清单）
+        let max = crate::system::constants::PLUGIN_WORKER_DECLARATIONS_MAX;
+        let over: Vec<serde_json::Value> = (0..=max)
+            .map(|i| serde_json::json!({ "name": format!("w{i}"), "file": format!("w{i}.wasm") }))
+            .collect();
+        let err = with(&serde_json::json!(over).to_string())
+            .err()
+            .expect("超上限必须拒绝");
+        assert!(
+            err.to_string().contains("超过上限"),
+            "错误必须点名条目数上限，got: {err}"
         );
     }
 

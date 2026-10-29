@@ -6,6 +6,11 @@ package wasmnest:plugin@0.0.2;
 /// `wasmnest-server-base` constants（`PLUGIN_WORKER_INPUT_MAX_BYTES` /
 /// `PLUGIN_WORKER_OUTPUT_MAX_BYTES`），宿主侧执行闸门——guest 侧超限同样由宿主
 /// 在受理 / 投递时拒绝，本接口不做形状约定（纯 string 透传）。
+///
+/// **失败通道 = trap**（本接口无 `result`，这是刻意的）：正常返回即「本 job 成功」，
+/// 输出字符串直载进终态 `succeeded` 事件；job 级失败用 trap（panic / unreachable /
+/// 燃料耗尽）表达，宿主统一归入终态 `failed` 的 `error`。输出 JSON 是**成功结果**
+/// 的载体——业务级的部分失败可以在其中自定字段，但宿主不解释、不据此改写终态。
 interface worker {
     run: func(input: string) -> string;
 }
