@@ -496,7 +496,7 @@ mod tests {
             "version": "1.0.0",
             "platform": platform,
             "main": "index.js",
-            "pluginType": if declares_wasm { "rust-ts" } else { "ts-only" },
+            "pluginType": if declares_wasm { "full" } else { "frontend" },
             "rustLibrary": if declares_wasm { wasm_name.clone() } else { String::new() },
             "permissions": [],
             "contributes": {}
@@ -548,7 +548,7 @@ mod tests {
             "name": "Worker Plugin",
             "version": "1.0.0",
             "platform": "both",
-            "pluginType": "wasm",
+            "pluginType": "backend",
             "workers": [worker],
             "permissions": [],
             "contributes": {}
@@ -801,7 +801,7 @@ mod tests {
             .exists());
     }
 
-    /// 构造声明 rust_library + wasmHash 的 rust-ts 插件 zip
+    /// 构造声明 rust_library + wasmHash 的 full 形态插件 zip
     fn build_wasm_zip(dir: &Path, id: &str, wasm_bytes: &[u8], declared_hash: &str) -> PathBuf {
         let zip_path = dir.join(format!("{}.zip", id));
         let file = std::fs::File::create(&zip_path).unwrap();
@@ -814,7 +814,7 @@ mod tests {
             "version": "1.0.0",
             "platform": "both",
             "main": "index.js",
-            "pluginType": "rust-ts",
+            "pluginType": "full",
             "rustLibrary": wasm_name,
             "wasmHash": declared_hash,
             "permissions": [],
@@ -1075,7 +1075,7 @@ mod tests {
             "version": "2.0.0",
             "platform": "both",
             "main": "index.js",
-            "pluginType": "ts-only",
+            "pluginType": "frontend",
             "rustLibrary": "",
             "permissions": [],
             "contributes": {}

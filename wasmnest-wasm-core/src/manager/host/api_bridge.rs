@@ -566,7 +566,7 @@ pub async fn plugin_network_auth_respond(
 /// **只接受宿主面凭证**（与 [`plugin_fs_auth_respond`] 同一判据）：授权记录是安全闸门
 /// 的配给账，插件面凭证不得用它枚举其它应用的授权情况。
 ///
-/// 只列 wasm 应用（`pluginType = rust-ts`）：授权策略与记录只对经 fs / http 原语的
+/// 只列携带 wasm 后端的应用（`pluginType` 为 backend / full）：授权策略与记录只对经 fs / http 原语的
 /// 应用成立，纯宿主侧插件没有可管理的授权面。
 #[tauri::command]
 pub async fn plugin_auth_overview(
@@ -594,7 +594,7 @@ pub async fn plugin_auth_overview(
         .list_plugins()
         .await
         .into_iter()
-        .filter(|info| info.plugin_type == crate::manifest::PluginType::RustTs)
+        .filter(|info| info.plugin_type.has_backend())
         .collect();
     if let Some(target) = plugin_id.as_deref() {
         apps.retain(|info| info.id == target);

@@ -166,6 +166,9 @@ pub use wasmnest_server_base::error::{AppError, Result};
 // ==================== 测试 ====================
 
 #[cfg(test)]
+mod manifest_type_tests;
+
+#[cfg(test)]
 mod tests {
     /// 运行时壳文件（相对 crate 根，正斜杠）——「壳内不得持 WIT 绑定」的扫描面
     ///
