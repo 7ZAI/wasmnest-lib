@@ -31,6 +31,9 @@ pub const SPLIT_CRATES: &[(&str, &str)] = &[
     ("wasmnest-server-http", "wasmnest-server-http"),
     ("wasmnest-server-websocket", "wasmnest-server-websocket"),
     ("wasmnest-server-peer-net", "wasmnest-server-peer-net"),
+    // libp2p 机制引擎（P1 传输栈换轨引入，peer-net 的传输底座）：纯机制、
+    // 零产品语义、零内部 crate 依赖；入表即纳入本锁的退役面扫描面。
+    ("wasmnest-p2p-engine", "wasmnest-p2p-engine"),
     ("wasmnest-crypto-engine", "wasmnest-crypto-engine"),
     ("wasmnest-host-kit", "wasmnest-host-kit"),
     // 组播发现能力域：票 02 批次 03 起宿主直接依赖（adapter 在
