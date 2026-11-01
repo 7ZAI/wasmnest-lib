@@ -1,7 +1,6 @@
 # ==================== wasmnest-p2p-engine：libp2p 机制引擎 ====================
-# libp2p 能力包（feat/p2p-engine 批次）：为替换文件传输底层传输栈做准备——
-# 现役 `wasmnest-server-peer-net` 的 base/{transport,tls,cert}（自管 TcpListener +
-# tokio-rustls + rcgen 自签证书）在后续批次换到本引擎的 swarm/流上，
+# libp2p 能力包：P1 起 `wasmnest-server-peer-net` 的传输栈已换到本引擎的
+# swarm/流上（原自管 TcpListener + tokio-rustls + rcgen 自签证书已删除）；
 # host-peer WIT 面、信任列表语义、`peer:*` 事件词汇零变化。
 #
 # 依赖纪律（本 crate 的存在意义，对齐 `wasmnest-ws-client-engine` 先例）：
@@ -23,10 +22,13 @@ edition = "2021"
 # feature 显式收窄（default-features = false 去掉默认 dns——LAN 场景拨 IP 字面量
 # 不需要 hickory 解析器；后续票据若需域名拨号再显式加回）：
 # - tokio/tcp：异步运行时与 TCP 传输（socket2，Android 交叉编译无额外构建链）
-# - noise/yamux：传输加密（snow，纯 Rust）与流多路复用——**不启用 tls/quic**：
-#   那两个 feature 才会拉 rustls/quinn；当前 feature 集经 `cargo tree` 核验，
-#   normal 与 aarch64-linux-android 目标树里 rustls / quinn / aws-lc / openssl-sys
-#   均为零（Android 禁 aws-lc-rs 的全仓纪律在 peer-net Cargo.toml 有先例注释）
+# - noise/yamux：传输加密与流多路复用——**不启用 tls/quic**：那两个 feature 才会
+#   拉 rustls/quinn；当前 feature 集经 `cargo tree` 核验，normal 与
+#   aarch64-linux-android 目标树里 rustls / quinn / aws-lc / openssl-sys 均为零
+#   （Android 禁 aws-lc-rs 的全仓纪律在 peer-net Cargo.toml 有先例注释）。
+#   **注意**：libp2p-noise 在非 wasm 目标用 snow 的 `ring-resolver`——ring 是 C
+#   构建（需 NDK clang，旧栈 rustls/ring 同款工具链），不是纯 Rust；`cargo check
+#   --target aarch64-linux-android` 需 `CC_aarch64_linux_android` 指向 NDK clang。
 # - ping：连接保活 + 对端静默死亡探测（对齐现役栈 socket2 keepalive 的意图）
 # - macros：`#[derive(NetworkBehaviour)]` 组合行为
 # - ed25519：节点身份密钥类型（node_id 派生强制 ed25519，非 ed25519 对端显性拒绝）
