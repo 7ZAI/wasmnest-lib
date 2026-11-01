@@ -3,8 +3,8 @@
 //! 节点身份初始化 + 节点/发现守护装配 + host-peer 原语（ADR 0022 v2）的引擎
 //! 转发唇口。**依赖方向**（spec D2）：本 crate 只**向下**依赖 `wasmnest-server-base`
 //! （错误 / 端口 traits）；底座机制（原 `wasmnest-peer-net` crate，2026-10-22
-//! peer-net-dissolve 拆分并入本 crate 的 `base/` 子模块：身份 / 证书 / TLS / 信任 /
-//! mDNS 注册 / 传输会话引擎原语）为 crate 自身内容，与 `wasmnest-server-core` /
+//! peer-net-dissolve 拆分并入本 crate 的 `base/` 子模块：身份 / libp2p 传输 /
+//! 信任 / mDNS 注册 / 传输会话引擎原语）为 crate 自身内容，与 `wasmnest-server-core` /
 //! `-http` / `-websocket` 三个传输面及宿主 crate **零依赖**
 //! ——它是「引擎域」不是「传输面」，不参与 I1/I2 传输面依赖链（由
 //! `dependency_direction_lock` 以依赖清单钉死）。
@@ -39,7 +39,7 @@
 //!   总线 topic，插件按 batchId 归并持久化业务视图。
 
 /// 对等网络底座机制（原 `wasmnest-peer-net` 拆分并入，2026-10-22 peer-net-dissolve）：
-/// 身份 / 证书 / TLS / 信任 / 帧 / 节点 / 连接 / mDNS 注册 / 传输会话引擎原语 / 共享目录线协议。
+/// 身份 / libp2p 传输 / 信任 / 帧 / 节点 / 连接 / mDNS 注册 / 传输会话引擎原语 / 共享目录线协议。
 /// 业务语义不留在底座：接收策略与共享暴露面经 WIT 由插件驱动。
 pub mod base;
 
@@ -104,16 +104,15 @@ use serde::Serialize;
 // `base::Result`（PeerNetError 别名）刻意不在此 re-export：lib 顶层 Result 是
 // server-base AppError 别名，两义共存时冲突；消费方需要底座错误时用全限定 `base::Result`。
 pub use crate::base::{
-    browse_shared_dir, generate_self_signed_cert, list_shared_roots, pull_shared_file, resolve_rel_path, saf_not_found,
-    send_batch, sort_entries, spawn_peer_mdns_daemon, verify_cert_matches_node_id, BrowseListing, CancelOrigin,
-    CancelToken, CertDer, Connection, ConnectionHandler, DirEntry, DiscoveredPeerRecord, DiscoveryCache,
-    DiscoveryConfig, DiscoveryDaemon, FileLanding, FileMeta, HandlerFuture, IncomingFrame, NodeId, NodeIdentity,
-    OutgoingFile, PauseCmd, PauseSlot, PeerMdnsBrowse, PeerNetError, PeerNetNode, PeerNetNodeConfig, ReceivePolicy,
-    RejectReason, RunningNode, SeqReader, SharedDirEntry, SharedDirHandler, SharedDirRoot, SharedDirStore,
-    SharedRootMeta, SharedSafAccess, StaticPeerRecord, TerminalState, TransferConfig, TransferEvent, TransferFrame,
-    TransferReceiveHandler, TrustEvent, TrustStatus, TrustStatusFrame, TrustStore, TrustedPeerEntry, CAP_FILE_TRANSFER,
-    CONFIRM_TIMEOUT, DISCOVERY_PROTOCOL_VERSION, MAX_PENDING_CONFIRMATIONS, PEER_DISCOVERY_TTL, SERVICE_TYPE,
-    SWEEP_INTERVAL,
+    browse_shared_dir, list_shared_roots, pull_shared_file, resolve_rel_path, saf_not_found, send_batch, sort_entries,
+    spawn_peer_mdns_daemon, BrowseListing, CancelOrigin, CancelToken, Connection, ConnectionHandler, DirEntry,
+    DiscoveredPeerRecord, DiscoveryCache, DiscoveryConfig, DiscoveryDaemon, FileLanding, FileMeta, HandlerFuture,
+    IncomingFrame, NodeId, NodeIdentity, OutgoingFile, PauseCmd, PauseSlot, PeerMdnsBrowse, PeerNetError, PeerNetNode,
+    PeerNetNodeConfig, ReceivePolicy, RejectReason, RunningNode, SeqReader, SharedDirEntry, SharedDirHandler,
+    SharedDirRoot, SharedDirStore, SharedRootMeta, SharedSafAccess, StaticPeerRecord, TerminalState, TransferConfig,
+    TransferEvent, TransferFrame, TransferReceiveHandler, TrustEvent, TrustHelloFrame, TrustStatus, TrustStatusFrame,
+    TrustStore, TrustedPeerEntry, CAP_FILE_TRANSFER, CONFIRM_TIMEOUT, DISCOVERY_PROTOCOL_VERSION,
+    MAX_PENDING_CONFIRMATIONS, PEER_DISCOVERY_TTL, SERVICE_TYPE, SWEEP_INTERVAL,
 };
 // 底座子模块（`transfer` / `shared` 等）对消费方保持模块路径可用：旧 `wasmnest_peer_net::transfer`
 // 形态 → `wasmnest_server_peer_net::transfer`（测试仓集成场景沿用该路径）

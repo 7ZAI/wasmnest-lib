@@ -144,7 +144,7 @@ pub const MODULE_NAME: &str = "http";
 /// ADR 0052 D2/D4：`host-http`（出站交集）契约真源在本 crate `wit/http.wit`；
 /// 服务端域 `host-http-endpoint`（桌面扩展）的 WIT 声明与 `impl Host` 已归桌面
 /// 宿主（本模块不再注册/声明它）。
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.1/host-http"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.2/host-http"];
 
 /// 本域的权限位（必须与 `wasmnest.wit` / SDK 权限表逐字一致）
 pub const MODULE_PERMISSIONS: &[&str] = &["network:http"];

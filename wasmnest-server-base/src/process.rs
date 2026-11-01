@@ -13,7 +13,9 @@ use std::process::Command;
 /// Windows 上自动添加 `CREATE_NO_WINDOW` 标志，避免控制台窗口闪现。
 /// 其他平台等同于 `Command::new(program)`。
 pub fn create_command(program: &str) -> Command {
-    let cmd = Command::new(program);
+    // `mut` 只在 Windows 分支用得上；非 Windows 下加 allow 免得 unused_mut
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

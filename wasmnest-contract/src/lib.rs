@@ -48,10 +48,18 @@
 pub const PACKAGE_NAME: &str = "wasmnest:plugin";
 
 /// 契约包版本（三段 semver）
-pub const PACKAGE_VERSION: &str = "0.0.1";
+pub const PACKAGE_VERSION: &str = "0.0.2";
 
 /// 契约包全名（`namespace:name@version`）——组件**导出实例**的键形态
-pub const PACKAGE: &str = "wasmnest:plugin@0.0.1";
+pub const PACKAGE: &str = "wasmnest:plugin@0.0.2";
+
+/// worker 接口名（worker 组件的唯一导出接口，`wasmnest:plugin/worker@<version>`）
+///
+/// worker 与主插件不同 world（零宿主 import，仅 WASI 内建；world 本体在
+/// `wasmnest-wasm-core/wit/worker.wit`，双端同源）。消费方经
+/// `wasmnest-wasm-core::contract::export_item(WORKER_INTERFACE, func)` /
+/// `interface_path(WORKER_INTERFACE)` 拼导出键——版本由派生机制注入，本常量只持接口名。
+pub const WORKER_INTERFACE: &str = "worker";
 
 #[cfg(test)]
 mod tests {

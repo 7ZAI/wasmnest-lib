@@ -59,21 +59,18 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// L2「静态声明 + 动态就绪」两段的运行时判据（ADR 0031 K9 · fail-visible 形态②）
+/// L2 层「静态声明 + 动态就绪」的运行时判据（ADR 0031 K9 · fail-visible 形态②）
 ///
 /// 抽成纯函数只为可单测：boot 循环本身要整套 `PluginHost` 才跑得起来，而这条判据
 /// 决定「是否必须在就位点点名报错」——fail-closed 下它唯一的可见信号就是这条日志，
 /// 判据本身不能只能靠端到端观察。
 ///
-/// `registered_owner` = 此刻注册表里认证中心的属主（`None` = 无人注册）。**只看属主
-/// 相等**（不比对 methods）：methods 是中心自述的能力清单，宿主不解释它，缺席一个
-/// 方法不构成「没就位」，而由 `auth-grant` 分派侧的失败显性化。
-fn l2_auth_center_unready(
-    kind: PluginKind,
-    plugin_id: &str,
-    registered_owner: Option<&str>,
-) -> bool {
-    kind.is_internal_business() && registered_owner != Some(plugin_id)
+/// `registered_owner` = L2 层激活完毕后注册表里的认证中心属主（`None` = 无人注册）。
+/// 单中心（K4）下只判「有没有中心」，**不比对属主**：L2 层允许多插件共存
+/// （auth-center + monitor），逐插件要求「自己是中心」会在正常启动时误报全拒
+/// （2026-10-26 dev 实证：auth-center 已在册，monitor 激活后仍刷「认证面全部拒绝」）。
+fn l2_auth_center_unready(kind: PluginKind, registered_owner: Option<&str>) -> bool {
+    kind.is_internal_business() && registered_owner.is_none()
 }
 
 impl PluginHost {
@@ -216,19 +213,20 @@ impl PluginHost {
                     );
                     continue;
                 }
-                // L2 的「静态声明 + 动态就绪」两段（ADR 0031 K9）：manifest 声明了 L2
-                // 角色（静态），但 activate 结束仍未调 `auth-center-register`（动态）——
-                // 这是**旧产物**（v31 SDK 无注册原语）或中心插件忘注册的典型形态。
-                // fail-closed 下它的后果是全部认证面拒绝，故必须在就位点显性点名
-                // 「按当前 SDK 重建以注册认证中心」（fail-visible 形态②），而不是等
-                // 用户撞到「所有东西都连不上」再猜。
+            }
+            // L2 的「静态声明 + 动态就绪」两段（ADR 0031 K9）：**整层激活完毕后**
+            // 仍无认证中心在册，才是 fail-closed 的报错条件。不能逐个插件比属主——
+            // L2 可以有多插件（auth-center + monitor），非属主的同级插件是常态。
+            // 该报错是「旧产物 / 中心忘注册」的 fail-visible 形态②：必须在就位点
+            // 点名「按当前 SDK 重建并注册」，而不是等用户撞到「所有东西都连不上」。
+            if kind.is_internal_business() {
                 let registered_owner =
                     crate::host_api::auth_center::center().map(|entry| entry.owner);
-                if l2_auth_center_unready(kind, &id, registered_owner.as_deref()) {
+                if l2_auth_center_unready(kind, registered_owner.as_deref()) {
                     tracing::error!(
-                        plugin_id = %id,
+                        role = kind.label(),
                         deny_kind = "no_center",
-                        "[PluginHost] L2 插件激活完成但未注册为认证中心——认证面将全部拒绝 \
+                        "[PluginHost] L2 层激活完成但无认证中心在册——认证面将全部拒绝 \
                          (fail-closed)。旧产物请按当前 SDK 重建（activate 内调 \
                          auth-center-register）；新产物请在 activate 里调用并检查失败日志"
                     );
@@ -419,69 +417,40 @@ mod tests {
     use super::l2_auth_center_unready;
     use crate::manifest::PluginKind;
 
-    const SESSION: &str = "com.wasmnest.bedcode";
-
-    /// C-1（正例）：L2 激活完但注册表空 → 未就位（fail-closed 全拒，必须点名）
+    /// C-1（正例）：L2 整层激活完但注册表空 → 未就位（fail-closed 全拒，必须点名）
     #[test]
     fn l2_activation_without_registered_center_is_flagged() {
-        assert!(l2_auth_center_unready(
-            PluginKind::InternalBusiness,
-            SESSION,
-            None
-        ));
+        assert!(l2_auth_center_unready(PluginKind::InternalBusiness, None));
     }
 
-    /// C-2（正例）：L2 激活完但注册表里是**别的**属主 → 仍未就位
-    /// （单中心 desk 下「有中心但不是我」同样意味着本插件的注册没生效）
+    /// C-2（反例，回归 2026-10-26）：中心已在册即就位——非属主的同级 L2 插件
+    /// （monitor）不得再被误判为「认证中心未就位」刷全拒错误。
     #[test]
-    fn l2_activation_with_another_owner_is_still_flagged() {
-        assert!(l2_auth_center_unready(
-            PluginKind::InternalBusiness,
-            SESSION,
-            Some("com.wasmnest.some-other")
-        ));
-    }
-
-    /// C-3（反例）：L2 自己已注册 → 不得刷错误日志（否则每次正常启动都误报）
-    #[test]
-    fn registered_l2_is_not_flagged() {
+    fn non_owner_l2_is_not_flagged_when_center_is_registered() {
         assert!(!l2_auth_center_unready(
             PluginKind::InternalBusiness,
-            SESSION,
-            Some(SESSION)
+            Some("com.wasmnest.auth-center")
+        ));
+        // 中心属主为自身的边界同样不得误报
+        assert!(!l2_auth_center_unready(
+            PluginKind::InternalBusiness,
+            Some("com.wasmnest.bedcode")
         ));
     }
 
-    /// C-4（反例）：L1 / L3 永不参与该判据——L1 无认证中心语义，L3 未注册是正常态
+    /// C-3（反例）：L1 / L3 永不参与该判据——L1 无认证中心语义，L3 未注册是正常态
     #[test]
     fn non_l2_kinds_are_never_flagged() {
         for kind in [PluginKind::BasicService, PluginKind::BusinessApp] {
             assert!(
-                !l2_auth_center_unready(kind, SESSION, None),
+                !l2_auth_center_unready(kind, None),
                 "{} 不得被判为认证中心未就位",
                 kind.label()
             );
             assert!(!l2_auth_center_unready(
                 kind,
-                SESSION,
-                Some("com.wasmnest.other")
+                Some("com.wasmnest.auth-center")
             ));
-        }
-    }
-
-    /// C-5（边界）：属主名按**完全相等**判定——前缀/子串相似的属主不算已注册
-    #[test]
-    fn owner_match_is_exact_not_prefix() {
-        for owner in [
-            "com.wasmnest.terminal-sessio",
-            "com.wasmnest.bedcode-2",
-            "com.wasmnest.terminal",
-        ] {
-            assert!(
-                l2_auth_center_unready(PluginKind::InternalBusiness, SESSION, Some(owner)),
-                "属主 {owner} 与 {} 不相等，必须判为未就位",
-                SESSION
-            );
         }
     }
 }

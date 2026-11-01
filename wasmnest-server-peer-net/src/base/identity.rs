@@ -147,8 +147,8 @@ impl NodeIdentity {
 
     /// 签名密钥种子（32 字节）
     ///
-    /// crate 内部供 cert.rs 构造 rcgen 密钥对；后续 TLS 栈（ticket 02）复用同一
-    /// 密钥时再评估是否提升可见性，当前保持最小暴露面。
+    /// P1 起 crate 内部供 `transport` 构造 libp2p NodeKey（同一把密钥派生
+    /// PeerId，node_id ↔ PeerId 互验）；保持 crate 内可见，不扩大暴露面。
     pub(crate) fn seed_bytes(&self) -> [u8; 32] {
         self.signing_key.to_bytes()
     }

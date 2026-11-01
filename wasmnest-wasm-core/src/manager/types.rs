@@ -48,10 +48,10 @@ impl PluginSource {
     ///
     /// 内置 wasm 插件恒真；用户 zip 安装（`UserInstalled`）仅当 manifest 声明
     /// `rust_library` 时有 wasm 实例。区分意义：激活/停用/热重载的 guest 调用
-    /// 必须以「有实例」为准，否则用户安装的 rust-ts 插件会在**未运行 guest
+    /// 必须以「有实例」为准，否则用户安装的 full 形态插件会在**未运行 guest
     /// activate** 的实例上执行命令——guest 侧 OnceLock 激活态（数据目录等）
     /// 永不初始化，典型报错 `activate incomplete`（agent-hub 票据复现）。
-    /// TS-only 用户插件无实例，维持原语义（跳过 guest 生命周期）。
+    /// 纯前端（frontend）用户插件无实例，维持原语义（跳过 guest 生命周期）。
     pub fn has_wasm_backend(&self, rust_library: &str) -> bool {
         match self {
             Self::Wasm => true,
@@ -84,7 +84,7 @@ pub struct HostPluginInfo {
     /// 缺省 `false` 不写入前端投影（与既有 wire 形状逐字一致）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub background_transport: bool,
-    /// WASM 模块文件名（仅 rust-ts 类型插件使用）
+    /// WASM 模块文件名（携带 wasm 后端的形态使用：backend / full；键名暂保留历史拼写，见 wasmnest-apps#21 键位子决策）
     pub rust_library: String,
     pub permissions: Vec<String>,
     pub state: PluginState,
@@ -185,7 +185,7 @@ mod tests {
             author: "tester".to_string(),
             main: "index.ts".to_string(),
             permissions: vec!["broadcast".to_string(), "storage".to_string()],
-            plugin_type: PluginType::RustTs,
+            plugin_type: PluginType::Full,
             rust_library: "wasmnest_test.wasm".to_string(),
             ..Default::default()
         }
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(info.description, "descriptive text");
         assert_eq!(info.author, "tester");
         assert_eq!(info.main, "index.ts");
-        assert_eq!(info.plugin_type, PluginType::RustTs);
+        assert_eq!(info.plugin_type, PluginType::Full);
         assert_eq!(info.kind, PluginKind::BusinessApp);
         assert!(
             !info.background_transport,
@@ -246,8 +246,8 @@ mod tests {
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["source"], "scanned");
         assert_eq!(
-            json["pluginType"], "rust-ts",
-            "PluginType 序列化为 kebab-case"
+            json["pluginType"], "full",
+            "PluginType 序列化为 lowercase 形态值"
         );
         assert!(json.get("icon").is_none(), "icon=None 时应省略字段");
         assert!(json.get("installedAt").is_none());

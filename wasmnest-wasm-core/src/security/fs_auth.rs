@@ -2618,9 +2618,7 @@ mod tests {
         let target_s = target.to_string_lossy().to_string();
         // 第一方清单覆盖的目录：撤销前免弹窗（否则本用例恒真）
         assert!(
-            checker
-                .check("test.bedcode", &target_s, FsOp::Write)
-                .await,
+            checker.check("test.bedcode", &target_s, FsOp::Write).await,
             "前置：第一方集成目录本来免弹窗"
         );
 
@@ -2636,25 +2634,17 @@ mod tests {
             .expect("revoke");
 
         assert!(
-            !checker
-                .check("test.bedcode", &target_s, FsOp::Write)
-                .await,
+            !checker.check("test.bedcode", &target_s, FsOp::Write).await,
             "硬拒绝记录必须优先于第一方免询问目录（撤销后访问被直接拒绝）"
         );
         assert!(
-            !checker
-                .check("test.bedcode", &target_s, FsOp::Read)
-                .await,
+            !checker.check("test.bedcode", &target_s, FsOp::Read).await,
             "deny 是整目标硬拒绝：读同样被拒"
         );
         let sibling = claude.join("hooks/x.py");
         assert!(
             !checker
-                .check(
-                    "test.bedcode",
-                    &sibling.to_string_lossy(),
-                    FsOp::Read
-                )
+                .check("test.bedcode", &sibling.to_string_lossy(), FsOp::Read)
                 .await,
             "deny 覆盖子树"
         );
@@ -2683,9 +2673,7 @@ mod tests {
 
         // 撤销：走与界面完全相同的写面（`revoke` = 删 allow + 落 deny）
         assert!(
-            checker
-                .check("test.bedcode", &target_s, FsOp::Read)
-                .await,
+            checker.check("test.bedcode", &target_s, FsOp::Read).await,
             "前置：第一方集成目录本来免弹窗"
         );
         checker
@@ -2694,9 +2682,7 @@ mod tests {
             .await
             .expect("revoke");
         assert!(
-            !checker
-                .check("test.bedcode", &target_s, FsOp::Read)
-                .await,
+            !checker.check("test.bedcode", &target_s, FsOp::Read).await,
             "撤销后该目录被硬拒绝"
         );
 
@@ -2717,11 +2703,7 @@ mod tests {
             NoDialogDecision::Allowed(FsGrantLayer::FirstPartyDir),
             "移除撤销记录后第一方免询问必须恢复（档位 / 记录层都不是它）"
         );
-        assert!(
-            checker
-                .check("test.bedcode", &target_s, FsOp::Read)
-                .await
-        );
+        assert!(checker.check("test.bedcode", &target_s, FsOp::Read).await);
         std::fs::remove_dir_all(&project).ok();
     }
 
@@ -3008,11 +2990,7 @@ mod tests {
         );
         assert!(
             checker
-                .check(
-                    "test.bedcode",
-                    &target.to_string_lossy(),
-                    FsOp::Write
-                )
+                .check("test.bedcode", &target.to_string_lossy(), FsOp::Write)
                 .await
         );
         std::fs::remove_dir_all(&project).ok();

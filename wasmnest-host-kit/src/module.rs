@@ -25,7 +25,7 @@ use crate::state::WasmPluginState;
 pub struct HostModuleDesc {
     /// 模块名（白名单键；全局唯一，小写下划线风格，如 `sqlite` / `discovery`）
     pub name: &'static str,
-    /// 本模块提供的 guest interface 路径（如 `wasmnest:plugin@0.0.1/host-plugin-database`；
+    /// 本模块提供的 guest interface 路径（如 `wasmnest:plugin@0.0.2/host-plugin-database`；
     /// 版本化契约下为全名，运行期匹配不吃它——`verify_whitelist` 只比 `name`）
     pub interfaces: &'static [&'static str],
     /// 本模块读写的权限位（如 `database:query`）——用于装载期一致性核对

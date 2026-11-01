@@ -320,10 +320,7 @@ mod tests {
         let mut state = local_state();
         let id = register_inner(&mut state, "com.wasmnest.bedcode", methods4()).unwrap();
         assert!(id.starts_with("authc-"), "句柄形态 authc-<uuid>: {id}");
-        assert_eq!(
-            state.as_ref().unwrap().owner,
-            "com.wasmnest.bedcode"
-        );
+        assert_eq!(state.as_ref().unwrap().owner, "com.wasmnest.bedcode");
         assert_eq!(state.as_ref().unwrap().center_id, id);
     }
 
@@ -365,10 +362,7 @@ mod tests {
             "重复注册必须点名在册句柄, got: {err}"
         );
         // 原中心不受影响
-        assert_eq!(
-            state.as_ref().unwrap().owner,
-            "com.wasmnest.bedcode"
-        );
+        assert_eq!(state.as_ref().unwrap().owner, "com.wasmnest.bedcode");
     }
 
     /// 空 methods 拒绝（半就绪中心是静默不可用源）
@@ -403,10 +397,7 @@ mod tests {
         register_inner(&mut state, "com.wasmnest.bedcode", methods4()).unwrap();
         // 非属主 purge：不回收（只碰本人）
         purge_inner(&mut state, "com.wasmnest.agent-hub");
-        assert_eq!(
-            state.as_ref().unwrap().owner,
-            "com.wasmnest.bedcode"
-        );
+        assert_eq!(state.as_ref().unwrap().owner, "com.wasmnest.bedcode");
         // 属主 purge：回收
         purge_inner(&mut state, "com.wasmnest.bedcode");
         assert!(state.is_none());

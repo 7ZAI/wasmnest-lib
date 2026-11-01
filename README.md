@@ -14,7 +14,7 @@
 ## 1. 工程形态
 
 - **无根 workspace**：17 个独立 crate（各自 `Cargo.toml` + 随仓库跟踪的 `Cargo.lock`）+ 4 个夹具 crate。命令一律在 crate 目录执行，不存在「仓级 cargo test」。
-- **版本线**：全部 crate 自 `0.0.1` 重开；契约版本 `wasmnest:plugin@0.0.1` 唯一手写真源在 `wasmnest-contract`。
+- **版本线**：全部 crate 自 `0.0.1` 重开；契约版本 `wasmnest:plugin@0.0.2` 唯一手写真源在 `wasmnest-contract`。
 - **消费方式**：平台双端宿主与测试仓经 sibling path 直接依赖本仓工作树（本仓不复制、不发布到 registry；唯一例外是 `wasmnest-wasm-core` 的 `desktop-assembly` 对桌面 SDK `wasmnest-plugin-api` 的版本依赖，消费侧用 `[patch.crates-io]` 指回 SDK 工作树）。
 
 ## 2. 依赖分层
@@ -39,7 +39,7 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 | 目录（包名） | 定位（一句话） | 形态 / feature | WIT 真源 | 主要消费方 |
 | --- | --- | --- | --- | --- |
 | `wasmnest-contract` | **契约常量**：`PACKAGE` / `PACKAGE_NAME` / `PACKAGE_VERSION` 唯一手写真源；零依赖、不装 WIT | 无 feature | — | wasm-core（`use` 后派生）、平台仓脚本与锁（正则读源文件） |
-| `wasmnest-wasm-core` | 插件机制**整核**：wasmtime 组件宿主运行时壳 + host_api adapter + 安全闸门 + 主库/引擎面 | `default = ["desktop-assembly"]`；`test-support` | `wit/core.wit` | 平台双端宿主（桌面默认开 / 移动 `default-features = false`）、测试仓 |
+| `wasmnest-wasm-core` | 插件机制**整核**：wasmtime 组件宿主运行时壳 + host_api adapter + 安全闸门 + 主库/引擎面 | `default = ["desktop-assembly"]`；`test-support` | `wit/core.wit` + `wit/worker.wit`（worker world 自持分片，双端同源） | 平台双端宿主（桌面默认开 / 移动 `default-features = false`）、测试仓 |
 | `wasmnest-host-kit` | 装配期机制内核：`WasmPluginState` / `HostModule` 契约 / 自动注册表 / limits / metrics | 无 feature | — | 双端宿主、全部 `common-host` 能力域、wasm-core |
 | `wasmnest-host-api-core` | host_api 无 WIT 域**实现层**：gate / storage / bus / database / log / events / fs | 无 feature | — | wasm-core adapter、server-base（re-export 护栏常量） |
 | `wasmnest-server-base` | server **叶子地基**：错误信封 / 常量 / 系统信息 / 网络配置形状 / 连接身份 / 端口 traits / wire | `tauri-compat`（默认开） | — | 几乎全仓 + 双端宿主 + 测试仓 |
@@ -97,7 +97,7 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 ## 5. 夹具 crate（不入一览表、不发布）
 
 - `wasmnest-host-kit/fixtures/forced-link-probe`：强制链接实证——链接期属性无法同进程既「有」又「无」，对应两个独立测试二进制（`forced_link` / `forced_link_absent`）。
-- `wasmnest-wasm-core/fixtures/{wasi-test,wasip3-test,p3-async-host-import-test}`：自持 WASI / WASI p3 / 异步宿主导入测试夹具，绑定本 crate `wit/core.wit`，零 SDK 依赖。
+- `wasmnest-wasm-core/fixtures/{wasi-test,wasip3-test,p3-async-host-import-test}`：自持 WASI / WASI p3 / 异步宿主导入测试夹具，绑定本 crate `wit/`（core.wit 契约真源；wasip3 夹具按目录加载），零 SDK 依赖。
 
 ## 6. 四仓协作
 
@@ -139,7 +139,7 @@ cd ../wasmnest-headless-host-probe && cargo test
 | --- | --- |
 | 开发导航与硬约束 | 本仓 [AGENTS.md](./AGENTS.md) |
 | 契约包名 / 版本真源 | `wasmnest-contract/src/lib.rs` |
-| 核心 WIT / 域 WIT | `wasmnest-wasm-core/wit/core.wit`、各能力域 `wit/<domain>.wit`（mdns / pty / http / peer / ws / notify） |
+| 核心 WIT / 域 WIT | `wasmnest-wasm-core/wit/core.wit` + `wit/worker.wit`、各能力域 `wit/<domain>.wit`（mdns / pty / http / peer / ws / notify） |
 | 权限词汇真源 | `wasmnest-wasm-core/src/permission.rs` |
 | 主库 schema | `wasmnest-wasm-core/src/db/schema.sql` |
 | 跨仓锁（wire / 权限 / mDNS） | 测试仓 `cross-end-tests/tests/{wire_drift_locks,permission_vocabulary_lock,mdns_browse_singleton_lock}.rs` |

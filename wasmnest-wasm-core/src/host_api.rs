@@ -108,6 +108,9 @@ mod wsl_fs;
 // `context` 超集）；`sql_guard` 垫片随票 05 退役（零消费者）。
 
 pub mod ports;
+/// 宿主事件 topic 词汇（pty / ws 域事件常量与订阅 topic 构建器；双端常编译——
+/// 纯数据 + 纯函数，批 2 自桌面 SDK 收口上提，平台仓 issue #36）
+pub mod topics;
 // `sql_guard` 垫片（原 `validate_sql_table_prefix` / `extract_table_names` 的落点）
 // 已随票 05（wasm-core-single-form，M6）删除：主库收归（2026-10-09）后它只剩
 // `column_to_json` 的一条 re-export，且**两侧均无消费者**（域实现直连共享核

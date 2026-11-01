@@ -9,11 +9,81 @@ impl PluginHost {
     ///
     /// 解压校验（manifest/身份/路径安全）→ 重新扫描用户目录 → WASM 实例化 →
     /// 注册 manifest 扩展点。同 id 已安装时回滚安装目录并报错（需先卸载）。
-    pub async fn install_from_zip(&self, zip_path: &str) -> crate::Result<String> {
-        let plugin_id = crate::manager::downloader::PluginDownloader::install_from_file(
-            zip_path,
-            &self.user_plugins_dir,
-        )?;
+    ///
+    /// `upgrade = true`（应用版本更新链路）：同 id **用户安装**插件的就地升级——
+    /// 先裁决（未安装 / 非 user-installed 来源 / 运行中一律 fail-visible 点名拒绝），
+    /// 再摘除旧实例与注册记录（**不走卸载路径**：插件存储 / 授权策略 / 审批记录 /
+    /// 监控计数全部保留），最后换目录内容（私有库 plugin.db 家族保留，见 downloader
+    /// `upgrade_from_file`）并重装载。目录内容变化使审批内容哈希失配 → 下次激活落
+    /// NeedsApproval 重新批准（新代码需重新授权，安全语义）。
+    pub async fn install_from_zip(&self, zip_path: &str, upgrade: bool) -> crate::Result<String> {
+        let zip_path = std::path::Path::new(zip_path);
+        if upgrade {
+            // 升级前置：先解出目标 id（任何落盘动作之前），注册表里裁决运行态与来源。
+            let plugin_id = crate::manager::downloader::PluginDownloader::peek_plugin_id(zip_path)?;
+            {
+                let plugins = self.plugins.read().await;
+                let loaded = plugins.get(&plugin_id).ok_or_else(|| {
+                    crate::AppError::Plugin(format!(
+                        "Plugin '{}' is not installed; use install instead of upgrade.",
+                        plugin_id
+                    ))
+                })?;
+                if loaded.source != PluginSource::UserInstalled {
+                    return Err(crate::AppError::Plugin(format!(
+                        "Plugin '{}' (source: {}) cannot be upgraded in place; builtin apps are updated with the host release.",
+                        plugin_id,
+                        loaded.source.as_str()
+                    )));
+                }
+                // 与卸载同判据：运行中（含激活进行中 / 降级）拒绝升级
+                if matches!(
+                    loaded.state,
+                    PluginState::Activated
+                        | PluginState::Activating
+                        | PluginState::Degraded { .. }
+                ) {
+                    return Err(crate::AppError::Plugin(format!(
+                        "Plugin '{}' is running, deactivate it before upgrading.",
+                        plugin_id
+                    )));
+                }
+            }
+            // 摘除旧实例（防御性停用清残留 → 丢私有库连接 → 停属主 → 移除记录）。
+            // 与 uninstall_plugin 的差异：不清插件存储 / 授权策略 / 审批记录 /
+            // 监控计数——升级保数据，卸载清数据，两条语义不混用。
+            self.deactivate_plugin(&plugin_id, true).await?;
+            self.wasm_host_ctx.drop_plugin_db(&plugin_id).await;
+            let removed_entry = { self.wasm_plugins.write().await.remove(&plugin_id) };
+            if let Some(entry) = removed_entry {
+                if let Some(report) = entry.shutdown().await {
+                    if report.forced_abort || report.abandoned_requests > 0 {
+                        tracing::warn!(
+                            plugin_id = %plugin_id,
+                            abandoned_requests = report.abandoned_requests,
+                            forced_abort = report.forced_abort,
+                            "plugin instance owner stopped on upgrade with unresolved requests"
+                        );
+                    }
+                }
+            }
+            self.plugins.write().await.remove(&plugin_id);
+        }
+        let plugin_id = if upgrade {
+            crate::manager::downloader::PluginDownloader::upgrade_from_file(
+                zip_path.to_str().ok_or_else(|| {
+                    crate::AppError::Plugin("Plugin package path is not valid UTF-8".to_string())
+                })?,
+                &self.user_plugins_dir,
+            )?
+        } else {
+            crate::manager::downloader::PluginDownloader::install_from_file(
+                zip_path.to_str().ok_or_else(|| {
+                    crate::AppError::Plugin("Plugin package path is not valid UTF-8".to_string())
+                })?,
+                &self.user_plugins_dir,
+            )?
+        };
 
         if self.plugins.read().await.contains_key(&plugin_id) {
             let dir = self.user_plugins_dir.join(&plugin_id);

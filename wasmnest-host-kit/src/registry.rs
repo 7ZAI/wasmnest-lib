@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn descriptor_noun_matcher_keeps_compounds_and_drops_substrings() {
         assert!(descriptor_haystack_has_noun(
-            "wasmnest:plugin@0.0.1/host-session",
+            "wasmnest:plugin@0.0.2/host-session",
             "session"
         ));
         assert!(descriptor_haystack_has_noun("pty-instance", "pty-instance"));
@@ -282,7 +282,7 @@ mod tests {
         ));
         assert!(descriptor_haystack_has_noun("ai-chatbox", "ai"));
         assert!(descriptor_haystack_has_noun(
-            "wasmnest:plugin@0.0.1/host-session",
+            "wasmnest:plugin@0.0.2/host-session",
             "plugin"
         ));
         // 正例：分号 / 斜杠权限位与接口路径的词段照样命中

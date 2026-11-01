@@ -12,9 +12,9 @@
 //! - 组件**导出实例**的键 = `ns:pkg/iface@version`（**版本在末尾**）；
 //! - 实例**内部**函数名的键 = **平名**（`on-message`），故 `ItemName` 的两段查找
 //!   （顶层按接口实例 → 实例内按平名）是唯一可用机制；
-//! - `ItemName` 字面量的版本**只能写在末尾**：`wasmnest:plugin@0.0.1/events.on-message`
+//! - `ItemName` 字面量的版本**只能写在末尾**：`wasmnest:plugin@0.0.2/events.on-message`
 //!   解析失败（wit-parser 在 `ns:pkg` 后强制要求 `/`），
-//!   `wasmnest:plugin/events.on-message@0.0.1` 才合法且命中。
+//!   `wasmnest:plugin/events.on-message@0.0.2` 才合法且命中。
 //!
 //! ## 版本真源
 //!
@@ -26,7 +26,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-pub use wasmnest_contract::{PACKAGE, PACKAGE_NAME, PACKAGE_VERSION};
+pub use wasmnest_contract::{PACKAGE, PACKAGE_NAME, PACKAGE_VERSION, WORKER_INTERFACE};
 
 /// 派生缓存（进程内唯一；条目数为导出词汇的常数上界，构造期一次性填齐）
 ///
@@ -164,5 +164,69 @@ mod tests {
         let parts: Vec<&str> = PACKAGE_VERSION.split('.').collect();
         assert_eq!(parts.len(), 3, "版本须三段 semver：{PACKAGE_VERSION}");
         assert!(parts.iter().all(|p| p.bytes().all(|b| b.is_ascii_digit())));
+    }
+
+    /// worker world 的 WIT 形状（worker 机制契约面，issue #10）
+    ///
+    /// 钉三件事：① `wit/worker.wit` 的 package 行与契约真源同版本——平台锁
+    /// `wit_package_version_lock` 的 `WIT_SOURCES` 尚未登记本文件（登记随合流进行，
+    /// 见 issue #10 的锁清单），此单测是**仓内兜底**，防 worker world 与主插件
+    /// import 名版本漂移（编译面全绿、运行期实例化才炸的同款静默断链）；
+    /// ② world `worker-guest` **零宿主 import**（WASI 内建由装配面注入，不进 world
+    /// 声明；world 名带 `-guest` 后缀是因为 WIT 同 package 内 interface 与 world
+    /// 共享名字空间，导出接口名必须保有契约名 `worker`）；
+    /// ③ 唯一导出 = `worker` 接口的 `run`（接口名与 [`WORKER_INTERFACE`] 一致，
+    /// worker 组件的导出键 = `interface_path(WORKER_INTERFACE)`）。
+    #[test]
+    fn worker_world_shape_is_contract_aligned() {
+        use wasmtime::component::wit_parser::{Resolve, WorldItem, WorldKey};
+
+        let mut resolve = Resolve::new();
+        let pkg = resolve
+            .push_source("wit/worker.wit", include_str!("../wit/worker.wit"))
+            .expect("worker.wit 可被 wit-parser 消费（T2 夹具的前置）");
+        let package = &resolve.packages[pkg].name;
+        assert_eq!(package.namespace, "wasmnest");
+        assert_eq!(package.name, "plugin");
+        assert_eq!(
+            package.version.as_ref().map(|v| v.to_string()).as_deref(),
+            Some(PACKAGE_VERSION),
+            "worker.wit 的 package 行必须与契约真源同版本（漂移＝运行期实例化失败）"
+        );
+
+        let (_, world) = resolve
+            .worlds
+            .iter()
+            .find(|(_, w)| w.name == "worker-guest")
+            .expect("worker.wit 必须声明 world worker-guest");
+        assert!(
+            world.imports.is_empty(),
+            "world worker-guest 零宿主 import（WASI 内建由装配面注入，不进 world 声明）"
+        );
+        assert_eq!(
+            world.exports.len(),
+            1,
+            "world worker-guest 只导出 worker 接口"
+        );
+        let (exported_iface, exported_iface_id) = world
+            .exports
+            .iter()
+            .find_map(|(key, item)| match (key, item) {
+                (WorldKey::Interface(_), WorldItem::Interface { id, .. }) => {
+                    Some((resolve.interfaces[*id].name.clone().unwrap(), *id))
+                }
+                _ => None,
+            })
+            .expect("导出必须是接口形态");
+        assert_eq!(
+            exported_iface, WORKER_INTERFACE,
+            "导出接口名必须与契约常量一致（T2 经 interface_path 派生导出键）"
+        );
+        let funcs: Vec<&str> = resolve.interfaces[exported_iface_id]
+            .functions
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(funcs, ["run"], "worker 唯一导出函数 = run");
     }
 }

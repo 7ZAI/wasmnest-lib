@@ -66,7 +66,7 @@ pub struct PluginManifest {
     /// 扩展点声明
     #[serde(default)]
     pub contributes: PluginContributes,
-    /// 插件类型：rust / rust-ts / ts-only / wasm
+    /// 插件产物形态：frontend / backend / full（语言无关三档，见 [`PluginType`]）
     #[serde(default = "default_plugin_type")]
     pub plugin_type: PluginType,
     /// WASM 库文件名（不含路径，相对于插件目录）
@@ -98,6 +98,20 @@ pub struct PluginManifest {
     /// 单插件在册 `host-pty` 句柄数上限声明（会话引擎下沉 P1 / H1）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pty_quota: Option<usize>,
+    /// 内嵌 worker 声明（worker 机制，ADR 0059；spec `.scratch/2026-10-28-worker-mechanism/`）
+    ///
+    /// 每项是一个即用即弃纯计算 wasm 子资源：wasm 放插件包 `worker/` 目录，
+    /// 主插件（仍 `persistent`）经 `host-worker.submit` 调用。worker **私属于
+    /// 声明插件**，不可跨插件 submit。结构校验（name 唯一 / file 形状 / 条数上限）
+    /// 在 `validation::validate_worker_declarations`，file 存在性在装载入口
+    /// `validation::validate_worker_files`，`wasmHash` 在安装入口（与主 wasm 同一处）。
+    ///
+    /// **wire 形状的已知边界**：桌面 SDK 的 `PluginManifest` 类型尚无本字段，
+    /// 经 `from_sdk_json`（静态注册插件的绑定层往返）会把声明丢掉；文件插件只经
+    /// 本中性类型解析，不受影响。SDK 侧补类型随 worker 构建链（T4）——在那之前
+    /// 不要让静态注册插件依赖本字段。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workers: Vec<WorkerDecl>,
     /// 实例生命周期策略：`persistent`（常驻，缺省）/ `ephemeral`（即用即弃）
     #[serde(default, skip_serializing_if = "InstanceLifecycle::is_persistent")]
     pub lifecycle: InstanceLifecycle,
@@ -135,29 +149,108 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// 缺省产物形态（与桌面 SDK 同一真源语义：`pluginType` 缺省 = ts-only）
+/// 缺省产物形态（与双端 SDK 同一真源语义：`pluginType` 缺省 = 纯前端）
 fn default_plugin_type() -> PluginType {
-    PluginType::TsOnly
+    PluginType::Frontend
 }
 
 /// 单插件 Store 资源上限覆盖请求（manifest `resourceOverrides`；真源 =
 /// `crate::config::ResourceOverrides`，本模块再导出供 manifest 词汇统一）
 pub use crate::config::ResourceOverrides;
 
+/// 内嵌 worker 声明条目（manifest `workers` 数组元素；worker 机制 / ADR 0059）
+///
+/// worker 与主插件不同 world（零宿主 import，仅 WASI 内建；`wit/worker.wit`），
+/// 导出 `wasmnest:plugin/worker@<version>` 的 `run: func(input: string) -> string`
+/// （JSON in/out）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerDecl {
+    /// worker 名（`host-worker.submit(worker)` 的寻址键；同一清单内唯一，加载期校验）
+    pub name: String,
+    /// worker wasm 文件名（不含路径，相对插件包 `worker/` 目录；存在性加载期校验）
+    pub file: String,
+    /// worker wasm 内容 SHA-256（小写十六进制；缺省空串 = 不校验，语义与主
+    /// [`PluginManifest::wasm_hash`] 一致）
+    ///
+    /// 校验落点与主 `wasmHash` 相同：安装入口（`manager::downloader::install_zip`）
+    /// 读盘比对；装载入口只保文件存在性，不重复算摘要。
+    #[serde(default)]
+    pub wasm_hash: String,
+    /// 单 worker 资源覆盖请求（缺省继承缺省档：内存 128 MiB、燃料与主插件同基数；
+    /// 六字段可逐 worker 覆盖，与主插件 `resourceOverrides` 同形）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_overrides: Option<ResourceOverrides>,
+}
+
 // ==================== 枚举词汇 ====================
 
-/// 插件产物形态类型
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// 插件产物形态（语言无关三形态，2026-10-26 语义重定义，wasmnest-apps#21）
+///
+/// 词汇只表达**形态**（是否携带 wasm 后端 / 前端产物），不表达后端语言——
+/// 形态是宿主与装配真正消费的判据（是否实例化 wasm、是否有页面产物），语言
+/// 不是。Go 后端（SDK Go 壳）与 Rust 后端共用同一词汇。
+///
+/// 旧值（rust / rust-ts / ts-only / wasm）已退役：研发起步期无兼容读入义务，
+/// 反序列化**点名拒绝并给出迁移出路**（fail-visible，不静默降级）。本枚举与
+/// 桌面 SDK `types/state.rs`、移动 SDK `types.rs` 的同形定义**逐字对齐**
+/// （三处独立 crate，无共享依赖，漂移面以文本一致纪律维护）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PluginType {
-    /// 纯 Rust 插件，无前端组件
-    Rust,
-    /// Rust + TypeScript 插件
-    RustTs,
-    /// 纯 TypeScript 插件
-    TsOnly,
-    /// WASM 插件（移动 SDK 有该形态；桌面 `plugin_type` 词汇缺省面为 ts-only）
-    Wasm,
+    /// 纯前端（原 ts-only）：仅前端产物，无 wasm 后端
+    Frontend,
+    /// 纯后端（原 rust）：wasm 后端、无页面产物（worker / ephemeral 声明限此形态）
+    Backend,
+    /// 前后端（原 rust-ts；移动端原 `wasm` 形态按是否携带前端核定归属）
+    Full,
+}
+
+impl PluginType {
+    /// wire 值（错误文案 / 对比用；与 serde rename 同源）
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Frontend => "frontend",
+            Self::Backend => "backend",
+            Self::Full => "full",
+        }
+    }
+
+    /// 是否携带 wasm 后端（授权读模型 / guest 生命周期 / 事件派发共用的
+    /// 「有实例」判据——原桌面 `RustTs` 过滤与移动 `Wasm` 匹配的统一语义）
+    pub const fn has_backend(&self) -> bool {
+        matches!(self, Self::Backend | Self::Full)
+    }
+}
+
+impl<'de> Deserialize<'de> for PluginType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "frontend" => Ok(Self::Frontend),
+            "backend" => Ok(Self::Backend),
+            "full" => Ok(Self::Full),
+            "ts-only" => Err(retired_plugin_type::<D::Error>("ts-only", "frontend")),
+            "rust" => Err(retired_plugin_type::<D::Error>("rust", "backend")),
+            "rust-ts" => Err(retired_plugin_type::<D::Error>("rust-ts", "full")),
+            "wasm" => Err(serde::de::Error::custom(
+                "pluginType 'wasm' 已退役（形态三档重定义，2026-10-26，wasmnest-apps#21）：携带前端产物用 'full'，纯后端 worker 用 'backend'（移动端逐 app 核定）",
+            )),
+            other => Err(serde::de::Error::custom(format!(
+                "pluginType '{other}' 不是合法形态值（frontend / backend / full）"
+            ))),
+        }
+    }
+}
+
+/// 退役值 → 迁移出路的错误构造（点名旧值，不静默）
+fn retired_plugin_type<E: serde::de::Error>(old: &str, new: &str) -> E {
+    E::custom(format!(
+        "pluginType '{old}' 已退役（形态三档重定义，2026-10-26，wasmnest-apps#21）：改用 '{new}'——词汇只表达形态，不表达后端语言"
+    ))
 }
 
 impl Default for PluginType {
@@ -173,7 +266,7 @@ impl Default for PluginType {
 ///
 /// `Default` 取 `Both` **仅服务测试夹具与合成清单**（wire 层该字段必填、无 serde
 /// 缺省）：合成清单对两端都可装载，不把测试夹具钉死在某一个端。端名（desktop /
-/// mobile）在此是**双端共享的 wire 词汇**（与 pluginType 的 wasm 同档）——不是按
+/// mobile）在此是**双端共享的 wire 词汇**——不是按
 /// 端分叉的机制（ADR 0047 D2 判据只针对自持标识符的声明位，wire 取值不在此列）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -852,5 +945,74 @@ mod cli_segment_tests {
         let value = serde_json::to_value(&cmd).unwrap();
         assert!(value.get("cli").is_none(), "无段不得产出 cli key");
         assert_eq!(value.get("id"), Some(&serde_json::json!("demo.run")));
+    }
+}
+
+/// workers 块 wire 形状（worker 机制契约面，issue #10）
+///
+/// 未声明 = 零迁移（wire 形状不出现 `workers` 键，与既有 manifest 逐字一致，
+/// 也保住上方漂移锁的双侧同形——桌面 SDK 类型尚无本字段，空值省略是两侧相等
+/// 的前提）；声明 = camelCase 字段名 + 可选字段（`wasmHash` 空串缺省、
+/// `resourceOverrides` 缺省省略）+ 反序列化回读等价。
+#[cfg(test)]
+mod workers_wire_shape {
+    use super::*;
+
+    #[test]
+    fn workers_block_uses_camel_case_and_skips_defaults() {
+        // 未声明：wire 形状零变化
+        let bare = PluginManifest {
+            id: "com.wasmnest.worker".to_string(),
+            name: "w".to_string(),
+            version: "1.0.0".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            serde_json::to_value(&bare)
+                .unwrap()
+                .get("workers")
+                .is_none(),
+            "未声明 workers 不得出现在 wire 形状里（漂移锁双侧同形的前提）"
+        );
+
+        // 完整条目：camelCase 字段名 + 缺省省略
+        let declared = PluginManifest {
+            workers: vec![WorkerDecl {
+                name: "hasher".to_string(),
+                file: "hasher.wasm".to_string(),
+                wasm_hash: "deadbeef".to_string(),
+                resource_overrides: None,
+            }],
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&declared).unwrap();
+        let entry = &value["workers"][0];
+        assert_eq!(entry["name"], "hasher");
+        assert_eq!(entry["file"], "hasher.wasm");
+        assert_eq!(entry["wasmHash"], "deadbeef");
+        assert!(
+            entry.get("resourceOverrides").is_none(),
+            "缺省资源覆盖不得出现在 wire 形状里"
+        );
+
+        // 反序列化回读等价（显式声明的字段保形）
+        let roundtrip: PluginManifest = serde_json::from_value(value).unwrap();
+        assert_eq!(roundtrip.workers, declared.workers);
+
+        // 最小条目：wasmHash 缺省空串（= 不校验，与主 wasmHash 同语义）、
+        // 资源覆盖缺省 None（继承缺省档）
+        let minimal: PluginManifest = serde_json::from_str(
+            r#"{"id":"com.wasmnest.worker","name":"w","version":"1.0.0","platform":"both",
+                "workers":[{"name":"n","file":"n.wasm"}]}"#,
+        )
+        .expect("最小 worker 条目应可解析");
+        assert_eq!(minimal.workers.len(), 1);
+        assert_eq!(minimal.workers[0].wasm_hash, "");
+        assert!(minimal.workers[0].resource_overrides.is_none());
+
+        // 空 wasmHash 在 wire 里显式为空串（与主 wasmHash 的既有行为一致——
+        // 2026-10-28 审核裁决保持该形状；T4 SDK 类型照此对齐）
+        let serialized = serde_json::to_value(&minimal).unwrap();
+        assert_eq!(serialized["workers"][0]["wasmHash"], "");
     }
 }

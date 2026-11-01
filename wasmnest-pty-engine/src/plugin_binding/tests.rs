@@ -801,8 +801,10 @@ fn drain_events(rx: &Receiver<serde_json::Value>, window: Duration) -> Vec<serde
 }
 
 /// 正例（P2）：真 PTY 产出 → 属主收到 `pty:output`（只带句柄），且**限频**：
-/// 一次毫秒级突发含二十余次 4 KiB push，通知数必须远少于 push 数——证明写侧装饰器
-/// 确实生效，而不是「每次 push 一条」（那等于把通知退化成逐块 push）。
+/// 整段突发落环后块数远少于读块数——环 [`PtyRing::push`] 尾块按 16 KiB 合并
+/// （`COALESCE_TARGET`，块边界对消费者不可见），`seq 1 20000` 全量约 128 KiB
+/// （行纪律 ONLCR 把 `\n` 翻成 `\r\n`，引擎侧不设 raw mode）≈ 8 块。证明写侧
+/// 装饰器确实生效，而不是「每次 push 一条」（那等于把通知退化成逐块 push）。
 #[cfg(target_os = "linux")]
 #[test]
 fn output_notify_is_rate_limited_and_owner_scoped() {
@@ -813,8 +815,8 @@ fn output_notify_is_rate_limited_and_owner_scoped() {
     let events = subscribe(&ctx, &output_topic(owner));
     let other_events = subscribe(&ctx, &output_topic(other));
 
-    // 突发约 100 KiB 文本（`read_buffer_size` = 4096 → 二十余次 push），末尾驻留
-    // （`read go`）保证句柄与环在断言窗口内不被摘除
+    // 突发约 100 KiB 文本（读侧 4 KiB 粒度，连续读块被环按 16 KiB 合并），
+    // 末尾驻留（`read go`）保证句柄与环在断言窗口内不被摘除
     let pty_id = pty_spawn(
         ctx.ports(),
         owner,
@@ -835,25 +837,42 @@ fn output_notify_is_rate_limited_and_owner_scoped() {
         "他人命名空间收不到（定向投递只到属主）"
     );
 
-    // 等产出全部落环（推送异步：按内容断言，不断言时序）
+    // 等产出**停驻**后再数块（推送异步：不断言时序）。
+    //
+    // 2026-10-27 修正：旧版在「watermark 首次越过 100 KiB」的瞬间读块数——
+    // 驻留落 (98_304, 114_688] 带窗时读作 7 块，把「落环持续推进」误判为
+    // 完成；并发负载改变落环节拍后该项成为抓阄（全量并行实测偶发 FAIL
+    // chunks=7，单跑稳定过）。停驻判据 = 连续 3 轮（20ms 间隔）watermark
+    // 不再增长且已达 100 KiB：突发落环是毫秒级，60ms 静默能代表收尾；
+    // 负载最坏只拉长落环，不会复活停驻后的流。
     let ring = ring_of(&pty_id);
     let deadline = Instant::now() + Duration::from_secs(5);
+    let (mut last, mut settled) = (0u64, 0u32);
     loop {
+        assert!(Instant::now() < deadline, "突发产出未落环（max={last}）");
+        std::thread::sleep(Duration::from_millis(20));
         let max = ring
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .watermarks()
             .1;
-        if max >= 100_000 || Instant::now() >= deadline {
-            assert!(max >= 100_000, "突发产出未落环（max={max}）");
+        if max == last {
+            settled += 1;
+        } else {
+            settled = 0;
+        }
+        last = max;
+        if settled >= 3 && max >= 100_000 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(20));
     }
     let chunks = ring.lock().unwrap_or_else(|e| e.into_inner()).chunk_count();
+    // 停驻后总量确定：含 ONLCR 约 128 KiB → 8 块；若行纪律差异不带 `\r`
+    // 约 108 KiB → 7 块。阈值取 7（不大于 onlcr 之下的最小可能），不再
+    // 押注读取粒度时序。
     assert!(
-        chunks >= 8,
-        "4 KiB 读块下 100 KiB 产出应有多次 push，实际 {chunks}"
+        chunks >= 7,
+        "16 KiB 合并块下该突发产出应 ≥ 7 块，实际 {chunks}"
     );
 
     let extra = drain_events(&events, Duration::from_millis(100));

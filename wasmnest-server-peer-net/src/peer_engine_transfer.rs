@@ -556,7 +556,13 @@ impl PeerTransferState {
 /// 发送专用拨号（每次会话独立握手）：可信对端静默放行；拒绝/不可达归一为
 /// 失败明细（业务文案由前端按状态渲染）
 async fn dial_for_send(node: &PeerNetNode, record: &DiscoveredPeerRecord) -> Result<Connection, String> {
-    match node.dial(&record.to_static_peer_record()).await {
+    match node
+        .dial_with(
+            &record.to_static_peer_record(),
+            wasmnest_p2p_engine::stream_proto::TRANSFER,
+        )
+        .await
+    {
         Ok(conn) => Ok(conn),
         Err(crate::base::PeerNetError::DialDeniedByPeer { .. }) => {
             Err("dial denied by peer (trust revoked or first-connect pending)".to_string())

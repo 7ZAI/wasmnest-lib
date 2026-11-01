@@ -82,30 +82,7 @@ pub enum PeerNetError {
     #[error("invalid node id (expected 64 lowercase hex chars): {value}")]
     InvalidNodeId { value: String },
 
-    /// 从身份种子构造证书签名密钥对失败（PKCS#8 包装/解析层）
-    #[error("build certificate key pair from identity seed failed (node_id={node_id}): {source}")]
-    KeyPairFromSeed {
-        node_id: String,
-        #[source]
-        source: rcgen::Error,
-    },
-
-    /// rcgen 自签证书生成失败
-    #[error("generate self-signed certificate failed (node_id={node_id}): {source}")]
-    CertGenerate {
-        node_id: String,
-        #[source]
-        source: rcgen::Error,
-    },
-
-    /// X.509 证书 DER / SPKI 解析失败
-    ///
-    /// `detail` 承载底层解析器（nom/x509-parser）的错误描述文本：
-    /// 该错误经 nom 的 Err 包装，无法以标准 `#[source]` 形式保留。
-    #[error("parse x509 certificate DER failed: {detail}")]
-    CertParse { detail: String },
-
-    // ==================== 监听 / 拨号 / TLS（ticket 02）====================
+    // ==================== 监听 / 拨号 / 传输（P1 libp2p）====================
     /// 绑定本节点 TCP 监听端口失败
     #[error("bind peer-net TCP listener failed: {addr}: {source}")]
     ListenBind {
@@ -114,14 +91,14 @@ pub enum PeerNetError {
         source: std::io::Error,
     },
 
-    /// 准备移交的 TCP listener 失败（读本地地址 / 设非阻塞 / std→tokio 转换）
+    /// 准备移交的 TCP listener 失败（读本地地址）
     #[error("prepare TCP listener for peer-net node failed: {source}")]
     ListenerPrepare {
         #[source]
         source: std::io::Error,
     },
 
-    /// 拨号对端时 TCP 连接失败
+    /// 拨号对端时 TCP 连接失败（旧栈错误形状保留，供消费方匹配）
     #[error("dial peer failed on TCP connect: {addr}: {source}")]
     DialConnect {
         addr: SocketAddr,
@@ -129,24 +106,17 @@ pub enum PeerNetError {
         source: std::io::Error,
     },
 
-    /// 构建 rustls TLS 配置失败（协议版本/key/cert 装载层，非单连接握手）
-    #[error("build rustls TLS configuration failed: {detail}")]
-    TlsConfig { detail: String },
+    /// 节点尚未启动（`PeerNetNode::start` / `start_with_listener` 之前拨号）
+    #[error("peer-net node is not started (call start before dial)")]
+    NodeNotStarted,
 
-    /// 与对端的 TLS 握手失败
-    ///
-    /// `detail` 承载 rustls/io 层错误描述文本：错误经 tokio-rustls 的 `io::Error`
-    /// 包装后类型信息不统一，无法以标准 `#[source]` 形式保留。
-    #[error("TLS handshake with peer failed ({peer_addr}): {detail}")]
-    TlsHandshake { peer_addr: SocketAddr, detail: String },
+    /// libp2p 传输层错误（握手 / 开流 / 协议协商；detail 带操作上下文）
+    #[error("peer-net transport error: {detail}")]
+    Transport { detail: String },
 
-    /// 对端证书指纹与期望节点 ID 不符——拨号侧 TLS 层身份钉扎拒绝（AC#3 的错误种类）
-    #[error("TLS certificate binding mismatch: expected node_id={expected}, actual={actual}")]
-    TlsBindingMismatch { expected: String, actual: String },
-
-    /// mTLS 握手完成但对端未出示证书（mandatory client auth 被绕过的防御分支）
-    #[error("mTLS peer presented no certificate (peer_addr={peer_addr})")]
-    PeerCertMissing { peer_addr: SocketAddr },
+    /// 对端身份与期望 node_id 不符——拨号侧握手后校验拒绝（P1 取代 TLS 钉扎）
+    #[error("peer identity mismatch: expected node_id={expected}, actual={actual}")]
+    IdentityMismatch { expected: String, actual: String },
 
     /// 首连信任状态控制帧读写失败（长度前缀/JSON/IO 层）
     #[error("trust status control frame I/O failed ({peer_addr}): {detail}")]

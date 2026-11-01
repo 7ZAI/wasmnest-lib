@@ -214,14 +214,11 @@ impl PluginLoader {
 
                     let extension_path = strip_verbatim_prefix(&path.to_string_lossy());
 
-                    // TS-only 插件强制设置 plugin_type
+                    // 纯前端插件的形态缺省与 main 必填判据在 load_manifest 收口
+                    // （历史遗留空块，随 2026-10-26 形态三档重定义清理语义注释）
 
                     let manifest = manifest;
-
-                    if manifest.plugin_type == PluginType::TsOnly && !manifest.main.is_empty() {
-
-                        // 保留 manifest 中的 plugin_type，若未指定则默认 TsOnly
-                    }
+                    let _ = &manifest;
 
                     // 非核心能力域的装载期回调（票 02 批次 02 / 批次 03）：manifest
                     // **原文**下发，解析权与**声明仲裁权**都在能力域——内核不解释
@@ -334,11 +331,19 @@ impl PluginLoader {
         // 解析与必填字段校验走唯一真源（票 11 第 6 项）
         let manifest = crate::manager::validation::parse_manifest_json(&content)?;
 
-        // TS-only 插件必须有 main 字段（目录扫描入口独有的一道）
+        // worker 声明的 wasm 文件存在性（装载入口独有的一道：结构面已在
+        // parse_manifest_json 的必填校验里过掉；zip 安装入口按「结构性必填」口径
+        // 不查，与 ptyQuota 同款分层——安装期可通过、装载期拒绝）
+        crate::manager::validation::validate_worker_files(
+            &manifest,
+            path.parent().unwrap_or_else(|| std::path::Path::new(".")),
+        )?;
 
-        if manifest.plugin_type == PluginType::TsOnly && manifest.main.is_empty() {
+        // 纯前端插件必须有 main 字段（目录扫描入口独有的一道）
+
+        if manifest.plugin_type == PluginType::Frontend && manifest.main.is_empty() {
             return Err(crate::AppError::Plugin(
-                "TS-only plugin.json missing main field".to_string(),
+                "frontend plugin.json missing main field".to_string(),
             ));
         }
 
@@ -393,6 +398,47 @@ mod tests {
         assert_eq!(manifest.id, "com.test.plugin");
         assert_eq!(manifest.permissions.len(), 2);
         assert_eq!(manifest.contributes.commands.len(), 1);
+    }
+
+    /// worker 声明的 wasm 文件存在性在装载期拒绝（worker 机制 / ADR 0059）
+    ///
+    /// 反例先拒（点名 worker 与 worker/ 目录），文件在场后同 manifest 放行——
+    /// 证明拒绝来自 file 存在性而不是声明本身。结构面（重名 / 路径注入）的用例
+    /// 在 `validation.rs`（parse 漏斗），本用例钉装载入口的接线。
+    #[test]
+    fn test_load_manifest_rejects_missing_worker_file() {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let plugin_dir = tmp_dir.path().join("com.test.worker");
+        fs::create_dir_all(plugin_dir.join("worker")).unwrap();
+
+        let manifest_json = serde_json::json!({
+            "id": "com.test.worker",
+            "name": "Worker Plugin",
+            "version": "1.0.0",
+            "platform": "both",
+            "pluginType": "backend",
+            "workers": [{ "name": "n", "file": "n.wasm" }]
+        });
+        let manifest_path = plugin_dir.join("plugin.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest_json).unwrap(),
+        )
+        .unwrap();
+
+        let err = PluginLoader::load_manifest(&manifest_path)
+            .err()
+            .expect("缺 worker wasm 必须装载期拒绝");
+        let text = err.to_string();
+        assert!(
+            text.contains("workers[n]") && text.contains("n.wasm") && text.contains("worker/"),
+            "错误必须点名 worker 名、文件与 worker/ 目录，got: {text}"
+        );
+
+        fs::write(plugin_dir.join("worker").join("n.wasm"), b"wasm").unwrap();
+        let manifest = PluginLoader::load_manifest(&manifest_path).expect("在场文件放行");
+        assert_eq!(manifest.workers.len(), 1);
+        assert_eq!(manifest.workers[0].name, "n");
     }
 
     #[test]

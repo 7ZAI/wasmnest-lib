@@ -1,0 +1,9 @@
+# ==================== 与 peer-net 共享 target 桶 ====================
+# 本 crate 与 `wasmnest-server-peer-net` 同属网络栈，P1 起被它依赖、随宿主同批
+# 构建——产物落同一桶最大化 sccache / 编译产物复用（桶治理先例见 5 个 server
+# crate + crypto-engine 的同名文件）。独立克隆下落点 = 本仓根 target/server-libs：
+#   cd wasmnest-p2p-engine && cargo metadata --no-deps --format-version 1
+# 其 `target_directory` 应为 `<wasmnest-lib>/target/server-libs`。
+# 平台装配（宿主 src-tauri 构建）下本文件不参与编译，产物落宿主 target。
+[build]
+target-dir = "../target/server-libs"
