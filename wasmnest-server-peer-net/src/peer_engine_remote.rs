@@ -216,7 +216,12 @@ async fn dial_peer(ctx: &PeerCtx, node_id: &NodeId, action: &str) -> Result<crat
             node_id.as_str()
         ))
     })?;
-    node.dial(&record.to_static_peer_record()).await.map_err(|e| match e {
+    node.dial_with(
+        &record.to_static_peer_record(),
+        wasmnest_p2p_engine::stream_proto::SHARED_DIR,
+    )
+    .await
+    .map_err(|e| match e {
         PeerNetError::DialDeniedByPeer { .. } => AppError::Internal(format!(
             "peer-net {action} failed: not trusted by peer {}",
             node_id.as_str()
@@ -424,7 +429,10 @@ async fn run_pull_queue(
             if cancel_root.is_cancelled() {
                 return;
             }
-            match node.dial(&record).await {
+            match node
+                .dial_with(&record, wasmnest_p2p_engine::stream_proto::SHARED_DIR)
+                .await
+            {
                 Ok(conn) => {
                     let _ = pull_shared_file(
                         conn,

@@ -79,7 +79,83 @@ impl TrustStatusFrame {
     }
 }
 
+/// 拨号方向接听方声明的期望身份：信任状态流的第一帧（P1 起）
+///
+/// 先校验「拨号方拨的是不是本节点」再触发确认闸门——伪造身份记录在拨入侧
+/// 不产生任何确认回调（对齐旧 TLS 层钉扎的语义）。这是 P1 传输栈换轨新增的
+/// 客户端问候帧，状态帧（`TrustStatusFrame`）仍由接听方单向发回。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustHelloFrame {
+    /// 协议版本（接收端拒绝大于 [`PROTOCOL_VERSION`] 的版本）
+    pub protocol_version: u32,
+    /// 拨号方期望的对端 node_id（接听方必须校验等于自身）
+    pub expected_node_id: String,
+}
+
+impl TrustHelloFrame {
+    /// 构造指向期望对端的问候帧
+    pub fn new(expected_node_id: &crate::base::identity::NodeId) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            expected_node_id: expected_node_id.as_str().to_string(),
+        }
+    }
+}
+
 // ==================== 编解码 ====================
+
+/// 通用写帧：u32 BE 长度前缀 + JSON 载荷，写毕 flush
+async fn write_payload<W>(sink: &mut W, payload: &[u8], what: &str) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    if payload.len() > MAX_FRAME_PAYLOAD_LEN {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{what} payload {} exceeds cap {MAX_FRAME_PAYLOAD_LEN}", payload.len()),
+        ));
+    }
+    let len_prefix = u32::try_from(payload.len())
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{what} payload does not fit u32"),
+            )
+        })?
+        .to_be_bytes();
+    sink.write_all(&len_prefix).await?;
+    sink.write_all(payload).await?;
+    sink.flush().await
+}
+
+/// 通用读帧：先读 u32 BE 长度，再定长读取载荷
+async fn read_payload<R>(stream: &mut R, what: &str) -> std::io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut len_prefix = [0u8; 4];
+    stream.read_exact(&mut len_prefix).await?;
+    let payload_len = u32::from_be_bytes(len_prefix) as usize;
+    if payload_len == 0 || payload_len > MAX_FRAME_PAYLOAD_LEN {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{what} length {payload_len} out of range 1..={MAX_FRAME_PAYLOAD_LEN}"),
+        ));
+    }
+    let mut payload = vec![0u8; payload_len];
+    stream.read_exact(&mut payload).await?;
+    Ok(payload)
+}
+
+fn ensure_supported_version(version: u32, what: &str) -> std::io::Result<()> {
+    if version > PROTOCOL_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{what} protocol version {version} is newer than supported {PROTOCOL_VERSION}"),
+        ));
+    }
+    Ok(())
+}
 
 /// 写入一帧：u32 BE 长度前缀 + JSON 载荷，写毕 flush
 pub async fn write_frame<W>(sink: &mut W, frame: &TrustStatusFrame) -> std::io::Result<()>
@@ -90,27 +166,7 @@ where
         // 序列化失败意味着内部不变量破坏（帧结构不可能产生非法 JSON），按
         // InvalidData 上抛由调用方归入 ControlFrame 错误域
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    if payload.len() > MAX_FRAME_PAYLOAD_LEN {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "trust status frame payload {} exceeds cap {MAX_FRAME_PAYLOAD_LEN}",
-                payload.len()
-            ),
-        ));
-    }
-
-    let len_prefix = u32::try_from(payload.len())
-        .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "trust status frame payload does not fit u32",
-            )
-        })?
-        .to_be_bytes();
-    sink.write_all(&len_prefix).await?;
-    sink.write_all(&payload).await?;
-    sink.flush().await
+    write_payload(sink, &payload, "trust status frame").await
 }
 
 /// 读取一帧：先读 u32 BE 长度，再定长读取并解析 JSON 载荷
@@ -122,31 +178,32 @@ pub async fn read_frame<R>(stream: &mut R) -> std::io::Result<TrustStatusFrame>
 where
     R: AsyncRead + Unpin,
 {
-    let mut len_prefix = [0u8; 4];
-    stream.read_exact(&mut len_prefix).await?;
-    let payload_len = u32::from_be_bytes(len_prefix) as usize;
-    if payload_len == 0 || payload_len > MAX_FRAME_PAYLOAD_LEN {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("trust status frame length {payload_len} out of range 1..={MAX_FRAME_PAYLOAD_LEN}"),
-        ));
-    }
-
-    let mut payload = vec![0u8; payload_len];
-    stream.read_exact(&mut payload).await?;
+    let payload = read_payload(stream, "trust status frame").await?;
     let frame: TrustStatusFrame =
         serde_json::from_slice(&payload).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
-    if frame.protocol_version > PROTOCOL_VERSION {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "trust status frame protocol version {} is newer than supported {PROTOCOL_VERSION}",
-                frame.protocol_version
-            ),
-        ));
-    }
+    ensure_supported_version(frame.protocol_version, "trust status frame")?;
     Ok(frame)
+}
+
+/// 写入拨号问候帧
+pub async fn write_hello<W>(sink: &mut W, hello: &TrustHelloFrame) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let payload = serde_json::to_vec(hello).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    write_payload(sink, &payload, "trust hello frame").await
+}
+
+/// 读取拨号问候帧
+pub async fn read_hello<R>(stream: &mut R) -> std::io::Result<TrustHelloFrame>
+where
+    R: AsyncRead + Unpin,
+{
+    let payload = read_payload(stream, "trust hello frame").await?;
+    let hello: TrustHelloFrame =
+        serde_json::from_slice(&payload).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    ensure_supported_version(hello.protocol_version, "trust hello frame")?;
+    Ok(hello)
 }
 
 // ==================== Tests ====================

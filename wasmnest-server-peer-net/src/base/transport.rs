@@ -1,68 +1,70 @@
-//! 监听循环、首连确认闸门与拨号：ticket 02 的传输行为核心。
+//! libp2p 传输适配层：连接/流、信任状态握手、准入桥与节点的启动/关停。
 //!
-//! ## 为什么自管 TcpListener + accept 循环而不引入 actix-web（Decision 3）
+//! ## P1 换轨口径
 //!
-//! 闸门语义要求在「TLS 握手完成后、上层协议分发前」拦截，actix-web 高层监听
-//! 不暴露此缝；本票亦无 HTTP 面，引入 actix 只扩编译面（Android 目标尤其敏感）
-//! 而零测试收益。后续 HTTP 服务票在本模块定义的 [`ConnectionHandler`] 缝上挂
-//! 低层驱动（`actix_http::HttpService` 可驱动既有 IO 流）或并行 actix-server，
-//! 监听/TLS/闸门层零返工——此衔接意图即 ADR 0027「数据面栈复用方向」的落点。
+//! 旧实现自管 `TcpListener` + rustls mTLS + 自签证书；P1 起连接、加密、身份
+//! 与多路复用全部交给 `wasmnest-p2p-engine`（TCP + noise + yamux + ping）。
+//! 本模块只保留 peer-net 的线协议语义：
 //!
-//! ## 事件通道形态
+//! - `/wasmnest/trust-status/1`：拨号方先发 [`TrustHelloFrame`] 声明期望对端，
+//!   接听方校验后才请求准入，再把 Pending / Accepted / Denied 写回；
+//! - `/wasmnest/transfer/1`、`/wasmnest/shared-dir/1`、`/wasmnest/session/1`：
+//!   业务流，帧编解码（`frame.rs` / `transfer/message.rs` / `shared.rs`）
+//!   **逐字复用**——它们只依赖 `AsyncRead`/`AsyncWrite`，本模块用 tokio-util
+//!   compat 把 libp2p 子流转成 tokio IO。
 //!
-//! 首连确认经 `tokio::sync::mpsc::Sender<TrustEvent>` 推给宿主、应答走帧内
-//! `oneshot` 回执：免 async-trait 依赖；有界发送天然背压（宿主不消费则新连接
-//! 按拒绝结算）；事件枚举可追加新变体演进。符合 Event-Driven 架构决策。
+//! ## 准入闸门
 //!
-//! ## 关停语义（Graceful Shutdown）
+//! 引擎以 `admit_on_connect = false` 启动：入站连接只登记 `Pending`，不产生
+//! 确认回调。信任状态流先读 Hello 并校验期望身份，再显式
+//! [`wasmnest_p2p_engine::engine::RunningNode::request_admission`]——伪造身份
+//! 记录在接听侧不会弹确认窗（对齐旧 TLS 钉扎语义）。业务流由引擎按
+//! `Admitted` 过滤，闸门放行前零业务协议流量。
 //!
-//! `shutdown` 经 `watch` 广播：accept 循环停止收新连接；在途闸门任务收到信号
-//! 后**按拒绝结算**（写 Denied 帧 + 释放 pending 槽位）而非悬挂；随后对剩余
-//! 任务给予短暂宽限再强制中止（业务 handler 的长连接由对端关闭或宽限到期收束）。
+//! ## 关停语义
+//!
+//! [`RunningNode::shutdown`] 停引擎（swarm 析构关闭全部连接与流），再中止本层
+//! 派生出的协议接收循环；在途 handler 因流关闭自然收束。
 
-use std::collections::HashSet;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use rustls::Error as RustlsError;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::sync::watch;
-use tokio::task::{JoinError, JoinHandle, JoinSet};
-use tokio_rustls::rustls::pki_types::ServerName;
-use tokio_rustls::server::TlsStream as ServerTlsStream;
-// 统一流枚举：Connection 需要同形承载 client/server 两侧移交的连接
-use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream as UnifiedTlsStream};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
+use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
 
-use crate::base::cert::node_id_from_cert;
+use wasmnest_p2p_engine::admission::AdmissionConfig;
+use wasmnest_p2p_engine::engine::{socket_addr_to_multiaddr, P2pEngine, P2pNodeConfig, RunningNode as P2pRunningNode};
+use wasmnest_p2p_engine::error::P2pError;
+use wasmnest_p2p_engine::identity_bridge::{NodeId as P2pNodeId, NodeKey};
+use wasmnest_p2p_engine::links::LinkAdmission;
+use wasmnest_p2p_engine::ports::{
+    DialFailed, P2pEventSink, P2pPorts, PeerAdmissionPort, PeerConnected, PeerDenied, PeerDisconnected,
+};
+use wasmnest_p2p_engine::stream_proto;
+use wasmnest_p2p_engine::{InboundStream, IncomingStreams, P2pStream, PeerId as P2pPeerId};
+
 use crate::base::error::{PeerNetError, Result};
-use crate::base::frame::{read_frame, write_frame, TrustStatus, TrustStatusFrame};
+use crate::base::frame::{
+    read_frame, read_hello, write_frame, write_hello, TrustHelloFrame, TrustStatus, TrustStatusFrame,
+};
 use crate::base::identity::{NodeId, NodeIdentity};
 use crate::base::node::StaticPeerRecord;
-use crate::base::tls::{parse_binding_mismatch, BINDING_MISMATCH_PREFIX};
+use crate::base::trust_store::TrustStore;
 
-// ==================== 常量 ====================
-
-/// 首连确认超时：留足用户读弹窗时间；超时按拒绝处理并关闭连接（拨号方可重试）
-pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
+/// 首连确认超时：留足用户读弹窗时间；超时按拒绝处理（引擎闸门结算）
+pub use wasmnest_p2p_engine::admission::DEFAULT_CONFIRM_TIMEOUT as CONFIRM_TIMEOUT;
 
 /// 并发 pending 确认上限：防同网恶意节点堆 pending 耗尽内存的资源保护
-///
-/// 超限新连接立即按拒绝结算；同一 node_id 已有 pending 时重复拨入也直接拒绝，
-/// 避免弹窗风暴（Decision 6）。
-pub const MAX_PENDING_CONFIRMATIONS: usize = 8;
+pub use wasmnest_p2p_engine::admission::DEFAULT_MAX_PENDING as MAX_PENDING_CONFIRMATIONS;
 
-/// TCP accept 出错后的退避间隔：避免持续错误时热循环空转
-const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
-
-/// 关停时给在途任务的宽限期：闸门任务在信号后即时结算，宽限只留给业务 handler
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+/// 等拨号方 Hello 的窗口：超时即关闭信任状态流（不触发确认回调）
+const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ==================== 事件 ====================
 
@@ -83,36 +85,42 @@ pub enum TrustEvent {
 
 // ==================== 连接与 handler 缝 ====================
 
-/// 一条已完成 mTLS 握手且通过信任放行的连接
+/// 一条已通过身份校验与信任放行的会话流
 ///
-/// 身份已在 TLS 层证毕（证书指纹钉扎 + CertificateVerify 私钥持有证明），
-/// 上层无需也无法再做身份协商；`AsyncRead`/`AsyncWrite` 直接透传内层流，
-/// 供后续 HTTP/WS 服务票原样挂载（ADR 0027 衔接缝）。
-///
-/// 内部用 tokio-rustls 的统一 `TlsStream` 枚举承载：拨号侧（client 变体）与
-/// 接听侧（server 变体）移交的连接对上层形态一致。
-#[derive(Debug)]
+/// 底层是 libp2p 具名子流：noise 已完成双向身份认证，PeerId → node_id 互验在
+/// 引擎侧完成；本类型只把 futures IO 适配成 tokio IO，供既有帧编解码原样消费。
 pub struct Connection {
-    io: UnifiedTlsStream<TcpStream>,
+    io: Compat<P2pStream>,
     peer_node_id: NodeId,
+    peer_addr: SocketAddr,
+}
+
+impl std::fmt::Debug for Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Connection")
+            .field("peer_node_id", &self.peer_node_id)
+            .field("peer_addr", &self.peer_addr)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Connection {
-    pub(crate) fn new(io: impl Into<UnifiedTlsStream<TcpStream>>, peer_node_id: NodeId) -> Self {
+    pub(crate) fn new(stream: P2pStream, peer_node_id: NodeId, peer_addr: SocketAddr) -> Self {
         Self {
-            io: io.into(),
+            io: stream.compat(),
             peer_node_id,
+            peer_addr,
         }
     }
 
-    /// 对端已认证节点 ID（客户端证书 SPKI 公钥指纹）
+    /// 对端已认证节点 ID（PeerId 公钥 → SHA-256 指纹，引擎侧已完成互验）
     pub fn peer_node_id(&self) -> &NodeId {
         &self.peer_node_id
     }
 
-    /// 对端 TCP 地址（供日志/UI 展示）
-    pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
-        self.io.get_ref().0.peer_addr()
+    /// 对端地址（供日志/UI 展示）
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.peer_addr
     }
 }
 
@@ -143,338 +151,136 @@ impl AsyncWrite for Connection {
 /// handler 返回的 future：由 transport 在该连接的独立任务中驱动至完成
 pub type HandlerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-/// 信任放行后的上层协议处理缝（后续 HTTP 服务票的挂载点）
+/// 信任放行后的上层协议处理缝
 ///
-/// 实现方拿到 [`Connection`] 即持有完全认证的传输流；返回的 future 结束或被
-/// 关停中止都意味着连接生命周期终止。同步 trait 方法 + 显式 boxed future：
+/// 实现方拿到 [`Connection`] 即持有完全认证的传输流；返回的 future 结束或
+/// 连接关闭都意味着会话生命周期终止。同步 trait 方法 + 显式 boxed future：
 /// 免 async-trait 依赖且保持对象安全（`Arc<dyn ConnectionHandler>`）。
 pub trait ConnectionHandler: Send + Sync + 'static {
     /// 处理一条信任放行的已认证连接
     fn handle(&self, conn: Connection) -> HandlerFuture;
 }
 
-// ==================== 运行期共享上下文 ====================
+// ==================== 信任准入桥 ====================
 
-/// accept 循环与各连接任务共享的运行期状态（内部互斥，禁止 unsafe impl）
-pub(crate) struct NodeRuntime {
-    trust: Arc<crate::base::trust_store::TrustStore>,
+/// 引擎准入端口 → 宿主首连确认事件
+struct TrustAdmissionPort {
+    trust: Arc<TrustStore>,
     events: mpsc::Sender<TrustEvent>,
-    handler: Arc<dyn ConnectionHandler>,
-    /// 当前处于确认闸门的节点 ID 集合（去重 + 上限判定）
-    pending: Mutex<HashSet<NodeId>>,
 }
 
-impl NodeRuntime {
-    pub(crate) fn new(
-        trust: Arc<crate::base::trust_store::TrustStore>,
-        events: mpsc::Sender<TrustEvent>,
-        handler: Arc<dyn ConnectionHandler>,
-    ) -> Self {
-        Self {
-            trust,
-            events,
-            handler,
-            pending: Mutex::new(HashSet::new()),
-        }
-    }
-
-    /// 尝试为该节点占用一个 pending 槽位；重复拨入或超上限均拒绝（Decision 6）
-    fn try_enter_pending(&self, node_id: &NodeId) -> bool {
-        let mut guard = self.pending.lock().expect("pending table lock poisoned");
-        if guard.contains(node_id) || guard.len() >= MAX_PENDING_CONFIRMATIONS {
+#[async_trait::async_trait]
+impl PeerAdmissionPort for TrustAdmissionPort {
+    async fn confirm_inbound(&self, node_id: &P2pNodeId, _peer_id: &P2pPeerId) -> bool {
+        let Ok(node_id) = NodeId::parse(node_id.as_str()) else {
+            tracing::warn!(raw = %node_id, "inbound admission carries invalid node id");
             return false;
+        };
+        if self.trust.contains(&node_id) {
+            return true;
         }
-        guard.insert(node_id.clone());
-        true
-    }
-
-    /// 释放 pending 槽位（无论结论是接受还是拒绝都必须调用）
-    fn settle_pending(&self, node_id: &NodeId) {
-        self.pending
-            .lock()
-            .expect("pending table lock poisoned")
-            .remove(node_id);
-    }
-
-    fn trust(&self) -> &Arc<crate::base::trust_store::TrustStore> {
-        &self.trust
-    }
-}
-
-// ==================== 监听循环 ====================
-
-/// accept 循环主体：TCP accept → TLS 握手 → 信任分流 → handler 移交
-///
-/// 由 [`crate::base::node::PeerNetNode::start`] 系列方法在 tokio 任务中启动；正常
-/// 只因 shutdown 信号退出，退出前排空所有在途连接任务（见模块文档关停语义）。
-pub(crate) async fn run_accept_loop(
-    listener: TcpListener,
-    acceptor: TlsAcceptor,
-    runtime: Arc<NodeRuntime>,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    let local_addr = listener
-        .local_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| "<unknown>".to_string());
-    tracing::info!(addr = %local_addr, "peer-net listening");
-
-    let mut conn_tasks: JoinSet<()> = JoinSet::new();
-    loop {
-        tokio::select! {
-            biased;
-
-            _ = wait_for_shutdown(&mut shutdown) => {
-                tracing::info!(addr = %local_addr, "peer-net accept loop stopping");
-                break;
-            }
-
-            accepted = listener.accept() => match accepted {
-                Ok((tcp, peer_addr)) => {
-                    let acceptor = acceptor.clone();
-                    let runtime = Arc::clone(&runtime);
-                    let mut conn_shutdown = shutdown.clone();
-                    conn_tasks.spawn(async move {
-                        enable_keepalive(&tcp);
-                        if let Err(e) =
-                            serve_inbound(tcp, peer_addr, acceptor, runtime, &mut conn_shutdown).await
-                        {
-                            tracing::warn!(peer = %peer_addr, "inbound connection ended with error: {e}");
-                        }
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(addr = %local_addr, "TCP accept failed: {e}");
-                    // 错误退避必须保持对关停信号的响应
-                    tokio::select! {
-                        biased;
-                        _ = wait_for_shutdown(&mut shutdown) => break,
-                        _ = tokio::time::sleep(ACCEPT_BACKOFF) => {}
-                    }
-                }
-            },
-        }
-    }
-
-    // ---- 关停排空：先等闸门类任务按拒绝结算自然退出，宽限后强制中止 ----
-    let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
-    loop {
-        tokio::select! {
-            biased;
-            finished = conn_tasks.join_next() => match finished {
-                Some(result) => log_join_result("inbound connection", result),
-                None => break,
-            },
-            _ = tokio::time::sleep_until(deadline) => {
-                let aborted = conn_tasks.len();
-                conn_tasks.abort_all();
-                if aborted > 0 {
-                    tracing::warn!(
-                        count = aborted,
-                        "aborted remaining connections after shutdown grace period"
-                    );
-                }
-                // abort 之后继续排空直至全部收束
-                while let Some(result) = conn_tasks.join_next().await {
-                    log_join_result("inbound connection", result);
-                }
-                break;
-            }
-        }
-    }
-}
-
-/// 单条入站连接的全生命周期：握手 → 身份提取 → 信任分流 → 闸门 → handler
-async fn serve_inbound(
-    tcp: TcpStream,
-    peer_addr: SocketAddr,
-    acceptor: TlsAcceptor,
-    runtime: Arc<NodeRuntime>,
-    shutdown: &mut watch::Receiver<bool>,
-) -> Result<()> {
-    // TLS 握手：mandatory client auth + 形状校验 verifier 在此生效；
-    // 非 WasmNest 客户端在此直接失败（ADR 0027 协议私有）
-    let mut tls = tokio::select! {
-        biased;
-        _ = wait_for_shutdown(shutdown) => return Ok(()),
-        handshook = acceptor.accept(tcp) => handshook
-            .map_err(|e| map_handshake_error(peer_addr, e))?,
-    };
-
-    let certs = tls
-        .get_ref()
-        .1
-        .peer_certificates()
-        .ok_or(PeerNetError::PeerCertMissing { peer_addr })?;
-    let end_entity = certs.first().ok_or(PeerNetError::PeerCertMissing { peer_addr })?;
-    let peer_id = node_id_from_cert(end_entity.as_ref()).map_err(|e| PeerNetError::TlsHandshake {
-        peer_addr,
-        detail: format!("client certificate unusable: {e}"),
-    })?;
-
-    if runtime.trust().contains(&peer_id) {
-        // 信任直通快路径：仍无条件发 Accepted 帧——双向信任态不对称（A 信 B 但
-        // B 可能已撤销 A），统一「必发一帧」消除谁该等帧的歧义（Decision 3）
-        write_frame(&mut tls, &TrustStatusFrame::accepted(&peer_id))
-            .await
-            .map_err(|e| control_frame_error(peer_addr, e))?;
-        tracing::info!(
-            node_id = %peer_id,
-            short = %peer_id.short_fingerprint(),
-            peer = %peer_addr,
-            "trusted peer connected"
-        );
-        return deliver_to_handler(runtime, tls, peer_id, peer_addr).await;
-    }
-
-    // ---- 首连确认闸门 ----
-    if !runtime.try_enter_pending(&peer_id) {
-        // 同 ID 已有 pending（弹窗风暴防护）或超并发上限（资源保护）：直接拒绝
-        tracing::warn!(
-            node_id = %peer_id,
-            peer = %peer_addr,
-            "connection rejected: confirmation already pending or cap reached"
-        );
-        write_best_effort_denied(&mut tls, &peer_id, peer_addr).await;
-        return Ok(());
-    }
-
-    // —— 已进入 pending 表：以下任何出口都必须先 settle ——
-    let verdict: bool = 'gate: {
-        if let Err(e) = write_frame(&mut tls, &TrustStatusFrame::pending_confirmation(&peer_id)).await {
-            tracing::warn!(node_id = %peer_id, peer = %peer_addr, "write pending frame failed: {e}");
-            break 'gate false;
-        }
-
         let (reply_tx, reply_rx) = oneshot::channel();
-        if let Err(e) = runtime.events.try_send(TrustEvent::ConfirmRequested {
-            node_id: peer_id.clone(),
+        if let Err(e) = self.events.try_send(TrustEvent::ConfirmRequested {
+            node_id: node_id.clone(),
             reply: reply_tx,
         }) {
-            // 事件通道满或宿主已停消费：按拒绝结算（背压语义，模块文档）
-            tracing::warn!(node_id = %peer_id, "confirm event undeliverable, denying: {e}");
-            break 'gate false;
+            // 事件通道满或宿主已停消费：按拒绝结算（背压语义）
+            tracing::warn!(node_id = %node_id, "confirm event undeliverable, denying: {e}");
+            return false;
         }
-        tracing::info!(
-            node_id = %peer_id,
-            short = %peer_id.short_fingerprint(),
-            peer = %peer_addr,
-            "first-connect confirmation requested"
-        );
-
-        let decision = tokio::select! {
-            biased;
-            _ = wait_for_shutdown(shutdown) => false,
-            waited = tokio::time::timeout(CONFIRM_TIMEOUT, reply_rx) => match waited {
-                Ok(Ok(accepted)) => accepted,
-                // 宿主弃置回执视为拒绝（oneshot 文档约定）
-                Ok(Err(_recv_closed)) => false,
-                Err(_elapsed) => {
-                    let timeout = PeerNetError::ConfirmTimeout { node_id: peer_id.clone() };
-                    tracing::warn!("{timeout}; treating as denial");
-                    false
+        match reply_rx.await {
+            Ok(true) => {
+                // 接听侧半边落库；持久化失败不影响本次放行，仅影响重启后免确认
+                if let Err(e) = self.trust.add(&node_id) {
+                    tracing::error!(node_id = %node_id, "persist newly trusted peer failed: {e}");
                 }
-            },
-        };
-        break 'gate decision;
-    };
-    runtime.settle_pending(&peer_id);
-
-    if verdict {
-        // 双向落库的接听侧半边；持久化失败不影响本次放行（远端已确认，连接本身
-        // 有效），仅影响重启后免确认——如实记日志交运维感知
-        if let Err(e) = runtime.trust().add(&peer_id) {
-            tracing::error!(node_id = %peer_id, "persist newly trusted peer failed: {e}");
+                true
+            }
+            // 宿主弃置回执视为拒绝（oneshot 文档约定）
+            _ => false,
         }
-        if let Err(e) = write_frame(&mut tls, &TrustStatusFrame::accepted(&peer_id)).await {
-            return Err(control_frame_error(peer_addr, e));
-        }
-        tracing::info!(node_id = %peer_id, short = %peer_id.short_fingerprint(), "first-connect confirmed, trusting peer");
-        return deliver_to_handler(runtime, tls, peer_id, peer_addr).await;
     }
-
-    write_best_effort_denied(&mut tls, &peer_id, peer_addr).await;
-    tracing::info!(node_id = %peer_id, short = %peer_id.short_fingerprint(), "first-connect denied or timed out");
-    Ok(())
 }
 
-/// 把放行的连接移交给宿主 handler 并驱动至完成（连接所有权移交）
-async fn deliver_to_handler(
-    runtime: Arc<NodeRuntime>,
-    tls: ServerTlsStream<TcpStream>,
-    peer_id: NodeId,
-    peer_addr: SocketAddr,
-) -> Result<()> {
-    let conn = Connection::new(tls, peer_id);
-    let fut = runtime.handler.handle(conn);
-    fut.await;
-    tracing::debug!(peer = %peer_addr, "handler finished for connection");
-    Ok(())
+/// 引擎连接态事件出口：本层不消费（连接态由 `InboundConnectionBridge` 与
+/// 宿主出站会话表维护），只留诊断日志。
+struct LogEventSink;
+
+impl P2pEventSink for LogEventSink {
+    fn listening_changed(&self, addrs: Vec<SocketAddr>) {
+        tracing::debug!(?addrs, "p2p listening addresses changed");
+    }
+    fn peer_connected(&self, ev: PeerConnected) {
+        tracing::debug!(
+            node_id = %ev.node_id,
+            outbound = ev.outbound,
+            addr = %ev.remote_addr,
+            "p2p peer connected"
+        );
+    }
+    fn peer_disconnected(&self, ev: PeerDisconnected) {
+        tracing::debug!(
+            node_id = %ev.node_id,
+            by_local = ev.by_local,
+            "p2p peer disconnected"
+        );
+    }
+    fn peer_denied(&self, ev: PeerDenied) {
+        tracing::warn!(
+            node_id = ?ev.node_id,
+            cause = ?ev.cause,
+            "p2p inbound peer denied"
+        );
+    }
+    fn dial_failed(&self, ev: DialFailed) {
+        tracing::debug!(
+            addr = %ev.addr,
+            cause = %ev.cause,
+            "p2p dial failed"
+        );
+    }
 }
 
 // ==================== 拨号 ====================
 
-/// 拨号对端：TCP 连接 → 客户端 mTLS 握手（身份钉扎在此生效）→ 读状态帧分流
+/// 拨号对端：引擎连接/校验 → Hello 信任握手 → 开指定业务流
 ///
-/// - 对端发 `Accepted` → 本地可信表落库（双向落库的发起侧半边），返回连接；
-/// - `Denied` → [`PeerNetError::DialDeniedByPeer`]（用户拒绝/超时/资源拒绝），
-///   可重试；
-/// - 中间态 `PendingConfirmation` → 继续等待终态帧（宿主思考时间可达
-///   [`CONFIRM_TIMEOUT`]）；
-/// - 证书指纹与期望不符 → [`PeerNetError::TlsBindingMismatch`]（AC#3 断言点）。
-/// LAN 活性探测：拨号/接听即设 TCP keepalive
-///
-/// 对端静默死亡（WiFi 骤断/休眠等无 FIN 场景）时探测失败让挂起的读写以
-/// 错误返回——宿主侧会话活性泵与入站 handler 据此感知中断并发断开事件。
-/// 时间窗取「30s 静默 + 10s×3 探测」（interval/retries 仅 Unix 可显式设置，
-/// Windows 用系统默认约 1-2s、收敛更快但两端不一致），LAN 规模下断网约
-/// 1 分钟内收敛。
-fn enable_keepalive(tcp: &TcpStream) {
-    let ka = socket2::TcpKeepalive::new().with_time(Duration::from_secs(30));
-    #[cfg(unix)]
-    let ka = ka.with_interval(Duration::from_secs(10)).with_retries(3);
-    // keepalive 设置失败不阻断建连（fail-open），但必须留痕：首帧超时移除后
-    // 连接活性强依赖此探测，静默失败会让对端静默死亡时挂起无兜底
-    if let Err(e) = socket2::SockRef::from(tcp).set_tcp_keepalive(&ka) {
-        tracing::warn!(error = %e, "set TCP keepalive failed; dead-peer detection degraded");
-    }
-}
-
+/// - 对端身份与记录不符 → [`PeerNetError::IdentityMismatch`]（引擎握手后校验）；
+/// - 对端 `Denied` → [`PeerNetError::DialDeniedByPeer`]（用户拒绝/超时/资源拒绝）；
+/// - 中间态 `PendingConfirmation` → 继续等终态帧（窗口见 [`CONFIRM_TIMEOUT`]）。
 pub(crate) async fn dial(
+    p2p: &P2pRunningNode,
     identity: &NodeIdentity,
-    own_cert_der: &[u8],
-    trust: &Arc<crate::base::trust_store::TrustStore>,
+    trust: &Arc<TrustStore>,
     record: &StaticPeerRecord,
+    protocol: &'static str,
 ) -> Result<Connection> {
-    let tcp = TcpStream::connect(record.addr)
+    let expected = P2pNodeId::parse(record.node_id.as_str()).map_err(|e| PeerNetError::Transport {
+        detail: format!("invalid node id: {e}"),
+    })?;
+    p2p.dial(socket_addr_to_multiaddr(record.addr), expected.clone())
         .await
-        .map_err(|e| PeerNetError::DialConnect {
-            addr: record.addr,
-            source: e,
-        })?;
-    enable_keepalive(&tcp);
+        .map_err(map_p2p_error)?;
 
-    let config = crate::base::tls::client_config(&record.node_id, identity, own_cert_der)?;
-    let connector = TlsConnector::from(Arc::new(config));
-    // 自定义 verifier 忽略 server_name（身份由证书指纹钉扎）；IP 直连无 DNS，
-    // 用 IpAddress 形态满足类型要求即可
-    let server_name = ServerName::from(record.addr.ip());
-
-    let mut tls = connector
-        .connect(server_name, tcp)
+    // 信任状态流：Hello 声明期望对端，接听方校验后才请求准入
+    let trust_stream = p2p
+        .open_stream(&expected, stream_proto::TRUST_STATUS)
         .await
-        .map_err(|e| map_handshake_error(record.addr, e))?;
+        .map_err(map_p2p_error)?;
+    let mut trust_io = trust_stream.compat();
+    write_hello(&mut trust_io, &TrustHelloFrame::new(&record.node_id))
+        .await
+        .map_err(|e| control_frame_error(record.addr, e))?;
 
     loop {
-        let frame = read_frame(&mut tls)
+        let frame = read_frame(&mut trust_io)
             .await
             .map_err(|e| control_frame_error(record.addr, e))?;
         let subject = NodeId::parse(&frame.node_id).map_err(|_| PeerNetError::ControlFrame {
             peer_addr: record.addr,
             detail: format!("status frame carries invalid node id: {}", frame.node_id),
         })?;
-        // 状态帧的 node_id 指拨入方（本节）自身：对端在陈述「关于你」的信任状态。
-        // 不符说明对端状态机错乱或未来多路复用时误投递，防御性拒绝
+        // 状态帧的 node_id 指拨入方（本节）自身：不符说明对端状态机错乱
         if subject != *identity.node_id() {
             return Err(PeerNetError::UnknownPeer { node_id: subject });
         }
@@ -489,9 +295,10 @@ pub(crate) async fn dial(
                     node_id = %record.node_id,
                     short = %record.node_id.short_fingerprint(),
                     peer = %record.addr,
+                    protocol,
                     "dial accepted by peer"
                 );
-                return Ok(Connection::new(tls, record.node_id.clone()));
+                break;
             }
             TrustStatus::Denied => {
                 tracing::info!(
@@ -513,28 +320,127 @@ pub(crate) async fn dial(
             }
         }
     }
+
+    let stream = p2p.open_stream(&expected, protocol).await.map_err(map_p2p_error)?;
+    Ok(Connection::new(stream, record.node_id.clone(), record.addr))
+}
+
+// ==================== 入站协议接收 ====================
+
+/// 业务协议接收循环：引擎已按 `Admitted` 过滤，本层只转成 [`Connection`] 并
+/// 交给宿主 handler（每条流一个任务，互不阻塞）。
+async fn accept_business_streams(
+    mut streams: IncomingStreams,
+    handler: Arc<dyn ConnectionHandler>,
+    protocol: &'static str,
+) {
+    while let Some(inbound) = streams.next().await {
+        let Ok(node_id) = NodeId::parse(inbound.node_id.as_str()) else {
+            tracing::warn!(protocol, raw = %inbound.node_id, "inbound stream carries invalid node id");
+            continue;
+        };
+        let conn = Connection::new(inbound.stream, node_id, inbound.remote_addr);
+        let handler = Arc::clone(&handler);
+        tokio::spawn(async move {
+            handler.handle(conn).await;
+        });
+    }
+    tracing::debug!(protocol, "inbound business stream acceptor ended");
+}
+
+/// 信任状态流接收循环：每流独立任务（Hello 等待不阻塞其他连接）
+async fn accept_trust_streams(
+    mut streams: IncomingStreams,
+    p2p: P2pRunningNode,
+    own_node_id: NodeId,
+    trust: Arc<TrustStore>,
+) {
+    while let Some(inbound) = streams.next().await {
+        let p2p = p2p.clone();
+        let own_node_id = own_node_id.clone();
+        let trust = Arc::clone(&trust);
+        tokio::spawn(async move {
+            if let Err(detail) = serve_trust_stream(inbound, p2p, own_node_id, trust).await {
+                tracing::debug!("trust-status stream ended: {detail}");
+            }
+        });
+    }
+    tracing::debug!("trust-status stream acceptor ended");
+}
+
+/// 单条信任状态流：Hello 校验 → 显式准入 → 写 Pending / 终态帧
+///
+/// 连接复用下信任可能已被撤销：链路上旧 `Admitted` 快照不能直接复用，必须先
+/// 按可信表重置准入再重走闸门（否则撤销后重连会被静默放行）。
+async fn serve_trust_stream(
+    inbound: InboundStream,
+    p2p: P2pRunningNode,
+    own_node_id: NodeId,
+    trust: Arc<TrustStore>,
+) -> std::result::Result<(), String> {
+    let peer_id = inbound.peer_id;
+    let peer_addr = inbound.remote_addr;
+    let peer_node_id = NodeId::parse(inbound.node_id.as_str()).map_err(|e| e.to_string())?;
+    let p2p_peer_node_id = P2pNodeId::parse(inbound.node_id.as_str()).map_err(|e| e.to_string())?;
+    let mut io = inbound.stream.compat();
+
+    // 先校验拨号方期望的对端身份：不符即关闭，不触发确认回调
+    let hello = tokio::time::timeout(HELLO_TIMEOUT, read_hello(&mut io))
+        .await
+        .map_err(|_| format!("hello timeout ({peer_addr})"))?
+        .map_err(|e| format!("hello read failed ({peer_addr}): {e}"))?;
+    if hello.expected_node_id != own_node_id.as_str() {
+        tracing::warn!(
+            peer = %peer_addr,
+            expected = %hello.expected_node_id,
+            own = %own_node_id,
+            "dialer expected another node; rejecting without confirmation callback"
+        );
+        let _ = p2p.disconnect(p2p_peer_node_id).await;
+        return Ok(());
+    }
+
+    let link = p2p
+        .peer_link(&p2p_peer_node_id)
+        .ok_or("link vanished before admission")?;
+    let trusted = trust.contains(&peer_node_id);
+    let already_admitted = link.admission == LinkAdmission::Admitted;
+    if !trusted || !already_admitted {
+        p2p.reset_admission(&peer_id)
+            .await
+            .map_err(|e| format!("reset admission failed: {e}"))?;
+    }
+
+    let Some(mut watch) = p2p.admission_watch(&peer_id) else {
+        return Ok(());
+    };
+    if let Err(e) = p2p.request_admission(&peer_id).await {
+        // 已拒绝 / 链路消失：按 watch 当前值写终态（Denied 仍要写回拨号方）
+        tracing::debug!(peer = %peer_addr, error = %e, "request admission returned error");
+    }
+
+    let mut state = *watch.borrow();
+    loop {
+        let frame = match state {
+            LinkAdmission::Pending => TrustStatusFrame::pending_confirmation(&peer_node_id),
+            LinkAdmission::Admitted => TrustStatusFrame::accepted(&peer_node_id),
+            LinkAdmission::Denied => TrustStatusFrame::denied(&peer_node_id),
+        };
+        write_frame(&mut io, &frame)
+            .await
+            .map_err(|e| format!("write status failed ({peer_addr}): {e}"))?;
+        if state != LinkAdmission::Pending {
+            break;
+        }
+        if watch.changed().await.is_err() {
+            return Ok(());
+        }
+        state = *watch.borrow();
+    }
+    Ok(())
 }
 
 // ==================== 内部辅助 ====================
-
-/// 等待关停信号（值为真）。用 borrow_and_update 标记版本，避免错过信号
-async fn wait_for_shutdown(rx: &mut watch::Receiver<bool>) {
-    if *rx.borrow_and_update() {
-        return;
-    }
-    while rx.changed().await.is_ok() {
-        if *rx.borrow_and_update() {
-            return;
-        }
-    }
-}
-
-/// 尽力写入 Denied 帧：写失败只记日志——连接即将关闭，无恢复动作可做
-async fn write_best_effort_denied(tls: &mut ServerTlsStream<TcpStream>, peer_id: &NodeId, peer_addr: SocketAddr) {
-    if let Err(e) = write_frame(tls, &TrustStatusFrame::denied(peer_id)).await {
-        tracing::warn!(node_id = %peer_id, peer = %peer_addr, "write denied frame failed: {e}");
-    }
-}
 
 /// 控制帧 IO 错误归一到 ControlFrame 变体
 fn control_frame_error(peer_addr: SocketAddr, e: std::io::Error) -> PeerNetError {
@@ -544,110 +450,177 @@ fn control_frame_error(peer_addr: SocketAddr, e: std::io::Error) -> PeerNetError
     }
 }
 
-/// 把 tokio-rustls 的握手错误归一到具体错误种类
-///
-/// tokio-rustls 以 `io::Error` 包装 rustls 错误（inner 为 `rustls::Error`）：
-/// 下钻还原类型信息，把「指纹不符」从一般握手失败中分拣出来（AC#3 需要
-/// 错误种类级断言）。
-fn map_handshake_error(peer_addr: SocketAddr, e: std::io::Error) -> PeerNetError {
-    let io_display = e.to_string();
-    let inner = e
-        .into_inner()
-        .and_then(|b| b.downcast::<RustlsError>().ok().map(|b| *b));
-    match inner {
-        Some(RustlsError::General(msg)) if msg.starts_with(BINDING_MISMATCH_PREFIX) => {
-            let (expected, actual) = parse_binding_mismatch(&msg).unwrap_or_else(|| (String::new(), String::new()));
-            PeerNetError::TlsBindingMismatch { expected, actual }
-        }
-        Some(other) => PeerNetError::TlsHandshake {
-            peer_addr,
-            detail: other.to_string(),
+/// 引擎错误 → peer-net 错误（消费方按 `DialDeniedByPeer` / `IdentityMismatch`
+/// 分支，其余归入 Transport 明细）
+fn map_p2p_error(e: P2pError) -> PeerNetError {
+    match e {
+        P2pError::NodeIdMismatch { expected, actual } => PeerNetError::IdentityMismatch { expected, actual },
+        P2pError::NotRunning => PeerNetError::NodeNotStarted,
+        P2pError::DialTimeout => PeerNetError::Transport {
+            detail: "dial timeout".to_string(),
         },
-        None => PeerNetError::TlsHandshake {
-            peer_addr,
-            detail: io_display,
+        P2pError::Dial(detail)
+        | P2pError::Build(detail)
+        | P2pError::Listen(detail)
+        | P2pError::InvalidSeed(detail)
+        | P2pError::InvalidNodeId(detail)
+        | P2pError::UnsupportedPeerIdentity(detail)
+        | P2pError::ProtocolRegistered(detail) => PeerNetError::Transport { detail },
+        P2pError::NotConnected(detail) => PeerNetError::Transport {
+            detail: format!("peer not connected: {detail}"),
         },
-    }
-}
-
-/// 记录任务 join 结果（JoinError 分级日志：取消属预期，panic 属异常）
-fn log_join_result(label: &'static str, result: std::result::Result<(), JoinError>) {
-    match result {
-        Ok(()) => {}
-        Err(e) if e.is_cancelled() => tracing::debug!("{label} task cancelled during shutdown"),
-        Err(e) => tracing::error!("{label} task panicked: {e}"),
+        P2pError::NotAdmitted(detail) => PeerNetError::Transport {
+            detail: format!("peer not admitted: {detail}"),
+        },
+        P2pError::Stream { protocol, detail } => PeerNetError::Transport {
+            detail: format!("open stream {protocol}: {detail}"),
+        },
+        P2pError::StreamTimeout(protocol) => PeerNetError::Transport {
+            detail: format!("open stream timeout: {protocol}"),
+        },
     }
 }
 
 // ==================== 运行句柄 ====================
 
-/// 节点运行句柄：accept 循环存活期的控制面
+/// 节点运行句柄：引擎 swarm + 本层协议接收循环
 ///
-/// 由 [`crate::base::node::PeerNetNode`] 的 start 系列方法产出；drop 句柄**不会**停
-/// 节点（任务已移交运行时），显式关停必须调用 [`RunningNode::shutdown`]。
+/// 由 [`crate::base::node::PeerNetNode`] 的 start 系列方法产出；显式关停必须
+/// 调用 [`RunningNode::shutdown`]（drop 句柄不会停节点）。
 pub struct RunningNode {
+    p2p: P2pRunningNode,
     local_addr: SocketAddr,
-    shutdown_tx: watch::Sender<bool>,
-    accept_task: Option<JoinHandle<()>>,
+    accept_tasks: Vec<JoinHandle<()>>,
 }
 
 impl RunningNode {
-    /// 实际监听地址（自绑路径下可能与配置的 `bind_addr` 端口 0 展开值不同）
+    /// 实际监听地址（端口 0 已展开）
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
-    /// 优雅关停：停收新连接 → 在途闸门按拒绝结算 → 排空/中止在途连接 → join
-    ///
-    /// 已放行的业务 handler 连接有 [`SHUTDOWN_GRACE`] 宽限，超时强制中止——
-    /// 长连接的收尾属宿主协议层职责（Graceful Shutdown 架构决策）。
-    pub async fn shutdown(mut self) {
-        // 先广播：accept 循环退出接收；闸门任务按拒绝结算并写 Denied 帧
-        if self.shutdown_tx.send(true).is_err() {
-            // 全部接收端已消失 = 循环早已结束；无需再等
-            tracing::debug!("shutdown signal skipped: accept loop receivers already gone");
+    /// 引擎节点句柄（`PeerNetNode::dial` 与诊断用）
+    pub(crate) fn p2p(&self) -> &P2pRunningNode {
+        &self.p2p
+    }
+
+    /// 优雅关停：停引擎（关闭全部连接/流）→ 中止本层接收循环
+    pub async fn shutdown(self) {
+        let RunningNode { p2p, accept_tasks, .. } = self;
+        p2p.shutdown().await;
+        for task in accept_tasks {
+            task.abort();
         }
-        if let Some(task) = self.accept_task.take() {
-            match task.await {
-                Ok(()) => tracing::info!("peer-net node shut down cleanly"),
-                Err(e) if e.is_cancelled() => {
-                    tracing::debug!("peer-net accept loop already cancelled")
-                }
-                Err(e) => log_join_result("peer-net accept loop", Err(e)),
-            }
-        }
+        tracing::info!("peer-net node shut down cleanly (libp2p)");
     }
 }
 
-/// 启动监听装配线：listener 准备 → TLS 配置 → 共享上下文 → spawn accept 循环
+/// 启动引擎与入站协议接收循环
 ///
 /// 必须在 tokio 运行时上下文中调用（spawn 依赖 Handle::current）：生产侧为
 /// tauri 异步环境，测试侧为 `#[tokio::test]`。
 pub(crate) fn spawn_running_node(
-    listener: std::net::TcpListener,
+    listen_addr: SocketAddr,
     identity: &NodeIdentity,
-    own_cert_der: &[u8],
-    trust: Arc<crate::base::trust_store::TrustStore>,
+    trust: Arc<TrustStore>,
     events: mpsc::Sender<TrustEvent>,
     handler: Arc<dyn ConnectionHandler>,
 ) -> Result<RunningNode> {
-    let local_addr = listener
-        .local_addr()
-        .map_err(|source| PeerNetError::ListenerPrepare { source })?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|source| PeerNetError::ListenerPrepare { source })?;
-    let listener = TcpListener::from_std(listener).map_err(|source| PeerNetError::ListenerPrepare { source })?;
+    // libp2p 的 listen_on 异步展开端口：先占位取端口再释放（与旧 listener 占位
+    // 同一防竞态思路）。旧调用方可能仍持有 listener 副本（try_clone 后只把克隆
+    // 交进来）——此时已选端口仍占用，回退系统分配端口，实际地址以
+    // `RunningNode::local_addr` 为准（调用方须据此寻址）。
+    let port = match std::net::TcpListener::bind(listen_addr) {
+        Ok(placeholder) => {
+            let port = placeholder
+                .local_addr()
+                .map_err(|source| PeerNetError::ListenerPrepare { source })?
+                .port();
+            drop(placeholder);
+            port
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::AddrInUse => {
+            let fallback =
+                std::net::TcpListener::bind((listen_addr.ip(), 0)).map_err(|source| PeerNetError::ListenBind {
+                    addr: listen_addr,
+                    source,
+                })?;
+            let port = fallback
+                .local_addr()
+                .map_err(|source| PeerNetError::ListenerPrepare { source })?
+                .port();
+            drop(fallback);
+            tracing::warn!(
+                requested = %listen_addr,
+                actual_port = port,
+                "peer-net listen port still occupied (caller kept a listener clone); using ephemeral port"
+            );
+            port
+        }
+        Err(source) => {
+            return Err(PeerNetError::ListenBind {
+                addr: listen_addr,
+                source,
+            })
+        }
+    };
+    let resolved_addr = SocketAddr::new(listen_addr.ip(), port);
 
-    let server_config = Arc::new(crate::base::tls::server_config(identity, own_cert_der)?);
-    let acceptor = TlsAcceptor::from(server_config);
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let runtime = Arc::new(NodeRuntime::new(trust, events, handler));
+    let key = NodeKey::from_seed_bytes(&identity.seed_bytes()).map_err(|e| PeerNetError::Transport {
+        detail: format!("node identity seed rejected: {e}"),
+    })?;
+    let config = P2pNodeConfig {
+        listen_addr: resolved_addr.ip(),
+        listen_port: resolved_addr.port(),
+        admission: AdmissionConfig {
+            confirm_timeout: CONFIRM_TIMEOUT,
+            max_pending: MAX_PENDING_CONFIRMATIONS,
+        },
+        admit_on_connect: false,
+    };
+    let ports = P2pPorts {
+        admission: Arc::new(TrustAdmissionPort {
+            trust: Arc::clone(&trust),
+            events,
+        }),
+        events: Arc::new(LogEventSink),
+    };
+    let protocols = [
+        stream_proto::TRUST_STATUS,
+        stream_proto::TRANSFER,
+        stream_proto::SHARED_DIR,
+        stream_proto::SESSION,
+    ];
+    let (p2p, mut incoming) = P2pEngine::start_with_protocols(key, config, ports, &protocols).map_err(map_p2p_error)?;
 
-    let accept_task = tokio::spawn(run_accept_loop(listener, acceptor, runtime, shutdown_rx));
+    let own_node_id = identity.node_id().clone();
+    let mut accept_tasks = Vec::new();
+    if let Some(trust_streams) = incoming.remove(stream_proto::TRUST_STATUS) {
+        accept_tasks.push(tokio::spawn(accept_trust_streams(
+            trust_streams,
+            p2p.clone(),
+            own_node_id,
+            trust,
+        )));
+    } else {
+        tracing::error!("trust-status protocol acceptor missing after engine start");
+    }
+    for protocol in [stream_proto::TRANSFER, stream_proto::SHARED_DIR, stream_proto::SESSION] {
+        if let Some(streams) = incoming.remove(protocol) {
+            accept_tasks.push(tokio::spawn(accept_business_streams(
+                streams,
+                Arc::clone(&handler),
+                protocol,
+            )));
+        } else {
+            tracing::error!(protocol, "business protocol acceptor missing after engine start");
+        }
+    }
+
+    tracing::info!(addr = %resolved_addr, "peer-net listening (libp2p)");
     Ok(RunningNode {
-        local_addr,
-        shutdown_tx,
-        accept_task: Some(accept_task),
+        p2p,
+        local_addr: resolved_addr,
+        accept_tasks,
     })
 }

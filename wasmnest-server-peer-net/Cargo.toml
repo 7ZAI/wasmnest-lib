@@ -31,10 +31,13 @@ uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 # 基础层（AppError/Result、常量、错误边界 spawn、端口 traits 与全局注册表）
 wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1" }
+# libp2p 机制引擎（P1 传输栈换轨）：swarm 生命周期 / 准入闸门 / 具名流协议。
+# 本 crate 只做「连接 → 流」的线协议适配；引擎零内部依赖（crate 内 boundary_lock）。
+wasmnest-p2p-engine = { path = "../wasmnest-p2p-engine", version = "0.0.1" }
+# libp2p 子流（futures AsyncRead/AsyncWrite）→ tokio AsyncRead/AsyncWrite：
+# 线协议帧编解码原样复用，只换承载。compat 为纯适配层，Android 无额外构建链。
+tokio-util = { version = "0.7", features = ["compat"] }
 # ==================== 对等网络底座机制（原 wasmnest-peer-net 拆分并入，2026-10-22） ====================
-# 依赖随模块平移自 wasmnest-peer-net，版本原样（双端锁步纪律：rustls 0.23 ring /
-# tokio-rustls 0.26 ring / mdns-sd 0.20 async / flume 0.12 / ed25519-dalek 2 /
-# rcgen 0.13 / x509-parser 0.17 —— 与两端宿主既有 lock 零漂移）。
 # 节点身份密钥（Ed25519）；rand_core feature 启用 SigningKey::generate
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 # OsRng：节点身份首启纯随机生成（决策 D2 重装即新身份，不做设备标识派生）
@@ -42,29 +45,12 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # node_id 指纹哈希
 sha2 = "0.10"
 hex = "0.4"
-# 自签 TLS 证书（证书公钥即节点公钥，决策 D4 关键点）
-rcgen = "0.13"
-# 绑定校验侧：从证书 DER 提取 SPKI 原始公钥
-x509-parser = "0.17"
 # 主版本与两端宿主一致（均为 1.x），宿主 map_err 时错误链兼容
 thiserror = "1"
 # 虚拟网卡过滤的接口枚举（两端宿主均已有 0.6，无版本漂移）
 local-ip-address = "0.6"
 # 可信对端元数据时间戳（added_at）；两端宿主均已有 0.4，无版本漂移
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-# --- TLS 直连栈（ticket 02；crypto provider 显式锁定 ring：aws-lc-rs 在 Android
-# 需 CMake/NDK 构建链；配置构建时显式传 rustls::crypto::ring::default_provider()，
-# 不用全局 install_default()）---
-# rt：spawn 类 API（accept 循环 / mDNS 事件循环）在 crate 自身编译单元可用；
-# macros：transport.rs 的 tokio::select! 同理
-# （注：与下方现有 tokio 依赖合并 feature 并集）
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
-# TCP keepalive 探测参数（拨号/接听即设）：对端静默死亡（WiFi 骤断等无 FIN
-# 场景）在探测窗口内以读错误浮现，会话常驻等待语义依赖此机制收敛
-socket2 = "0.6"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-# TLS 1.3 CertificateVerify 的真实 Ed25519 签名验证直用 ring（安全约束）
-ring = "0.17"
 # --- 传输应用层加密（Offer/Decision 自定义头协商）：x25519 ECDH / HKDF-SHA256 /
 # AES-256-GCM 数据块。纯 Rust 实现，Android 构建链无额外要求；版本对齐两端宿主 ---
 x25519-dalek = { version = "2", features = ["static_secrets"] }
