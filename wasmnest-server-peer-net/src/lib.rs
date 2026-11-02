@@ -274,7 +274,48 @@ pub(crate) async fn is_node_running(ctx: &PeerCtx) -> bool {
 pub async fn start_peer_node(ctx: Arc<PeerCtx>) -> Result<PeerNodeStatus> {
     let data_dir = app_data_dir(&ctx)?;
     let device_name = resolve_device_name(&ctx);
-    start_locked(ctx, &data_dir, device_name).await
+    start_locked(ctx, &data_dir, device_name, DEFAULT_PEER_PORT).await
+}
+
+/// per-app 配置版启动：app 经 WIT 声明自己的 data_dir / device_name / listen_port
+///
+/// 与 [`start_peer_node`] 的区别：参数来源从宿主注入端口改为 wasm 调用方显式传入，
+/// 为 per-app 实例隔离做准备（服务租约路径仍走全局 `PeerCtx`，待 #5 拆分）。
+pub async fn start_peer_node_with_config(
+    ctx: Arc<PeerCtx>,
+    data_dir: &str,
+    device_name: &str,
+    listen_port: u16,
+) -> Result<PeerNodeStatus> {
+    let data_dir_path = validate_peer_data_dir(data_dir)?;
+    // 确保目录存在（旧路径由宿主注入，新路径由 app 声明——app 侧有义务保证可写，
+    // 但首次启动时目录可能尚未建，此处兜底创建）
+    if let Err(e) = std::fs::create_dir_all(&data_dir_path) {
+        return Err(AppError::Internal(format!(
+            "create peer data dir `{}` failed: {e}",
+            data_dir_path.display()
+        )));
+    }
+    start_locked(ctx, &data_dir_path, device_name.to_string(), listen_port).await
+}
+
+/// 校验 app 声明的节点数据目录
+///
+/// 目录来自 wasm 调用方并直接交给 `create_dir_all` + 身份落盘：相对路径会落到
+/// 进程 CWD（不可预测），`..` 段会逃出声明目录。两者一律拒绝（fail-closed）。
+fn validate_peer_data_dir(data_dir: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(data_dir);
+    if !path.is_absolute() {
+        return Err(AppError::Internal(format!(
+            "peer data dir must be an absolute path: `{data_dir}`"
+        )));
+    }
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(AppError::Internal(format!(
+            "peer data dir must not contain `..` segments: `{data_dir}`"
+        )));
+    }
+    Ok(path)
 }
 
 /// 优雅关停对等网络节点（幂等：未启动直接成功）
@@ -842,7 +883,12 @@ impl ConnectionHandler for InboundConnectionBridge {
 }
 
 /// 持锁装配路径：start 命令与自动启动共用（调用方已持有状态互斥锁）
-async fn start_locked(ctx: Arc<PeerCtx>, data_dir: &Path, device_name: String) -> Result<PeerNodeStatus> {
+async fn start_locked(
+    ctx: Arc<PeerCtx>,
+    data_dir: &Path,
+    device_name: String,
+    listen_port: u16,
+) -> Result<PeerNodeStatus> {
     // 生命周期闸门：全程持 permit 串行化并发装配/关停（服务租约模板已串行
     // 同 key 的 acquire/release，但无租约装配的引擎入口仍可能并发触发）。
     // 修复 TOCTOU：先前幂等检查在锁内、装配在锁外，双装配时次者
@@ -871,14 +917,23 @@ async fn start_locked(ctx: Arc<PeerCtx>, data_dir: &Path, device_name: String) -
     let trust = Arc::new(TrustStore::load_or_create(data_dir).map_err(map_peer_net_error)?);
     *ctx.state.trust.lock().await = Some(Arc::clone(&trust));
 
-    // 占位 bind 固定默认端口（防火墙规则友好），被占回退 :0；占位句柄移交节点
-    // 消除端口竞态（Decision 4）
-    let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, DEFAULT_PEER_PORT)))
+    // 占位 bind 指定端口（per-app 配置；防火墙友好场景 app 可声明固定端口），
+    // 被占回退 :0；占位句柄移交节点消除端口竞态（Decision 4）
+    let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, listen_port)))
         .or_else(|_| TcpListener::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))))
         .map_err(|e| AppError::Internal(format!("bind peer-net listener failed: {e}")))?;
     let bind_addr = listener
         .local_addr()
         .map_err(|e| AppError::Internal(format!("read peer-net listener addr failed: {e}")))?;
+    // 显式声明了固定端口的 app 拿到随机端口会静默破掉防火墙/排障预期（WIT 注释
+    // 承诺 `listen-port = 0` 才由 OS 分配）——回退后必须留痕，不静默降级。
+    if listen_port != 0 && bind_addr.port() != listen_port {
+        tracing::warn!(
+            requested = listen_port,
+            bound = bind_addr.port(),
+            "requested peer-net port unavailable, fell back to an OS-assigned port"
+        );
+    }
 
     let node = PeerNetNode::new(PeerNetNodeConfig {
         bind_addr,
@@ -1584,12 +1639,35 @@ pub(crate) fn app_data_dir(ctx: &PeerCtx) -> Result<PathBuf> {
 
 /// 设备名解析：宿主壳经 SystemInfoPort 注入；空值兜底名由端口给（各端自持产品名，
 /// 能力域不硬编码某端名）
-fn resolve_device_name(ctx: &PeerCtx) -> String {
+pub(crate) fn resolve_device_name(ctx: &PeerCtx) -> String {
     let name = ctx.ports.system_info.device_name();
     if name.is_empty() {
         ctx.ports.system_info.device_name_fallback()
     } else {
         name
+    }
+}
+
+#[cfg(test)]
+mod peer_data_dir_tests {
+    use super::*;
+
+    #[test]
+    fn absolute_dir_is_accepted() {
+        let path = validate_peer_data_dir("/var/lib/wasmnest/peer/app-a").unwrap();
+        assert_eq!(path, PathBuf::from("/var/lib/wasmnest/peer/app-a"));
+    }
+
+    #[test]
+    fn relative_dir_is_rejected() {
+        let err = validate_peer_data_dir("peer/app-a").unwrap_err();
+        assert!(err.to_string().contains("absolute"), "实际：{err}");
+    }
+
+    #[test]
+    fn parent_dir_segment_is_rejected() {
+        let err = validate_peer_data_dir("/var/lib/wasmnest/../../etc").unwrap_err();
+        assert!(err.to_string().contains("`..`"), "实际：{err}");
     }
 }
 

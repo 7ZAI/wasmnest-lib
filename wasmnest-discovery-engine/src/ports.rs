@@ -11,7 +11,7 @@
 //! | --- | --- |
 //! | [`DiscoveryPorts::check_permission`] | 权限门（`network:mdns`）是**宿主安全闸门**（AGENTS §5.1.3 四类薄壳之二），不该可插拔 ⇒ 留宿主，本 crate 只问结果 |
 //! | [`DiscoveryPorts::forward_mdns_browse`] / `_stop_browse` / `_advertise` / `_stop_advertise` / `_is_advertising` | 能力路由（core-plugin-manager）：`host-mdns` 能力由系统组件提供时按**调用方**转发到它的同形导出，否则 `None` ⇒ 走本域引擎。**返回 `Option`** 是契约的一部分（`None` = 无提供者，不是错误）。与 `plugin_binding::ports` 的 `forward_storage_*` 同形（票 08 先例） |
-//! | [`DiscoveryPorts::local_node_id`] | 自播回显过滤需要「本机节点 ID」；无宿主句柄时返回 `None` ⇒ **不拦截**（与原实现同口径：无法比对即不拦） |
+//! | [`DiscoveryPorts::local_node_id`] / [`DiscoveryPorts::advertised_node_ids`] | 自播回显过滤需要「本机广播身份」；无宿主句柄时返回 `None` / 空集合 ⇒ **不拦截**（与原实现同口径：无法比对即不拦）。集合版带默认实现（退化为 `local_node_id()` 单元素）以保证旧实现仍可编译；per-app 多身份后必须覆盖为「本进程全部登记身份」 |
 //! | [`DiscoveryPorts::publish`] | 向已拼好的完整 topic 投递发现事件；总线订阅方隔离在宿主侧 |
 //! | [`DiscoveryPorts::spawn`] | 浏览事件循环 / re-announce 续期都是后台任务，**必须挂在宿主运行时上**（本 crate 不假设 tokio runtime 上下文，见下） |
 //!
@@ -55,6 +55,15 @@ pub trait DiscoveryPorts: Send + Sync + 'static {
     /// `None` = 无宿主句柄（无头 / 测试）或节点未启动 ⇒ **不拦截自播**，
     /// 与原实现 `is_self_broadcast` 的「无法比对即不拦」口径一致。
     fn local_node_id(&self) -> Option<String>;
+
+    /// 本进程登记过的所有广播身份（自播回显过滤用集合版）
+    ///
+    /// per-app 身份后，同一宿主进程内可能有多个 app 各自广播不同的 node_id；
+    /// 回显过滤必须匹配**任一**自己登记的广播，而非只匹配单例。
+    /// 默认实现退化为 `local_node_id()` 的单元素集合（兼容尚未迁移的实现）。
+    fn advertised_node_ids(&self) -> Vec<String> {
+        self.local_node_id().into_iter().collect()
+    }
 
     /// 向**已拼好的完整 topic** 投递事件
     ///

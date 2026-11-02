@@ -24,6 +24,18 @@ package wasmnest:plugin@0.0.2;
 ///   旧快照 topic `peer:transfer` / `peer:receive` 已退役，任务状态真源在
 ///   插件事件归约状态机）
 interface host-peer {
+    /// per-app 节点启动配置（`start-node` 参数）
+    ///
+    /// 每个 app 声明自己的身份与网络参数，宿主按 app 维度隔离节点实例。
+    /// `listen-port = 0` 表示由 OS 分配（防火墙友好场景应显式指定固定端口）。
+    record peer-node-config {
+        /// 节点数据目录（存放 identity keypair、known peers 等持久状态）
+        data-dir: string,
+        /// 人类可读的设备名（广播给对端发现用）
+        device-name: string,
+        /// TCP 监听端口（0 = OS 自动分配）
+        listen-port: u16,
+    }
     /// 按 endpoint 拨号连接（ADR 0022 v2 终态，原 dial-peer-endpoint 转正）：
     /// endpoint = `{ nodeId, addr, port }`（camelCase JSON，插件从自身设备缓存/
     /// mdns 事件解析后显式传入；宿主不内藏 node-id → 地址解析表）。握手期
@@ -86,14 +98,15 @@ interface host-peer {
     /// 设置接收落点目录（空串 = 恢复默认 Downloads\WasmNest\；引擎落盘配置原语，
     /// ADR 0022 v3）
     set-download-dir: func(path: string) -> result<_, string>;
-    /// 按需启动本机 peer 节点（引擎级生命周期原语）：数据目录与设备名
-    /// 由宿主解析，起来后开始广播与监听。幂等——节点已在跑时返回 false（未改变状态）。
+    /// 按需启动本机 peer 节点（引擎级生命周期原语）：app 声明自己的身份与
+    /// 网络参数（`peer-node-config`），宿主按 app 维度隔离节点实例。
+    /// 幂等——该 config 对应的节点已在跑时返回 false（未改变状态）。
     ///
     /// 属主语义：把节点从「未跑」带到「跑」的那次调用，其调用方成为节点属主；
     /// 已被别的插件起着的节点**不可被本调用接管**（报错，且文案不回带他方身份）。
     /// 谁起谁停：内核不再按硬编码插件 id 猜测节点归属
     /// （旧 `peer_net::FILE_TRANSFER_PLUGIN_ID` 与激活外壳随之退役）。
-    start-node: func() -> result<bool, string>;
+    start-node: func(config: peer-node-config) -> result<bool, string>;
     /// 让本机节点下线（幂等；节点未跑为 no-op）：停广播 / 关监听 / 排水连接与
     /// 入站记账。仅节点属主可关停——非属主报错，文案不回带属主身份
     stop-node: func() -> result<bool, string>;

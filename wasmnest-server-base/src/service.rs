@@ -27,8 +27,12 @@ pub const TRANSPORT_SERVICE_KEY: &str = "net.transport";
 /// 实现者只提供两个真正与领域相关的动作。
 #[async_trait]
 pub trait ScopedService: Send + Sync + 'static {
-    /// 稳定服务键（机制词汇，全仓唯一；由定义服务的能力 crate 导出常量）
-    fn key(&self) -> &'static str;
+    /// 服务键（机制词汇；首段必须是机制域前缀，不得直接是产品名）
+    ///
+    /// 实现可返回按调用方细分的键（如 `net.peer-node:<plugin-id>`，per-app 实例
+    /// 表就绪后启用）；[`ServiceRegistry`] 在 `register` 时取出并持有拥有所有权的
+    /// 副本，之后不再回调本方法。同一注册表内键唯一。
+    fn key(&self) -> &str;
 
     /// 0→1：真正拉起服务。模板保证只在「引用集合从空变为非空」时调用一次。
     ///
@@ -113,7 +117,7 @@ struct SlotState {
 /// 桌面 / 移动各持一份，经宿主上下文的晚绑槽位注入；测试各自 `new`，互不干扰；
 /// 无头进程天然没有注册表。
 pub struct ServiceRegistry {
-    slots: RwLock<BTreeMap<&'static str, Arc<Slot>>>,
+    slots: RwLock<BTreeMap<String, Arc<Slot>>>,
 }
 
 impl Default for ServiceRegistry {
@@ -131,19 +135,19 @@ impl ServiceRegistry {
 
     /// 注册一个服务实现（装配期调用；同 key 重复注册 = 显性错误）。
     pub fn register(&self, service: Arc<dyn ScopedService>) -> Result<(), ServiceError> {
-        let key = service.key();
+        let key = service.key().to_string();
         let mut slots = self.slots.write().unwrap_or_else(|e| e.into_inner());
-        if slots.contains_key(key) {
-            return Err(ServiceError::AlreadyRegistered { key: key.to_string() });
+        if slots.contains_key(&key) {
+            return Err(ServiceError::AlreadyRegistered { key: key.clone() });
         }
         slots.insert(
-            key,
+            key.clone(),
             Arc::new(Slot {
                 service,
                 state: tokio::sync::Mutex::new(SlotState::default()),
             }),
         );
-        tracing::info!(service_key = key, "scoped service registered");
+        tracing::info!(service_key = %key, "scoped service registered");
         Ok(())
     }
 
@@ -279,12 +283,12 @@ impl ServiceRegistry {
     /// 单个 key 失败只记录并继续，不阻断停用流程。返回的报告中只含该 holder
     /// 实际持有过的 key。
     pub async fn release_all_for(&self, holder: &str) -> Vec<ReleaseReport> {
-        let slots: Vec<(&'static str, Arc<Slot>)> = self
+        let slots: Vec<(String, Arc<Slot>)> = self
             .slots
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .map(|(key, slot)| (*key, Arc::clone(slot)))
+            .map(|(key, slot)| (key.clone(), Arc::clone(slot)))
             .collect();
 
         let mut reports = Vec::new();
@@ -292,7 +296,7 @@ impl ServiceRegistry {
             if !slot.state.lock().await.holders.contains(holder) {
                 continue;
             }
-            match self.release(key, holder).await {
+            match self.release(&key, holder).await {
                 Ok(outcome) => {
                     reports.push(ReleaseReport {
                         key: key.to_string(),
@@ -321,12 +325,12 @@ impl ServiceRegistry {
     ///
     /// 按 key 字典序处理；单个失败只记录并继续。
     pub async fn shutdown_all(&self) -> Vec<ReleaseReport> {
-        let slots: Vec<(&'static str, Arc<Slot>)> = self
+        let slots: Vec<(String, Arc<Slot>)> = self
             .slots
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .map(|(key, slot)| (*key, Arc::clone(slot)))
+            .map(|(key, slot)| (key.clone(), Arc::clone(slot)))
             .collect();
 
         let mut reports = Vec::new();
@@ -368,12 +372,12 @@ impl ServiceRegistry {
 
     /// 诊断快照（按 key 字典序）。
     pub async fn snapshot(&self) -> Vec<ServiceSnapshot> {
-        let slots: Vec<(&'static str, Arc<Slot>)> = self
+        let slots: Vec<(String, Arc<Slot>)> = self
             .slots
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .map(|(key, slot)| (*key, Arc::clone(slot)))
+            .map(|(key, slot)| (key.clone(), Arc::clone(slot)))
             .collect();
 
         let mut snapshots = Vec::with_capacity(slots.len());
@@ -425,7 +429,7 @@ mod tests {
 
     #[async_trait]
     impl ScopedService for FakeService {
-        fn key(&self) -> &'static str {
+        fn key(&self) -> &str {
             self.key
         }
 

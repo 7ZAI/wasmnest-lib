@@ -35,7 +35,7 @@ impl PeerNodeService {
 
 #[async_trait]
 impl ScopedService for PeerNodeService {
-    fn key(&self) -> &'static str {
+    fn key(&self) -> &str {
         PEER_NODE_SERVICE_KEY
     }
 
@@ -57,9 +57,21 @@ impl ScopedService for PeerNodeService {
 mod tests {
     use super::*;
 
+    /// 服务键必须是机制词汇（前缀 = 机制域，后缀 = 调用方身份或无）
+    ///
+    /// per-app 实例后键可能形如 `"net.peer-node:com.wasmnest.file-transfer"`，
+    /// 但前缀段（`:` 前）必须是机制词汇，不得直接是产品名。
     #[test]
     fn key_is_mechanism_vocabulary() {
         assert_eq!(PEER_NODE_SERVICE_KEY, "net.peer-node");
+        let prefix = PEER_NODE_SERVICE_KEY.split(':').next().unwrap();
+        let domain = prefix.split('.').next().unwrap();
+        let allowed_domains = ["net", "io", "compute", "storage"];
+        assert!(
+            allowed_domains.contains(&domain),
+            "服务键前缀必须是机制域词汇 ({allowed_domains:?})，实际: {domain:?}"
+        );
+        // 动态键不得把产品名词硬编码进本模块（交由注册表按调用方拼装）
         let source = include_str!("service.rs");
         let production = source.split("#[cfg(test)]").next().unwrap_or(source);
         for forbidden in ["file-transfer", "bedcode", "com.wasmnest", "FILE_TRANSFER"] {

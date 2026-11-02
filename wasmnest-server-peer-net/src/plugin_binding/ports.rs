@@ -34,6 +34,19 @@ use std::sync::Arc;
 
 use crate::PeerCtx;
 
+/// per-app 节点启动配置（内部形态；WIT 边界层做类型转换）
+///
+/// 与 WIT `peer-node-config` record 同形，但本结构不依赖 `bindgen!` 生成物，
+/// 故可在 `common-host` feature 未开启时编译（纯引擎形态 / 无头测试）。
+pub struct NodeStartConfig {
+    /// 节点数据目录
+    pub data_dir: String,
+    /// 人类可读设备名
+    pub device_name: String,
+    /// TCP 监听端口（0 = OS 分配）
+    pub listen_port: u16,
+}
+
 /// 类型擦除的「同步驱动异步」入参（[`PeerPorts::block_on_any`]）
 pub type BoxedBlocked = Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>>;
 

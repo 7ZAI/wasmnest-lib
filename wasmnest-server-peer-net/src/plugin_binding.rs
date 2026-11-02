@@ -503,6 +503,25 @@ pub fn peer_set_download_dir(ports: &Arc<dyn PeerPorts>, plugin_id: &str, path: 
     sync_result(block_on(ports, crate::set_download_dir_for_plugin(ctx, path)))
 }
 
+/// 租约路径不采用 per-app 配置时的显性告警
+///
+/// per-app 实例表（#5）未落地前，`net.peer-node` 服务恒用全局 `PeerCtx`；app 若
+/// 声明了非常规身份 / 端口，实际不会被采用——显性留痕，不静默降级。
+fn warn_config_ignored_by_lease(plugin_id: &str, config: &crate::plugin_binding::ports::NodeStartConfig) {
+    let declares_identity = !config.data_dir.is_empty() || !config.device_name.is_empty();
+    let declares_port = config.listen_port != crate::DEFAULT_PEER_PORT;
+    if !declares_identity && !declares_port {
+        return;
+    }
+    tracing::warn!(
+        plugin_id = %plugin_id,
+        data_dir = %config.data_dir,
+        device_name = %config.device_name,
+        listen_port = config.listen_port,
+        "per-app node config ignored on service-lease path (per-app instance table pending)"
+    );
+}
+
 /// 无租约装配时的兼容路径警告（每进程一次，不刷屏）
 fn warn_no_lease_assembly(api: &str) {
     static WARNED: std::sync::Once = std::sync::Once::new();
@@ -522,11 +541,21 @@ fn warn_no_lease_assembly(api: &str) {
 /// 无租约装配（无头 / 测试）退化为直接调引擎并落一次 `warn`。
 ///
 /// 非持有者停止时以错误上抛，文案不回带对方 id（与 `ensure_handle_owner` 同口径）。
-pub fn peer_start_node(ports: &Arc<dyn PeerPorts>, plugin_id: &str) -> Result<bool, String> {
+///
+/// `config` 是 app 声明的 per-app 节点配置（身份/端口）；当前服务租约路径
+/// 暂用全局 `PeerCtx`（per-app 实例表待 #5 落地），fallback 路径直接使用 config。
+pub fn peer_start_node(
+    ports: &Arc<dyn PeerPorts>,
+    plugin_id: &str,
+    config: &crate::plugin_binding::ports::NodeStartConfig,
+) -> Result<bool, String> {
     if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_start_node") {
         return Err(denied());
     }
     if let Some(registry) = ports.service_registry() {
+        // per-app 实例表（#5）未落地前，租约路径恒用全局 `PeerCtx`：app 声明的身份/
+        // 端口在此分支不会被采用。静默忽略会让调用方误以为隔离已生效 ⇒ 显性告警。
+        warn_config_ignored_by_lease(plugin_id, config);
         let holder = plugin_id.to_string();
         let outcome = block_on(ports, async move {
             registry.acquire(crate::service::PEER_NODE_SERVICE_KEY, &holder).await
@@ -539,9 +568,26 @@ pub fn peer_start_node(ports: &Arc<dyn PeerPorts>, plugin_id: &str) -> Result<bo
     }
     warn_no_lease_assembly("host_peer_start_node");
     let ctx = ports.peer_ctx()?;
+    // app 未声明的字段由宿主默认值补齐（向后兼容：旧 app 产物可能传空串）
+    let data_dir = if config.data_dir.is_empty() {
+        crate::app_data_dir(&ctx)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .to_string()
+    } else {
+        config.data_dir.clone()
+    };
+    let device_name = if config.device_name.is_empty() {
+        crate::resolve_device_name(&ctx)
+    } else {
+        config.device_name.clone()
+    };
+    let listen_port = config.listen_port;
     sync_result(block_on(ports, async move {
         let was_running = crate::is_node_running(&ctx).await;
-        crate::start_peer_node(ctx).await.map(|_| !was_running)
+        crate::start_peer_node_with_config(ctx, &data_dir, &device_name, listen_port)
+            .await
+            .map(|_| !was_running)
     }))
 }
 
@@ -784,8 +830,13 @@ impl wasmnest::plugin::host_peer::Host for WasmPluginState {
         peer_set_download_dir(&ports_for(self), &self.plugin_id, &path)
     }
 
-    fn start_node(&mut self) -> Result<bool, String> {
-        peer_start_node(&ports_for(self), &self.plugin_id)
+    fn start_node(&mut self, config: wasmnest::plugin::host_peer::PeerNodeConfig) -> Result<bool, String> {
+        let local_config = crate::plugin_binding::ports::NodeStartConfig {
+            data_dir: config.data_dir,
+            device_name: config.device_name,
+            listen_port: config.listen_port,
+        };
+        peer_start_node(&ports_for(self), &self.plugin_id, &local_config)
     }
 
     fn stop_node(&mut self) -> Result<bool, String> {

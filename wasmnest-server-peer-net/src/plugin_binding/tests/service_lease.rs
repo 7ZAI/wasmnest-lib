@@ -12,6 +12,15 @@ use wasmnest_server_base::service::{ScopedService, ServiceRegistry};
 
 use crate::plugin_binding::ports::{BoxedBlocked, PeerPorts, HEADLESS_UNAVAILABLE};
 
+/// 测试用 per-app 节点配置（租约路径不真用这些字段，但签名要求传入）
+fn test_config() -> crate::plugin_binding::ports::NodeStartConfig {
+    crate::plugin_binding::ports::NodeStartConfig {
+        data_dir: "/tmp/peer-test".to_string(),
+        device_name: "test-device".to_string(),
+        listen_port: 0,
+    }
+}
+
 struct LeaseProbe {
     key: &'static str,
     starts: AtomicUsize,
@@ -21,7 +30,7 @@ struct LeaseProbe {
 
 #[async_trait]
 impl ScopedService for LeaseProbe {
-    fn key(&self) -> &'static str {
+    fn key(&self) -> &str {
         self.key
     }
 
@@ -96,15 +105,16 @@ fn probe() -> Arc<LeaseProbe> {
 fn start_attaches_second_holder_and_stop_only_on_last_release() {
     let probe = probe();
     let ports = ports_with_registry(&probe);
+    let config = test_config();
 
-    assert_eq!(super::super::peer_start_node(&ports, "app.a").unwrap(), true);
+    assert_eq!(super::super::peer_start_node(&ports, "app.a", &config).unwrap(), true);
     assert_eq!(probe.starts.load(Ordering::SeqCst), 1);
 
-    assert_eq!(super::super::peer_start_node(&ports, "app.b").unwrap(), false);
+    assert_eq!(super::super::peer_start_node(&ports, "app.b", &config).unwrap(), false);
     assert_eq!(probe.starts.load(Ordering::SeqCst), 1, "他人持有时不得重复 start");
 
     assert_eq!(
-        super::super::peer_start_node(&ports, "app.a").unwrap(),
+        super::super::peer_start_node(&ports, "app.a", &config).unwrap(),
         false,
         "同一 holder 重复 acquire 幂等"
     );
@@ -128,11 +138,12 @@ fn start_failure_is_visible_and_not_recorded() {
     let probe = probe();
     probe.fail_start.store(true, Ordering::SeqCst);
     let ports = ports_with_registry(&probe);
+    let config = test_config();
 
-    let error = super::super::peer_start_node(&ports, "app.a").unwrap_err();
+    let error = super::super::peer_start_node(&ports, "app.a", &config).unwrap_err();
     assert!(error.contains("injected start failure"), "实际错误: {error}");
     assert_eq!(
-        super::super::peer_start_node(&ports, "app.b").map(|_| ()),
+        super::super::peer_start_node(&ports, "app.b", &config).map(|_| ()),
         Err("service `net.peer-node` failed to start: injected start failure".to_string())
     );
     assert_eq!(probe.starts.load(Ordering::SeqCst), 0);
@@ -143,7 +154,8 @@ fn start_failure_is_visible_and_not_recorded() {
 #[test]
 fn no_registry_falls_back_to_engine_and_stays_fail_visible() {
     let ports: Arc<dyn PeerPorts> = Arc::new(LeasePorts { registry: None });
-    let error = super::super::peer_start_node(&ports, "app.a").unwrap_err();
+    let config = test_config();
+    let error = super::super::peer_start_node(&ports, "app.a", &config).unwrap_err();
     assert_eq!(error, HEADLESS_UNAVAILABLE);
     let error = super::super::peer_stop_node(&ports, "app.a").unwrap_err();
     assert_eq!(error, HEADLESS_UNAVAILABLE);

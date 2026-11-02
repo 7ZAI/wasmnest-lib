@@ -649,18 +649,21 @@ fn publish_dir_event(
     ports.publish(&topic, payload);
 }
 
-/// 自播回显判定：browse 会收到本机自己的广播（TXT `id` == 本机节点 ID）。
+/// 自播回显判定：browse 会收到本机自己的广播（TXT `id` ∈ 本进程登记的广播身份集合）。
 ///
-/// 端口拿不到本机节点 ID（无宿主句柄的无头/测试环境，或节点未启动）时返回
-/// false——无法比对即不拦截，与引擎 `handle_browse_event` 的同口径过滤一致。
+/// per-app 身份后同一进程可能有多个 app 各自广播不同 node_id，过滤必须匹配
+/// 任一自己登记的广播。端口拿不到任何广播身份（无宿主句柄的无头/测试环境，
+/// 或节点未启动）时返回 false——无法比对即不拦截，与引擎 `handle_browse_event`
+/// 的同口径过滤一致。
 fn is_self_broadcast(
     ports: &dyn DiscoveryPorts,
     txt: &std::collections::BTreeMap<String, String>,
 ) -> bool {
-    let Some(own) = ports.local_node_id() else {
+    let Some(txt_id) = txt.get("id") else {
         return false;
     };
-    txt.get("id").map(|v| v.as_str()) == Some(own.as_str())
+    let advertised = ports.advertised_node_ids();
+    advertised.iter().any(|own| own == txt_id)
 }
 // ==================== Tests ====================
 
@@ -672,8 +675,10 @@ mod tests {
     struct FakePorts {
         /// 已授权 `network:mdns` 的属主
         granted: Vec<String>,
-        /// 本机节点 ID（自播回显过滤）
+        /// 本机节点 ID（自播回显过滤；`advertised_ids` 覆盖时此字段被忽略）
         node_id: Option<String>,
+        /// per-app 多身份：设置后覆盖 `advertised_node_ids()` 的默认单值回退
+        advertised_ids: Option<Vec<String>>,
         /// 捕获到的事件投递（topic, payload）
         published: Mutex<Vec<(String, serde_json::Value)>>,
         /// 「系统组件」代持 `host-mdns` 能力的属主（能力路由用例用）
@@ -688,6 +693,7 @@ mod tests {
             Self {
                 granted: vec![plugin_id.to_string()],
                 node_id: None,
+                advertised_ids: None,
                 published: Mutex::new(Vec::new()),
                 routed: Vec::new(),
                 routed_calls: Mutex::new(Vec::new()),
@@ -697,6 +703,7 @@ mod tests {
             Self {
                 granted: Vec::new(),
                 node_id: None,
+                advertised_ids: None,
                 published: Mutex::new(Vec::new()),
                 routed: Vec::new(),
                 routed_calls: Mutex::new(Vec::new()),
@@ -778,6 +785,11 @@ mod tests {
         }
         fn local_node_id(&self) -> Option<String> {
             self.node_id.clone()
+        }
+        fn advertised_node_ids(&self) -> Vec<String> {
+            self.advertised_ids
+                .clone()
+                .unwrap_or_else(|| self.local_node_id().into_iter().collect())
         }
         fn publish(&self, topic: &str, payload: serde_json::Value) {
             self.published
@@ -1055,6 +1067,26 @@ mod tests {
         );
         let other = std::collections::BTreeMap::from([("id".to_string(), "node-2".to_string())]);
         assert!(!is_self_broadcast(p.as_ref(), &other), "peer TXT must pass");
+    }
+
+    /// per-app 多身份：任一登记的广播 id 命中即判自播
+    #[test]
+    fn self_broadcast_filter_matches_any_advertised_id() {
+        let mut fp = FakePorts::deny_all();
+        fp.advertised_ids = Some(vec!["app-a-id".into(), "app-b-id".into()]);
+        let p = ports(fp);
+        let own_a = std::collections::BTreeMap::from([("id".to_string(), "app-a-id".to_string())]);
+        let own_b = std::collections::BTreeMap::from([("id".to_string(), "app-b-id".to_string())]);
+        let peer = std::collections::BTreeMap::from([("id".to_string(), "peer-x-id".to_string())]);
+        assert!(
+            is_self_broadcast(p.as_ref(), &own_a),
+            "app-a 的广播必须被过滤"
+        );
+        assert!(
+            is_self_broadcast(p.as_ref(), &own_b),
+            "app-b 的广播必须被过滤"
+        );
+        assert!(!is_self_broadcast(p.as_ref(), &peer), "外部 peer 必须放行");
     }
 
     /// 定向事件 payload 增量字段：serviceType / browserId 追加，既有字段保留；
