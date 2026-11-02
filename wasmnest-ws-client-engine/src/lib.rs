@@ -11,8 +11,8 @@
 //!   ports.rs   边界：宿主能力端口（权限门 / 总线投递 / 宿主运行时任务 / jwt 代发 token /
 //!              重连退避策略）
 //!   wire.rs    契约：事件名 / 属主私有 topic 拼法 / 帧信封 kind 与头长 / 权限字面量
-//!              （自持副本，与移动 SDK 逐字一致由平台仓漂移锁
-//!              `cross-end-tests/tests/wire_drift_locks.rs` 钉死）
+//!              （自持副本，与移动 SDK 逐字一致由测试仓漂移锁
+//!              `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs` 钉死）
 //!   lib.rs     出口：模块与常量再导出
 //! ```
 //!

@@ -10,8 +10,8 @@
 //!
 //! 都是纯 wire 契约（事件名 / 命名空间形状），不携带宿主机制——移进本 crate
 //! 不改变任何依赖方向。桌面 SDK 原常量**不删除**（宿主 bus 面 / 插件侧仍有消费方），
-//! 副本与原版逐字一致由平台仓漂移锁钉死（三仓拆分 L2/E2b 票 08 迁出本 crate：
-//! `cross-end-tests/tests/wire_drift_locks.rs`）：任一侧漂移即红。
+//! 副本与原版逐字一致由测试仓漂移锁钉死（三仓拆分 L2/E2b 票 08 迁出本 crate：
+//! `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs`）：任一侧漂移即红。
 //!
 //! 注意：本模块定义块的注释与桌面 SDK **逐字一致**（漂移锁按文本块比对），
 //! 本地说明一律写在本模块文档与下方分隔注释里，不要改动定义块内注释。
@@ -49,4 +49,4 @@ pub const MDNS_LOST: &str = "mdns:lost";
 
 // 生成属主私有发现事件 topic
 // （非 doc 注释：本文件末尾无被文档化的项，`///` 会成悬空 doc 编译错误；
-// 平台仓漂移锁 cross-end-tests/tests/wire_drift_locks.rs 的本地结束标记同此文本。）
+// 测试仓漂移锁 wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs 的本地结束标记同此文本。）

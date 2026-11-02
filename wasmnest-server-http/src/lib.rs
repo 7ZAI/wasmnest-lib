@@ -15,8 +15,8 @@
 //!
 //! 认证档位词汇 `EndpointAuth` 与权限位 `network:http` 为本 crate **自持副本**
 //! （[`wire`] 模块；能力域脱绑 P1：能力域默认形态零 WIT / 零桌面 SDK 依赖，
-//! 任何宿主可直接引用）。副本与桌面 SDK 原版逐字一致由平台仓漂移锁
-//! `cross-end-tests/tests/wire_drift_locks.rs` 钉死（漂移即红）。
+//! 任何宿主可直接引用）。副本与桌面 SDK 原版逐字一致由测试仓漂移锁
+//! `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs` 钉死（漂移即红）。
 //!
 //! DTO 口径（AGENTS §5.1.1 B4 合法残留）：`dtos` 进生产构建的只有 `common_dto`
 //! （通用 API 信封 + 两个业务码）。会话 / 文件 / git 三组是「移动端看到的字节」这一

@@ -8,8 +8,8 @@
 //! 之间的 wire 契约，漂移会让插件声明 `peer` 却匹配不上宿主权限位。
 //!
 //! 桌面 SDK 原常量**不删除**（插件侧 manifest / WIT 契约面仍有消费方），副本与
-//! 原版逐字一致由平台仓漂移锁钉死（三仓拆分 L2/E2b 票 08 迁出本 crate：
-//! `cross-end-tests/tests/wire_drift_locks.rs`）：任一侧漂移即红。
+//! 原版逐字一致由测试仓漂移锁钉死（三仓拆分 L2/E2b 票 08 迁出本 crate：
+//! `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs`）：任一侧漂移即红。
 //!
 //! 注意：本模块定义块的注释与桌面 SDK **逐字一致**（漂移锁按文本块比对），
 //! 本地说明一律写在本模块文档里，不要改动定义块内注释。

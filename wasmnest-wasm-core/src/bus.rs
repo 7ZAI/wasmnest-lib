@@ -11,8 +11,8 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::RwLock;
 // 总线消息载荷统一取共享层 `wasmnest-server-base::wire::BusMessage`（票 02 M4）：
-// server-base 是双端无条件依赖的共享基础层，wire 形状自持副本由平台仓漂移锁
-// （`cross-end-tests/tests/wire_drift_locks.rs`）钉住桌面 SDK 原版逐字一致
+// server-base 是双端无条件依赖的共享基础层，wire 形状自持副本由测试仓漂移锁
+// （`wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs`）钉住桌面 SDK 原版逐字一致
 // （移动 SDK 同名副本同形）；机制面不再按形态引用
 // 任一 SDK crate——双端绑定层在入口把 SDK wire 载荷 JSON 往返转成本类型。
 // **crate 内引用一律走 `crate::bus::BusMessage`**（此处 pub use 是单点切换），
@@ -756,8 +756,8 @@ impl wasmnest_server_websocket::plugin_binding::ports::WsPorts for BusBoundWsPor
 ///
 /// P5 常量下沉后 base trait 载荷形状收 `wasmnest_server_base::wire::BusMessage`
 /// （本 crate 总线内部流转保持 SDK `BusMessage`——机制层类型选择，spec §8）；
-/// 两形状逐字一致由 base 侧 wire 漂移锁钉死（平台仓
-/// `cross-end-tests/tests/wire_drift_locks.rs`），此处做值转换（字段逐个
+/// 两形状逐字一致由 base 侧 wire 漂移锁钉死（测试仓
+/// `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs`），此处做值转换（字段逐个
 /// 克隆，零语义变化）。
 struct WasmHandlerAdapter(Box<dyn wasmnest_server_base::ports::BusMessageHandler>);
 

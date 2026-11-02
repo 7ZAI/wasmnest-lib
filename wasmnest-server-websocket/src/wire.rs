@@ -15,8 +15,8 @@
 //!
 //! 全部都是纯 wire 契约，不携带宿主机制——移进本 crate 不改变任何依赖方向。
 //! 桌面 SDK 原常量**不删除**（另有消费方：wasm-core 的 host_api 总线 / WIT 契约面），
-//! 副本与原版逐字一致由平台仓漂移锁钉死（三仓拆分 L2/E2b 票 08 迁出本 crate：
-//! `cross-end-tests/tests/wire_drift_locks.rs`）：任一侧漂移即红。
+//! 副本与原版逐字一致由测试仓漂移锁钉死（三仓拆分 L2/E2b 票 08 迁出本 crate：
+//! `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs`）：任一侧漂移即红。
 //!
 //! 注意：本模块定义块的注释与桌面 SDK **逐字一致**（漂移锁按文本块比对），
 //! 本地说明一律写在本模块文档与下方分隔注释里，不要改动定义块内注释。

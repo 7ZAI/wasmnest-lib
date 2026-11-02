@@ -14,8 +14,8 @@
 //! 都是纯 wire 契约（事件名 / 命名空间形状 / 字节布局），不携带宿主机制——移进本 crate
 //! 不改变任何依赖方向。**插件的消费面**（`parse_ws_frame` / `WsIncomingFrame` / `HostWs`
 //! trait / topic 助手）仍住在移动 SDK `host/ws.rs`，本 crate 与它逐字一致由
-//! 平台仓漂移锁钉死（三仓拆分 L2/E2b 票 08 迁出本 crate：
-//! `cross-end-tests/tests/wire_drift_locks.rs`）：任一侧漂移即红。
+//! 测试仓漂移锁钉死（三仓拆分 L2/E2b 票 08 迁出本 crate：
+//! `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs`）：任一侧漂移即红。
 //!
 //! 注意：下方**事件名常量块**与 **topic 助手块**的注释与移动 SDK **逐字一致**
 //! （漂移锁按文本块比对），本地说明一律写在本模块文档与块之间，不要改动块内注释。

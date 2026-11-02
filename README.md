@@ -131,7 +131,7 @@ cd ../wasmnest-headless-host-probe && cargo test
 
 - 根 `.cargo/config.toml` 强制 `rustc-wrapper = "sccache"`；未安装时 cargo 直接失败，这是显性设计，不要绕过。
 - `jobs = 4` 是内存兜底；内存充足时用 `CARGO_BUILD_JOBS` 覆盖。**不要设 `CARGO_INCREMENTAL=1`**，sccache 会拒绝执行。
-- 跨仓契约与真实互连验证在测试仓 `cross-end-tests`（wire / 权限词汇 / mDNS 锁 + 跨端场景）。
+- 跨仓契约与真实互连验证在测试仓 `wasmnest-test/cross-end-tests`（wire / 权限词汇 / mDNS 锁 + 跨端场景）。
 
 ## 8. 相关指针
 
@@ -142,7 +142,7 @@ cd ../wasmnest-headless-host-probe && cargo test
 | 核心 WIT / 域 WIT | `wasmnest-wasm-core/wit/core.wit` + `wit/worker.wit`、各能力域 `wit/<domain>.wit`（mdns / pty / http / peer / ws / notify） |
 | 权限词汇真源 | `wasmnest-wasm-core/src/permission.rs` |
 | 主库 schema | `wasmnest-wasm-core/src/db/schema.sql` |
-| 跨仓锁（wire / 权限 / mDNS） | 测试仓 `cross-end-tests/tests/{wire_drift_locks,permission_vocabulary_lock,mdns_browse_singleton_lock}.rs` |
+| 跨仓锁（wire / 权限 / mDNS） | 测试仓 `wasmnest-test/cross-end-tests/tests/{wire_drift_locks,permission_vocabulary_lock,mdns_browse_singleton_lock}.rs` |
 | 平台仓治理锁 | 平台仓双端 `src-tauri/tests/`（形态 / 语义 / 整核 / 纯净性锁） |
 | 四仓通用规范 | 平台仓 `docs/public/{git,commenting,testing,versioning,issues}.md` |
 

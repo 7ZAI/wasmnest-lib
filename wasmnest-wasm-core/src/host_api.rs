@@ -309,7 +309,7 @@ pub(crate) mod tests {
     }
 
     // 权限词汇的跨仓漂移锁（真源 ↔ SDK 生成物 ↔ 宿主门禁落点）已随三仓拆分
-    // L2/E2b（票 08）迁平台仓：`cross-end-tests/tests/permission_vocabulary_lock.rs`。
+    // L2/E2b（票 08）迁测试仓：`wasmnest-test/cross-end-tests/tests/permission_vocabulary_lock.rs`。
     // 原 `generated_vocabulary_know` 的单点断言（读平台 SDK 生成物）由该锁的
     // 「全集合相等」整体覆盖，能力仓不再读平台文件。
 

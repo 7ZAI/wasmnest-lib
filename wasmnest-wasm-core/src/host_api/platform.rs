@@ -253,8 +253,8 @@ mod tests {
         );
     }
 
-    // 权限位进 CLI 生成物的断言已随漂移锁迁平台仓（票 08）：
-    // `cross-end-tests/tests/permission_vocabulary_lock.rs` 的「真源 ↔ 生成物
+    // 权限位进 CLI 生成物的断言已随漂移锁迁测试仓（票 08）：
+    // `wasmnest-test/cross-end-tests/tests/permission_vocabulary_lock.rs` 的「真源 ↔ 生成物
     // 集合相等」整体覆盖；本文件不再读平台 SDK 生成物。
 
     // ==================== 选择器端口到授权链路的全链 ====================

@@ -44,8 +44,8 @@ pub mod pty_ring;
 pub mod pty_status;
 mod runtime;
 /// wire 契约词汇自持副本（能力域脱绑 P4：topic 规则 / PTY 事件名 / 权限位 /
-/// 按键组合线协议，与桌面 SDK 原版逐字一致由平台仓漂移锁
-/// `cross-end-tests/tests/wire_drift_locks.rs` 钉死）
+/// 按键组合线协议，与桌面 SDK 原版逐字一致由测试仓漂移锁
+/// `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs` 钉死）
 pub mod wire;
 
 pub use lifecycle::{PtyTerminated, PtyTerminationGate};

@@ -24,8 +24,8 @@ async-trait = "0.1"
 # 输出时间戳（读线程逐块记录）
 chrono = { version = "0.4", features = ["clock"] }
 # KeyCombo / KeyCode 特殊键 wire 形状已自持（`src/wire/key.rs`，能力域脱绑 P4：与桌面
-# SDK `wire/key.rs` 生产段逐字一致由平台仓漂移锁
-# `cross-end-tests/tests/wire_drift_locks.rs` 钉死），不再依赖 plugin-api。
+# SDK `wire/key.rs` 生产段逐字一致由测试仓漂移锁
+# `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs` 钉死），不再依赖 plugin-api。
 serde = { version = "1", features = ["derive"] }
 # 退出事件 / 限频通知的载荷形状（`serde_json::json!`）
 serde_json = "1"

@@ -45,7 +45,7 @@ pub mod routing;
 /// ADR 0054）。出口 [`subscribe_type`] / [`request_type_requery`]
 pub mod type_hub;
 /// wire 契约词汇自持副本（能力域脱绑 P2：发现事件名 / topic 命名规则，
-/// 与桌面 SDK 原版逐字一致由平台仓漂移锁 `cross-end-tests/tests/wire_drift_locks.rs` 钉死）
+/// 与桌面 SDK 原版逐字一致由测试仓漂移锁 `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs` 钉死）
 pub mod wire;
 
 /// 自播面：宿主把本机 `_wasmnest._tcp.local.` 服务广播到局域网供移动端发现
@@ -68,7 +68,7 @@ pub use type_hub::{
 // `daemon.browse` / `stop_browse`，守护实例只允许 `engine` 创建一次）的源码锁
 // 已随三仓拆分 L2/E2b（票 08）迁平台仓：扫描面横跨能力仓 `packages/**/src` 与
 // 双端宿主 `src-tauri/src`，只有平台仓能同时看到两侧——
-// `cross-end-tests/tests/mdns_browse_singleton_lock.rs`（判据与白名单逐字未变）。
+// `wasmnest-test/cross-end-tests/tests/mdns_browse_singleton_lock.rs`（判据与白名单逐字未变）。
 
 // ==================== 模块描述符词汇（常编译 pub：宿主 adapter 引用） ====================
 //

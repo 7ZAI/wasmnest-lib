@@ -213,7 +213,7 @@ impl ModuleRegistry {
     ///
     /// **两遍装配**：先装正式实现（`fallback() == false`），再装 [`HostModule::fallback`]
     /// 自报的兜底/兼容桩，且**跳过接口已被正式实现占用的桩**。为什么必须这样：跨端同
-    /// 进程装配（`cross-end-tests`：桌面 lib 与移动 lib 同时链入）时，移动侧的桌面兼容桩
+    /// 进程装配（`wasmnest-test/cross-end-tests`：桌面 lib 与移动 lib 同时链入）时，移动侧的桌面兼容桩
     /// （`mobile-desktop-compat`：只为 import 闭合的 fail-visible 桩）会与桌面真实现
     /// 同名 interface 撞车；桩的语义本来就是「没有真实现时才填位」，跳过是正解。
     /// 单端装配下接口无竞争，两遍装配与单遍行为一致（桩照装）。

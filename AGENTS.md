@@ -24,7 +24,7 @@
 
 维护口径：
 
-- **路径基准**：仓内路径相对能力仓根。跨仓按 R1 同场布局记为 `../wasmnest`（平台仓：双端宿主 + SDK + 构建工具）、`../wasmnest-apps`（应用仓）、`../wasmnest-test`（测试容器仓，跨端工程在 `cross-end-tests/`）。
+- **路径基准**：仓内路径相对能力仓根。跨仓按 R1 同场布局记为 `../wasmnest`（平台仓：双端宿主 + SDK + 构建工具）、`../wasmnest-apps`（应用仓）、`../wasmnest-test`（测试容器仓，跨端工程在 `wasmnest-test/cross-end-tests/`）。
 - **平台仓两端目录在本文一律记作 `wasmnest-{desktop,mobile}`**（需要某端时写 `wasmnest-{desktop}`）——**复制命令 / 引用路径前先展开花括号**。原因：本仓全文不得出现平台仓目录名字面量（零平台引用锁 `wasmnest-wasm-core/tests/platform_reference_registry_lock.rs` 扫描仓根一切文本文件；唯二豁免是 `wasmnest-server-websocket` 与 `wasmnest-server-peer-net` 两个 `src/dependency_direction_lock.rs` 里作为**被判对象**的依赖名字面量）。**写任何注释 / 文档 / 测试字符串时都适用这条**：提端用「桌面宿主 / 移动宿主」等端词汇，不提跨仓目录名或跨仓读取路径。
 - **文档字面 ≠ 事实**：引用任何路径 / 命令 / 锁名 / 版本前先用 `ls` / `rg` / `cargo metadata` 核对；与实际不符先修文档再继续。
 - **最小改动**：只改任务必要文件；禁止顺手重构相邻代码、擅自升级依赖、批量重排格式；设计取舍不猜，先问用户。
@@ -152,7 +152,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 铁律：
 
 - 副本的**定义块与 SDK 逐字一致**（漂移锁按行/块级文本比对，换行归一化）；本地说明只写模块文档，**不要改定义块内注释**。
-- 改任一侧先问「真源是谁」：**先改平台 SDK，再逐字同步副本**（或反向），然后跑测试仓 `cross-end-tests/tests/wire_drift_locks.rs`（19 条断言，读双侧源文件）。
+- 改任一侧先问「真源是谁」：**先改平台 SDK，再逐字同步副本**（或反向），然后跑测试仓 `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs`（19 条断言，读双侧源文件）。
 - 副本文件里的权限常量（如 `PERMISSION_PTY_IO` / `PERMISSION_NETWORK_HTTP` / `PERMISSION_PEER` / `ws:client`）必须与 `permission.rs` 真源同值；`permission_vocabulary_lock` 会把真源钉到平台生成物与生产 manifest。
 
 ### 2.4 跨仓锁清单（平台仓 / 测试仓读本仓源码；改结构 / 文案前先看它们）
@@ -166,7 +166,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 | 平台仓 · `capability_crates_no_product_ids.rs` | 能力 crate 生产代码零产品插件 id / 零退役宿主面词汇（按 `SCANNED_CRATES` 登记；`wasm-core` 暂不在面内，见 §8） |
 | 平台仓 · `host_module_desc_noun_lock.rs`（双端）/ `wasm_core_whole_crate_lock.rs` / `l2_gating_lock.rs` / `wit_package_version_lock.rs` | 描述符零产品名词 / 整核垫片形态 / L2 反向依赖白名单 / 契约版本字面量（`@0.0.2`） |
 | 平台仓 · `wasmnest-{mobile}/src-tauri/tests/{mobile_wasm_core_purity_lock, kernel_schema_single_truth_lock, peer_engine_consolidation_lock, mobile_host_websocket_client_domain_lock, retired_*}.rs` | 内核纯净性七判据 / 主库 schema / 引擎集中化 / 客户端域边界 / fork 与退役面不复活 |
-| 测试仓 · `cross-end-tests/tests/{wire_drift_locks, permission_vocabulary_lock, command_vocabulary_lock, mdns_browse_singleton_lock, bedcode_app_identity_lock, file_transfer_wiring_lock}.rs` | wire / 权限 / 命令面词汇 / mDNS 单 browse 出口 / 身份与接线不变量 |
+| 测试仓 · `wasmnest-test/cross-end-tests/tests/{wire_drift_locks, permission_vocabulary_lock, command_vocabulary_lock, mdns_browse_singleton_lock, bedcode_app_identity_lock, file_transfer_wiring_lock}.rs` | wire / 权限 / 命令面词汇 / mDNS 单 browse 出口 / 身份与接线不变量 |
 
 > 这些锁是**可执行判据**，不是文档：改本仓对应面时必须在平台仓 / 测试仓跑相关套件（§7）。锁红时的正确动作是同步真源与副本 / 修形态，**不是**改锁放行；确需豁免必须显式登记条目 + 写明理由。
 
@@ -280,7 +280,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
   - **平台装配下**（宿主从 `<平台>/<end>/src-tauri` 构建，本仓 crate 以 sibling path 入图）：产物落**宿主的** `target/<bucket>`；本仓 crate 的 `.cargo/config.toml` 不参与宿主编译；
   - **独立克隆下**（crate 在 `<能力仓>/<crate>`）：落到**本仓根** `<能力仓>/target/<bucket>`（2026-10-20 收口：平台仓删除 `packages/` submodule 挂载点后 crate 深度少一层，10 个 crate 的 `target-dir` 从 `../../target/*` 统一改为 `../target/*`）。
 - **判据以运行时为准**：`cargo metadata --no-deps --format-version 1` 的 `target_directory`（或 `CARGO_TARGET_DIR=<crate>/target` 强制落点）。改任何 `target-dir` 后必须逐 crate 核验——写错一层 `..` **不会报错**，只会安静落到别处（2026-10-20 前就曾整体落到三仓共同父目录 `${WASMNEST}/target/*`）。
-- 桶位对照：`server-libs` = 5 个 server crate + crypto-engine；`host-kits` = host-kit / discovery / pty / wasm-core；夹具 = `<crate>/target/fixtures`（wasm-core 自持夹具）；`cross-end-tests/target` 独立（平台/测试仓侧）。
+- 桶位对照：`server-libs` = 5 个 server crate + crypto-engine；`host-kits` = host-kit / discovery / pty / wasm-core；夹具 = `<crate>/target/fixtures`（wasm-core 自持夹具）；`wasmnest-test/cross-end-tests/target` 独立（平台/测试仓侧）。
 - 构建资源：仓根 `.cargo/config.toml` 强制 `jobs = 4` + `rustc-wrapper = "sccache"`（**未装 sccache 一切 cargo 命令直接失败**——显性失败设计，不绕过；本机已装 0.18）。**绝不要设 `CARGO_INCREMENTAL=1`**（sccache 0.18 检测到会拒绝执行，成批失败）；`SCCACHE_CACHE_SIZE` 只认纯字节数字。磁盘吃紧先 `sccache --show-stats`，清理见 §5「清理 target/磁盘」。
 - `Cargo.lock` **随仓库跟踪**（夹具 / 探针需要可复现构建），只经 cargo 变更、禁止手编。**当前已知状态**：部分 crate 的 lock 里内部 crate 版本仍残留 `0.1.0`（版本线重开为 `0.0.1` 后只刷新了 7 个根包），首次构建/测试会自动把它刷新成 `0.0.1`——这会让 `--locked` 失败（预期）。刷新结果作为独立 `chore(lib)` 提交（先例：`chore(lib): 7 个 crate 的 Cargo.lock 根包版本随 0.0.1 刷新`），不要混进功能提交。
 
@@ -315,7 +315,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 | 增加 crates.io 依赖 / 升级依赖 | 先问用户；`Cargo.lock` 随改随提交（§4.4） |
 | 发版 / 钉平台指针 | §4.5；未经授权不改平台仓 |
 | 独立克隆测试 / 构建失败 | §4.2（wasm-core 解析点）+ §4.4（`target_directory` 判据 + `--locked` 与陈旧 lock） |
-| 清理 target / 磁盘吃紧 | 先 `df -h` / `du -sh` 定位；安全优先级：旧落点 `${WASMNEST}/target/{host-kits,server-libs}`（2026-10-20 前的漂移产物，无活引用可整删）、`cross-end-tests/target`、夹具 target；本仓 `target/*` 是**活跃桶**（host-kits ≈11G 可复用），`cargo clean` 只对该 crate 且确认不误伤平台装配桶（§4.4） |
+| 清理 target / 磁盘吃紧 | 先 `df -h` / `du -sh` 定位；安全优先级：旧落点 `${WASMNEST}/target/{host-kits,server-libs}`（2026-10-20 前的漂移产物，无活引用可整删）、`wasmnest-test/cross-end-tests/target`、夹具 target；本仓 `target/*` 是**活跃桶**（host-kits ≈11G 可复用），`cargo clean` 只对该 crate 且确认不误伤平台装配桶（§4.4） |
 | 排查「改了没生效」 | 先确认构建读的是哪一份源码：平台装配读 sibling `<平台>/../wasmnest-lib/<crate>`，独立克隆读本仓工作树（现在两者是同一物理路径）；再确认 target 桶与 sccache 状态 |
 | 定位 crate / 符号 | `rg` 全文 + `cargo metadata`；真源先在 `Cargo.toml` description 与 `src/lib.rs` 头注 |
 
@@ -386,7 +386,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 
 ## 8. 已知漂移与遗留（截至 2026-10-18；动手前按需复核）
 
-1. **旧路径注释**：本仓（~30 处）与应用仓（4 处）注释仍引旧路径 `cross-end-tests/...`。更新本仓注释需同步 `release-manifest.json` 的 tag，**用户当前未授权**——不要顺手改（详见 pi scratchpad 的同名条目）。
+1. **（已收口 2026-11-02）旧路径注释**：本仓注释已全部改为 `wasmnest-test/cross-end-tests/...` 形态（issue #1），漂移锁归属同步订正为测试仓；应用仓 4 处未代改。本仓后续提交需按 §4.5 重钉平台指针。
 2. **wasm-core 的 SDK 版本依赖（架构债）**：`desktop-assembly` → `wasmnest-plugin-api = "0.0.1"`（未发布）导致独立克隆无法解析（§4.2）。终态清偿票据未做，勿扩大。
 3. **`Cargo.lock` 版本残留**：多个 crate 的 lock 里内部 crate 版本仍是 `0.1.0`（应 `0.0.1`，§4.4）；这些 crate 首次 cargo 运行会自动刷新（刷完才可用 `--locked`，刷前 `--locked` 直接失败）。
 4. **（已收口 2026-10-20）`target-dir` 落点漂移**：10 个 crate 已统一改为 `../target/<bucket>`，独立克隆落本仓根；旧落点 `${WASMNEST}/target/{host-kits,server-libs}` 为漂移产物（无活引用，可整删），本仓 `target/host-kits` 的历史残留即当前活跃桶。核查方法见 §4.4。

@@ -12,8 +12,8 @@
 //! 是桌面端唯一的权限清单。打包 CLI（`bin/cli.js`）的列表是**生成物**，由 `cargo run
 //! --manifest-path rust/Cargo.toml --example gen_permission_vocabulary`（即 SDK 的
 //! `pnpm run gen:permissions`）重出，禁止手抄；两份（真源 + CLI 生成物）一致性由
-//! **平台仓**漂移锁断言（三仓拆分 L2/E2b 票 08 迁出本 crate：
-//! `cross-end-tests/tests/permission_vocabulary_lock.rs`——真源是本文件公开常量，
+//! **测试仓**漂移锁断言（三仓拆分 L2/E2b 票 08 迁出本 crate：
+//! `wasmnest-test/cross-end-tests/tests/permission_vocabulary_lock.rs`——真源是本文件公开常量，
 //! 由平台测试经 wasm-core 公开面读取；能力仓不再读平台文件）。
 //!
 //! desktop-host-frontend-downsink（2026-10-17）：原「宿主前端生成物」
@@ -160,7 +160,7 @@ pub const PERMISSION_NOTIFY: &str = "notify";
 ///
 /// 标识符由 `stringify!` 取自常量本身，与值同源、不可能漂移。有了这一列，宿主测试
 /// 就能把「源码里出现的 `PERMISSION_*` 引用」机械还原成权限串，从而断言
-/// 「每一条词汇都有真实门禁落点」（平台仓锁 `cross-end-tests/tests/permission_vocabulary_lock.rs`），
+/// 「每一条词汇都有真实门禁落点」（测试仓锁 `wasmnest-test/cross-end-tests/tests/permission_vocabulary_lock.rs`），
 /// 而不需要再手抄一份清单。
 pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
     (
@@ -221,7 +221,7 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
 /// 未列入本表的权限在 [`PermissionManager::grant_permissions`] 授权时被静默过滤，
 /// 因此 manifest 声明了这里没有的字段等于没声明（票 01 的词汇清零即为此而设）。
 /// 新增/拆分权限位只需在反射表加一行，再重跑生成器（见模块头），
-/// 否则平台仓词汇漂移锁转红（锁位见模块头）。
+/// 否则测试仓词汇漂移锁转红（锁位见模块头）。
 const fn valid_permissions() -> [&'static str; PERMISSION_VOCABULARY.len()] {
     let mut out = [""; PERMISSION_VOCABULARY.len()];
     let mut i = 0;
@@ -243,8 +243,8 @@ pub static VALID_PERMISSIONS: &[&str] = &valid_permissions();
 ///   实际门禁在宿主侧各域函数入口的 `check_permission`。
 ///
 /// 表内每个权限都必有一条门禁落点（宿主侧域函数入口 `check_permission`）
-/// ——无落点的权限位由平台仓词汇漂移锁拒绝
-///（`cross-end-tests/tests/permission_vocabulary_lock.rs`）。
+/// ——无落点的权限位由测试仓词汇漂移锁拒绝
+///（`wasmnest-test/cross-end-tests/tests/permission_vocabulary_lock.rs`）。
 pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
     // 票 08：`terminal.sendInput` 随宿主输入通道（`plugin_terminal_send_input`）
     // 注销——插件写自家会话输入走自有命令通道（不受本表管辖）。

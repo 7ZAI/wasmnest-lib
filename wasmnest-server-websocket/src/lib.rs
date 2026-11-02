@@ -23,7 +23,7 @@
 //! 认证档位词汇 `EndpointAuth`、权限位 `ws:client` / `ws:server` 与 WS 状态事件
 //! 名 / topic 构造为本 crate **自持副本**（[`wire`] 模块；能力域脱绑 P3：能力域
 //! 默认形态零 WIT / 零桌面 SDK 依赖，任何宿主可直接引用）。副本与桌面 SDK 原版
-//! 逐字一致由平台仓漂移锁 `cross-end-tests/tests/wire_drift_locks.rs` 钉死（漂移即红）。
+//! 逐字一致由测试仓漂移锁 `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs` 钉死（漂移即红）。
 //!
 //! **插件绑定层（wasm-core-lib-split 票 04）**：[`plugin_binding`] 是本 crate 的
 //! `host-websocket` 能力域——客户端域 WIT 接线（契约真源

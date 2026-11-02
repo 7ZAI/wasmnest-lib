@@ -56,7 +56,7 @@ pub mod plugin_binding;
 pub mod service;
 pub mod source_collect;
 /// wire 契约词汇自持副本（能力域脱绑 P4：权限位判据字符串，
-/// 与桌面 SDK 原版逐字一致由平台仓漂移锁 `cross-end-tests/tests/wire_drift_locks.rs` 钉死）
+/// 与桌面 SDK 原版逐字一致由测试仓漂移锁 `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs` 钉死）
 pub mod wire;
 
 #[cfg(test)]

@@ -10,8 +10,8 @@
 //! 任何宿主可直接引用。
 //!
 //! 桌面 SDK 原定义**不删除**（另有消费方：wasm-core 总线内部流转、WIT guest 面），
-//! 副本与原版逐字一致由平台仓漂移锁钉死（三仓拆分 L2/E2b 票 08 迁出本 crate：
-//! `cross-end-tests/tests/wire_drift_locks.rs`）：任一侧漂移即红。
+//! 副本与原版逐字一致由测试仓漂移锁钉死（三仓拆分 L2/E2b 票 08 迁出本 crate：
+//! `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs`）：任一侧漂移即红。
 //! 双类型在 `wasm-core` 的 `WasmHandlerAdapter` 桥接点做值转换（形状一致由本锁保证）。
 //!
 //! 注意：本模块定义块与桌面 SDK **逐字一致**（漂移锁按行级比对），

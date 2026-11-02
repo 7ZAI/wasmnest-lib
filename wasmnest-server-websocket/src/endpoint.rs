@@ -28,8 +28,8 @@ pub const ENDPOINT_HANDLE_PREFIX: &str = "wse-";
 pub const PLUGIN_ENDPOINT_ROUTE_PREFIX: &str = "/ws/plugin";
 
 /// 端点认证档位（spec D8）——本 crate 自持副本（[`crate::wire`]，能力域脱绑 P3：
-/// 与桌面 SDK 原版逐字一致由平台仓漂移锁
-/// `cross-end-tests/tests/wire_drift_locks.rs` 钉死，漂移即红）
+/// 与桌面 SDK 原版逐字一致由测试仓漂移锁
+/// `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs` 钉死，漂移即红）
 ///
 /// 票 08 起 WS 注册面与 HTTP 声明面共用这一张表，避免「两 transport 各自抄一遍
 /// `none|jwt`」的词汇漂移。缺省档位各面自己给：WS = `None`（本文件，历史行为），

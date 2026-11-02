@@ -57,8 +57,8 @@ pub trait AuthCenter: Send + Sync {
 /// 静态订阅者的消息回调（`subscribe_static` 的 handler；宿主壳实现转为
 /// `wasm_core::BusMessageHandler`，载荷形状即 [`crate::wire::BusMessage`]——
 /// 本 crate 自持副本，能力域脱绑 P5：双类型在 wasm-core 的
-/// `WasmHandlerAdapter` 桥接点做值转换，形状一致由平台仓漂移锁钉死
-/// `cross-end-tests/tests/wire_drift_locks.rs`）
+/// `WasmHandlerAdapter` 桥接点做值转换，形状一致由测试仓漂移锁钉死
+/// `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs`）
 pub trait BusMessageHandler: Send + Sync {
     fn on_message(&self, msg: &crate::wire::BusMessage) -> anyhow::Result<()>;
 }

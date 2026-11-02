@@ -131,7 +131,7 @@ cd ../wasmnest-headless-host-probe && cargo test
 
 - The root `.cargo/config.toml` forces `rustc-wrapper = "sccache"`; without it cargo fails immediately. This is intentional; do not bypass it.
 - `jobs = 4` is a memory fallback; override it with `CARGO_BUILD_JOBS` when memory allows. **Never set `CARGO_INCREMENTAL=1`**, because sccache refuses to run.
-- Cross-repo contracts and real interop are verified in the test repo's `cross-end-tests` (wire / permission-vocabulary / mDNS locks + cross-end scenarios).
+- Cross-repo contracts and real interop are verified in the test repo's `wasmnest-test/cross-end-tests` (wire / permission-vocabulary / mDNS locks + cross-end scenarios).
 
 ## 8. Pointers
 
@@ -142,7 +142,7 @@ cd ../wasmnest-headless-host-probe && cargo test
 | Core / domain WIT | `wasmnest-wasm-core/wit/core.wit` + `wit/worker.wit` and each domain's `wit/<domain>.wit` (mdns / pty / http / peer / ws / notify) |
 | Permission vocabulary source | `wasmnest-wasm-core/src/permission.rs` |
 | Main database schema | `wasmnest-wasm-core/src/db/schema.sql` |
-| Cross-repo locks (wire / permissions / mDNS) | Test repo `cross-end-tests/tests/{wire_drift_locks,permission_vocabulary_lock,mdns_browse_singleton_lock}.rs` |
+| Cross-repo locks (wire / permissions / mDNS) | Test repo `wasmnest-test/cross-end-tests/tests/{wire_drift_locks,permission_vocabulary_lock,mdns_browse_singleton_lock}.rs` |
 | Platform governance locks | Platform repo's both `src-tauri/tests/` (shape / semantics / whole-core / purity locks) |
 | Shared conventions across the four repos | Platform repo `docs/public/{git,commenting,testing,versioning,issues}.md` |
 
