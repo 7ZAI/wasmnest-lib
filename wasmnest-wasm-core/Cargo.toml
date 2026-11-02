@@ -62,10 +62,8 @@ test-support = []
 # tauri 内部对各 target 的 webview 后端 cfg 正确（Linux 桌面 = webkit2gtk /
 # Android = 系统 WebView），不构成 Android 撞车点。
 tauri = { version = "2", features = ["protocol-asset", "tray-icon", "test"] }
-# 文件选择对话框（host-platform `fs:pick` 引擎面；与 lib 同版本锁步）。
-# 票 03：`platform` 域随 core 绑定层常编译化 ⇒ 依赖无条件（可选化只为形态门控，
-# 而 dialog 本身是 tauri 插件，移动/无头宿主同样可链接）。
-tauri-plugin-dialog = { version = "2" }
+# 文件选择对话框已端口化（`PlatformPickerPort`）：内核不再直接调用
+# `tauri-plugin-dialog`，对话框本体由两端宿主各自实现并装配（issue #3）。
 
 # ==================== WASM 运行时（wasmtime 48，双端锁版 ADR 0019） ====================
 wasmtime = { version = "48", features = ["component-model"] }
