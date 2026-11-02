@@ -30,11 +30,19 @@ impl PluginHost {
                     ))
                 })?;
                 if loaded.source != PluginSource::UserInstalled {
-                    return Err(crate::AppError::Plugin(format!(
-                        "Plugin '{}' (source: {}) cannot be upgraded in place; builtin apps are updated with the host release.",
-                        plugin_id,
-                        loaded.source.as_str()
-                    )));
+                    // 应用版本更新（2026-11-02）：随包内置的**可更新应用**允许被用户
+                    // 目录里的更新副本覆盖（load_builtin_and_user 只接受同更新源且
+                    // 版本更新者）。静态注册插件（StaticRegistry）无目录可换，仍然拒。
+                    let updatable_builtin =
+                        matches!(loaded.source, PluginSource::Wasm | PluginSource::FileScan)
+                            && loaded.manifest.update.is_some();
+                    if !updatable_builtin {
+                        return Err(crate::AppError::Plugin(format!(
+                            "Plugin '{}' (source: {}) cannot be upgraded in place; builtin apps are updated with the host release.",
+                            plugin_id,
+                            loaded.source.as_str()
+                        )));
+                    }
                 }
                 // 与卸载同判据：运行中（含激活进行中 / 降级）拒绝升级
                 if matches!(

@@ -58,6 +58,9 @@ pub fn validate_manifest_required(manifest: &PluginManifest) -> crate::Result<()
     // 不随端装配面门控；file 存在性需要插件目录上下文，挂装载入口
     // [`validate_worker_files`]（与 ptyQuota 的「安装期可通过、装载期拒绝」同款分层）。
     validate_worker_declarations(manifest)?;
+    // 应用更新源声明：repo / slug / tagPrefix 是拼 URL 与资产名的输入，
+    // 形态非法必须在装载 / 安装期拒绝（fail-visible），不能等到用户点检查更新。
+    crate::app_update::resolve_update_source(manifest.update.as_ref(), &manifest.id)?;
     // 生命周期 / preopen 校验为桌面 manifest 专属面（移动 manifest 无这两个字段，
     // fork 票 17 §3.2）——随桌面装配面门控（`desktop-assembly`）
     #[cfg(feature = "desktop-assembly")]

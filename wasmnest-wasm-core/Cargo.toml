@@ -181,6 +181,9 @@ encoding_rs = "0.8"
 libc = "0.2"
 
 sha2 = "0.10"
+# 应用更新：Release tag 语义化版本判定（应用版本更新全链路；双端宿主共用
+# `crate::app_update` 的纯逻辑，不在各端各写一套）
+semver = "1"
 
 # Windows：文件定位 COM API（opener）+ 电源唤醒监听
 [target.'cfg(windows)'.dependencies]

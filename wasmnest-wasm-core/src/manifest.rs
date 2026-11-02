@@ -139,6 +139,16 @@ pub struct PluginManifest {
     /// 外网访问预授权 URL 声明（移动 manifest 专属；桌面形态不产出该 key，与桌面 SDK JSON 形状一致）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preauth_urls: Vec<String>,
+    /// 应用更新源声明（GitHub Release；缺省 = 不参与更新检查）
+    ///
+    /// 声明即表示应用参与「检查更新」：宿主应用管理页与 SDK 默认设置卡都按
+    /// 本段解析发布仓 / tag 前缀 / 资产 slug。缺省字段收敛到官方应用仓命名
+    /// 约定（`7ZAI/wasmnest-apps`、`<slug>-v<X.Y.Z>`）；第三方应用可声明
+    /// 自己的 repo / tagPrefix / slug。
+    ///
+    /// 纯声明，不含可执行语义：宿主只在用户显式触发检查 / 更新时读取。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<crate::app_update::PluginUpdateDecl>,
 }
 
 /// `skip_serializing_if` 辅助：布尔 `false` 不写入序列化输出

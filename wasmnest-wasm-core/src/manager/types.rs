@@ -84,6 +84,12 @@ pub struct HostPluginInfo {
     /// 缺省 `false` 不写入前端投影（与既有 wire 形状逐字一致）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub background_transport: bool,
+    /// 应用更新源声明（manifest `update` 原样透传；缺省 = 不参与更新检查）
+    ///
+    /// 宿主壳据此决定是否给该应用渲染「检查更新」入口。缺省不写入前端投影
+    /// （与既有 wire 形状逐字一致）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<crate::app_update::PluginUpdateDecl>,
     /// WASM 模块文件名（携带 wasm 后端的形态使用：backend / full；键名暂保留历史拼写，见 wasmnest-apps#21 键位子决策）
     pub rust_library: String,
     pub permissions: Vec<String>,
@@ -119,6 +125,7 @@ impl From<&LoadedPlugin> for HostPluginInfo {
             plugin_type: p.manifest.plugin_type.clone(),
             kind: p.manifest.kind,
             background_transport: p.manifest.background_transport,
+            update: p.manifest.update.clone(),
             rust_library: p.manifest.rust_library.clone(),
             permissions: p.manifest.permissions.clone(),
             state: p.state.clone(),

@@ -66,6 +66,7 @@
 // 自报（linker 装配）、`GuestEventDispatcher` 注入（events 导出契约）、`AbiPolicy`
 // 注入（ABI 版本上限）——wasm-core 内零端名、零端常量。
 
+pub mod app_update;
 pub mod bus;
 pub mod config;
 /// 契约包名单点派生（ADR 0051 D3/D4）：导出名 / 接口全名的版本后缀由

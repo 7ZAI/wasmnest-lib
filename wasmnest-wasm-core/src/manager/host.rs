@@ -582,10 +582,10 @@ impl PluginHost {
         );
 
         // 2. 扫描文件系统的 TS-only 和 WASM 插件：随包内置目录 + 用户插件目录
-        // （zip 安装，可卸载），共用同一套加载与 WASM 实例化逻辑。**去重状态跨
-        // 两次扫描共享**（内置先到先得）：同 id 的用户副本被拒绝，不得顶替内置
-        // 条目——分开两次 load_all 各持一份 seen_ids，用户副本会静默覆盖内置记录，
-        // 随包插件随即被降级为 UserInstalled 而卡在审批门禁（拒绝激活）
+        // （zip 安装，可卸载），共用同一套加载与 WASM 实例化逻辑。同 id 冲突由
+        // `load_builtin_and_user` 显式裁决：默认内置胜出；唯一例外是「用户副本
+        // 声明同一更新源且版本严格更新」的应用更新覆盖（该副本随后走
+        // UserInstalled 审批门禁，新代码必须重新授权）。
         let (file_plugins, user_plugins) =
             PluginLoader::load_builtin_and_user(plugins_dir, user_plugins_dir, &permission);
         tracing::info!(
