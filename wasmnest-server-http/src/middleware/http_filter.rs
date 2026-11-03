@@ -22,7 +22,7 @@ use actix_web::{
     web::Bytes,
     FromRequest, HttpResponse, Result,
 };
-use tracing::Instrument;
+use tracing::{Instrument, Level};
 
 use crate::dtos::common_dto::{ApiResponse, CODE_INVALID_REQUEST};
 use wasmnest_server_core::filter::{Direction, FilterContext, TrafficChannel, TrafficFilterChain};
@@ -207,8 +207,9 @@ fn resolve_route_identity(path: &str, method: &str) -> (String, String) {
 /// 完整过滤流程：入站请求体 → 下游 → 出站响应体
 ///
 /// 单一出口统一记录请求完成事件（01 全路径日志）：请求结束按结果记
-/// `status` + `duration_ms` 结构化字段，级别按结果语义（成功 debug 不刷 info /
-/// 4xx warn / 5xx+异常 error）；`request_id`/`method`/`path` 由外层 span 字段继承。
+/// `status` + `duration_ms` 结构化字段，级别按结果语义（成功 **trace** 不刷屏 /
+/// 4xx warn / 5xx+异常 error），成功分支另带 `requests_in_window` 秒级聚合计数
+/// （见 [`super::http_stats`]）；`request_id`/`method`/`path` 由外层 span 字段继承。
 ///
 /// 协商头在、本端却不参与时的显性拒绝（不进下游、不碰 body）
 ///
@@ -327,21 +328,57 @@ where
     }
     .await;
 
-    // 完成事件（01）：span 已带 request_id/method/path，事件只补 status/duration_ms/error
+    // 秒级聚合计数：只累加「有过滤链在跑」的请求（快速路径 / 空链在上方已提前返回，
+    // 不计入），每个请求固定一次原子写，与是否有日志输出无关
+    let status = match &outcome {
+        Ok(res) => Some(res.status().as_u16()),
+        Err(_) => None,
+    };
+    let requests_in_window = super::http_stats::record(status);
+
+    // 完成事件（01）：span 已带 request_id/method/path，事件只补 status/duration_ms/error；
+    // 成功分支的级别由 `completion_level` 统一裁决（TRACE，见其注释）
     let duration_ms = started.elapsed().as_millis() as u64;
     match &outcome {
-        Ok(res) => {
-            let status = res.status().as_u16();
-            match status {
-                200..=399 => tracing::debug!(status, duration_ms, "HTTP request completed"),
-                400..=499 => tracing::warn!(status, duration_ms, "HTTP request completed with client error"),
-                _ => tracing::error!(status, duration_ms, "HTTP request completed with server error"),
-            }
-        }
+        Ok(res) => emit_completion(res.status().as_u16(), duration_ms, requests_in_window),
         // 下游/读体的异常路径：不吞错误，error 字段带失败文本（request_id 仍由 span 继承）
         Err(e) => tracing::error!(error = %e, duration_ms, "HTTP request failed"),
     }
     outcome
+}
+
+// ==================== 成功完成事件的秒级聚合 ====================
+//
+// 为什么需要：请求完成日志的成功分支从 `debug` 降到 `trace` 后（见上方完成事件处
+// 注释），「成功请求是否还在流动」不能随之完全失明——排查「客户端说调不通、宿主
+// 这边什么都没有」时，第一个要回答的就是「到底有没有请求进来」。实现住在
+// [`super::http_stats`]：进程级原子计数、每秒滚动一个窗口、不产生任何日志输出，
+// 唯一出口是本文件完成事件的 `requests_in_window` 字段。
+
+/// 完成事件 → 级别选择（纯函数，日志级别口径的单一事实源）
+///
+/// 成功（2xx/3xx）走 `TRACE`：逐请求留痕属于数据面日志，放 `DEBUG` 会在应用轮询 /
+/// 事件推送下把控制台与 runtime 文件层刷满（2026-11-04 桌面端日志风暴）。成功与否的
+/// 可见性由 [`super::http_stats`] 的秒级聚合计数承担；需要逐条追踪某次请求时开
+/// `RUST_LOG=wasmnest_server_http::middleware::http_filter=trace`（EnvFilter 语法，
+/// 无需改代码）。4xx 仍 `WARN`、5xx 仍 `ERROR`——那些是异常，逐条留痕是义务。
+fn completion_level(status: u16) -> Level {
+    if (200..400).contains(&status) {
+        Level::TRACE
+    } else if (400..500).contains(&status) {
+        Level::WARN
+    } else {
+        Level::ERROR
+    }
+}
+
+/// 按状态码发出完成事件（4xx / 5xx 的唯一日志出口）
+fn emit_completion(status: u16, duration_ms: u64, requests_in_window: u64) {
+    match completion_level(status) {
+        Level::TRACE => tracing::trace!(status, duration_ms, requests_in_window, "HTTP request completed"),
+        Level::WARN => tracing::warn!(status, duration_ms, "HTTP request completed with client error"),
+        _ => tracing::error!(status, duration_ms, "HTTP request completed with server error"),
+    }
 }
 
 /// 缓冲完整响应体（BoxBody）为内存字节
@@ -352,14 +389,34 @@ async fn to_bytes_owned(body: BoxBody) -> Result<Vec<u8>> {
     Ok(bytes.to_vec())
 }
 
-/// 生成请求级关联 ID（05 调用链）：peer 归一化 + 纳秒后缀，日志中可凭其跨模块串起一次请求
+/// 生成请求级关联 ID（05 调用链）：peer 归一化 + 进程内单调序号（hex）
+///
+/// 序号而非时间戳：`subsec_nanos` 在纳秒级并发下会重复（同一纳秒内的多个请求得到
+/// 同一 id，关联反而失效），且取系统时钟比一次原子加一贵。序号从 1 起单调递增、
+/// 进程内唯一，日志中可直接按字典序/数值序判断请求先后。
 fn new_request_id(peer: &str) -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     let peer_slug = peer.replace([':', '.'], "-");
-    format!("req-{peer_slug}-{nanos:x}")
+    format!("req-{peer_slug}-{seq:x}")
+}
+
+/// 级别口径锁：成功 = TRACE（防止「200 + 耗时」按请求刷屏回归），4xx = WARN，
+/// 5xx = ERROR
+#[cfg(test)]
+#[test]
+fn completion_level_maps_success_to_trace() {
+    for status in [200u16, 201, 204, 302, 304] {
+        assert_eq!(
+            completion_level(status),
+            Level::TRACE,
+            "成功响应必须落 TRACE，否则高 QPS 应用会刷满控制台与 runtime 日志"
+        );
+    }
+    assert_eq!(completion_level(400), Level::WARN);
+    assert_eq!(completion_level(404), Level::WARN);
+    assert_eq!(completion_level(500), Level::ERROR);
+    assert_eq!(completion_level(503), Level::ERROR);
 }
 
 #[cfg(test)]
@@ -367,9 +424,9 @@ fn new_request_id(peer: &str) -> String {
 fn request_id_is_stable_format_and_unique_enough() {
     let r1 = new_request_id("192.168.1.5:54321");
     let r2 = new_request_id("192.168.1.5:54321");
-    // 格式：req-<peer 归一化>-<hex>
+    // 格式：req-<peer 归一化>-<hex 序号>
     assert!(r1.starts_with("req-192-168-1-5-54321-"), "got: {r1}");
-    // 纳秒后缀：同 peer 连续调用几乎必然不同
+    // 单调序号：同 peer 连续调用必然不同
     assert_ne!(r1, r2);
     // 未知 peer 也能生成（不 panic）
     assert!(new_request_id("unknown").starts_with("req-unknown-"));
@@ -745,24 +802,35 @@ mod tests {
     }
 
     /// 在捕获订阅器下执行一次请求（请求类型与 call_service 一致，泛型透传）
+    ///
+    /// `max_level`：捕获订阅器的级别上限。成功完成事件已降为 `trace`（数据面日志），
+    /// 默认 `DEBUG` 捕获会**看不到**它——需要验证成功路径的用例显式传 `TRACE`；
+    /// 4xx/5xx 用例传 `DEBUG` 即可（warn/error 恒可见）。
     #[allow(dead_code)] // 仅 cfg(test) 下被测试引用（见 block_on 注释）
-    fn run_request_captured<S, R, B, E>(app: &S, buf: &Arc<Mutex<Vec<u8>>>, req: R)
+    fn run_request_captured<S, R, B, E>(app: &S, buf: &Arc<Mutex<Vec<u8>>>, max_level: tracing::Level, req: R)
     where
         S: actix_web::dev::Service<R, Response = actix_web::dev::ServiceResponse<B>, Error = E>,
         E: std::fmt::Debug,
     {
+        use tracing_subscriber::filter::LevelFilter;
+        use tracing_subscriber::layer::Layer as _;
         let layer = tracing_subscriber::fmt::layer()
             .with_writer(CaptureWriterMaker(buf.clone()))
             .with_ansi(false)
-            .with_target(false);
+            .with_target(false)
+            .with_filter(LevelFilter::from_level(max_level));
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, || {
             let _ = block_on(test::call_service(app, req));
         });
     }
 
-    /// 01 验收：成功请求在 http_request span 内发 debug 完成事件，携带
-    /// status/duration_ms 字段，且 request_id 由 span 继承（文本行 span 前缀）
+    /// 01 验收：成功请求在 http_request span 内发完成事件，携带
+    /// status/duration_ms/requests_in_window 字段，且 request_id 由 span 继承
+    ///
+    /// **级别锁**：成功完成必须是 `TRACE`——曾有实现把它放在 `debug`，配合 dev
+    /// 控制台 `debug` 兜底与 dev 强制 `file_level=debug`，应用轮询即把控制台与
+    /// runtime 日志刷成「200 + 耗时」风暴。此断言是这条降噪结论的回归锁。
     #[actix_web::test]
     async fn completed_request_logs_status_and_duration() {
         let _guard = GLOBAL_CHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -779,23 +847,56 @@ mod tests {
         let req = test::TestRequest::post().uri("/echo").set_payload("hello").to_request();
 
         let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        run_request_captured(&app, &buf, req);
+        run_request_captured(&app, &buf, tracing::Level::TRACE, req);
         let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
 
-        // 完成事件：debug 级 + status + duration_ms 字段
+        // 完成事件：trace 级（数据面降噪）+ status + duration_ms + 秒级聚合计数
         assert!(
-            out.contains("DEBUG") && out.contains("HTTP request completed"),
-            "success completion should be debug level: {out}"
+            out.contains("TRACE") && out.contains("HTTP request completed"),
+            "success completion must be TRACE (debug 会造成请求日志风暴): {out}"
         );
         assert!(out.contains("status=200"), "completion should carry status: {out}");
         assert!(
             out.contains("duration_ms="),
             "completion should carry duration_ms: {out}"
         );
+        assert!(
+            out.contains("requests_in_window="),
+            "completion should carry window aggregate: {out}"
+        );
         // span 继承：文本行带 http_request span（含 request_id）
         assert!(
             out.contains("http_request") && out.contains("request_id="),
             "completion should inherit request_id from span: {out}"
+        );
+
+        chain.clear();
+    }
+
+    /// 降噪回归锁：默认日志级别（debug）下**不得**出现成功完成事件——
+    /// 这才是「日志风暴」消失的直接判据（dev 控制台兜底 debug、runtime 层 dev 强制 debug）
+    #[actix_web::test]
+    async fn successful_completion_is_silent_at_debug_level() {
+        let _guard = GLOBAL_CHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let chain = TrafficFilterChain::global();
+        chain.clear();
+        chain.register(std::sync::Arc::new(TransformFilter));
+
+        let app = test::init_service(
+            App::new()
+                .wrap(TrafficFilter)
+                .route("/echo", web::post().to(echo_handler)),
+        )
+        .await;
+        let req = test::TestRequest::post().uri("/echo").set_payload("hello").to_request();
+
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        run_request_captured(&app, &buf, tracing::Level::DEBUG, req);
+        let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+
+        assert!(
+            !out.contains("HTTP request completed"),
+            "debug 级不得输出成功完成事件（否则高 QPS 应用会刷满日志）: {out}"
         );
 
         chain.clear();
@@ -816,7 +917,7 @@ mod tests {
         let req = test::TestRequest::get().uri("/boom").to_request();
 
         let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        run_request_captured(&app, &buf, req);
+        run_request_captured(&app, &buf, tracing::Level::DEBUG, req);
         let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
 
         assert!(
@@ -845,7 +946,7 @@ mod tests {
         let req = test::TestRequest::post().uri("/echo").set_payload("hello").to_request();
 
         let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        run_request_captured(&app, &buf, req);
+        run_request_captured(&app, &buf, tracing::Level::DEBUG, req);
         let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
 
         // 既有拒绝 warn 保留（rej 详情）
