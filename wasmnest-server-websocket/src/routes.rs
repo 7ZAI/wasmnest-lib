@@ -19,6 +19,7 @@ use crate::channel::plugin::PluginChannel;
 use crate::conn::{ConnSpec, WsConnBase};
 use crate::registry::WsSessionRegistry;
 use wasmnest_server_base::constants::PLACEHOLDER_PEER_ADDR;
+use wasmnest_server_core::link_crypto::{ws_has_ciphers, EncryptionPolicy};
 
 /// WS 帧/消息大小上限（字节）
 ///
@@ -72,6 +73,28 @@ async fn plugin_endpoint_ws(
         .peer_addr()
         .unwrap_or_else(|| PLACEHOLDER_PEER_ADDR.parse().unwrap());
     let client_id = addr.to_string();
+
+    // ==================== 端点加密策略：required 在升级前门禁 ====================
+    // `required` 端点的连接必须已持有链路加密会话密码（配对设备完成握手后由
+    // 能力层按连接地址注册）。没有密码 = 未配对 / 不支持加密的第三方客户端：
+    // 在协议升级**之前**显性拒绝（spec §5 Phase 2），不降级成明文、不建立一条
+    // 随后必被帧过滤器断开的连接。
+    if entry.encryption == Some(EncryptionPolicy::Required) && !ws_has_ciphers(&client_id) {
+        tracing::warn!(
+            plugin_id = %plugin_id,
+            endpoint_id = %entry.endpoint_id,
+            peer = %client_id,
+            "plugin ws endpoint requires link encryption but the connection has no session cipher, rejecting 400"
+        );
+        return Ok(HttpResponse::BadRequest()
+            .content_type("text/plain; charset=utf-8")
+            .body(format!(
+                "link encryption required: endpoint '{}' of plugin '{}' declares policy 'required', \
+                 but this connection carries no negotiated session cipher; pair the client or lower \
+                 the endpoint encryption policy",
+                entry.endpoint_id, entry.owner
+            )));
+    }
     if !WsSessionRegistry::global().reserve_endpoint_client(&entry.endpoint_id, &client_id, entry.max_clients) {
         tracing::warn!(
             plugin_id = %plugin_id,

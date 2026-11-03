@@ -70,9 +70,10 @@ pub enum TrafficChannel {
     WsEvent,
     /// WS 插件端点通道（`/ws/plugin/{plugin_id}/{path}`，插件入站端点帧）
     ///
-    /// 参与流量过滤链（帧级 inbound / outbound），但不参与链路加密
-    /// （`LinkEncryptionFilter::should_process` 对本品恒 `false`）——链路加密是
-    /// 移动端配对设备专用协商协议，插件端点的第三方客户端不参与
+    /// 参与流量过滤链（帧级 inbound / outbound）。是否进链路加密由**端点声明的
+    /// 策略**决定（`strictest(通道下限, 端点声明)`）：`required` 端点要求连接已有
+    /// 协商密码（未配对客户端在握手前被拒），`preferred` 机会主义，`off` 明文。
+    /// 历史 blanket「插件端点永不加密」已随 per-endpoint 策略解除。
     WsPlugin,
 }
 
@@ -110,6 +111,15 @@ pub struct FilterContext<'a> {
     pub peer: &'a str,
     /// 路由提示：HTTP = 请求 path，WS = 帧类别（"text" / "binary"）
     pub route: &'a str,
+    /// 属主插件 id（**由宿主端点注册表注入**，不解析 URL 猜、不接受客户端自报）
+    ///
+    /// 空串 = 宿主自有面（健康检查 / 配对引导 / 未注册路径），没有应用语义。
+    /// 按端点策略裁决时以本字段为身份真源（spec §3）。
+    pub owner: &'a str,
+    /// 端点标识（注册记录端点句柄 `http-*` / `wse-*`；空串 = 无端点维度）
+    ///
+    /// 与 `owner` 同源注入：HTTP 由请求路径反查注册表，WS 由握手反查端点表。
+    pub endpoint: &'a str,
     /// 协商信号（链路加密）：HTTP = 请求头 `X-WasmNest-Crypto` 原始值
     /// （如 "v1 <ek_b64>"），无协商为空串；WS 不用此字段（握手态由
     /// link_crypto 的连接密码表按 peer 查询）。issue 02 引入。
@@ -393,6 +403,8 @@ mod tests {
             direction: Direction::Inbound,
             peer: "",
             route,
+            owner: "",
+            endpoint: "",
             negotiation: "",
             data: data.to_vec(),
             outbound_headers: Vec::new(),
@@ -425,6 +437,8 @@ mod tests {
             direction: Direction::Inbound,
             peer: "192.168.1.42:5001",
             route: "text",
+            owner: "com.example.plugin",
+            endpoint: "wse-0000",
             negotiation: "",
             data: b"hello".to_vec(),
             outbound_headers: Vec::new(),
@@ -438,6 +452,8 @@ mod tests {
             direction: Direction::Outbound,
             peer: "192.168.1.42:5001",
             route: "binary",
+            owner: "com.example.plugin",
+            endpoint: "wse-0000",
             negotiation: "",
             data: b"hello".to_vec(),
             outbound_headers: Vec::new(),
@@ -477,6 +493,8 @@ mod tests {
             direction: Direction::Outbound,
             peer: "127.0.0.1:5000",
             route: "text",
+            owner: "",
+            endpoint: "",
             negotiation: "",
             data: b"bbb".to_vec(),
             outbound_headers: Vec::new(),

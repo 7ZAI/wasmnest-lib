@@ -171,6 +171,7 @@ mod tests {
             Some("/api/auth/pairing"),
             &methods,
             crate::wire::EndpointAuth::None,
+            None,
         )
         .expect("register public alias");
 
@@ -219,6 +220,7 @@ mod tests {
             Some("/api/jwt-guarded-alias"),
             &methods,
             crate::wire::EndpointAuth::Jwt,
+            None,
         )
         .expect("register jwt alias");
 

@@ -68,6 +68,7 @@ use wasmtime::component::{bindgen, Linker};
 use crate::endpoint::EndpointAuth;
 use crate::plugin_binding::ports::{block_on, FrameDispatch, WsFrameTarget, WsPorts};
 use crate::registry::WsSessionRegistry;
+use wasmnest_server_core::link_crypto::EncryptionPolicy;
 
 /// 宿主能力端口（边界层；见 [`ports`] 模块文档）
 pub mod ports;
@@ -157,9 +158,12 @@ struct CloseConfig {
     reason: Option<String>,
 }
 
-/// 插件端点注册 config-json 契约（服务端域；本票只做形状校验的预留定义）
+/// 插件端点注册 config-json 契约（服务端域）
+///
+/// **严格解析**（`deny_unknown_fields` + 策略取值白名单）：未知字段 / 未知策略
+/// 一律注册失败——静默忽略会让「应用以为加密了、实际明文」。
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EndpointConfig {
     path: String,
     #[serde(default)]
@@ -168,6 +172,9 @@ struct EndpointConfig {
     max_message_bytes: Option<usize>,
     #[serde(default)]
     max_clients: Option<usize>,
+    /// 链路加密策略："required" | "preferred" | "off"（缺省 = 未声明，跟随宿主下限）
+    #[serde(default)]
+    encryption: Option<String>,
 }
 
 // ==================== 客户端域原语 ====================
@@ -455,6 +462,12 @@ pub fn ws_register_endpoint(ports: &Arc<dyn WsPorts>, plugin_id: &str, config_js
     // 缺省档 = none（WS 历史行为）；未定义取值报错，绝不静默降级为较宽档位
     let auth = EndpointAuth::parse_with(config.auth.as_deref(), EndpointAuth::None)
         .map_err(|e| format!("ws register-endpoint: {e}"))?;
+    // 加密策略：未声明 = None（跟随宿主下限）；未定义取值报错，绝不静默当明文
+    let encryption = match config.encryption.as_deref() {
+        None => None,
+        Some(raw) if raw.trim().is_empty() => None,
+        Some(raw) => Some(EncryptionPolicy::parse(raw).map_err(|e| format!("ws register-endpoint: {e}"))?),
+    };
 
     let entry = crate::endpoint::register(
         plugin_id,
@@ -463,6 +476,7 @@ pub fn ws_register_endpoint(ports: &Arc<dyn WsPorts>, plugin_id: &str, config_js
         config.max_clients,
         config.max_message_bytes,
         ports.bus_port(),
+        encryption,
     )?;
     Ok(entry.endpoint_id)
 }

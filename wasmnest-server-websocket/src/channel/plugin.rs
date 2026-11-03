@@ -422,7 +422,7 @@ mod tests {
 
     fn test_endpoint(seed: &str, auth: EndpointAuth) -> EndpointEntry {
         let owner = format!("test-plugin-channel-{seed}");
-        register(&owner, "echo", auth, None, None, Arc::new(TestBus)).expect("register endpoint")
+        register(&owner, "echo", auth, None, None, Arc::new(TestBus), None).expect("register endpoint")
     }
     /// 测试假总线（通道只存句柄；无头/单测上下文不投递）
     struct TestBus;

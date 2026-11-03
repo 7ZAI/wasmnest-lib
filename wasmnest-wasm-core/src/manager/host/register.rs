@@ -157,6 +157,24 @@ impl PluginHost {
                     continue;
                 }
             };
+            // 链路加密策略：未声明 = None（跟随宿主下限）；未定义取值 → 报错 + 跳过
+            // （绝不静默降级成明文——这是「应用以为加密了、实际明文」的唯一入口）
+            let encryption = match endpoint.encryption_raw() {
+                None => None,
+                Some(raw) if raw.trim().is_empty() => None,
+                Some(raw) => match wasmnest_server_websocket::EncryptionPolicy::parse(raw) {
+                    Ok(policy) => Some(policy),
+                    Err(e) => {
+                        tracing::warn!(
+                            plugin_id = %plugin_id,
+                            declared = %endpoint.path(),
+                            error = %e,
+                            "manifest declared ws endpoint has invalid encryption policy, not registered"
+                        );
+                        continue;
+                    }
+                },
+            };
             match wasmnest_server_websocket::endpoint::register(
                 plugin_id,
                 path,
@@ -170,6 +188,7 @@ impl PluginHost {
                     // 见票面「批次 03 · 第 2–4 步设计定稿」。
                     Arc::new(crate::bus::BusBoundWsPorts::new(self.message_bus.clone())),
                 )),
+                encryption,
             ) {
                 Ok(entry) => {
                     tracing::info!(
@@ -177,6 +196,7 @@ impl PluginHost {
                         endpoint_id = %entry.endpoint_id,
                         mount_path = %entry.mount_path,
                         auth = auth.as_str(),
+                        encryption = entry.encryption.map(|p| p.as_str()).unwrap_or("(host-floor)"),
                         "manifest-declared ws endpoint registered"
                     );
                 }

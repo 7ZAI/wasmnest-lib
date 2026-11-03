@@ -50,6 +50,7 @@ use serde::Deserialize;
 
 use crate::plugin_binding::ports::HttpPorts;
 use crate::wire::{EndpointAuth, PERMISSION_NETWORK_HTTP};
+use wasmnest_server_core::link_crypto::EncryptionPolicy;
 
 /// 宿主能力端口（边界层；见 [`ports`] 模块文档）
 pub mod ports;
@@ -60,8 +61,12 @@ pub mod egress;
 // ==================== 服务端域（ABI v29：插件动态路由注册） ====================
 
 /// `register-endpoint` 的 config-json 契约（服务端域，camelCase）
+///
+/// **严格解析**（`deny_unknown_fields` + 策略取值白名单）：未知字段 / 未知策略
+/// 一律注册失败——旧解析器静默忽略新字段会让「应用以为加密了、实际明文」，
+/// 这是本契约最危险的失败模式（spec §2）。
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EndpointRegistrationConfig {
     /// 插件内相对端点段（宿主拼出 `/api/plugin/<plugin-id>/<path>`）
     path: String,
@@ -74,6 +79,9 @@ struct EndpointRegistrationConfig {
     /// 认证档位："jwt"（缺省，最严）| "none"（免凭证）
     #[serde(default)]
     auth: Option<String>,
+    /// 链路加密策略："required" | "preferred" | "off"（缺省 = 未声明，跟随宿主下限）
+    #[serde(default)]
+    encryption: Option<String>,
 }
 
 /// 注册插件 HTTP 端点（WIT `host-http.register-endpoint`，ABI v29 服务端域）
@@ -95,7 +103,20 @@ pub fn http_register_endpoint(
     // 未定义取值报错，绝不静默降级为较宽档位
     let auth = EndpointAuth::parse_with(config.auth.as_deref(), EndpointAuth::Jwt)
         .map_err(|e| format!("http register-endpoint: {e}"))?;
-    let entry = crate::registry::register(plugin_id, &config.path, config.host.as_deref(), &config.methods, auth)?;
+    // 加密策略：未声明 = None（跟随宿主下限）；未定义取值报错，绝不静默当明文
+    let encryption = match config.encryption.as_deref() {
+        None => None,
+        Some(raw) if raw.trim().is_empty() => None,
+        Some(raw) => Some(EncryptionPolicy::parse(raw).map_err(|e| format!("http register-endpoint: {e}"))?),
+    };
+    let entry = crate::registry::register(
+        plugin_id,
+        &config.path,
+        config.host.as_deref(),
+        &config.methods,
+        auth,
+        encryption,
+    )?;
     Ok(entry.endpoint_id)
 }
 

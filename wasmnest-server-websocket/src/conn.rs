@@ -330,8 +330,8 @@ impl WsConnBase {
     /// 本连接对应的流量通道类型
     ///
     /// 终态（票 08）只有插件端点一类连接，恒为 `WsPlugin`；方法保留为
-    /// 过滤链通道标签的事实来源（`TrafficChannel` 仍是传输面分类词汇，
-    /// 链路加密配置按通道取档）
+    /// 过滤链通道标签的事实来源。链路加密策略按「通道下限 ▸ 端点声明」裁决，
+    /// 端点身份（`owner` / `endpoint_id`）随上下文注入过滤链（spec §3）。
     fn traffic_channel(&self) -> TrafficChannel {
         TrafficChannel::WsPlugin
     }
@@ -359,6 +359,8 @@ impl WsConnBase {
             direction: Direction::Inbound,
             peer: &peer,
             route: kind,
+            owner: self.owner.as_deref().unwrap_or(""),
+            endpoint: self.endpoint_id.as_deref().unwrap_or(""),
             negotiation: "",
             data,
             outbound_headers: Vec::new(),
@@ -400,6 +402,8 @@ impl WsConnBase {
             direction: Direction::Outbound,
             peer: &peer,
             route: "text",
+            owner: self.owner.as_deref().unwrap_or(""),
+            endpoint: self.endpoint_id.as_deref().unwrap_or(""),
             negotiation: "",
             data: text.into_bytes(),
             outbound_headers: Vec::new(),
@@ -436,6 +440,8 @@ impl WsConnBase {
             direction: Direction::Outbound,
             peer: &peer,
             route: "binary",
+            owner: self.owner.as_deref().unwrap_or(""),
+            endpoint: self.endpoint_id.as_deref().unwrap_or(""),
             negotiation: "",
             data,
             outbound_headers: Vec::new(),

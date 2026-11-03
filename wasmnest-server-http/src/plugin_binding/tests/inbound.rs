@@ -3,6 +3,10 @@
 use super::scaffold::*;
 use super::*;
 use crate::registry;
+use wasmnest_server_core::link_crypto::EncryptionPolicy;
+
+/// 触碰链路加密全局快照的用例必须串行（本 crate 内只有本组会改它）
+static LINK_CRYPTO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 服务端域权限门：未声明 network:http 的插件 register/unregister 一律拒绝
 #[test]
@@ -104,4 +108,92 @@ fn purge_for_plugin_touches_only_owner_endpoints() {
     assert_eq!(registry::count_by_owner(&bystander), 1, "他人端点不得被动到");
 
     purge_for_plugin(&bystander);
+}
+
+// ==================== 按端点链路加密策略（spec §1 / §2） ====================
+
+/// 未声明 `encryption` → 端点记录 `None`（跟随宿主下限），注册照旧成功
+#[test]
+fn register_endpoint_without_encryption_follows_host_floor() {
+    let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let ports = granting();
+    let plugin = test_plugin(&format!("enc-none-{}", uuid::Uuid::new_v4()));
+    let id = http_register_endpoint(&as_ports(&ports), &plugin, r#"{"path":"status"}"#).expect("register");
+    let entry = registry::get(&id).expect("registered");
+    assert_eq!(entry.encryption, None, "未声明 = 跟随下限（不写死 preferred）");
+    purge_for_plugin(&plugin);
+}
+
+/// 声明的策略落在端点记录上；取值严格白名单（拼错不允许静默当明文）
+#[test]
+fn register_endpoint_parses_encryption_strictly() {
+    use wasmnest_server_core::link_crypto::{self, LinkCryptoConfig};
+
+    // 下限是进程级快照：本用例假设 floor=off，必须与改路径的用例串行
+    let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let original = link_crypto::current_config();
+    link_crypto::update_config(LinkCryptoConfig::default());
+
+    let ports = granting();
+    let plugin = test_plugin(&format!("enc-parse-{}", uuid::Uuid::new_v4()));
+
+    let id = http_register_endpoint(&as_ports(&ports), &plugin, r#"{"path":"monitor","encryption":"off"}"#)
+        .expect("off 在默认下限（off）下允许");
+    assert_eq!(registry::get(&id).unwrap().encryption, Some(EncryptionPolicy::Off));
+
+    for bad in ["required-all", "REQUIRED", "plain"] {
+        let err = http_register_endpoint(
+            &as_ports(&ports),
+            &plugin,
+            &format!(r#"{{"path":"bad-{bad}","encryption":"{bad}"}}"#),
+        )
+        .expect_err("未知策略必须拒绝");
+        assert!(
+            err.contains(bad) && err.contains("required") && err.contains("preferred") && err.contains("off"),
+            "文案须点名非法取值与合法取值: {err}"
+        );
+    }
+    // 未知字段同样拒绝：旧解析器静默忽略新字段 = 「以为加密了、实际明文」
+    let err = http_register_endpoint(&as_ports(&ports), &plugin, r#"{"path":"typo","encrypton":"required"}"#)
+        .expect_err("未知字段必须拒绝");
+    assert!(err.contains("encrypton"), "文案须点名未知字段: {err}");
+
+    assert_eq!(registry::count_by_owner(&plugin), 1, "失败不得留下端点");
+    purge_for_plugin(&plugin);
+    link_crypto::update_config(original);
+}
+
+/// 宿主下限更严时 `off` 声明注册失败且零副作用（floor=required）
+#[test]
+fn register_endpoint_rejects_off_when_floor_is_required() {
+    use wasmnest_server_core::link_crypto::{self, LinkCryptoConfig};
+
+    let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let original = link_crypto::current_config();
+    link_crypto::update_config(LinkCryptoConfig::from_floor(EncryptionPolicy::Required));
+
+    let ports = granting();
+    let plugin = test_plugin(&format!("enc-floor-{}", uuid::Uuid::new_v4()));
+    let err = http_register_endpoint(&as_ports(&ports), &plugin, r#"{"path":"plain","encryption":"off"}"#)
+        .expect_err("floor=required 时 off 必须拒绝");
+    assert!(
+        err.contains("off") && err.contains("required") && err.contains(&plugin),
+        "文案须点名策略 / 下限 / 属主: {err}"
+    );
+    assert_eq!(registry::count_by_owner(&plugin), 0, "拒绝不得留下端点");
+    assert!(
+        crate::registry::find_by_internal(&format!("/api/plugin/{plugin}/plain")).is_none(),
+        "拒绝不得留下内部路径"
+    );
+
+    // preferred 声明允许（生效仍取更严的 required）
+    let id = http_register_endpoint(&as_ports(&ports), &plugin, r#"{"path":"ok","encryption":"preferred"}"#)
+        .expect("preferred 是向上/持平声明");
+    assert_eq!(
+        link_crypto::effective_endpoint_policy(&plugin, &id, wasmnest_server_core::filter::TrafficChannel::Http),
+        EncryptionPolicy::Required
+    );
+
+    purge_for_plugin(&plugin);
+    link_crypto::update_config(original);
 }

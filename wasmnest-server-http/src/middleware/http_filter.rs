@@ -26,6 +26,7 @@ use tracing::Instrument;
 
 use crate::dtos::common_dto::{ApiResponse, CODE_INVALID_REQUEST};
 use wasmnest_server_core::filter::{Direction, FilterContext, TrafficChannel, TrafficFilterChain};
+use wasmnest_server_core::link_crypto::{EncryptionPolicy, LinkEncryptionFilter};
 
 // ==================== Transform（构造层） ====================
 
@@ -78,6 +79,10 @@ where
         // 快速路径在进入 async 块前判断，避免无谓的任务装箱开销：
         // WS 升级请求的帧级过滤在 WS 层做；HEAD 响应无 body；空链零介入
         let skip_filtering = req.path().starts_with("/ws") || req.method() == actix_web::http::Method::HEAD;
+        let peer = req
+            .peer_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
 
         let chain = TrafficFilterChain::global();
 
@@ -122,16 +127,48 @@ or turn off encryption on the mobile client."
             });
         }
 
+        // ==================== HEAD + required 端点：不得绕过协商要求 ====================
+        // HEAD 响应无 body 可加密，整体跳过过滤链是既有快速路径；但端点策略不能
+        // 因此被旁路（否则「GET 拒绝、HEAD 放行」就是一条明文探测通道）。这里只
+        // 取策略裁决（本地豁免 / 白名单逻辑复用过滤器同一实现），不驱动责任链。
+        if req.method() == actix_web::http::Method::HEAD {
+            let (owner, endpoint) = resolve_route_identity(req.path(), "HEAD");
+            let probe = FilterContext {
+                channel: TrafficChannel::Http,
+                direction: Direction::Inbound,
+                peer: &peer,
+                route: req.path(),
+                owner: &owner,
+                endpoint: &endpoint,
+                negotiation: &negotiation,
+                data: Vec::new(),
+                outbound_headers: Vec::new(),
+            };
+            if LinkEncryptionFilter::policy_of(&probe) == Some(EncryptionPolicy::Required)
+                && negotiation.trim().is_empty()
+            {
+                let message = format!(
+                    "link encryption required but this request carries no negotiation header: \
+                     endpoint '{endpoint}' of plugin '{owner}' (channel 'http', policy 'required')"
+                );
+                return Box::pin(async move {
+                    tracing::warn!(
+                        path = %req.path(),
+                        "HTTP HEAD rejected: required endpoint without link encryption negotiation"
+                    );
+                    Ok(reject_encrypted_request(req, message))
+                });
+            }
+        }
+
         if skip_filtering || chain.is_empty() {
             let fut = self.service.call(req);
             return Box::pin(async move { Ok(fut.await?.map_into_boxed_body()) });
         }
 
-        let peer = req
-            .peer_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
         let path = req.path().to_string();
+        // 端点身份只从注册表取（spec §3）：不解析 URL 猜属主，也不接受对端自报
+        let (owner, endpoint) = resolve_route_identity(req.path(), req.method().as_str());
         let service = self.service.clone();
 
         // 链路追踪（05 调用链）：请求级 span 在同步上下文创建，`instrument` 包裹异步体
@@ -145,11 +182,26 @@ or turn off encryption on the mobile client."
         );
 
         Box::pin(async move {
-            run_traffic_filter(req, service, peer, path, negotiation)
+            run_traffic_filter(req, service, peer, path, negotiation, owner, endpoint)
                 .instrument(span)
                 .await
         })
     }
+}
+
+/// 由已注册路由反查端点身份（属主插件 id / 端点句柄）
+///
+/// 两条查法都只读宿主注册表：内部路径 `/api/plugin/<owner>/<path>` 精确反查，
+/// 其次对外别名（含 `{name}` 模板段）按（路径, 方法）匹配。未注册路径返回空
+/// 身份——那是宿主自有面（健康检查 / 配对引导 / 404），按通道下限裁决。
+fn resolve_route_identity(path: &str, method: &str) -> (String, String) {
+    if let Some(entry) = crate::registry::find_by_internal(path) {
+        return (entry.owner, entry.endpoint_id);
+    }
+    if let Some(host_match) = crate::registry::find_by_host(path, method) {
+        return (host_match.entry.owner, host_match.entry.endpoint_id);
+    }
+    (String::new(), String::new())
 }
 
 /// 完整过滤流程：入站请求体 → 下游 → 出站响应体
@@ -176,6 +228,8 @@ async fn run_traffic_filter<S, B>(
     peer: String,
     path: String,
     negotiation: String,
+    owner: String,
+    endpoint: String,
 ) -> Result<ServiceResponse>
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>,
@@ -197,6 +251,8 @@ where
             direction: Direction::Inbound,
             peer: &peer,
             route: &path,
+            owner: &owner,
+            endpoint: &endpoint,
             negotiation: &negotiation,
             data: body.to_vec(),
             outbound_headers: Vec::new(),
@@ -225,6 +281,8 @@ where
             direction: Direction::Outbound,
             peer: &peer,
             route: &path,
+            owner: &owner,
+            endpoint: &endpoint,
             negotiation: &negotiation,
             data: res_bytes,
             outbound_headers: Vec::new(),

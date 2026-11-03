@@ -190,3 +190,93 @@ async fn purge_for_plugin_removes_only_owner_endpoints() {
 
     drop_endpoint(&bystander_endpoint);
 }
+
+// ==================== 按端点链路加密策略（spec §1 / §2） ====================
+
+/// 触碰链路加密全局快照的用例必须串行
+static LINK_CRYPTO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 未声明 `encryption` → 端点记录 `None`（跟随宿主下限）；声明值落在记录上；
+/// 未知取值 / 未知字段一律注册失败且零副作用
+#[tokio::test]
+async fn register_endpoint_parses_encryption_strictly() {
+    use wasmnest_server_core::link_crypto::{self, LinkCryptoConfig};
+
+    // 下限是进程级快照：本用例假设 floor=off，必须与改路径的用例串行
+    let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let original = link_crypto::current_config();
+    link_crypto::update_config(LinkCryptoConfig::default());
+
+    let plugin = test_plugin("ep-enc");
+    let ports: Arc<dyn WsPorts> = FakePorts::with(&[(&plugin, PERMISSION_WS_SERVER)]);
+
+    let follow = register_endpoint(&ports, &plugin, "follow");
+    assert_eq!(
+        crate::endpoint::get(&follow).unwrap().encryption,
+        None,
+        "未声明 = 跟随宿主下限"
+    );
+
+    let plain = ws_register_endpoint(&ports, &plugin, r#"{"path":"plain","encryption":"off"}"#)
+        .expect("默认下限（off）下 off 声明允许");
+    assert_eq!(
+        crate::endpoint::get(&plain).unwrap().encryption,
+        Some(wasmnest_server_core::link_crypto::EncryptionPolicy::Off)
+    );
+
+    for bad in ["required-all", "REQUIRED", "plain"] {
+        let err = ws_register_endpoint(
+            &ports,
+            &plugin,
+            &format!(r#"{{"path":"bad-{bad}","encryption":"{bad}"}}"#),
+        )
+        .expect_err("未知策略必须拒绝");
+        assert!(
+            err.contains(bad) && err.contains("required") && err.contains("preferred") && err.contains("off"),
+            "文案须点名非法取值与合法取值: {err}"
+        );
+    }
+    let err = ws_register_endpoint(&ports, &plugin, r#"{"path":"typo","encrypton":"required"}"#)
+        .expect_err("未知字段必须拒绝");
+    assert!(err.contains("encrypton"), "文案须点名未知字段: {err}");
+    assert!(crate::endpoint::find_by_mount(&crate::endpoint::mount_path(&plugin, "typo")).is_none());
+
+    // 清理（全局端点表跨用例共享）
+    for entry in crate::endpoint::list_by_owner(&plugin) {
+        crate::endpoint::remove(&entry.endpoint_id);
+    }
+    link_crypto::update_config(original);
+}
+
+/// 宿主下限更严时 `off` 声明注册失败且零副作用（floor=required）
+#[tokio::test]
+async fn register_endpoint_rejects_off_when_floor_is_required() {
+    use wasmnest_server_core::link_crypto::{self, EncryptionPolicy, LinkCryptoConfig};
+
+    let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let original = link_crypto::current_config();
+    link_crypto::update_config(LinkCryptoConfig::from_floor(EncryptionPolicy::Required));
+
+    let plugin = test_plugin("ep-floor");
+    let ports: Arc<dyn WsPorts> = FakePorts::with(&[(&plugin, PERMISSION_WS_SERVER)]);
+    let err = ws_register_endpoint(&ports, &plugin, r#"{"path":"plain","encryption":"off"}"#)
+        .expect_err("floor=required 时 off 必须拒绝");
+    assert!(
+        err.contains("off") && err.contains("required") && err.contains(&plugin),
+        "文案须点名策略 / 下限 / 属主: {err}"
+    );
+    assert_eq!(crate::endpoint::count_by_owner(&plugin), 0, "拒绝不得留下端点");
+
+    // preferred 声明允许，生效值取更严的 required
+    let id = ws_register_endpoint(&ports, &plugin, r#"{"path":"ok","encryption":"preferred"}"#)
+        .expect("preferred 是向上/持平声明");
+    assert_eq!(
+        link_crypto::effective_endpoint_policy(&plugin, &id, wasmnest_server_core::filter::TrafficChannel::WsPlugin),
+        EncryptionPolicy::Required
+    );
+
+    for entry in crate::endpoint::list_by_owner(&plugin) {
+        crate::endpoint::remove(&entry.endpoint_id);
+    }
+    link_crypto::update_config(original);
+}
