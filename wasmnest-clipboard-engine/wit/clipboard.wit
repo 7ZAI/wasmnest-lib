@@ -1,0 +1,48 @@
+package wasmnest:plugin@0.0.2;
+// ======================================================================
+// 剪贴板域共享契约（唯一真源；ADR 0052 D2/D3 · domain-owned-contracts 票 04）
+//
+// 本文件是 `host-clipboard` 的单一事实源：
+// - 双端 `compose.json` 的 caps.clipboard 直接指向本文件（pty 先例推广）；
+// - 有实现两端底层机制不同、且都只有几行宿主代码，故本域没有共享引擎，
+//   按 ADR 0052 D2/D4 用**轻量契约房**（`wasmnest-clipboard-engine`）承载；
+//   实现按端住宿主（桌面 / 移动各自 `src-tauri/src/plugin/clipboard.rs`）。
+//
+// ## 功能级口径（票 04 统一）
+//
+// - 桌面与移动共享同一 `host-clipboard` 接口：`read-text` 读系统剪贴板文本、
+//   `write-text` 写文本到系统剪贴板；
+// - 读操作返回 `option<string>`（剪贴板为空或含非文本内容时返回 `none`）；
+// - 写操作返回空结果（成功即 `ok`，失败经 `err` 传宿主侧可读消息）。
+//
+// ## 权限（各端自持，契约不规定门）
+//
+// - 桌面：`clipboard:read` / `clipboard:write`（fail-closed，未声明即拒——
+//   剪贴板是用户隐私面，跨应用数据泄露风险高）；
+// - 移动：同桌面（双端同一口径，与 `host-clipboard` 共享契约对齐）。
+//
+// 门在各端函数实现内（正确性由 Rust 端仲裁），契约面只描述签名。
+// ======================================================================
+
+/// 系统剪贴板读写（功能级交集；实现按端住宿主）
+interface host-clipboard {
+    /// 读取系统剪贴板文本内容。
+    ///
+    /// 返回 `ok(option<string>)`：剪贴板有文本时返回 `some(text)`，剪贴板为空
+    /// 或含非文本内容（图片、文件等）时返回 `none`。失败返回 `err(message)`。
+    ///
+    /// **权限 `clipboard:read`（manifest 必须单独声明）**：未声明即 `Err`。
+    read-text: func() -> result<option<string>, string>;
+
+    /// 写入文本到系统剪贴板。
+    ///
+    /// 成功返回 `ok`，失败返回 `err(message)`（如剪贴板被其他进程锁定）。
+    ///
+    /// **权限 `clipboard:write`（manifest 必须单独声明）**：未声明即 `Err`。
+    write-text: func(text: string) -> result<_, string>;
+}
+
+/// 剪贴板域端组合 world（双端 compose.json 的 `caps.clipboard` 指向本文件）
+world cap-clipboard {
+    import host-clipboard;
+}

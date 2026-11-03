@@ -151,10 +151,17 @@ pub const PERMISSION_METRICS_READ: &str = "metrics:read";
 /// 是用户打扰面（高频弹通知或狂震会骚扰用户），独立成位、fail-closed。
 /// 无前端 API 面（WASM-only 权限，宿主在 host fn 层仲裁）。
 ///
-/// **双端口径**（批 2 自移动 SDK 收口上提，平台仓 issue #36）：移动宿主
-/// `plugin/notify.rs` 域函数入口为本位的门禁落点；桌面 host-notify 实现暂无
-/// 独立权限门（缺口已记录，随批 2 遗留跟进）。
+/// **双端口径**：移动宿主与桌面宿主的 `plugin/notify.rs` 域函数入口都是本位的
+/// 门禁落点（桌面侧此前自述的缺口已随 2026-11-02 安全审查 #46 补齐）。
 pub const PERMISSION_NOTIFY: &str = "notify";
+/// 系统剪贴板读取（共享域契约 `host-clipboard`，ADR-0006）：读取剪贴板文本内容
+///
+/// 与 `clipboard:write` 分域：读是「获取其他应用放入剪贴板的数据」——用户隐私面
+/// （剪贴板可能含密码、令牌等敏感文本），写是「把数据放入剪贴板供其他应用消费」
+/// ——数据泄露面方向不同。分开授权让「只需粘贴」的插件不获得复制面，反之亦然。
+pub const PERMISSION_CLIPBOARD_READ: &str = "clipboard:read";
+/// 系统剪贴板写入（共享域契约 `host-clipboard`，ADR-0006）：写入文本到剪贴板
+pub const PERMISSION_CLIPBOARD_WRITE: &str = "clipboard:write";
 
 /// 权限词汇反射表：`(常量标识符, 权限串)`
 ///
@@ -214,6 +221,14 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
     (stringify!(PERMISSION_CRYPTO_KDF), PERMISSION_CRYPTO_KDF),
     (stringify!(PERMISSION_METRICS_READ), PERMISSION_METRICS_READ),
     (stringify!(PERMISSION_NOTIFY), PERMISSION_NOTIFY),
+    (
+        stringify!(PERMISSION_CLIPBOARD_READ),
+        PERMISSION_CLIPBOARD_READ,
+    ),
+    (
+        stringify!(PERMISSION_CLIPBOARD_WRITE),
+        PERMISSION_CLIPBOARD_WRITE,
+    ),
 ];
 
 /// 合法权限集合 — 桌面端权限词汇的**唯一真源**（由 [`PERMISSION_VOCABULARY`] 派生）
@@ -410,6 +425,11 @@ pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
     // 内嵌 worker 调度（WASM-only：宿主 `host-worker.submit/cancel`，无前端调用点）。
     // 门禁落点 = `manager/runtime/core_binding.rs` 的 Host impl 首行（同 metrics 范式）。
     (PERMISSION_WORKER_RUN, &["worker.submit", "worker.cancel"]),
+    // 系统剪贴板读写（WASM-only：宿主 `host-clipboard.read-text/write-text`，无前端调用点）。
+    // 门禁落点 = 各端 `src/plugin/clipboard.rs` 的 Host impl 首行（同 notify 范式）。
+    // 读 / 写分域授权：「只需粘贴」的插件不获得复制面，反之亦然（ADR-0006）。
+    (PERMISSION_CLIPBOARD_READ, &["clipboard.readText"]),
+    (PERMISSION_CLIPBOARD_WRITE, &["clipboard.writeText"]),
 ];
 
 /// 权限管理器
@@ -592,5 +612,24 @@ mod retired_permissions_tests {
             .find(|(perm, _)| *perm == PERMISSION_WORKER_RUN)
             .expect("worker:run 应在 API 映射表内");
         assert_eq!(entry.1, &["worker.submit", "worker.cancel"][..]);
+    }
+
+    #[test]
+    fn clipboard_vocabulary_registered() {
+        // 剪贴板域（ADR-0006）：clipboard:read / clipboard:write 分域进双端真源，
+        // 门禁落点 = 各端 `src/plugin/clipboard.rs` 的 Host impl 首行。
+        // 读 / 写分域授权：「只需粘贴」的插件不获得复制面（API 映射登记审计名）
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_CLIPBOARD_READ));
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_CLIPBOARD_WRITE));
+        let read_entry = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_CLIPBOARD_READ)
+            .expect("clipboard:read 应在 API 映射表内");
+        assert_eq!(read_entry.1, &["clipboard.readText"][..]);
+        let write_entry = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_CLIPBOARD_WRITE)
+            .expect("clipboard:write 应在 API 映射表内");
+        assert_eq!(write_entry.1, &["clipboard.writeText"][..]);
     }
 }

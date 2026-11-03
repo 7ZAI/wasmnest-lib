@@ -1,0 +1,20 @@
+//! WasmNest 剪贴板域契约房（**只持契约，零实现**；ADR 0052 D2/D4 · 票 04）
+//!
+//! ## 为什么是一个独立 crate
+//!
+//! 系统剪贴板读写是**双端同功能**的能力（R2 功能级交集）：桌面经 Tauri
+//! clipboard-manager 插件读写系统剪贴板、移动经 Android clipboard 桥读写，
+//! 功能一致 → 统一为一份共享契约 `wit/clipboard.wit`。本域没有可共享的引擎
+//! 实现（两端底层机制完全不同，且都只有几行宿主代码），故按 ADR 0052 D2/D4
+//! 的轻量契约房形态承载：crate 只持 WIT + 端口词汇（当前无端口），实现按端
+//! 住宿主（桌面 `src-tauri/src/plugin/clipboard.rs`；移动 `src-tauri/src/plugin/clipboard.rs`）。
+//!
+//! ## 边界（防回接）
+//!
+//! - 本 crate **不得**出现任何桌面 / 移动专属实现或依赖（端差异归宿主）；
+//! - `wit/clipboard.wit` 是 `host-clipboard` 的**唯一真源**——双端 `compose.json`
+//!   经 `caps.clipboard` 直接消费它，端生成物由 `scripts/compose-wit.mjs` 拼装；
+//! - 剪贴板操作返回 `result<T, string>`，错误内容为宿主侧可读的 UTF-8 消息。
+//!
+//! 实现落点与权限语义的现行口径见 `wit/clipboard.wit` 的 interface 文档与各端
+//! 宿主 adapter（本文件不复制漂移源）。
