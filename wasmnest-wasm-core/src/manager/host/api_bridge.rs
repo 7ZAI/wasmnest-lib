@@ -242,17 +242,6 @@ pub async fn plugin_approve(
     result
 }
 
-/// 标记插件错误
-#[tauri::command]
-pub async fn plugin_mark_error(
-    plugin_id: String,
-    error: String,
-    plugin_host: State<'_, Arc<PluginHost>>,
-) -> crate::Result<()> {
-    plugin_host.mark_error(&plugin_id, error).await;
-    Ok(())
-}
-
 /// 获取插件激活状态映射（plugin_id → is_activated）
 #[tauri::command]
 pub async fn plugin_get_activated_state(
