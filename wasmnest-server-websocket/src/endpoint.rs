@@ -148,7 +148,7 @@ pub fn register(
     };
 
     // 策略登记先于挂牌：下限冲突 / 身份不可用 → 整体失败，不留无策略端点
-    declare_endpoint_policy(owner, &entry.endpoint_id, encryption, TrafficChannel::WsPlugin)?;
+    declare_endpoint_policy(owner, &entry.endpoint_id, &mount, encryption, TrafficChannel::WsPlugin)?;
 
     table.id_by_mount.insert(mount, entry.endpoint_id.clone());
     table.by_id.insert(entry.endpoint_id.clone(), entry.clone());
@@ -220,6 +220,16 @@ pub fn purge_for_plugin(owner: &str) -> Vec<EndpointEntry> {
 /// 本插件已注册端点数
 pub fn count_by_owner(owner: &str) -> usize {
     lock().by_id.values().filter(|e| e.owner == owner).count()
+}
+
+/// 全部已注册端点快照（宿主审计面：未声明策略的端点也必须可枚举，spec §7）
+///
+/// 排序 = 属主 + 挂载路径（稳定展示序；HashMap 遍历序不保证）。声明值不在这里：
+/// 端点策略是 `link_crypto` 的表，宿主按句柄拼合后才是完整的"谁在明文"快照。
+pub fn list_all() -> Vec<EndpointEntry> {
+    let mut entries: Vec<EndpointEntry> = lock().by_id.values().cloned().collect();
+    entries.sort_by(|a, b| (&a.owner, &a.mount_path).cmp(&(&b.owner, &b.mount_path)));
+    entries
 }
 
 /// 清空全部端点（仅测试用：全局表在 test 进程内跨用例共享）
@@ -330,6 +340,30 @@ mod tests {
         assert!(remove(&entry.endpoint_id).is_some());
         assert!(find_by_mount(&entry.mount_path).is_none());
         assert_eq!(count_by_owner(&plugin), 0);
+    }
+
+    /// 审计面：全部已注册端点（含未声明策略的）都能枚举，且同属主按挂载路径升序
+    #[test]
+    fn list_all_enumerates_every_registered_endpoint_in_stable_order() {
+        let plugin = owner("list-all");
+        let b = register_path(&plugin, "b").expect("register b");
+        let a = register_path(&plugin, "a").expect("register a");
+
+        let entries = list_all();
+        let ia = entries
+            .iter()
+            .position(|e| e.endpoint_id == a.endpoint_id)
+            .expect("a 应在全量快照中");
+        let ib = entries
+            .iter()
+            .position(|e| e.endpoint_id == b.endpoint_id)
+            .expect("b 应在全量快照中");
+        assert!(ia < ib, "同属主按挂载路径升序（a 在 b 前）");
+        assert_eq!(entries[ia].mount_path, format!("/ws/plugin/{plugin}/a"));
+
+        for entry in [a, b] {
+            remove(&entry.endpoint_id);
+        }
     }
 
     #[test]

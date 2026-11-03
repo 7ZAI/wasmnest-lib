@@ -60,7 +60,12 @@ use std::sync::{Arc, RwLock};
 // ==================== 类型定义 ====================
 
 /// 流量通道类型（过滤器可据此选择性处理）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// 参与序列化的唯一理由：端点策略审计快照需要告诉宿主「这条明文声明属于哪条
+/// 通道」（`link_crypto::EndpointPolicyRecord`）；wire 字面量与日志字段同源
+/// （[`TrafficChannel::as_str`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum TrafficChannel {
     /// HTTP REST API（含插件动态端点 /api/plugin/*）
     Http,

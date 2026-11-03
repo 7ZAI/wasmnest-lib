@@ -20,7 +20,7 @@
 //! 决策模型（spec §6）：发送方配置决定参与意愿 → 接收方按线上信封自动识别 →
 //! 响应绑定与降级检测两条强制安全耦合在 issue 02/04 落地。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock, RwLock};
@@ -159,6 +159,13 @@ impl LinkCryptoConfig {
     /// 「required」，留着会让 `required` 被一个旧开关静默降级）。
     /// 迁移态沿用逐通道子开关；插件 WS 端点（`WsPlugin`）在迁移态恒 `off`——
     /// 它在旧模型里从未参与链路加密，迁移必须保持这一事实（不静默改变姿态）。
+    ///
+    /// **`WsPlugin => false` 只活在迁移态**（2026-11-03 审核 P3-5 澄清）：设置页的
+    /// 写入口 `set_traffic_encryption_config` 一律经 [`Self::from_floor`] 构造，
+    /// 落库后 `floor` 恒为 `Some`，本函数第一行即返回宿主下限——也就是说
+    /// **用户把下限调到 `required` 时，插件 WS 端点同样受约束**，
+    /// 不存在「设置里调严了但 WS 端点仍是 off」的情况。该分支只在读旧版落库值
+    /// （无 `floor` 字段）时生效。
     pub fn channel_floor(&self, channel: TrafficChannel) -> EncryptionPolicy {
         if self.floor.is_some() {
             return self.host_floor();
@@ -325,6 +332,9 @@ pub fn strictest(a: EncryptionPolicy, b: EncryptionPolicy) -> EncryptionPolicy {
 }
 
 /// 一条已登记的端点策略（宿主设置页 / 审计面数据源；不含载荷与密钥）
+///
+/// `locator` / `channel` 让审计面能指名「哪个端点明文」，而不是只给一个
+/// 宿主铸造的句柄（句柄对用户没有意义）；两者都来自注册表，不接受对端自报。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EndpointPolicyRecord {
@@ -332,17 +342,31 @@ pub struct EndpointPolicyRecord {
     pub owner: String,
     /// 端点句柄（`http-*` / `wse-*`）
     pub endpoint: String,
+    /// 人可读端点路径（HTTP = `/api/plugin/<owner>/<path>`，WS = `/ws/plugin/<owner>/<path>`）
+    pub locator: String,
+    /// 端点所属通道（`http` / `ws-plugin`）
+    pub channel: TrafficChannel,
     /// 端点声明的策略（未声明的端点不在本表——它们跟随宿主下限）
     pub policy: EncryptionPolicy,
+    /// 生效策略 = `strictest(通道下限, 声明)`；快照时按当前下限计算（下限可运行期调严）
+    pub effective: EncryptionPolicy,
+}
+
+/// 策略表条目（句柄之外的展示材料随声明一起存，回收与查找只认键）
+#[derive(Debug, Clone)]
+struct EndpointPolicyEntry {
+    locator: String,
+    channel: TrafficChannel,
+    policy: EncryptionPolicy,
 }
 
 /// 端点策略表：键 = (属主插件 id, 端点句柄)
 ///
 /// 端点句柄由宿主注册表铸造（UUID），插件无法伪造他端点的身份。
-static ENDPOINT_POLICIES: LazyLock<RwLock<HashMap<(String, String), EncryptionPolicy>>> =
+static ENDPOINT_POLICIES: LazyLock<RwLock<HashMap<(String, String), EndpointPolicyEntry>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-fn policy_lock() -> std::sync::RwLockReadGuard<'static, HashMap<(String, String), EncryptionPolicy>> {
+fn policy_lock() -> std::sync::RwLockReadGuard<'static, HashMap<(String, String), EndpointPolicyEntry>> {
     ENDPOINT_POLICIES.read().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -353,9 +377,12 @@ fn policy_lock() -> std::sync::RwLockReadGuard<'static, HashMap<(String, String)
 /// 2. 声明 `required` 而本进程链路身份不可用 → 拒绝（否则注册成功却根本无法加密）。
 ///
 /// `channel` 决定用哪条通道下限做判据（HTTP / 插件 WS 各自的下限可能不同）。
+/// `locator` 是人可读端点路径（注册表铸造配置时给出：HTTP 内部路径 / WS 挂载路径），
+/// 只进审计快照，不参与裁决。
 pub fn declare_endpoint_policy(
     owner: &str,
     endpoint: &str,
+    locator: &str,
     policy: Option<EncryptionPolicy>,
     channel: TrafficChannel,
 ) -> std::result::Result<(), String> {
@@ -369,7 +396,14 @@ pub fn declare_endpoint_policy(
 
     match ENDPOINT_POLICIES.write() {
         Ok(mut map) => {
-            map.insert((owner.to_string(), endpoint.to_string()), policy);
+            map.insert(
+                (owner.to_string(), endpoint.to_string()),
+                EndpointPolicyEntry {
+                    locator: locator.to_string(),
+                    channel,
+                    policy,
+                },
+            );
         }
         Err(_) => {
             return Err(format!(
@@ -384,6 +418,7 @@ pub fn declare_endpoint_policy(
         tracing::info!(
             plugin_id = %owner,
             endpoint = %endpoint,
+            locator = %locator,
             channel = channel.as_str(),
             floor = %floor,
             "plaintext endpoint registered (encryption off)"
@@ -392,6 +427,7 @@ pub fn declare_endpoint_policy(
         tracing::debug!(
             plugin_id = %owner,
             endpoint = %endpoint,
+            locator = %locator,
             channel = channel.as_str(),
             policy = %policy,
             floor = %floor,
@@ -455,7 +491,9 @@ pub fn withdraw_endpoint_policies(owner: &str) -> usize {
 
 /// 端点声明的策略（未声明 = `None`；调用方按 `preferred` 缺省）
 pub fn endpoint_policy(owner: &str, endpoint: &str) -> Option<EncryptionPolicy> {
-    policy_lock().get(&(owner.to_string(), endpoint.to_string())).copied()
+    policy_lock()
+        .get(&(owner.to_string(), endpoint.to_string()))
+        .map(|entry| entry.policy)
 }
 
 /// 生效策略 = `strictest(channel_floor, declared)`
@@ -476,17 +514,56 @@ pub fn effective_endpoint_policy(owner: &str, endpoint: &str, channel: TrafficCh
 }
 
 /// 当前已登记的端点策略快照（宿主设置页「明文端点清单」数据源）
+///
+/// `effective` 在快照时按当前通道下限重算：下限可在运行期调严（宿主设置页），
+/// 存量声明不会因此被改写，但审计面必须如实展示「现在真正生效的是什么」。
 pub fn declared_endpoint_policies() -> Vec<EndpointPolicyRecord> {
+    let config = current_config();
     let mut records: Vec<EndpointPolicyRecord> = policy_lock()
         .iter()
-        .map(|((owner, endpoint), policy)| EndpointPolicyRecord {
+        .map(|((owner, endpoint), entry)| EndpointPolicyRecord {
             owner: owner.clone(),
             endpoint: endpoint.clone(),
-            policy: *policy,
+            locator: entry.locator.clone(),
+            channel: entry.channel,
+            policy: entry.policy,
+            effective: strictest(config.channel_floor(entry.channel), entry.policy),
         })
         .collect();
     records.sort_by(|a, b| (&a.owner, &a.endpoint).cmp(&(&b.owner, &b.endpoint)));
     records
+}
+
+/// 明文放行审计去重集（键 = (属主, 端点句柄)）
+///
+/// 审计要回答「哪些端点真的在被明文使用」，而不是逐请求刷日志：同一端点只记首次。
+/// 集合有上限：端点声明本身受注册表上限约束，这里再兜一层，避免长期运行被
+/// 「装/卸循环」产生的旧句柄撑大内存（超限后只放弃审计新端点，不影响裁决）。
+const PLAINTEXT_AUDIT_CAP: usize = 1024;
+static PLAINTEXT_AUDITED: LazyLock<RwLock<HashSet<(String, String)>>> = LazyLock::new(|| RwLock::new(HashSet::new()));
+
+/// 记录一次明文放行；返回 true = 该端点首次（调用方据此记 info 审计日志）
+pub fn note_plaintext_connection(owner: &str, endpoint: &str) -> bool {
+    if owner.is_empty() || endpoint.is_empty() {
+        return false;
+    }
+    let Ok(mut seen) = PLAINTEXT_AUDITED.write() else {
+        return false;
+    };
+    let key = (owner.to_string(), endpoint.to_string());
+    if seen.contains(&key) || seen.len() >= PLAINTEXT_AUDIT_CAP {
+        return false;
+    }
+    seen.insert(key);
+    true
+}
+
+/// 测试用：清空明文审计去重集
+#[cfg(test)]
+fn reset_plaintext_audit() {
+    if let Ok(mut seen) = PLAINTEXT_AUDITED.write() {
+        seen.clear();
+    }
 }
 
 /// 能力查询（宿主 → 本模块）：应用注册 `required` 端点前必须能确认本端支持
@@ -1139,6 +1216,7 @@ impl LinkEncryptionFilter {
     fn on_ws_frame(ctx: &mut FilterContext<'_>, policy: EncryptionPolicy) -> Verdict {
         if !ws_has_ciphers(ctx.peer) {
             return if policy.allows_plaintext() {
+                Self::audit_plaintext(ctx, policy);
                 Verdict::Continue
             } else {
                 Verdict::Reject(format!(
@@ -1173,6 +1251,25 @@ impl LinkEncryptionFilter {
 
     /// HTTP 入站：协商 → ECDH(Kd, ek) 派生 → 解信封 → 缓存响应密钥。
     /// 任一步失败一律 Reject（fail-closed），错误详情进 400 响应体。
+    /// 明文放行留痕（每端点首次）：注册日志说明端点存在，首连日志说明它真的被
+    /// 明文使用（spec §7 审计要求）；只记端点与对端，不写载荷 / 密钥材料
+    fn audit_plaintext(ctx: &FilterContext<'_>, policy: EncryptionPolicy) {
+        if !note_plaintext_connection(ctx.owner, ctx.endpoint) {
+            return;
+        }
+        tracing::info!(
+            plugin_id = %ctx.owner,
+            endpoint = %ctx.endpoint,
+            channel = ctx.channel.as_str(),
+            policy = policy.as_str(),
+            peer = %ctx.peer,
+            route = %ctx.route,
+            "plaintext connection allowed by endpoint policy"
+        );
+    }
+
+    /// HTTP 入站：协商 → ECDH(Kd, ek) 派生 → 解信封 → 缓存响应密钥。
+    /// 任一步失败一律 Reject（fail-closed），错误详情进 400 响应体。
     ///
     /// GET/HEAD 无请求体：协商头携带临时公钥即足以派生响应密钥，body
     /// 为空时跳过解信封（无载荷可解），仅缓存密钥供出站加密响应。
@@ -1183,6 +1280,7 @@ impl LinkEncryptionFilter {
         // 解析，回出误导性业务码（比直接拒绝更难排查）
         if policy == EncryptionPolicy::Off {
             return if ctx.negotiation.trim().is_empty() {
+                Self::audit_plaintext(ctx, policy);
                 Verdict::Continue
             } else {
                 Verdict::Reject(format!(
@@ -1194,6 +1292,7 @@ impl LinkEncryptionFilter {
         let Some(ek_b64) = parse_negotiation(ctx.negotiation) else {
             // 无协商：`preferred` 放行明文；`required` 必拒（不降级）
             return if policy.allows_plaintext() {
+                Self::audit_plaintext(ctx, policy);
                 Verdict::Continue
             } else {
                 Verdict::Reject(format!(
@@ -1314,6 +1413,7 @@ impl TrafficFilter for LinkEncryptionFilter {
             TrafficChannel::Http => Self::on_http_inbound(ctx, policy),
             TrafficChannel::WsTerminal | TrafficChannel::WsEvent | TrafficChannel::WsPlugin => {
                 if policy == EncryptionPolicy::Off {
+                    Self::audit_plaintext(ctx, policy);
                     return Verdict::Continue;
                 }
                 Self::on_ws_frame(ctx, policy)
@@ -1329,6 +1429,7 @@ impl TrafficFilter for LinkEncryptionFilter {
             TrafficChannel::Http => Self::on_http_outbound(ctx, policy),
             TrafficChannel::WsTerminal | TrafficChannel::WsEvent | TrafficChannel::WsPlugin => {
                 if policy == EncryptionPolicy::Off {
+                    Self::audit_plaintext(ctx, policy);
                     return Verdict::Continue;
                 }
                 Self::on_ws_frame(ctx, policy)
@@ -1381,7 +1482,9 @@ fn crypto_wanted() -> bool {
         return true;
     }
     // 端点可把「全关」的宿主机抬高（应用声明 required）
-    policy_lock().values().any(|policy| *policy != EncryptionPolicy::Off)
+    policy_lock()
+        .values()
+        .any(|entry| entry.policy != EncryptionPolicy::Off)
 }
 
 /// 向指定链注册（测试隔离用：单元测试走独立链实例，不触碰全局单例）
@@ -1868,6 +1971,7 @@ mod tests {
             declare_endpoint_policy(
                 "com.example.plugin",
                 "wse-declared",
+                "/ws/plugin/com.example.plugin/declared",
                 Some(EncryptionPolicy::Preferred),
                 TrafficChannel::WsPlugin,
             )
@@ -2593,6 +2697,7 @@ mod tests {
         declare_endpoint_policy(
             "policy-test",
             "http-a",
+            "/api/plugin/policy-test/a",
             Some(EncryptionPolicy::Required),
             TrafficChannel::Http,
         )
@@ -2604,6 +2709,7 @@ mod tests {
         declare_endpoint_policy(
             "policy-test",
             "http-b",
+            "/api/plugin/policy-test/b",
             Some(EncryptionPolicy::Off),
             TrafficChannel::Http,
         )
@@ -2632,16 +2738,38 @@ mod tests {
         );
         assert_eq!(endpoint_policy("policy-test", "http-b"), Some(EncryptionPolicy::Off));
 
-        // 清单快照（排序稳定，供宿主设置页展示）
+        // 清单快照（排序稳定，供宿主设置页展示）：句柄之外必须带人可读定位与
+        // 生效值——审计面要能指名「哪个端点、哪种通道、现在真正生效什么」
         let records = declared_endpoint_policies();
-        assert!(records
+        let record = records
             .iter()
-            .any(|r| r.owner == "policy-test" && r.endpoint == "http-a"));
+            .find(|r| r.owner == "policy-test" && r.endpoint == "http-a")
+            .expect("http-a 应在策略快照中");
+        assert_eq!(record.locator, "/api/plugin/policy-test/a");
+        assert_eq!(record.channel, TrafficChannel::Http);
+        assert_eq!(record.policy, EncryptionPolicy::Required);
+        assert_eq!(record.effective, EncryptionPolicy::Required);
+        // wire 形状是前端接口的镜像真源：字段名必须是 camelCase（多单词字段拼错
+        // = 前端默默读到 undefined，能力缺失/清单空掉，而不是报错）
+        let json = serde_json::to_value(record).expect("端点策略快照必须可序列化");
+        for key in ["owner", "endpoint", "locator", "channel", "policy", "effective"] {
+            assert!(json.get(key).is_some(), "端点策略 wire 缺字段 {key}: {json}");
+        }
+        assert_eq!(json["channel"], "http", "通道 wire 字面量须与日志字段同源");
+        // 下限此时已调严到 required：未升级的 off 声明在快照里必须表现为
+        // effective=required（存储态声明不变）
+        let b = records
+            .iter()
+            .find(|r| r.owner == "policy-test" && r.endpoint == "http-b")
+            .expect("http-b 应在策略快照中");
+        assert_eq!(b.policy, EncryptionPolicy::Off);
+        assert_eq!(b.effective, EncryptionPolicy::Required);
 
         // 回收只命中本人
         declare_endpoint_policy(
             "policy-other",
             "http-c",
+            "/api/plugin/policy-other/c",
             Some(EncryptionPolicy::Preferred),
             TrafficChannel::Http,
         )
@@ -2667,6 +2795,7 @@ mod tests {
         declare_endpoint_policy(
             "com.example.a",
             "http-req",
+            "/api/plugin/com.example.a/req",
             Some(EncryptionPolicy::Required),
             TrafficChannel::Http,
         )
@@ -2674,6 +2803,7 @@ mod tests {
         declare_endpoint_policy(
             "com.example.b",
             "http-plain",
+            "/api/plugin/com.example.b/plain",
             Some(EncryptionPolicy::Off),
             TrafficChannel::Http,
         )
@@ -2745,6 +2875,7 @@ mod tests {
         declare_endpoint_policy(
             "com.example.ws",
             "wse-req",
+            "/ws/plugin/com.example.ws/req",
             Some(EncryptionPolicy::Required),
             TrafficChannel::WsPlugin,
         )
@@ -2771,6 +2902,7 @@ mod tests {
         declare_endpoint_policy(
             "com.example.ws",
             "wse-opt",
+            "/ws/plugin/com.example.ws/opt",
             Some(EncryptionPolicy::Preferred),
             TrafficChannel::WsPlugin,
         )
@@ -2783,9 +2915,37 @@ mod tests {
         update_config(original);
     }
 
+    /// 明文放行审计：同一端点只记首次（其余去重），无身份不记
+    #[test]
+    fn plaintext_audit_records_first_connection_per_endpoint() {
+        assert!(
+            note_plaintext_connection("com.example.audit-first", "http-first"),
+            "首次明文放行应留痕"
+        );
+        assert!(
+            !note_plaintext_connection("com.example.audit-first", "http-first"),
+            "同一端点重复放行应去重（否则逐请求刷日志）"
+        );
+        assert!(
+            note_plaintext_connection("com.example.audit-first", "wse-second"),
+            "同一应用的另一端点独立计数"
+        );
+        assert!(
+            !note_plaintext_connection("", "http-first"),
+            "无属主身份（宿主自有面）不记端点审计"
+        );
+        assert!(
+            !note_plaintext_connection("com.example.audit-first", ""),
+            "无端点身份不记端点审计"
+        );
+        reset_plaintext_audit();
+    }
+
     /// 能力查询：per-endpoint 策略已支持、下限与身份如实上报
     #[test]
     fn capabilities_report_supported_policy_surface() {
+        // 读全局配置快照：与改快照的用例串行，避免并发读到别的用例临时设的下限
+        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let caps = capabilities();
         assert!(caps.per_endpoint_policy, "本版本支持按端点声明策略");
         assert_eq!(caps.endpoint_policies, vec!["required", "preferred", "off"]);
@@ -2795,6 +2955,18 @@ mod tests {
         // 身份可用时指纹随能力一起下发（应用注册 required 前用于确认）
         if let Some(fp) = identity_fingerprint() {
             assert_eq!(caps.identity_fingerprint.as_deref(), Some(fp));
+        }
+        // wire 形状（serde camelCase）是前端接口镜像真源：多单词字段必须驼峰，
+        // 否则前端读 undefined 会误判「宿主不支持按端点策略」
+        let json = serde_json::to_value(&caps).expect("能力查询必须可序列化");
+        for key in [
+            "perEndpointPolicy",
+            "endpointPolicies",
+            "floor",
+            "identityFingerprint",
+            "keyModels",
+        ] {
+            assert!(json.get(key).is_some(), "能力查询 wire 缺字段 {key}: {json}");
         }
     }
 }

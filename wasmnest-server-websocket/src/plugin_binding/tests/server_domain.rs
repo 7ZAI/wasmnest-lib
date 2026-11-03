@@ -280,3 +280,45 @@ async fn register_endpoint_rejects_off_when_floor_is_required() {
     }
     link_crypto::update_config(original);
 }
+
+/// 宿主下限运行期调严 → WS 协议升级前即拒绝（生效策略判据，spec §5 Phase 2）
+///
+/// 回归：routes 曾直接读端点声明值（`entry.encryption == Some(Required)`），
+/// 下限调严后「声明 off 的存量端点」会先完成升级、再被帧过滤器断开——
+/// 与「不建立一条随后必被断开的连接」的判据相悖。判据必须是
+/// `strictest(floor, declared)`，且错误文案点名生效策略 / 声明值 / 端点。
+#[tokio::test]
+async fn ws_upgrade_rejects_required_effective_policy_from_floor() {
+    use actix_web::{test, App};
+    use wasmnest_server_core::link_crypto::{self, EncryptionPolicy, LinkCryptoConfig};
+
+    let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let original = link_crypto::current_config();
+    let plugin = test_plugin("ep-floor-gate");
+    let ports: Arc<dyn WsPorts> = FakePorts::with(&[(&plugin, PERMISSION_WS_SERVER)]);
+
+    // 下限 off 时声明 off 合法；随后宿主设置页把下限调严（运行期动作）
+    link_crypto::update_config(LinkCryptoConfig::from_floor(EncryptionPolicy::Off));
+    let endpoint = ws_register_endpoint(&ports, &plugin, r#"{"path":"gated","encryption":"off"}"#)
+        .expect("floor=off 时 off 声明允许");
+    link_crypto::update_config(LinkCryptoConfig::from_floor(EncryptionPolicy::Required));
+
+    let app = test::init_service(App::new().configure(crate::routes::configure_routes)).await;
+    let req = test::TestRequest::get()
+        .uri(&crate::endpoint::mount_path(&plugin, "gated"))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+
+    assert_eq!(resp.status(), actix_web::http::StatusCode::BAD_REQUEST);
+    let body = test::read_body(resp).await;
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        text.contains("effective policy 'required'"),
+        "错误须点名生效策略（下限调严）: {text}"
+    );
+    assert!(text.contains("declared 'off'"), "错误须点名端点声明值: {text}");
+    assert!(text.contains(&endpoint), "错误须点名端点句柄: {text}");
+
+    drop_endpoint(&endpoint);
+    link_crypto::update_config(original);
+}

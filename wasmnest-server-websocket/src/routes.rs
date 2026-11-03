@@ -19,7 +19,8 @@ use crate::channel::plugin::PluginChannel;
 use crate::conn::{ConnSpec, WsConnBase};
 use crate::registry::WsSessionRegistry;
 use wasmnest_server_base::constants::PLACEHOLDER_PEER_ADDR;
-use wasmnest_server_core::link_crypto::{ws_has_ciphers, EncryptionPolicy};
+use wasmnest_server_core::filter::TrafficChannel;
+use wasmnest_server_core::link_crypto::{effective_endpoint_policy, ws_has_ciphers, EncryptionPolicy};
 
 /// WS 帧/消息大小上限（字节）
 ///
@@ -79,19 +80,28 @@ async fn plugin_endpoint_ws(
     // 能力层按连接地址注册）。没有密码 = 未配对 / 不支持加密的第三方客户端：
     // 在协议升级**之前**显性拒绝（spec §5 Phase 2），不降级成明文、不建立一条
     // 随后必被帧过滤器断开的连接。
-    if entry.encryption == Some(EncryptionPolicy::Required) && !ws_has_ciphers(&client_id) {
+    //
+    // 判据用**生效策略**（`strictest(宿主下限, 端点声明)`）而不是端点声明值：
+    // 宿主下限可以在运行期被调严（宿主设置页），此时声明 `off` 的存量端点也
+    // 必须按更严下限在升级前拒绝——否则「下限调严」只对帧过滤器生效，
+    // 连接会先建起来再被断开。
+    let effective = effective_endpoint_policy(&entry.owner, &entry.endpoint_id, TrafficChannel::WsPlugin);
+    if effective == EncryptionPolicy::Required && !ws_has_ciphers(&client_id) {
+        let declared = entry.encryption.map(|p| p.as_str()).unwrap_or("(host-floor)");
         tracing::warn!(
             plugin_id = %plugin_id,
             endpoint_id = %entry.endpoint_id,
+            declared,
+            effective = effective.as_str(),
             peer = %client_id,
             "plugin ws endpoint requires link encryption but the connection has no session cipher, rejecting 400"
         );
         return Ok(HttpResponse::BadRequest()
             .content_type("text/plain; charset=utf-8")
             .body(format!(
-                "link encryption required: endpoint '{}' of plugin '{}' declares policy 'required', \
-                 but this connection carries no negotiated session cipher; pair the client or lower \
-                 the endpoint encryption policy",
+                "link encryption required: endpoint '{}' of plugin '{}' has effective policy 'required' \
+                 (declared '{declared}'), but this connection carries no negotiated session cipher; pair \
+                 the client or lower the endpoint encryption policy",
                 entry.endpoint_id, entry.owner
             )));
     }
