@@ -136,6 +136,23 @@ fn ensure_unit_path_granted(
     ))
 }
 
+/// 授权判定与真实 IO 共用的路径口径（2026-11-02 安全审查 #40 修复建议 2）
+///
+/// 每个 fs 原语只解析一次路径，并用**同一份结果**做授权与读 / 写 / 删：
+/// 「校验一份、落盘另一份」是多组件路径（`..` / 符号链接）被两侧解释出差异的根源，
+/// 差异一处即为沙箱逃逸。解析失败即拒（fail-visible），不降级为原始路径。
+///
+/// WSL UNC 路径由 `wsl.exe` 桥接解释（远端自己解析 `..`），本地规范化会破坏其
+/// 形态，故原样透传——它仍要过同一条 fs 授权链。
+fn io_target(path: &str) -> Result<String, String> {
+    if wsl_fs::is_wsl_unc_path(path) {
+        return Ok(path.to_string());
+    }
+    crate::security::fs_auth::FsAuthChecker::resolve_for_io(path)
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .ok_or_else(|| format!("fs error: path cannot be resolved: {path}"))
+}
+
 /// 读取文本文件（WSL UNC 路径走 wsl.exe 桥接）
 fn read_text_file(path: &str) -> std::io::Result<String> {
     if let Some((distro, wsl_path)) = wsl_fs::parse_wsl_unc_path(path) {
@@ -285,8 +302,9 @@ pub(crate) fn fs_read(
     plugin_id: &str,
     path: &str,
 ) -> Result<Option<String>, String> {
-    authorize_fs(sec, plugin_id, path, "read")?;
-    read_text_file(path).map(Some).or_else(|e| {
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "read")?;
+    read_text_file(&target).map(Some).or_else(|e| {
         // SDK HostFs 契约：文件不存在返回 Ok(None)（store.rs 等插件依赖此语义处理新建文件）
         if e.kind() == std::io::ErrorKind::NotFound {
             Ok(None)
@@ -303,8 +321,9 @@ pub(crate) fn fs_write(
     path: &str,
     data: &str,
 ) -> Result<(), String> {
-    authorize_fs(sec, plugin_id, path, "write")?;
-    write_text_file(path, data).map_err(|e| format!("fs error: file write failed: {}", e))
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "write")?;
+    write_text_file(&target, data).map_err(|e| format!("fs error: file write failed: {}", e))
 }
 
 /// 复制文件（读源 + 写目标双授权）
@@ -314,10 +333,13 @@ pub(crate) fn fs_copy(
     src: &str,
     dst: &str,
 ) -> Result<(), String> {
-    // 双授权：源读 + 目标写（与改造前一致，逐路径经授权管线）
-    authorize_fs(sec, plugin_id, src, "read")?;
-    authorize_fs(sec, plugin_id, dst, "write")?;
-    copy_file(src, dst).map_err(|e| format!("fs error: file copy failed: {}", e))
+    // 双授权：源读 + 目标写（与改造前一致，逐路径经授权管线）；
+    // 两侧各解析一次，随后用同一份结果做授权与复制
+    let src_target = io_target(src)?;
+    let dst_target = io_target(dst)?;
+    authorize_fs(sec, plugin_id, &src_target, "read")?;
+    authorize_fs(sec, plugin_id, &dst_target, "write")?;
+    copy_file(&src_target, &dst_target).map_err(|e| format!("fs error: file copy failed: {}", e))
 }
 
 /// 删除文件（权限 + 三层访问校验；文件不存在视为成功，幂等）
@@ -326,8 +348,9 @@ pub(crate) fn fs_delete(
     plugin_id: &str,
     path: &str,
 ) -> Result<(), String> {
-    authorize_fs(sec, plugin_id, path, "write")?;
-    delete_file(path).map_err(|e| format!("fs error: file delete failed: {}", e))
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "write")?;
+    delete_file(&target).map_err(|e| format!("fs error: file delete failed: {}", e))
 }
 
 /// 检查文件是否存在（权限 + 三层访问校验，支持 WSL UNC 路径）
@@ -336,13 +359,14 @@ pub(crate) fn fs_exists(
     plugin_id: &str,
     path: &str,
 ) -> Result<bool, String> {
-    authorize_fs(sec, plugin_id, path, "read")?;
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "read")?;
     // 支持 WSL UNC 路径
-    if let Some((distro, wsl_path)) = wsl_fs::parse_wsl_unc_path(path) {
+    if let Some((distro, wsl_path)) = wsl_fs::parse_wsl_unc_path(&target) {
         return wsl_fs::exists_via_wsl(&distro, &wsl_path)
             .map_err(|e| format!("fs error: WSL check failed: {}", e));
     }
-    Ok(std::path::Path::new(path).exists())
+    Ok(std::path::Path::new(&target).exists())
 }
 
 // ==================== v19 追加（票 03 文件浏览域） ====================
@@ -366,9 +390,10 @@ pub fn fs_read_dir(
     plugin_id: &str,
     path: &str,
 ) -> Result<String, String> {
-    authorize_fs(sec, plugin_id, path, "read")?;
-    let read_dir = std::fs::read_dir(path)
-        .map_err(|e| format!("fs error: read dir '{}' failed: {}", path, e))?;
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "read")?;
+    let read_dir = std::fs::read_dir(&target)
+        .map_err(|e| format!("fs error: read dir '{}' failed: {}", target, e))?;
     let mut entries = Vec::new();
     for entry in read_dir {
         let entry = entry.map_err(|e| format!("fs error: read dir entry failed: {}", e))?;
@@ -419,8 +444,9 @@ pub fn fs_stat(
     plugin_id: &str,
     path: &str,
 ) -> Result<Option<String>, String> {
-    authorize_fs(sec, plugin_id, path, "read")?;
-    match std::fs::metadata(path) {
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "read")?;
+    match std::fs::metadata(&target) {
         Ok(meta) => Ok(Some(
             serde_json::json!({
                 "size": meta.len(),
@@ -430,7 +456,7 @@ pub fn fs_stat(
             .to_string(),
         )),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("fs error: stat '{}' failed: {}", path, e)),
+        Err(e) => Err(format!("fs error: stat '{}' failed: {}", target, e)),
     }
 }
 

@@ -58,7 +58,7 @@ use crate::security::auth_policy::{
 };
 use crate::security::strategy::{self, StrategyStep, Tier};
 use crate::storage::PluginStorage;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Emitter;
@@ -1298,37 +1298,77 @@ impl FsAuthChecker {
         Ok(())
     }
 
-    /// 规范化路径（解析 ..、符号链接等）
+    /// 规范化路径（解析 `.` / `..` / 符号链接，绝对化）
     ///
-    /// Windows 上 `canonicalize` 返回 `\\?\C:\...` verbatim 格式，而 fallback
-    /// 分支（父目录尚不存在）只能返回普通路径——两者格式不一致会导致与已授权
-    /// 前缀的匹配失败（首次写入新子目录文件时误弹窗）。此处统一剥掉 `\\?\` 前缀。
+    /// **禁止「路径不存在就原样返回」的兜底**（2026-11-02 安全审查 #40 / P0-1）：
+    /// 未解析的 `..` 只是普通组件，组件级前缀匹配（`strip_prefix`）照样命中，
+    /// 于是 `<授权目录>/x/../../outside` 被判成「在授权目录内」，而落盘时 OS 解析
+    /// `..` 真的写到授权目录外——一个 `fs:write` 授权即可覆写任意文件（含 `~/.bashrc`
+    /// ⇒ 任意代码执行）。旧实现的这条兜底正是沙箱逃逸的唯一入口。
+    ///
+    /// 解析口径与 OS 逐组件解析**等价**：
+    /// - 已存在的部分走 `canonicalize`（解析符号链接、统一分隔符、剥 Windows `\\?\`）；
+    /// - 不存在的组件只做**词法**消解（`.` 丢弃 / `..` 回退一层）——不存在的目录
+    ///   不可能是符号链接；`..` 回退到已存在目录后，后续组件**重新**参与存在性
+    ///   判定（不设「已越过存在段」的短路，否则回退后再进入的符号链接逃过解析）；
+    /// - `..` 作用于已存在的**非目录**返回 `None`（OS 同样报 `ENOTDIR`，不能放行）；
+    /// - 相对路径不做词法推导（无法确定基准），存在则 canonicalize，不存在则 `None`。
+    ///
+    /// 返回 `None` 即硬闸门：调用方按拒绝处理，**不得**降级为原始路径继续判定
+    /// （既有用例 `always_allow_does_not_bypass_path_canonicalization_hard_gate`）。
     fn canonicalize_path(path: &str) -> Option<PathBuf> {
         let p = Path::new(path);
-        // 文件可能不存在（如即将写入的文件），使用父目录 canonicalize
-        let result = if p.exists() {
-            p.canonicalize().ok()
-        } else if let Some(parent) = p.parent() {
-            // 父目录可能存在
-            if parent.exists() {
-                let canon_parent = parent.canonicalize().ok()?;
-                let file_name = p.file_name()?;
-                Some(canon_parent.join(file_name))
-            } else {
-                // 父目录也不存在：直接使用路径（后续 fs_write 会创建）。
-                // 规范化分隔符——canonicalize 在 Windows 上统一为 `\`，
-                // 否则与已授权前缀的匹配会因 `/` 与 `\` 混用而失败
-                let raw = p.to_string_lossy();
-                #[cfg(windows)]
-                let normalized = PathBuf::from(raw.replace('/', "\\"));
-                #[cfg(not(windows))]
-                let normalized = PathBuf::from(raw.into_owned());
-                Some(normalized)
+        // 相对路径：基准是进程 cwd，词法推导没有意义（`../x` 推不出绝对位置），
+        // 存在就交给 canonicalize，不存在即拒——与旧行为在「能否匹配绝对前缀」上一致
+        if !p.is_absolute() {
+            return p.canonicalize().ok().map(|pb| strip_verbatim_prefix(&pb));
+        }
+        // 快路径：目标已存在 → 一次 canonicalize 就是 OS 语义（含 `..` 与符号链接）。
+        // 这条路径覆盖授权记录（记录里存的是已存在的目录 / 文件）与既有文件读写，
+        // 不因下面逐组件解析而变慢。
+        if let Ok(canon) = p.canonicalize() {
+            return Some(strip_verbatim_prefix(&canon));
+        }
+
+        let mut resolved = PathBuf::new();
+        // 逐组件：已存在的组件一律 canonicalize（解析符号链接）；不存在的组件只做
+        // 词法处理。不设「已越过存在段」的短路——`..` 回退可能把游标带回已存在
+        // 目录，后续组件必须重新参与存在性判定（否则目录内的符号链接逃过解析：
+        // 授权判定看着在目录内，落盘却跟着链接走到目录外）。
+        for component in p.components() {
+            match component {
+                Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
+                Component::RootDir => resolved.push(Component::RootDir.as_os_str()),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    // 已存在段：非目录不能有父目录（OS 的 ENOTDIR）
+                    if resolved.exists() && !resolved.is_dir() {
+                        return None;
+                    }
+                    // `pop` 到根之外返回 false：`/..` 仍是 `/`（OS 语义），继续
+                    resolved.pop();
+                }
+                Component::Normal(name) => {
+                    resolved.push(name);
+                    if resolved.exists() {
+                        resolved = resolved.canonicalize().ok()?;
+                    }
+                }
             }
-        } else {
-            Some(p.to_path_buf())
-        };
-        result.map(|pb| strip_verbatim_prefix(&pb))
+        }
+        if resolved.as_os_str().is_empty() {
+            return None;
+        }
+        Some(strip_verbatim_prefix(&resolved))
+    }
+
+    /// 供**真实 IO** 复用的规范化入口（授权判定与落盘必须用同一份已解析路径）
+    ///
+    /// 「校验一份、落盘另一份」本身就是洞的温床：只要两侧对 `..` / 符号链接的解释
+    /// 有任何一处不同，校验通过的路径就会写去别处（2026-11-02 审查 #40 修复建议 2）。
+    /// `host_api::fs` 的读 / 写 / 复制 / 删除都在授权后按本函数的返回值落盘。
+    pub fn resolve_for_io(path: &str) -> Option<PathBuf> {
+        Self::canonicalize_path(path)
     }
 }
 
@@ -1858,22 +1898,139 @@ mod tests {
     /// canonicalize_path：父目录也不存在（首次写入新子目录文件）时应规范化分隔符
     #[test]
     fn canonicalize_path_normalizes_separators() {
-        let fake = format!(
-            "{}/sub-not-exist/deep-not-exist/file.jsonl",
-            std::env::temp_dir().to_string_lossy()
-        );
-        let canon = FsAuthChecker::canonicalize_path(&fake).expect("fallback must succeed");
+        let fake = canonical_temp_dir()
+            .join("sub-not-exist/deep-not-exist/file.jsonl")
+            .to_string_lossy()
+            .to_string();
+        let canon =
+            FsAuthChecker::canonicalize_path(&fake).expect("nonexistent suffix must resolve");
         // 平台感知断言：Windows 规范化分隔符为 `\`，其余平台保持原样
-        // （canonicalize_path 的 fallback 在 cfg(windows) 下 replace 分隔符，
-        //  非 Windows 直接原样返回——见函数注释）
+        // （已存在前缀走真实 canonicalize，不存在的后缀按词法拼接——不再原样返回原文）
         #[cfg(not(windows))]
         assert_eq!(canon.to_string_lossy().as_ref(), fake);
         #[cfg(windows)]
         assert_eq!(
             canon.to_string_lossy().as_ref(),
             fake.replace('/', "\\"),
-            "fallback path must use backslash on Windows"
+            "resolved path must use backslash on Windows"
         );
+    }
+
+    /// #40 / P0-1 回归锁：`..` 必须被**解析**掉，而不是当作普通组件留在结果里
+    ///
+    /// 旧实现「目标与父目录都不存在 → 回退为原文」让 `<授权目录>/x/../../outside`
+    /// 以词法形态通过 `strip_prefix` 前缀匹配，而落盘时 OS 解析 `..` 写到目录外。
+    #[test]
+    fn canonicalize_path_resolves_dotdot_through_missing_dirs() {
+        let dir = fixture_dir("fs-auth-canon-dotdot");
+        let raw = dir.join("missing/deeper/../../outside.txt");
+        let canon = FsAuthChecker::canonicalize_path(&raw.to_string_lossy())
+            .expect("traversal path must still canonicalize");
+
+        assert!(
+            !canon.to_string_lossy().contains(".."),
+            "规范化结果不得残留 `..`: {}",
+            canon.display()
+        );
+        assert_eq!(
+            canon,
+            dir.join("outside.txt"),
+            "`missing/deeper/../..` 必须回退到授权目录本身"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #40 / P0-1 回归锁（符号链接 × `..`）：词法回退把游标带回已存在段后，
+    /// 后续已存在的组件仍必须 canonicalize（否则 `link` 不会被解析，授权看着在
+    /// 目录内、落盘却跟着链接走到目录外）
+    #[cfg(unix)]
+    #[test]
+    fn canonicalize_path_resolves_symlink_reentered_after_dotdot() {
+        let dir = fixture_dir("fs-auth-canon-symlink");
+        // 上次失败可能留下同名夹具（link 已存在会让 symlink 报 EEXIST）
+        std::fs::remove_dir_all(&dir).ok();
+        let granted = dir.join("granted");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&granted).expect("granted dir");
+        std::fs::create_dir_all(&outside).expect("outside dir");
+        std::os::unix::fs::symlink(&outside, granted.join("link")).expect("symlink fixture");
+
+        let raw = granted.join("missing/../link/secret.txt");
+        let canon = FsAuthChecker::canonicalize_path(&raw.to_string_lossy())
+            .expect("path must canonicalize");
+
+        assert_eq!(
+            canon,
+            outside.join("secret.txt"),
+            "`..` 回退后重新进入的已存在段仍要解析符号链接（授权与落盘同一路径口径）"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #40 / P0-1 回归锁：一个 `fs:write` 目录授权不得写到目录外（读 / 写 / 删三向）
+    ///
+    /// 攻击形态取自审查报告：`A = 已授权目录`，`A/x/../../outside` 中 `x` 不存在
+    /// （`exists()` / `parent.exists()` 均为 false，正命中旧实现的回退分支）。
+    #[tokio::test]
+    async fn dotdot_traversal_out_of_granted_dir_is_denied() {
+        let checker = headless_checker().await;
+        let root = fixture_dir("fs-auth-dotdot-escape");
+        let granted = root.join("granted");
+        std::fs::create_dir_all(&granted).expect("granted dir");
+        // 目录外目标：攻击者要覆写的「任意文件」
+        let outside = root.join("outside.txt");
+        std::fs::write(&outside, b"secret").expect("outside fixture");
+
+        checker
+            .seed_legacy_granted_path(
+                "com.wasmnest.test",
+                &granted.join("seed.jsonl").to_string_lossy(),
+            )
+            .await
+            .expect("seed grant");
+
+        // 前置：授权目录内同形路径必须放行（否则本用例测的不是穿越）
+        assert!(
+            checker
+                .check(
+                    "com.wasmnest.test",
+                    &granted.join("new/deep/file.txt").to_string_lossy(),
+                    FsOp::Write
+                )
+                .await,
+            "授权目录内的新建路径必须放行"
+        );
+
+        // 穿越：`granted/x/../../outside.txt` 真实落在 granted 之外
+        let escape = format!("{}/x/../../outside.txt", granted.display());
+        assert!(
+            !checker
+                .check("com.wasmnest.test", &escape, FsOp::Read)
+                .await,
+            "读方向：`..` 穿越必须被拒"
+        );
+        assert!(
+            !checker
+                .check("com.wasmnest.test", &escape, FsOp::Write)
+                .await,
+            "写方向：`..` 穿越必须被拒（删除走同一写授权）"
+        );
+        assert!(
+            !checker
+                .is_granted("com.wasmnest.test", &escape, FsOps::READ_WRITE)
+                .await,
+            "无弹窗面（任务单元 / 预打开）同判据"
+        );
+
+        // 落盘口径同源：`host_api::fs` 用 resolve_for_io 的结果做授权与真实 IO，
+        // 这里断言它指向的就是目录外那个文件——若解析回落成原文，本断言先红
+        let resolved = FsAuthChecker::resolve_for_io(&escape).expect("resolve_for_io must resolve");
+        assert_eq!(
+            resolved, outside,
+            "IO 目标必须是解析后的真实路径（禁止「校验一份、落盘另一份」）"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// 已授权前缀：边界匹配 + 尚不存在的子路径（混合分隔符）也应放行
