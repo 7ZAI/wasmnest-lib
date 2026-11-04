@@ -20,7 +20,9 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
 use super::*;
-use crate::ports::{BoxedTask, ReconnectPolicy, WsClientPorts, WsTask};
+use crate::ports::{
+    BoxedTask, ReconnectPolicy, WsClientPorts, WsFrameCrypto, WsFrameCryptoFactory, WsTask,
+};
 
 /// 握手请求/应答间轮询等待上限（真实 TCP 交互的收敛窗口）
 const POLL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -76,6 +78,8 @@ struct StubPorts {
     policy_successes: Arc<AtomicUsize>,
     /// 派生任务被 cancel 的次数
     cancels: Arc<AtomicUsize>,
+    /// 链路帧加密工厂（`Some` = 模拟宿主提供加密；`None` = 明文）
+    frame_crypto: Mutex<Option<Arc<dyn WsFrameCryptoFactory>>>,
 }
 
 impl StubPorts {
@@ -91,6 +95,7 @@ impl StubPorts {
             policy_started: Arc::new(AtomicUsize::new(0)),
             policy_successes: Arc::new(AtomicUsize::new(0)),
             cancels: Arc::new(AtomicUsize::new(0)),
+            frame_crypto: Mutex::new(None),
         }
     }
 
@@ -152,6 +157,13 @@ impl WsClientPorts for StubPorts {
             .lock()
             .unwrap()
             .push((topic.to_string(), payload));
+    }
+
+    fn frame_crypto(&self, _plugin_id: &str, _url: &str) -> Option<Arc<dyn WsFrameCryptoFactory>> {
+        self.frame_crypto
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 任务派生：测试跑在 `#[tokio::test]` 提供的 runtime 上下文里，直接
@@ -815,4 +827,314 @@ async fn jwt_auth_without_token_fails_visibly() {
     .expect_err("jwt-auth without token must fail before handshake");
     assert!(err.contains("host has no auth token"), "{err}");
     assert_eq!(owned_entry_count(&owner), 0, "jwt-auth 失败不得留下句柄");
+}
+
+// ==================== 11. 链路帧加密（宿主端口注入） ====================
+
+/// 加密夹具：升级请求头 + 入站帧记录；服务端把入站帧原样回显
+///
+/// 协议完全由夹具定义（引擎不解释字节）：这里用 `sealed:` 前缀模拟密文。
+async fn spawn_crypto_server() -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind crypto server");
+    let addr = listener.local_addr().expect("local addr");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&seen);
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let captured = Arc::clone(&captured);
+            tokio::spawn(async move {
+                let handshake_captured = Arc::clone(&captured);
+                let ws = tokio_tungstenite::accept_hdr_async(
+                    stream,
+                    move |req: &Request, mut resp: Response| {
+                        let offer = req
+                            .headers()
+                            .get("x-test-crypto")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
+                        handshake_captured
+                            .lock()
+                            .unwrap()
+                            .push(format!("offer:{offer}"));
+                        resp.headers_mut().insert(
+                            tokio_tungstenite::tungstenite::http::HeaderName::from_static(
+                                "x-test-crypto",
+                            ),
+                            tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                                "v1 server-key",
+                            ),
+                        );
+                        resp.headers_mut().insert(
+                            tokio_tungstenite::tungstenite::http::HeaderName::from_static(
+                                "x-test-policy",
+                            ),
+                            tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                                "required",
+                            ),
+                        );
+                        Ok(resp)
+                    },
+                )
+                .await;
+                let Ok(ws) = ws else { return };
+                let (mut sink, mut source) = ws.split();
+                while let Some(Ok(msg)) = source.next().await {
+                    match msg {
+                        Message::Close(_) => break,
+                        Message::Text(text) => {
+                            captured.lock().unwrap().push(format!("text:{text}"));
+                            let _ = sink.send(Message::Text(text)).await;
+                        }
+                        Message::Binary(payload) => {
+                            captured
+                                .lock()
+                                .unwrap()
+                                .push(format!("binary:{}", payload.len()));
+                            let _ = sink.send(Message::Binary(payload)).await;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// 帧加密夹具：`sealed:` 前缀（双向对称）
+const SEALED_PREFIX: &str = "sealed:";
+
+struct SealedCodec;
+
+impl WsFrameCrypto for SealedCodec {
+    fn seal_text(&self, text: String) -> Result<String, String> {
+        Ok(format!("{SEALED_PREFIX}{text}"))
+    }
+
+    fn seal_binary(&self, payload: Vec<u8>) -> Result<Vec<u8>, String> {
+        let mut out = SEALED_PREFIX.as_bytes().to_vec();
+        out.extend_from_slice(&payload);
+        Ok(out)
+    }
+
+    fn open_text(&self, text: String) -> Result<String, String> {
+        text.strip_prefix(SEALED_PREFIX)
+            .map(str::to_string)
+            .ok_or_else(|| format!("text frame is not sealed: {text:?}"))
+    }
+
+    fn open_binary(&self, payload: Vec<u8>) -> Result<Vec<u8>, String> {
+        payload
+            .strip_prefix(SEALED_PREFIX.as_bytes())
+            .map(|rest| rest.to_vec())
+            .ok_or_else(|| "binary frame is not sealed".to_string())
+    }
+}
+
+/// 夹具工厂：总是提案；按 101 响应头决定是否建立编解码器
+struct SealedFactory;
+
+impl WsFrameCryptoFactory for SealedFactory {
+    fn request_headers(&self) -> Vec<(String, String)> {
+        vec![("X-Test-Crypto".to_string(), "v1 client-key".to_string())]
+    }
+
+    fn complete(
+        &self,
+        response_headers: &[(String, String)],
+    ) -> Result<Option<Arc<dyn WsFrameCrypto>>, String> {
+        let get = |name: &str| {
+            response_headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.clone())
+        };
+        if get("x-test-policy").as_deref() == Some("required") && get("x-test-crypto").is_none() {
+            return Err("server requires link encryption but returned no session key".to_string());
+        }
+        Ok(get("x-test-crypto").map(|_| Arc::new(SealedCodec) as Arc<dyn WsFrameCrypto>))
+    }
+}
+
+/// 总是回绝提案（模拟应用策略 off）
+struct DecliningFactory;
+
+impl WsFrameCryptoFactory for DecliningFactory {
+    fn request_headers(&self) -> Vec<(String, String)> {
+        vec![("X-Test-Crypto".to_string(), "v1 client-key".to_string())]
+    }
+
+    fn complete(
+        &self,
+        _response_headers: &[(String, String)],
+    ) -> Result<Option<Arc<dyn WsFrameCrypto>>, String> {
+        Ok(None)
+    }
+}
+
+/// 握手失败夹具（required 但服务端未回会话密钥）
+struct BrokenHandshakeFactory;
+
+impl WsFrameCryptoFactory for BrokenHandshakeFactory {
+    fn request_headers(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+
+    fn complete(
+        &self,
+        _response_headers: &[(String, String)],
+    ) -> Result<Option<Arc<dyn WsFrameCrypto>>, String> {
+        Err("server requires link encryption but returned no session key".to_string())
+    }
+}
+
+/// 出站文本（含 jwt auth 首帧）被封、入站帧被解后再投递；二进制同理
+#[tokio::test(flavor = "multi_thread")]
+async fn link_crypto_factory_seals_outbound_and_opens_inbound() {
+    let owner = plugin_id("crypto-sealed");
+    let (addr, seen) = spawn_crypto_server().await;
+    let ports = StubPorts::shared(&[&owner]);
+    *ports.frame_crypto.lock().unwrap() = Some(Arc::new(SealedFactory));
+    *ports.token.lock().unwrap() = "tok-123".to_string();
+    let p: Arc<dyn WsClientPorts> = ports.clone();
+
+    let h = connect(
+        &p,
+        &owner,
+        &serde_json::json!({ "url": format!("ws://{addr}"), "jwtAuth": true }).to_string(),
+    )
+    .await
+    .expect("connect crypto server");
+
+    // 升级请求携带提案头（引擎注入，协议字节由宿主决定）
+    wait_until(
+        || seen.lock().unwrap().iter().any(|e| e.starts_with("offer:")),
+        "upgrade request captured",
+    );
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|e| e == "offer:v1 client-key"),
+        "升级请求必须带宿主注入的提案头"
+    );
+
+    // jwt auth 首帧也必须加密（宿主代发的帧与业务帧同一条写链）
+    wait_until(
+        || seen.lock().unwrap().iter().any(|e| e.starts_with("text:")),
+        "sealed auth frame captured",
+    );
+    assert!(
+        seen.lock().unwrap().contains(&format!(
+            "text:sealed:{{\"type\":\"auth\",\"token\":\"tok-123\"}}"
+        )),
+        "auth 首帧必须是密封帧"
+    );
+
+    send_text(&p, &owner, &h, "hello").expect("send text");
+    wait_until(
+        || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|e| e == "text:sealed:hello")
+        },
+        "sealed business frame captured",
+    );
+
+    // 服务端原样回显密封帧；客户端解密后投递明文
+    wait_until(
+        || {
+            ports
+                .frames
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, bytes)| bytes.ends_with(b"hello"))
+        },
+        "decrypted text frame delivered",
+    );
+
+    send_binary(&p, &owner, &h, vec![1, 2, 3]).expect("send binary");
+    wait_until(
+        || {
+            ports
+                .frames
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, bytes)| bytes.ends_with(&[1, 2, 3]))
+        },
+        "decrypted binary frame delivered",
+    );
+    assert!(
+        seen.lock().unwrap().iter().any(|e| e == "binary:10"),
+        "二进制帧必须以密封形态上线（sealed: 前缀 + 3 字节）"
+    );
+
+    close(&p, &owner, &h, "{}").expect("close");
+    purge_for_plugin(&owner);
+}
+
+/// 宿主回绝提案（应用策略 off）→ 连接保持明文，帧不被加密
+#[tokio::test(flavor = "multi_thread")]
+async fn link_crypto_factory_decline_keeps_plaintext() {
+    let owner = plugin_id("crypto-decline");
+    let (addr, seen) = spawn_crypto_server().await;
+    let ports = StubPorts::shared(&[&owner]);
+    *ports.frame_crypto.lock().unwrap() = Some(Arc::new(DecliningFactory));
+    let p: Arc<dyn WsClientPorts> = ports.clone();
+
+    let h = connect(
+        &p,
+        &owner,
+        &serde_json::json!({ "url": format!("ws://{addr}") }).to_string(),
+    )
+    .await
+    .expect("connect plaintext after decline");
+    send_text(&p, &owner, &h, "plain").expect("send text");
+
+    wait_until(
+        || seen.lock().unwrap().iter().any(|e| e == "text:plain"),
+        "plaintext frame captured",
+    );
+    assert!(
+        !seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e == "text:sealed:plain"),
+        "回绝后不得再加密"
+    );
+
+    close(&p, &owner, &h, "{}").expect("close");
+    purge_for_plugin(&owner);
+}
+
+/// 握手失败 = 建连失败（不建立一条随后必被服务端断开的连接）
+#[tokio::test(flavor = "multi_thread")]
+async fn link_crypto_handshake_error_fails_connect() {
+    let owner = plugin_id("crypto-broken");
+    let (addr, _seen) = spawn_crypto_server().await;
+    let ports = StubPorts::shared(&[&owner]);
+    *ports.frame_crypto.lock().unwrap() = Some(Arc::new(BrokenHandshakeFactory));
+    let p: Arc<dyn WsClientPorts> = ports.clone();
+
+    let err = connect(
+        &p,
+        &owner,
+        &serde_json::json!({ "url": format!("ws://{addr}") }).to_string(),
+    )
+    .await
+    .expect_err("handshake error must fail connect");
+    assert!(
+        err.contains("no session key"),
+        "错误须原样上抛宿主裁决: {err}"
+    );
+    assert_eq!(owned_entry_count(&owner), 0, "失败不得留下句柄");
 }

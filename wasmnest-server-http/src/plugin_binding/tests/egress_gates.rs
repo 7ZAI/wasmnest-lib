@@ -151,6 +151,7 @@ async fn http_fetch_small_response_ok() {
             "url": format!("http://{}/small", addr),
         }),
         None,
+        None,
     )
     .await
     .expect("small response must succeed");
@@ -222,6 +223,7 @@ async fn http_fetch_oversized_response_rejected() {
             "method": "GET",
             "url": format!("http://{}/big", addr),
         }),
+        None,
         None,
     )
     .await
@@ -384,4 +386,94 @@ async fn missing_url_is_execution_error_not_authorization_error() {
     let err = http_fetch(&as_ports(&ports), "p1", r#"{"method":"GET"}"#, true).expect_err("缺 url 是请求错误");
     assert!(err.contains("Missing 'url'"), "错误须归执行层: {err}");
     assert!(!err.contains("authorization"), "缺 url 不该被归类成授权错误: {err}");
+}
+
+// ==================== 出站链路信封（宿主端口，2026-11-04） ====================
+
+/// 信封夹具：请求头追加 / body 加密 / 响应解密（用前缀模拟线协议，能力域不解释）
+struct TestEnvelope {
+    opened: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl crate::plugin_binding::ports::OutboundEnvelope for TestEnvelope {
+    fn seal_request(
+        &self,
+        headers: &mut Vec<(String, String)>,
+        body: Option<Vec<u8>>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        headers.push(("X-Test-Envelope".to_string(), "v1".to_string()));
+        Ok(body.map(|body| {
+            let mut out = b"sealed:".to_vec();
+            out.extend_from_slice(&body);
+            out
+        }))
+    }
+
+    fn open_response(&self, _headers: &[(String, String)], body: Vec<u8>) -> Result<Vec<u8>, String> {
+        self.opened.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(body)
+    }
+}
+
+/// 宿主裁决为「本次出站加密」：请求头与 body 在发出前被改写、响应读完后走 open
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn outbound_envelope_seals_request_and_opens_response() {
+    let addr = spawn_echo_server().await;
+    let opened = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let envelope: Arc<dyn crate::plugin_binding::ports::OutboundEnvelope> = Arc::new(TestEnvelope {
+        opened: std::sync::Arc::clone(&opened),
+    });
+
+    let resp = execute_http_request(
+        &json!({
+            "method": "POST",
+            "url": format!("http://{}/sealed", addr),
+            "headers": { "Content-Type": "application/json" },
+            "body": "hello",
+        }),
+        None,
+        Some(envelope),
+    )
+    .await
+    .expect("enveloped request must succeed");
+
+    assert!(
+        opened.load(std::sync::atomic::Ordering::SeqCst),
+        "响应读完后必须调用 open_response"
+    );
+    let echoed = resp["body"].as_str().unwrap().to_ascii_lowercase();
+    assert!(
+        echoed.contains("x-test-envelope: v1"),
+        "协商头必须随请求发出，got: {echoed}"
+    );
+    assert!(
+        echoed.contains("sealed:hello"),
+        "body 必须以密封形态发出，got: {echoed}"
+    );
+    assert!(
+        echoed.contains("content-type: application/json"),
+        "插件自带头不得被信封丢掉，got: {echoed}"
+    );
+}
+
+/// 未注入信封：请求字节与响应体不变（桌面宿主 / 未启用加密的移动端零影响）
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_envelope_keeps_plaintext_bytes() {
+    let addr = spawn_echo_server().await;
+    let resp = execute_http_request(
+        &json!({
+            "method": "POST",
+            "url": format!("http://{}/plain", addr),
+            "headers": { "Content-Type": "application/json" },
+            "body": "hello",
+        }),
+        None,
+        None,
+    )
+    .await
+    .expect("plain request must succeed");
+    let echoed = resp["body"].as_str().unwrap().to_ascii_lowercase();
+    assert!(!echoed.contains("x-test-envelope"), "got: {echoed}");
+    assert!(!echoed.contains("sealed:"), "got: {echoed}");
+    assert!(echoed.contains("hello"), "got: {echoed}");
 }

@@ -43,8 +43,20 @@ pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
 /// 线上信封版本与协商头 "vN" 前缀共用此源
 pub const PROTOCOL_VERSION: u8 = 1;
 
-/// HTTP 链路加密协商请求头
+/// 链路加密协商头：HTTP 请求/响应与 WS 升级请求/101 响应共用
+///
+/// - HTTP 请求：`v1 <客户端临时公钥>`；HTTP 响应：`v1`（响应密钥由请求派生）
+/// - WS 升级请求：`v1 <客户端临时公钥>`（提案）；WS 101：`v1 <服务端临时公钥>`
+///   （仅服务端接受提案时下发）
 pub const NEGOTIATION_HEADER: &str = "X-WasmNest-Crypto";
+
+/// WS 升级 101 响应的应用策略头（恒下发，客户端据此决定明文/加密是否可接受）
+///
+/// 值是 `EncryptionPolicy` 的 wire 字面量：`off` / `preferred` / `required`。
+pub const WS_POLICY_HEADER: &str = "X-WasmNest-Crypto-Policy";
+
+/// WS 插件端点通道串（AAD 绑定；与桌面 `TrafficChannel::WsPlugin.as_str()` 一致）
+pub const WS_PLUGIN_CHANNEL: &str = "ws-plugin";
 
 // HKDF info 常量——协议兼容性表面，各端实现必须逐字节一致
 /// HTTP 请求方向派生 info

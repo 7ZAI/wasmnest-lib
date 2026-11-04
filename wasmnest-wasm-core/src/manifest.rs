@@ -729,24 +729,20 @@ impl From<String> for HttpEndpointContribution {
 
 /// 插件 WS 端点声明（桌面；相对路径段）
 ///
-/// `encryption` 是本端点的链路加密声明（`required` / `preferred` / `off`，
-/// 缺省 = 跟随宿主下限）。HTTP 端点没有本字段：ABI v29 起 HTTP 路由由插件代码
-/// 在 `register-endpoint` 时声明（那里带 `encryption`），manifest 静态面已退役。
+/// 链路加密策略属于**应用**（`link_crypto::set_app_policy`），端点声明不携带
+/// `encryption`：同一应用的全部端点共用应用策略，由宿主统一执行。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum WsEndpointContribution {
     /// 裸路径
     Path(String),
-    /// 声明式条目（path + 可选 auth / encryption）
+    /// 声明式条目（path + 可选 auth）
     Declared {
         /// 相对路径段
         path: String,
         /// 认证档位（缺省按 WS 面默认档 none）
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth: Option<String>,
-        /// 链路加密策略（缺省 = 跟随宿主下限；未定义取值不登记，fail-visible）
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        encryption: Option<String>,
     },
 }
 
@@ -764,14 +760,6 @@ impl WsEndpointContribution {
         match self {
             Self::Path(_) => None,
             Self::Declared { auth, .. } => auth.as_deref(),
-        }
-    }
-
-    /// 链路加密策略原始值（裸路径形态 = None = 跟随宿主下限）
-    pub fn encryption_raw(&self) -> Option<&str> {
-        match self {
-            Self::Path(_) => None,
-            Self::Declared { encryption, .. } => encryption.as_deref(),
         }
     }
 }

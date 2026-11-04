@@ -105,7 +105,10 @@ fn require_host_surface(
 }
 
 /// 插件面命令的统一身份校验（fail-closed 语义与裁决规则见 `frontend_channel::authorize`）
-fn authorize_plugin_call(
+///
+/// 公开给宿主 crate 的插件面命令复用：身份只由 `credential` 解析，
+/// `plugin_id` 只是目标（插件令牌目标必须等于自己）。
+pub fn authorize_plugin_call(
     plugin_host: &PluginHost,
     webview_label: &str,
     plugin_id: &str,

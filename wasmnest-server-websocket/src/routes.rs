@@ -19,8 +19,10 @@ use crate::channel::plugin::PluginChannel;
 use crate::conn::{ConnSpec, WsConnBase};
 use crate::registry::WsSessionRegistry;
 use wasmnest_server_base::constants::PLACEHOLDER_PEER_ADDR;
-use wasmnest_server_core::filter::TrafficChannel;
-use wasmnest_server_core::link_crypto::{effective_endpoint_policy, ws_has_ciphers, EncryptionPolicy};
+use wasmnest_server_core::link_crypto::{
+    app_policy, derive_ws_session_ciphers, is_loopback_peer, parse_negotiation, ws_register_ciphers, ws_remove_ciphers,
+    EncryptionPolicy, NEGOTIATION_HEADER, PROTOCOL_VERSION, WS_POLICY_HEADER,
+};
 
 /// WS 帧/消息大小上限（字节）
 ///
@@ -75,36 +77,120 @@ async fn plugin_endpoint_ws(
         .unwrap_or_else(|| PLACEHOLDER_PEER_ADDR.parse().unwrap());
     let client_id = addr.to_string();
 
-    // ==================== 端点加密策略：required 在升级前门禁 ====================
-    // `required` 端点的连接必须已持有链路加密会话密码（配对设备完成握手后由
-    // 能力层按连接地址注册）。没有密码 = 未配对 / 不支持加密的第三方客户端：
-    // 在协议升级**之前**显性拒绝（spec §5 Phase 2），不降级成明文、不建立一条
-    // 随后必被帧过滤器断开的连接。
+    // ==================== 链路加密：升级期协商（应用策略裁决） ====================
     //
-    // 判据用**生效策略**（`strictest(宿主下限, 端点声明)`）而不是端点声明值：
-    // 宿主下限可以在运行期被调严（宿主设置页），此时声明 `off` 的存量端点也
-    // 必须按更严下限在升级前拒绝——否则「下限调严」只对帧过滤器生效，
-    // 连接会先建起来再被断开。
-    let effective = effective_endpoint_policy(&entry.owner, &entry.endpoint_id, TrafficChannel::WsPlugin);
-    if effective == EncryptionPolicy::Required && !ws_has_ciphers(&client_id) {
-        let declared = entry.encryption.map(|p| p.as_str()).unwrap_or("(host-floor)");
+    // 握手放在协议升级阶段（HTTP 头），而不是升级后的首帧：
+    // - 请求头 `X-WasmNest-Crypto: v1 <m_ek>` = 客户端提案（带上它的临时公钥）；
+    // - 101 响应头 `X-WasmNest-Crypto-Policy` 恒下发应用策略；
+    // - 101 响应头 `X-WasmNest-Crypto: v1 <s_ek>` 仅在服务端接受提案时下发。
+    //
+    // 这样 `required` 仍能在升级**之前**拒绝没有提案的连接（不建立一条随后必被
+    // 帧过滤器断开的连接），而接受提案后的帧级加解密沿用既有密码表（按对端 addr
+    // 索引），WS 连接建好后的帧语义 / 认证状态机零改动。
+    //
+    // 策略属于应用（owner）：`off` 时回绝提案（不注册密码、只回策略头）——移动端
+    // 只有一个全局开关，无法预知各应用在桌面端的策略；客户端按 strict 开关自行
+    // 决定「回绝即断开」还是「明文续跑」。
+    let policy = app_policy(&entry.owner);
+    let offer = match parse_ws_offer(&req) {
+        Ok(offer) => offer,
+        Err(reason) => {
+            tracing::warn!(
+                plugin_id = %plugin_id,
+                endpoint_id = %entry.endpoint_id,
+                peer = %client_id,
+                %reason,
+                "plugin ws endpoint rejected malformed link encryption offer"
+            );
+            return Ok(HttpResponse::BadRequest()
+                .content_type("text/plain; charset=utf-8")
+                .body(reason));
+        }
+    };
+    // 环回与 HTTP 面同口径（本地豁免）：本机客户端不要求协商，也不接受协商——
+    // 过滤器对环回流量不介入，注册了密码反而会把本机客户端的密文直投插件。
+    let local_peer = is_loopback_peer(&client_id);
+    if policy == EncryptionPolicy::Required && !local_peer && offer.is_none() {
         tracing::warn!(
             plugin_id = %plugin_id,
             endpoint_id = %entry.endpoint_id,
-            declared,
-            effective = effective.as_str(),
+            policy = policy.as_str(),
             peer = %client_id,
-            "plugin ws endpoint requires link encryption but the connection has no session cipher, rejecting 400"
+            "plugin ws endpoint requires link encryption but the upgrade request carries no offer, rejecting 400"
         );
         return Ok(HttpResponse::BadRequest()
             .content_type("text/plain; charset=utf-8")
             .body(format!(
-                "link encryption required: endpoint '{}' of plugin '{}' has effective policy 'required' \
-                 (declared '{declared}'), but this connection carries no negotiated session cipher; pair \
-                 the client or lower the endpoint encryption policy",
+                "link encryption required: endpoint '{}' of plugin '{}' has app policy 'required', but this \
+                 connection carries no '{NEGOTIATION_HEADER}' negotiation header; pair the client or change \
+                 the app's link encryption setting",
                 entry.endpoint_id, entry.owner
             )));
     }
+
+    // 所有可能在升级后失败的步骤都在 start 之前完成（派生 / 头值构造）；
+    // 密码注册留在 `start()` 前一刻，失败路径统一回滚。
+    let mut negotiated_ciphers = None;
+    if local_peer && offer.is_some() {
+        tracing::debug!(
+            plugin_id = %plugin_id,
+            endpoint_id = %entry.endpoint_id,
+            peer = %client_id,
+            "loopback ws client offered link encryption; local traffic is exempt and stays plaintext"
+        );
+    }
+    let negotiated_offer = if local_peer { None } else { offer.as_deref() };
+    let crypto_header = match negotiate_ws_offer(policy, negotiated_offer) {
+        Ok(Some(handshake)) => {
+            let value = format!("v{PROTOCOL_VERSION} {}", handshake.server_ek_b64);
+            match actix_web::http::header::HeaderValue::from_str(&value) {
+                Ok(value) => {
+                    negotiated_ciphers = Some(handshake.ciphers);
+                    Some(value)
+                }
+                Err(error) => {
+                    tracing::error!(peer = %client_id, %error, "ws link crypto response header invalid");
+                    return Ok(HttpResponse::InternalServerError().finish());
+                }
+            }
+        }
+        Ok(None) => {
+            if offer.is_some() {
+                // 应用策略 off：客户端提案被回绝（不注册密码），101 只带策略头。
+                // 这不是静默降级——客户端能看到策略值并自行决定 strict 断开。
+                tracing::info!(
+                    plugin_id = %plugin_id,
+                    endpoint_id = %entry.endpoint_id,
+                    peer = %client_id,
+                    "client offered link encryption but the app policy is 'off'; continuing plaintext"
+                );
+            }
+            None
+        }
+        Err(error) => {
+            tracing::warn!(
+                plugin_id = %plugin_id,
+                endpoint_id = %entry.endpoint_id,
+                peer = %client_id,
+                %error,
+                "plugin ws endpoint rejected invalid link encryption offer"
+            );
+            return Ok(HttpResponse::BadRequest()
+                .content_type("text/plain; charset=utf-8")
+                .body(format!(
+                    "invalid link encryption offer on endpoint '{}' of plugin '{}': {error}",
+                    entry.endpoint_id, entry.owner
+                )));
+        }
+    };
+
+    let crypto_header_name = actix_web::http::header::HeaderName::try_from(NEGOTIATION_HEADER)
+        .expect("negotiation header name is a valid HTTP token");
+    let policy_header_name = actix_web::http::header::HeaderName::try_from(WS_POLICY_HEADER)
+        .expect("policy header name is a valid HTTP token");
+    let policy_header =
+        actix_web::http::header::HeaderValue::from_str(policy.as_str()).expect("policy wire literal is ASCII");
+
     if !WsSessionRegistry::global().reserve_endpoint_client(&entry.endpoint_id, &client_id, entry.max_clients) {
         tracing::warn!(
             plugin_id = %plugin_id,
@@ -114,6 +200,15 @@ async fn plugin_endpoint_ws(
         );
         return Ok(HttpResponse::ServiceUnavailable().finish());
     }
+
+    // 先注册密码再启动 actor：升级响应一旦写出，首帧就可能到达，密码必须已就绪
+    let registered_ciphers = match negotiated_ciphers.take() {
+        Some(ciphers) => {
+            ws_register_ciphers(&client_id, ciphers);
+            true
+        }
+        None => false,
+    };
 
     let channel = PluginChannel::new(&entry, addr);
     let ws_actor = WsConnBase::new(
@@ -128,11 +223,127 @@ async fn plugin_endpoint_ws(
         .frame_size(entry.max_message_bytes)
         .start()
     {
-        Ok(response) => Ok(response),
+        Ok(mut response) => {
+            response.headers_mut().insert(policy_header_name, policy_header);
+            if let Some(value) = crypto_header {
+                response.headers_mut().insert(crypto_header_name, value);
+            }
+            Ok(response)
+        }
         Err(error) => {
             WsSessionRegistry::global().release_endpoint_reservation(&entry.endpoint_id, &client_id);
+            if registered_ciphers {
+                ws_remove_ciphers(&client_id);
+            }
             Err(error)
         }
+    }
+}
+
+/// 解析升级请求的链路加密提案
+///
+/// - `Ok(None)`：未带协商头（不提案）；
+/// - `Ok(Some(ek_b64))`：合法提案（客户端临时公钥）；
+/// - `Err(reason)`：带了头但格式非法——显性 400，不按「未提案」静默处理
+///   （否则 `required` 会把一个拼错头的加密客户端伪装成「没开加密」）。
+fn parse_ws_offer(req: &HttpRequest) -> Result<Option<String>, String> {
+    let Some(raw) = req.headers().get(NEGOTIATION_HEADER) else {
+        return Ok(None);
+    };
+    let raw = raw
+        .to_str()
+        .map_err(|_| format!("invalid '{NEGOTIATION_HEADER}' header: value is not valid ASCII/UTF-8"))?;
+    match parse_negotiation(raw) {
+        Some(ek_b64) => Ok(Some(ek_b64.to_string())),
+        None => Err(format!(
+            "invalid '{NEGOTIATION_HEADER}' header: expected 'v{PROTOCOL_VERSION} <base64 x25519 public key>'"
+        )),
+    }
+}
+
+/// 应用策略 × 客户端提案 → 是否接受（`Ok(Some(handshake))`）
+///
+/// - `off`：回绝提案（`Ok(None)`）——应用策略明文，不注册会话密码；
+/// - `preferred` / `required`：按提案派生；提案缺失由调用方按策略裁决；
+/// - 提案格式非法 / 身份不可用 → `Err`（fail-visible，不静默降级）。
+fn negotiate_ws_offer(
+    policy: EncryptionPolicy,
+    offer: Option<&str>,
+) -> Result<Option<wasmnest_server_core::link_crypto::WsHandshake>, String> {
+    let Some(ek_b64) = offer else {
+        return Ok(None);
+    };
+    if policy == EncryptionPolicy::Off {
+        return Ok(None);
+    }
+    derive_ws_session_ciphers(ek_b64)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 触碰链路身份/策略全局态的用例必须串行
+    static LINK_CRYPTO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn ready_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        wasmnest_server_core::link_crypto::init_identity(dir.path()).expect("link identity");
+    }
+
+    #[test]
+    fn offer_parser_distinguishes_absent_and_malformed() {
+        // 未带协商头 = 未提案（由 required 门禁裁决）
+        let req = actix_web::test::TestRequest::get().to_http_request();
+        assert_eq!(parse_ws_offer(&req), Ok(None));
+
+        // 带合法提案
+        let req = actix_web::test::TestRequest::get()
+            .insert_header((NEGOTIATION_HEADER, "v1 QUJD"))
+            .to_http_request();
+        assert_eq!(parse_ws_offer(&req), Ok(Some("QUJD".to_string())));
+
+        // 带头但版本/形状非法 = 错误，不得按「未提案」静默处理
+        for bad in ["v2 QUJD", "v1", "v1 A B", "", "QUJD"] {
+            let req = actix_web::test::TestRequest::get()
+                .insert_header((NEGOTIATION_HEADER, bad))
+                .to_http_request();
+            let parsed = parse_ws_offer(&req);
+            assert!(parsed.is_err(), "取值 {bad:?} 必须显性拒绝，got {parsed:?}");
+        }
+    }
+
+    #[test]
+    fn negotiate_declines_offer_when_app_policy_is_off() {
+        // off 不派生、也不需要身份：直接回绝
+        assert!(matches!(
+            negotiate_ws_offer(EncryptionPolicy::Off, Some("QUJD")),
+            Ok(None)
+        ));
+        assert!(matches!(negotiate_ws_offer(EncryptionPolicy::Off, None), Ok(None)));
+    }
+
+    #[test]
+    fn negotiate_derives_only_for_encrypting_policies() {
+        let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        ready_identity();
+
+        let (private, public) = wasmnest_server_core::link_crypto::generate_ephemeral();
+        let _ = private;
+        let ek_b64 = wasmnest_server_core::link_crypto::b64_encode(&public);
+
+        for policy in [EncryptionPolicy::Preferred, EncryptionPolicy::Required] {
+            let handshake = negotiate_ws_offer(policy, Some(&ek_b64))
+                .expect("valid offer must derive")
+                .expect("encrypting policy accepts the offer");
+            assert!(!handshake.server_ek_b64.is_empty());
+        }
+
+        // 非法提案 = 显性错误
+        assert!(negotiate_ws_offer(EncryptionPolicy::Preferred, Some("v1 not-base64!")).is_err());
+        assert!(negotiate_ws_offer(EncryptionPolicy::Required, Some("QUJD")).is_err());
     }
 }
 

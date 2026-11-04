@@ -1,11 +1,13 @@
 //! Link Crypto — 局域网链路报文加密（HTTP/WS 载荷）
 //!
 //! 规划文档：`.scratch/http-ws-payload-encryption/spec.md`。本模块是链路加密的
-//! 宿主侧协议与开关中心，职责四块：
+//! 宿主侧协议与执行中心，职责四块：
 //!
-//! 1. **配置域** [`LinkCryptoConfig`]：全部默认关闭（opt-in），持久化于 DB
-//!    settings 表单键 [`SETTING_KEY`]；运行期经 [`current_config`] /
-//!    [`update_config`] 快照热更新，过滤器逐流量读取、不做注册/注销抖动。
+//! 1. **应用策略域**（`APP_POLICIES`）：策略属于应用（plugin id），每个应用一个值
+//!    （`off` / `preferred` / `required`），覆盖该应用全部 HTTP / WS 端点。应用
+//!    在自己的设置页决定并经 app 通道令牌写入；宿主不设整机下限、不提供开关，
+//!    未登记 = `off`（不要求加密，默认明文）。持久化于 DB settings 表 [`APP_POLICY_SETTING_KEY`]，
+//!    仅供宿主重启后继续执行。
 //! 2. **身份密钥 Kd** [`LinkIdentity`]：桌面端静态 X25519 密钥对，首启生成、
 //!   落盘 `app_data_dir/link_crypto_identity.json`（与 peer-net node_identity.json
 //!   同目录同模式）；指纹 = SHA-256(公钥) 前 16 hex，供移动端 pin 与人工核对。
@@ -14,10 +16,10 @@
 //! 3. **HKDF 方向分离派生**：ECDH 共享密钥 → 各方向独立 AES-256 会话密钥，
 //!    info 常量是跨端兼容性表面（移动端 TS 实现必须逐字节一致）。
 //! 4. **过滤器骨架** [`LinkEncryptionFilter`]：注册进 `TrafficFilterChain` 的
-//!    转换型过滤器。本地豁免三分支与通道子开关判定已完整实现；豁免外流量的
+//!    转换型过滤器。本地豁免三分支与应用策略判定已完整实现；豁免外流量的
 //!    真实加解密由 issue 02（HTTP 信封）/ issue 04（WS 帧）在本模块填充。
 //!
-//! 决策模型（spec §6）：发送方配置决定参与意愿 → 接收方按线上信封自动识别 →
+//! 决策模型（spec §6）：应用声明自己的加密要求 → 接收方按线上信封自动识别 →
 //! 响应绑定与降级检测两条强制安全耦合在 issue 02/04 落地。
 
 use std::collections::{HashMap, HashSet};
@@ -57,16 +59,13 @@ static DATA_ECDH: LazyLock<&'static dyn KeyAgreementProvider> =
 use wasmnest_link_crypto as proto;
 
 pub use proto::{
-    b64_decode, b64_encode, decrypt_http_body, encrypt_http_body, parse_negotiation, HttpEnvelope, WsDirectionCipher,
-    WsTextEnvelope, HTTP_INFO_REQUEST, HTTP_INFO_RESPONSE, NEGOTIATION_HEADER, ORIGIN_BINARY, ORIGIN_TEXT,
-    PROTOCOL_VERSION, WS_BINARY_HEADER_LEN, WS_FRAME_VERSION, WS_INFO_CLIENT_TO_SERVER, WS_INFO_SERVER_TO_CLIENT,
-    WS_TRANSCRIPT_PREFIX,
+    b64_decode, b64_encode, decrypt_http_body, encrypt_http_body, generate_ephemeral, parse_negotiation,
+    ClientWsCrypto, HttpEnvelope, WsDirectionCipher, WsTextEnvelope, HTTP_INFO_REQUEST, HTTP_INFO_RESPONSE,
+    NEGOTIATION_HEADER, ORIGIN_BINARY, ORIGIN_TEXT, PROTOCOL_VERSION, WS_BINARY_HEADER_LEN, WS_FRAME_VERSION,
+    WS_INFO_CLIENT_TO_SERVER, WS_INFO_SERVER_TO_CLIENT, WS_PLUGIN_CHANNEL, WS_POLICY_HEADER, WS_TRANSCRIPT_PREFIX,
 };
 
 // ==================== 常量 ====================
-
-/// DB settings 表中的配置键（值为 LinkCryptoConfig 的 JSON 序列化）
-pub const SETTING_KEY: &str = "trafficEncryption";
 
 /// 身份密钥落盘文件名（与 node_identity.json 并列同目录）
 const IDENTITY_FILE: &str = "link_crypto_identity.json";
@@ -80,203 +79,26 @@ pub const FILTER_NAME: &str = "link-crypto";
 // HKDF info 常量——协议兼容性表面，issue 05 移动端 TS 实现必须逐字节一致
 // （已抽至共享 crate，经上方 pub use 保持既有路径可见）
 
-// ==================== 配置域 ====================
-
-/// 链路加密配置域（spec §6）
-///
-/// 默认值即「功能整体关闭」：`enabled=false` 时过滤器不注册，其余字段不生效；
-/// 子通道开关默认 true 是有意设计——用户只需打开主开关即获全通道覆盖，
-/// 粒度收窄是显式动作。未知字段一律拒绝（防前端拼写错误的开关被静默吞掉）。
-///
-/// **`floor` 与旧字段的关系**：`floor` 是权威的宿主下限；旧字段
-/// （`enabled` / `encrypt_*` / `allow_plaintext_fallback`）保留为**迁移输入**——
-/// 旧配置记录没有 `floor` 时按 [`LinkCryptoConfig::host_floor`] 的映射推导，
-/// 一旦写入 `floor`，旧子开关不再参与裁决（[`LinkCryptoConfig::channel_floor`]）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LinkCryptoConfig {
-    /// 主开关：false 时过滤器不注册，全服务明文（与现状一致）
-    ///
-    /// 迁移态下与 `floor` 同源；写 `floor` 时本字段由
-    /// [`LinkCryptoConfig::from_floor`] 同步（floor != off ⇒ true）。
-    #[serde(default)]
-    pub enabled: bool,
-    /// HTTP REST 载荷加解密（迁移输入：仅在无 `floor` 的旧记录里生效）
-    #[serde(default = "default_true")]
-    pub encrypt_http: bool,
-    /// WS 终端通道帧加解密（迁移输入，同上）
-    #[serde(default = "default_true")]
-    pub encrypt_ws_terminal: bool,
-    /// WS 事件通道帧加解密（迁移输入，同上）
-    #[serde(default = "default_true")]
-    pub encrypt_ws_event: bool,
-    /// 服务端对未协商的老客户端放行明文（迁移输入，同上）
-    #[serde(default = "default_true")]
-    pub allow_plaintext_fallback: bool,
-    /// 宿主下限（`required` / `preferred` / `off`）
-    ///
-    /// `None` = 迁移态：按 `enabled` + `allow_plaintext_fallback` 推导（见
-    /// [`LinkCryptoConfig::host_floor`]）。宿主设置页写入口一律写 `Some(..)`。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub floor: Option<EncryptionPolicy>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for LinkCryptoConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            encrypt_http: true,
-            encrypt_ws_terminal: true,
-            encrypt_ws_event: true,
-            allow_plaintext_fallback: true,
-            floor: None,
-        }
-    }
-}
-
-impl LinkCryptoConfig {
-    /// 宿主下限（含迁移推导；spec §6 迁移映射）
-    ///
-    /// - `enabled=false` → `off`（保持现状：默认明文，应用可主动 `required`）
-    /// - `enabled=true` + `allow_plaintext_fallback=true` → `preferred`
-    /// - `enabled=true` + `allow_plaintext_fallback=false` → `required`
-    pub fn host_floor(&self) -> EncryptionPolicy {
-        match self.floor {
-            Some(floor) => floor,
-            None if !self.enabled => EncryptionPolicy::Off,
-            None if self.allow_plaintext_fallback => EncryptionPolicy::Preferred,
-            None => EncryptionPolicy::Required,
-        }
-    }
-
-    /// 某通道的下限
-    ///
-    /// 显式 `floor` 是权威（旧逐通道子开关不再参与裁决——它们无法表达
-    /// 「required」，留着会让 `required` 被一个旧开关静默降级）。
-    /// 迁移态沿用逐通道子开关；插件 WS 端点（`WsPlugin`）在迁移态恒 `off`——
-    /// 它在旧模型里从未参与链路加密，迁移必须保持这一事实（不静默改变姿态）。
-    ///
-    /// **`WsPlugin => false` 只活在迁移态**（2026-11-03 审核 P3-5 澄清）：设置页的
-    /// 写入口 `set_traffic_encryption_config` 一律经 [`Self::from_floor`] 构造，
-    /// 落库后 `floor` 恒为 `Some`，本函数第一行即返回宿主下限——也就是说
-    /// **用户把下限调到 `required` 时，插件 WS 端点同样受约束**，
-    /// 不存在「设置里调严了但 WS 端点仍是 off」的情况。该分支只在读旧版落库值
-    /// （无 `floor` 字段）时生效。
-    pub fn channel_floor(&self, channel: TrafficChannel) -> EncryptionPolicy {
-        if self.floor.is_some() {
-            return self.host_floor();
-        }
-        if !self.enabled {
-            return EncryptionPolicy::Off;
-        }
-        let channel_enabled = match channel {
-            TrafficChannel::Http => self.encrypt_http,
-            TrafficChannel::WsTerminal => self.encrypt_ws_terminal,
-            TrafficChannel::WsEvent => self.encrypt_ws_event,
-            TrafficChannel::WsPlugin => false,
-        };
-        if !channel_enabled {
-            return EncryptionPolicy::Off;
-        }
-        if self.allow_plaintext_fallback {
-            EncryptionPolicy::Preferred
-        } else {
-            EncryptionPolicy::Required
-        }
-    }
-
-    /// 由宿主下限构造配置（设置页写入口的唯一构造点：`floor` 与 `enabled` 同源，
-    /// 避免「floor=required 但 enabled=false」这种自相矛盾的落库值）
-    pub fn from_floor(floor: EncryptionPolicy) -> Self {
-        Self {
-            enabled: floor != EncryptionPolicy::Off,
-            floor: Some(floor),
-            ..Self::default()
-        }
-    }
-}
-
-/// 运行期配置快照（单例）：过滤器热路径只做一次读锁克隆，无注册/注销抖动
-static CONFIG_SNAPSHOT: LazyLock<RwLock<LinkCryptoConfig>> = LazyLock::new(|| RwLock::new(LinkCryptoConfig::default()));
-
-/// 读取当前配置快照
-pub fn current_config() -> LinkCryptoConfig {
-    CONFIG_SNAPSHOT.read().map(|guard| guard.clone()).unwrap_or_else(|_| {
-        // 锁中毒退化为默认值（全关），可用性优先；中毒方已记 error
-        tracing::error!("link crypto config snapshot lock poisoned, using default");
-        LinkCryptoConfig::default()
-    })
-}
-
-/// 更新配置快照（调用方负责先持久化成功再更新内存态）
-pub fn update_config(config: LinkCryptoConfig) {
-    match CONFIG_SNAPSHOT.write() {
-        Ok(mut guard) => *guard = config,
-        Err(_) => tracing::error!("link crypto config snapshot lock poisoned, update dropped"),
-    }
-}
-
-/// 从 DB settings 表加载配置；键不存在或 JSON 非法均回退默认值（全关）
-///
-/// 非法 JSON 只 warn 不报错：配置损坏不应阻断启动，用户重存一次即可修复。
-pub fn load_config_from_db(conn: &rusqlite::Connection) -> LinkCryptoConfig {
-    let json = match conn.query_row(
-        "SELECT value FROM settings WHERE key = ?1",
-        rusqlite::params![SETTING_KEY],
-        |row| row.get::<_, String>(0),
-    ) {
-        Ok(json) => json,
-        Err(e) => {
-            // 表不存在 / 键缺失 / 读失败：一律回退默认（全关），不 panic
-            tracing::warn!(
-                key = SETTING_KEY,
-                "read traffic encryption config failed, falling back to default (all off): {e}"
-            );
-            return LinkCryptoConfig::default();
-        }
-    };
-    serde_json::from_str(&json).unwrap_or_else(|e| {
-        tracing::warn!(
-            key = SETTING_KEY,
-            "traffic encryption config corrupt, falling back to default (all off): {e}"
-        );
-        LinkCryptoConfig::default()
-    })
-}
-
-/// 持久化配置到 DB settings 表（JSON 序列化失败属程序错误，上抛）
-pub fn persist_config_to_db(conn: &rusqlite::Connection, config: &LinkCryptoConfig) -> Result<()> {
-    let json = serde_json::to_string(config)?;
-    let now = chrono::Utc::now().to_rfc3339();
-    conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
-        rusqlite::params![SETTING_KEY, json, now],
-    )?;
-    Ok(())
-}
-
-// ==================== 加密策略域（宿主下限 + 按应用/端点声明） ====================
+// ==================== 应用链路加密策略（应用拥有，宿主只执行） ====================
 //
-// 三层模型（spec §1）：宿主下限（本模块配置域）▸ 端点声明（本段）▸ 逐连接协商
-// （过滤器）。应用只能提高严格度，不能降低下限：把声明登记在**宿主侧表**里，
-// 过滤器按 `(owner, endpoint)` 查 `effective = strictest(floor, declared)`。
+// 归属（2026-11-04 用户裁决，修正 2026-11-02 的宿主 floor 方案）：
+// - **策略属于应用**：每个 plugin id 一个值（off / preferred / required），覆盖该
+//   应用注册的全部 HTTP / WS 端点。应用在自己的设置页决定，经 app 通道令牌写入；
+// - **宿主不设下限、不提供开关**：本模块只保存应用声明的当前值并交给过滤链执行；
+//   未登记 = `off`（不要求加密，默认明文）。宿主设置页只读审计，不提供任何写入口；
+// - **没有端点级声明**：同一应用的所有端点共用应用策略。若将来出现单端点例外，
+//   仍由应用侧声明，宿主不做策略决策。
 //
-// 身份真源：`owner` / `endpoint` 只来自端点注册表（HTTP 注册记录 / WS 端点表），
-// 过滤器不解析 URL 猜属主，也不接受请求方自报（spec §3 / 安全不变量 4）。
+// 身份真源：`owner` 只来自端点注册表（HTTP 注册记录 / WS 端点表），过滤器不解析
+// URL 猜属主，也不接受请求方自报。
 
-/// 链路加密严格度（端点声明与宿主下限共用词表）
+/// 链路加密严格度（应用策略词表）
 ///
-/// `Ord` 顺序 `Off < Preferred < Required` 即严格度顺序，「取更严者」用
-/// [`strictest`]（内部就是 `max`）。serde 只认小写字面量，未知取值解析失败——
-/// 端点注册配置里写错一个字母不允许静默当成明文。
+/// serde 只认小写字面量，未知取值解析失败——写错一个字母不允许静默当成明文。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EncryptionPolicy {
-    /// 明文：不进入加解密（宿主下限更严时，注册阶段即失败——fail-visible）
+    /// 不要求加密：默认明文；客户端自愿加密时仍解密/回密（不是「禁止加密」）
     Off,
     /// 机会主义：对端支持就加密，不支持就放行明文（永不拒绝）
     Preferred,
@@ -306,14 +128,6 @@ impl EncryptionPolicy {
         }
     }
 
-    /// 可选字段解析：缺省/空串 → 默认值（端点注册未声明 = `preferred`）
-    pub fn parse_opt(raw: Option<&str>, default: EncryptionPolicy) -> Result<Self> {
-        match raw {
-            Some(value) if !value.trim().is_empty() => Self::parse(value),
-            _ => Ok(default),
-        }
-    }
-
     /// 允许明文对端（`required` 不允许）
     pub fn allows_plaintext(self) -> bool {
         self != EncryptionPolicy::Required
@@ -326,218 +140,177 @@ impl std::fmt::Display for EncryptionPolicy {
     }
 }
 
-/// 取更严者：`effective = strictest(host_floor, endpoint_policy)`
-pub fn strictest(a: EncryptionPolicy, b: EncryptionPolicy) -> EncryptionPolicy {
-    a.max(b)
-}
-
-/// 一条已登记的端点策略（宿主设置页 / 审计面数据源；不含载荷与密钥）
+/// DB settings 表中的应用策略键：JSON 对象 `{ "<plugin id>": "<policy>" }`
 ///
-/// `locator` / `channel` 让审计面能指名「哪个端点明文」，而不是只给一个
-/// 宿主铸造的句柄（句柄对用户没有意义）；两者都来自注册表，不接受对端自报。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EndpointPolicyRecord {
-    /// 属主插件 id
-    pub owner: String,
-    /// 端点句柄（`http-*` / `wse-*`）
-    pub endpoint: String,
-    /// 人可读端点路径（HTTP = `/api/plugin/<owner>/<path>`，WS = `/ws/plugin/<owner>/<path>`）
-    pub locator: String,
-    /// 端点所属通道（`http` / `ws-plugin`）
-    pub channel: TrafficChannel,
-    /// 端点声明的策略（未声明的端点不在本表——它们跟随宿主下限）
-    pub policy: EncryptionPolicy,
-    /// 生效策略 = `strictest(通道下限, 声明)`；快照时按当前下限计算（下限可运行期调严）
-    pub effective: EncryptionPolicy,
-}
+/// 旧 `trafficEncryption`（宿主 floor）记录不再读取，保留在库里不迁移——研发期
+/// 直接换语义，避免把旧的整机下限静默翻译成某个应用的策略。
+pub const APP_POLICY_SETTING_KEY: &str = "linkCryptoAppPolicies";
 
-/// 策略表条目（句柄之外的展示材料随声明一起存，回收与查找只认键）
-#[derive(Debug, Clone)]
-struct EndpointPolicyEntry {
-    locator: String,
-    channel: TrafficChannel,
-    policy: EncryptionPolicy,
-}
-
-/// 端点策略表：键 = (属主插件 id, 端点句柄)
+/// 应用策略表：plugin id → 策略（未登记 = `off`：不要求加密）
 ///
-/// 端点句柄由宿主注册表铸造（UUID），插件无法伪造他端点的身份。
-static ENDPOINT_POLICIES: LazyLock<RwLock<HashMap<(String, String), EndpointPolicyEntry>>> =
+/// 宿主只保存应用声明的当前值（执行所需事实）；持久化同样只是让策略在宿主重启后
+/// 继续生效，决策权仍在应用。应用卸载不主动删（同 id 重装沿用用户选择；无端点时
+/// 不影响任何流量）。
+static APP_POLICIES: LazyLock<RwLock<HashMap<String, EncryptionPolicy>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-fn policy_lock() -> std::sync::RwLockReadGuard<'static, HashMap<(String, String), EndpointPolicyEntry>> {
-    ENDPOINT_POLICIES.read().unwrap_or_else(|e| e.into_inner())
+fn policy_lock() -> std::sync::RwLockReadGuard<'static, HashMap<String, EncryptionPolicy>> {
+    APP_POLICIES.read().unwrap_or_else(|e| e.into_inner())
 }
 
-/// 登记端点策略（端点注册表在挂牌前调用；返回 Err = 端点注册应整体失败）
-///
-/// 两条拒绝判据（fail-visible，不静默改档）：
-/// 1. 声明 `off` 而宿主下限更严 → 拒绝（否则就是「管理员要求加密、应用偷偷明文」）；
-/// 2. 声明 `required` 而本进程链路身份不可用 → 拒绝（否则注册成功却根本无法加密）。
-///
-/// `channel` 决定用哪条通道下限做判据（HTTP / 插件 WS 各自的下限可能不同）。
-/// `locator` 是人可读端点路径（注册表铸造配置时给出：HTTP 内部路径 / WS 挂载路径），
-/// 只进审计快照，不参与裁决。
-pub fn declare_endpoint_policy(
-    owner: &str,
-    endpoint: &str,
-    locator: &str,
-    policy: Option<EncryptionPolicy>,
-    channel: TrafficChannel,
-) -> std::result::Result<(), String> {
-    let floor = current_config().channel_floor(channel);
-    // 未声明 = 跟随宿主下限：没有需要登记/校验的声明（也无需为自己的端点背书）
-    let Some(policy) = policy else {
-        withdraw_endpoint_policy(owner, endpoint);
-        return Ok(());
-    };
-    check_declaration(owner, endpoint, policy, floor, channel, IDENTITY.get().is_some())?;
-
-    match ENDPOINT_POLICIES.write() {
-        Ok(mut map) => {
-            map.insert(
-                (owner.to_string(), endpoint.to_string()),
-                EndpointPolicyEntry {
-                    locator: locator.to_string(),
-                    channel,
-                    policy,
-                },
-            );
-        }
-        Err(_) => {
-            return Err(format!(
-                "endpoint policy registry lock poisoned, endpoint '{endpoint}' of plugin '{owner}' rejected"
-            ))
-        }
+/// 应用当前策略（未登记 / 空 owner = `off`）
+pub fn app_policy(owner: &str) -> EncryptionPolicy {
+    if owner.is_empty() {
+        return EncryptionPolicy::Off;
     }
-
-    // 明文端点必须可见、可审计（spec §7 / 安全不变量 5）：注册即留痕，
-    // 但不写载荷 / 密钥材料
-    if policy == EncryptionPolicy::Off {
-        tracing::info!(
-            plugin_id = %owner,
-            endpoint = %endpoint,
-            locator = %locator,
-            channel = channel.as_str(),
-            floor = %floor,
-            "plaintext endpoint registered (encryption off)"
-        );
-    } else {
-        tracing::debug!(
-            plugin_id = %owner,
-            endpoint = %endpoint,
-            locator = %locator,
-            channel = channel.as_str(),
-            policy = %policy,
-            floor = %floor,
-            "endpoint encryption policy registered"
-        );
-    }
-
-    // 端点声明可能把「全关」的下限抬高（off floor + required 端点），
-    // 过滤器注册状态要跟着走
-    sync_registration();
-    Ok(())
+    policy_lock().get(owner).copied().unwrap_or(EncryptionPolicy::Off)
 }
 
-/// 声明合法性判据（纯函数：身份可用性由调用方给，便于逐条单测）
-fn check_declaration(
+/// 策略合法性判据（纯函数：身份可用性由调用方给，便于逐条单测）
+fn validate_app_policy(
     owner: &str,
-    endpoint: &str,
     policy: EncryptionPolicy,
-    floor: EncryptionPolicy,
-    channel: TrafficChannel,
     identity_available: bool,
 ) -> std::result::Result<(), String> {
-    if policy == EncryptionPolicy::Off && floor != EncryptionPolicy::Off {
-        return Err(format!(
-            "encryption policy 'off' rejected: host floor is '{floor}' ({}), endpoint '{endpoint}' of plugin '{owner}' may not serve plaintext",
-            channel.as_str()
-        ));
+    if owner.trim().is_empty() {
+        return Err("app link encryption policy rejected: plugin id must not be empty".to_string());
     }
     if policy == EncryptionPolicy::Required && !identity_available {
         return Err(format!(
-            "encryption policy 'required' rejected: link identity unavailable on this host, endpoint '{endpoint}' of plugin '{owner}' cannot be encrypted"
+            "app link encryption policy 'required' rejected: link identity unavailable on this host, plugin '{owner}' cannot be encrypted"
         ));
     }
     Ok(())
 }
 
-/// 注销单个端点策略（端点注销 / 回收时调用；未知键幂等）
-pub fn withdraw_endpoint_policy(owner: &str, endpoint: &str) {
-    if let Ok(mut map) = ENDPOINT_POLICIES.write() {
-        map.remove(&(owner.to_string(), endpoint.to_string()));
+/// 写入应用策略（app 通道令牌门之后调用；`owner` 由宿主解析，不接受前端自报）
+///
+/// `required` 在本进程链路身份不可用时拒绝：否则策略显示 required 却根本无法
+/// 加密（fail-visible，不静默降级成明文）。
+pub fn set_app_policy(owner: &str, policy: EncryptionPolicy) -> std::result::Result<(), String> {
+    validate_app_policy(owner, policy, IDENTITY.get().is_some())?;
+    match APP_POLICIES.write() {
+        Ok(mut map) => {
+            map.insert(owner.to_string(), policy);
+        }
+        Err(_) => {
+            return Err(format!(
+                "app link encryption policy registry lock poisoned, plugin '{owner}' policy rejected"
+            ))
+        }
     }
     sync_registration();
+    tracing::info!(plugin_id = %owner, policy = policy.as_str(), "app link encryption policy updated");
+    Ok(())
 }
 
-/// 回收属主的全部端点策略（插件停用 / 卸载；只碰本人）
-pub fn withdraw_endpoint_policies(owner: &str) -> usize {
-    let removed = match ENDPOINT_POLICIES.write() {
-        Ok(mut map) => {
-            let before = map.len();
-            map.retain(|(key_owner, _), _| key_owner != owner);
-            before - map.len()
-        }
-        Err(_) => 0,
+/// 移除应用策略（卸载清理 / 测试隔离；未知键幂等）
+pub fn remove_app_policy(owner: &str) -> bool {
+    let removed = match APP_POLICIES.write() {
+        Ok(mut map) => map.remove(owner).is_some(),
+        Err(_) => false,
     };
-    if removed > 0 {
-        tracing::debug!(plugin_id = %owner, count = removed, "endpoint encryption policies withdrawn");
+    if removed {
         sync_registration();
+        tracing::debug!(plugin_id = %owner, "app link encryption policy removed");
     }
     removed
 }
 
-/// 端点声明的策略（未声明 = `None`；调用方按 `preferred` 缺省）
-pub fn endpoint_policy(owner: &str, endpoint: &str) -> Option<EncryptionPolicy> {
+/// 当前应用策略快照（DB 持久化 / 审计；按 plugin id 稳定排序）
+pub fn app_policy_snapshot() -> std::collections::BTreeMap<String, EncryptionPolicy> {
     policy_lock()
-        .get(&(owner.to_string(), endpoint.to_string()))
-        .map(|entry| entry.policy)
-}
-
-/// 生效策略 = `strictest(channel_floor, declared)`
-///
-/// - 端点**未声明** → 完全跟随通道下限（spec §2「缺省跟随 floor」）；
-/// - 端点**有声明** → 取更严者（只升不降）；
-/// - `owner` / `endpoint` 为空（宿主自有面 / 未注册路径）→ 没有端点维度，按通道
-///   下限执行。
-pub fn effective_endpoint_policy(owner: &str, endpoint: &str, channel: TrafficChannel) -> EncryptionPolicy {
-    let floor = current_config().channel_floor(channel);
-    if owner.is_empty() || endpoint.is_empty() {
-        return floor;
-    }
-    match endpoint_policy(owner, endpoint) {
-        Some(declared) => strictest(floor, declared),
-        None => floor,
-    }
-}
-
-/// 当前已登记的端点策略快照（宿主设置页「明文端点清单」数据源）
-///
-/// `effective` 在快照时按当前通道下限重算：下限可在运行期调严（宿主设置页），
-/// 存量声明不会因此被改写，但审计面必须如实展示「现在真正生效的是什么」。
-pub fn declared_endpoint_policies() -> Vec<EndpointPolicyRecord> {
-    let config = current_config();
-    let mut records: Vec<EndpointPolicyRecord> = policy_lock()
         .iter()
-        .map(|((owner, endpoint), entry)| EndpointPolicyRecord {
+        .map(|(owner, policy)| (owner.clone(), *policy))
+        .collect()
+}
+
+/// 一条应用策略记录（宿主设置页只读审计）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppPolicyRecord {
+    /// 属主插件 id
+    pub owner: String,
+    /// 应用当前策略（未登记的应用不出现在本表；它们按 `off` 执行）
+    pub policy: EncryptionPolicy,
+}
+
+/// 已登记的应用策略快照（宿主设置页 / 审计数据源；不含载荷与密钥）
+pub fn app_policies() -> Vec<AppPolicyRecord> {
+    let mut records: Vec<AppPolicyRecord> = policy_lock()
+        .iter()
+        .map(|(owner, policy)| AppPolicyRecord {
             owner: owner.clone(),
-            endpoint: endpoint.clone(),
-            locator: entry.locator.clone(),
-            channel: entry.channel,
-            policy: entry.policy,
-            effective: strictest(config.channel_floor(entry.channel), entry.policy),
+            policy: *policy,
         })
         .collect();
-    records.sort_by(|a, b| (&a.owner, &a.endpoint).cmp(&(&b.owner, &b.endpoint)));
+    records.sort_by(|a, b| a.owner.cmp(&b.owner));
     records
+}
+
+/// 从 DB settings 读取应用策略（启动期调用；表缺失 / 键缺失 / 损坏 → 空表 + 日志）
+///
+/// 逐条严格解析：未知策略值只跳过该条并 error 留痕（绝不把 required 静默当明文），
+/// 其余有效条目照常加载。返回成功应用条数。
+pub fn load_app_policies_from_db(conn: &rusqlite::Connection) -> usize {
+    let json = match conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        rusqlite::params![APP_POLICY_SETTING_KEY],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(json) => json,
+        Err(_) => return 0, // 首次启动 / 旧库：没有策略记录
+    };
+    let raw: HashMap<String, serde_json::Value> = match serde_json::from_str(&json) {
+        Ok(raw) => raw,
+        Err(e) => {
+            tracing::error!(
+                key = APP_POLICY_SETTING_KEY,
+                "app link encryption policies corrupt, no policy loaded this boot: {e}"
+            );
+            return 0;
+        }
+    };
+    let mut loaded = 0;
+    for (owner, value) in raw {
+        let Some(text) = value.as_str() else {
+            tracing::error!(plugin_id = %owner, "app link encryption policy is not a string, skipped");
+            continue;
+        };
+        match EncryptionPolicy::parse(text) {
+            Ok(policy) => match set_app_policy(&owner, policy) {
+                Ok(()) => loaded += 1,
+                Err(e) => {
+                    // 典型：identity 不可用时 required 被拒。运行期按 off 执行，错误可见。
+                    tracing::error!(plugin_id = %owner, error = %e, "app link encryption policy could not be applied")
+                }
+            },
+            Err(e) => {
+                tracing::error!(plugin_id = %owner, error = %e, "app link encryption policy invalid, skipped")
+            }
+        }
+    }
+    loaded
+}
+
+/// 持久化应用策略快照（宿主命令先更新运行态，落库失败由调用方回滚运行态）
+pub fn persist_app_policies_to_db(
+    conn: &rusqlite::Connection,
+    policies: &std::collections::BTreeMap<String, EncryptionPolicy>,
+) -> Result<()> {
+    let json = serde_json::to_string(policies)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![APP_POLICY_SETTING_KEY, json, now],
+    )?;
+    Ok(())
 }
 
 /// 明文放行审计去重集（键 = (属主, 端点句柄)）
 ///
 /// 审计要回答「哪些端点真的在被明文使用」，而不是逐请求刷日志：同一端点只记首次。
-/// 集合有上限：端点声明本身受注册表上限约束，这里再兜一层，避免长期运行被
+/// 集合有上限：端点数量本身受注册表上限约束，这里再兜一层，避免长期运行被
 /// 「装/卸循环」产生的旧句柄撑大内存（超限后只放弃审计新端点，不影响裁决）。
 const PLAINTEXT_AUDIT_CAP: usize = 1024;
 static PLAINTEXT_AUDITED: LazyLock<RwLock<HashSet<(String, String)>>> = LazyLock::new(|| RwLock::new(HashSet::new()));
@@ -566,35 +339,38 @@ fn reset_plaintext_audit() {
     }
 }
 
-/// 能力查询（宿主 → 本模块）：应用注册 `required` 端点前必须能确认本端支持
-/// per-endpoint 策略与对应密钥模型，旧宿主不支持时应用必须拒绝启用该业务
+/// 能力查询（宿主 → 应用前端，只读）：应用在声明 `required` 前必须能确认本端
+/// 支持按应用策略与对应密钥模型；旧宿主不支持时应用必须拒绝启用该业务。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkCryptoCapabilities {
-    /// 是否支持按端点声明加密策略（旧宿主缺此能力）
-    pub per_endpoint_policy: bool,
-    /// 端点策略可取的全部取值（wire 字面量）
-    pub endpoint_policies: Vec<&'static str>,
-    /// 当前宿主下限
-    pub floor: EncryptionPolicy,
-    /// 链路身份指纹（未初始化 = None，此时 `required` 端点注册会被拒绝）
+    /// 是否支持按应用设置策略（本版恒 true；旧宿主缺此字段）
+    pub app_scoped_policy: bool,
+    /// 策略可取的全部取值（wire 字面量）
+    pub policies: Vec<&'static str>,
+    /// 链路身份指纹（未初始化 = None，此时 `required` 会被拒绝）
     pub identity_fingerprint: Option<String>,
-    /// 可用密钥模型（配对设备的 HTTP 路径绑定 / 配对设备的 WS 会话密码）
+    /// 可用密钥模型（配对设备的 HTTP 路径绑定）
     pub key_models: Vec<&'static str>,
+    /// WS 帧级链路加密是否可用
+    ///
+    /// 自 2026-11-04 起为 `true`：升级期头协商（客户端提案 + 101 策略/密钥回执）
+    /// 已接线，`required` 不再拒绝所有 WS 客户端。
+    pub ws_session: bool,
 }
 
 /// 本进程的链路加密能力快照
 pub fn capabilities() -> LinkCryptoCapabilities {
     LinkCryptoCapabilities {
-        per_endpoint_policy: true,
-        endpoint_policies: vec![
+        app_scoped_policy: true,
+        policies: vec![
             EncryptionPolicy::Required.as_str(),
             EncryptionPolicy::Preferred.as_str(),
             EncryptionPolicy::Off.as_str(),
         ],
-        floor: current_config().host_floor(),
         identity_fingerprint: identity_fingerprint().map(|fp| fp.to_string()),
-        key_models: vec!["paired-http-path-bound", "paired-ws-session"],
+        key_models: vec!["paired-http-path-bound"],
+        ws_session: true,
     }
 }
 
@@ -885,15 +661,31 @@ pub fn ws_register_ciphers(addr: &str, ciphers: WsSessionCiphers) {
         Ok(mut map) => {
             map.insert(addr.to_string(), ciphers);
         }
-        Err(_) => tracing::error!(addr, "ws cipher registry lock poisoned, register dropped"),
+        Err(_) => {
+            tracing::error!(addr, "ws cipher registry lock poisoned, register dropped");
+            return;
+        }
     }
+    // 应用策略可能在同一时刻降到 off：过滤器不能在有活跃密码会话时被摘掉，
+    // 否则存量连接的帧会绕过滤链（Race 窗口：协商完成 → 策略切换）。
+    sync_registration();
 }
 
 /// 断连清理（terminal_ws disconnected 调用）
 pub fn ws_remove_ciphers(addr: &str) {
-    if let Ok(mut map) = WS_CIPHERS.lock() {
-        map.remove(addr);
+    let removed = match WS_CIPHERS.lock() {
+        Ok(mut map) => map.remove(addr).is_some(),
+        Err(_) => false,
+    };
+    if removed {
+        // 最后一条密码会话消失后，若所有应用策略都是 off，过滤器可以摘除
+        sync_registration();
     }
+}
+
+/// 是否有任何连接处于加密会话（过滤器不能把存量密文连接当明文处理）
+fn ws_ciphers_present() -> bool {
+    WS_CIPHERS.lock().map(|map| !map.is_empty()).unwrap_or(false)
 }
 
 /// 连接是否已处于加密模式（过滤器与 Close-4003 判定共用）
@@ -1170,12 +962,19 @@ fn parse_peer(peer: &str) -> Option<std::net::SocketAddr> {
     peer.parse().ok()
 }
 
+/// 对端是否环回（本地豁免判据；WS 升级门禁与过滤器共用同一口径）
+///
+/// 无法解析的 peer 一律视为远端（fail-safe：宁多过滤不放行）。
+pub fn is_loopback_peer(peer: &str) -> bool {
+    parse_peer(peer).is_some_and(|addr| addr.ip().is_loopback())
+}
+
 /// 本地豁免判定（spec §4，硬约束不受开关影响）：
 /// ① 环回对端（hook 脚本调 /api/plugin/*、本机工具直连 REST）；
 /// ② 配对引导白名单路由。
 /// peer 无法解析时视为远端（fail-safe：宁多过滤不放行）。
 fn is_exempt(ctx: &FilterContext<'_>) -> bool {
-    if parse_peer(ctx.peer).is_some_and(|addr| addr.ip().is_loopback()) {
+    if is_loopback_peer(ctx.peer) {
         return true;
     }
     matches!(ctx.channel, TrafficChannel::Http) && is_plaintext_whitelisted(ctx.route)
@@ -1184,13 +983,13 @@ fn is_exempt(ctx: &FilterContext<'_>) -> bool {
 impl LinkEncryptionFilter {
     /// 本流量的生效策略；`None` = 本地豁免（环回 / 宿主引导面，不受任何策略影响）
     ///
-    /// 策略 = `strictest(通道下限, 端点声明)`。端点身份（属主 / 端点句柄）由宿主
-    /// 注册表注入到 [`FilterContext`]，本函数不解析 URL 猜身份、不接受对端自报。
+    /// 策略 = 应用策略（`app_policy(owner)`），未登记 = `off`。端点身份（属主）
+    /// 由宿主注册表注入到 [`FilterContext`]，本函数不解析 URL 猜身份、不接受对端自报。
     pub fn policy_of(ctx: &FilterContext<'_>) -> Option<EncryptionPolicy> {
         if is_exempt(ctx) {
             return None;
         }
-        Some(effective_endpoint_policy(ctx.owner, ctx.endpoint, ctx.channel))
+        Some(app_policy(ctx.owner))
     }
 
     /// 该流量是否应进入加解密处理（`off` / 本地豁免 = 不处理）
@@ -1212,7 +1011,7 @@ impl LinkEncryptionFilter {
     }
 
     /// WS 入站/出站统一入口：连接已注册密码 → 帧级加解密（fail-closed，
-    /// Reject 由 WS 接线点升级为 Close 4003）；未注册（明文会话）→ 按端点策略裁决
+    /// Reject 由 WS 接线点升级为 Close 4003）；未注册（明文会话）→ 按应用策略裁决
     fn on_ws_frame(ctx: &mut FilterContext<'_>, policy: EncryptionPolicy) -> Verdict {
         if !ws_has_ciphers(ctx.peer) {
             return if policy.allows_plaintext() {
@@ -1220,7 +1019,7 @@ impl LinkEncryptionFilter {
                 Verdict::Continue
             } else {
                 Verdict::Reject(format!(
-                    "link encryption required (policy '{}') but this connection has no negotiated session cipher: {}; pair the client or lower the endpoint policy",
+                    "link encryption required (policy '{}') but this connection has no negotiated session cipher: {}; pair the client or change the app's encryption setting",
                     policy.as_str(),
                     Self::endpoint_hint(ctx)
                 ))
@@ -1264,7 +1063,7 @@ impl LinkEncryptionFilter {
             policy = policy.as_str(),
             peer = %ctx.peer,
             route = %ctx.route,
-            "plaintext connection allowed by endpoint policy"
+            "plaintext connection allowed by app policy"
         );
     }
 
@@ -1276,19 +1075,9 @@ impl LinkEncryptionFilter {
     /// 注：实际只有 GET 走此路径——HEAD 由 http_filter 在责任链之前按
     /// 快速路径短路（响应无 body 可加密），此处注释泛指无请求体语义
     fn on_http_inbound(ctx: &mut FilterContext<'_>, policy: EncryptionPolicy) -> Verdict {
-        // 明文端点（off）不接受加密信封：静默放行密文会让下游插件把密文当 JSON
-        // 解析，回出误导性业务码（比直接拒绝更难排查）
-        if policy == EncryptionPolicy::Off {
-            return if ctx.negotiation.trim().is_empty() {
-                Self::audit_plaintext(ctx, policy);
-                Verdict::Continue
-            } else {
-                Verdict::Reject(format!(
-                    "request negotiated link encryption but the target is a plaintext endpoint (policy 'off'): {}; disable encryption on the peer or raise the endpoint policy",
-                    Self::endpoint_hint(ctx)
-                ))
-            };
-        }
+        // `off` = 不要求加密，不是禁止加密：客户端自愿加密时照常解密（结
+        // 果仍是插件收到明文）。真正危险的是「本端无法解密却放行密文」——
+        // 那条由中间件的 fail-visible 分支处理（过滤器不在链上 → 400）。
         let Some(ek_b64) = parse_negotiation(ctx.negotiation) else {
             // 无协商：`preferred` 放行明文；`required` 必拒（不降级）
             return if policy.allows_plaintext() {
@@ -1296,7 +1085,7 @@ impl LinkEncryptionFilter {
                 Verdict::Continue
             } else {
                 Verdict::Reject(format!(
-                    "link encryption required (policy '{}') but the request carries no '{NEGOTIATION_HEADER}' negotiation header: {}; upgrade the peer or lower the endpoint policy",
+                    "link encryption required (policy '{}') but the request carries no '{NEGOTIATION_HEADER}' negotiation header: {}; upgrade the peer or change the app's encryption setting",
                     policy.as_str(),
                     Self::endpoint_hint(ctx)
                 ))
@@ -1348,10 +1137,8 @@ impl LinkEncryptionFilter {
     /// 未命中（未协商/入站被拒）→ 明文端点保持明文；`required` 端点拒绝
     /// （否则就是对管理员承诺的加密静默降级）
     fn on_http_outbound(ctx: &mut FilterContext<'_>, policy: EncryptionPolicy) -> Verdict {
-        if policy == EncryptionPolicy::Off {
-            // 明文端点：不回加密信封（对端即便带了协商头也已在上行被显式拒绝）
-            return Verdict::Continue;
-        }
+        // `off` 同理：没有协商/没有缓存密钥 → 明文；有协商且上行已缓存密钥 →
+        // 回加密响应（客户端自愿加密时必须成对，否则客户端会判降级）。
         let Some(ek_b64) = parse_negotiation(ctx.negotiation) else {
             return Verdict::Continue;
         };
@@ -1412,7 +1199,10 @@ impl TrafficFilter for LinkEncryptionFilter {
             // HTTP 即便 `off` 也要看协商头：密文送进明文端点是必须显性拒绝的错误
             TrafficChannel::Http => Self::on_http_inbound(ctx, policy),
             TrafficChannel::WsTerminal | TrafficChannel::WsEvent | TrafficChannel::WsPlugin => {
-                if policy == EncryptionPolicy::Off {
+                // 已协商会话密码的连接必须继续走加解密：应用把策略从 required /
+                // preferred 降到 off 时，存量连接仍是密文——按 off 直通会把密文
+                // 原样投给插件（或把明文回给期待密文的客户端）。
+                if policy == EncryptionPolicy::Off && !ws_has_ciphers(ctx.peer) {
                     Self::audit_plaintext(ctx, policy);
                     return Verdict::Continue;
                 }
@@ -1428,7 +1218,10 @@ impl TrafficFilter for LinkEncryptionFilter {
         match ctx.channel {
             TrafficChannel::Http => Self::on_http_outbound(ctx, policy),
             TrafficChannel::WsTerminal | TrafficChannel::WsEvent | TrafficChannel::WsPlugin => {
-                if policy == EncryptionPolicy::Off {
+                // 已协商会话密码的连接必须继续走加解密：应用把策略从 required /
+                // preferred 降到 off 时，存量连接仍是密文——按 off 直通会把密文
+                // 原样投给插件（或把明文回给期待密文的客户端）。
+                if policy == EncryptionPolicy::Off && !ws_has_ciphers(ctx.peer) {
                     Self::audit_plaintext(ctx, policy);
                     return Verdict::Continue;
                 }
@@ -1443,13 +1236,15 @@ impl TrafficFilter for LinkEncryptionFilter {
 /// 最近一次同步后的注册态（日志诊断用；裁决只认「链上有无同名节点」）
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 
-/// 按当前快照同步全局链注册状态（幂等；配置写入、端点策略登记/回收、启动装配共用）
+/// 按当前应用策略同步全局链注册状态（幂等；策略写入 / 启动装配共用）
 ///
-/// 注册判据（按优先级）：
-/// 1. 本进程必须有链路身份（没有密钥就不能加密；`required` 端点注册已在
-///    [`declare_endpoint_policy`] 处显性拒绝，此处是防御）；
-/// 2. 要么某通道下限非 `off`，要么有端点声明非 `off`——否则链上不应多一个
-///    每帧都要跑的过滤器（全明文部署零影响）。
+/// 注册判据：
+/// 1. 本进程必须有链路身份（没有密钥就不能加密；`required` 写入已在
+///    [`set_app_policy`] 处显性拒绝，此处是防御）；
+/// 2. 至少一个应用的策略非 `off`，或仍有存量 WS 密码会话——否则链上不应多一个
+///    每帧都要跑的过滤器（全明文部署零影响）。注意：`off` 只表示「不要求加密」，
+///    客户端自愿加密时本过滤器若因其他应用在链上，仍会解密/回密（见
+///    `on_http_inbound` / `on_http_outbound`）。
 pub fn sync_registration() {
     let chain = TrafficFilterChain::global();
     let wanted = IDENTITY.get().is_some() && crypto_wanted();
@@ -1467,24 +1262,23 @@ pub fn sync_registration() {
     }
 }
 
-/// 是否有任何流量需要加密能力（通道下限或端点声明非 `off`）
+/// 是否需要链路加密能力：至少一个应用要求非明文，或仍有存量密码会话
+///
+/// 后者是运行期降级的正确性约束：应用把策略降到 `off` 时，已协商的 WS 连接仍是
+/// 密文，过滤器必须留在链上继续解密/加密，直到这些连接断开（`ws_remove_ciphers`）。
+/// 该判据同时经 [`filter_active`] 暴露给 `/api/health`（移动端据此决定是否为
+/// 应用发起的 HTTP 加信封——链上没有过滤器时加信封只会被 fail-visible 400）。
 fn crypto_wanted() -> bool {
-    let config = current_config();
-    let channel_wants = [
-        TrafficChannel::Http,
-        TrafficChannel::WsTerminal,
-        TrafficChannel::WsEvent,
-        TrafficChannel::WsPlugin,
-    ]
-    .iter()
-    .any(|channel| config.channel_floor(*channel) != EncryptionPolicy::Off);
-    if channel_wants {
-        return true;
-    }
-    // 端点可把「全关」的宿主机抬高（应用声明 required）
-    policy_lock()
-        .values()
-        .any(|entry| entry.policy != EncryptionPolicy::Off)
+    policy_lock().values().any(|policy| *policy != EncryptionPolicy::Off) || ws_ciphers_present()
+}
+
+/// 本进程当前是否在流量链上装着链路加密过滤器（`/api/health` 只读能力位）
+///
+/// 移动端在感知到「对端参与链路加密」时才给应用发起的 HTTP 加信封；对方全
+/// `off` 时加信封只会被中间件的 fail-visible 分支拒绝。以链上真实节点为判据
+/// （而不是只看策略表）：外部 `chain.clear()` / 热重置后两者可能短暂脱节。
+pub fn filter_active() -> bool {
+    TrafficFilterChain::global().contains(FILTER_NAME)
 }
 
 /// 向指定链注册（测试隔离用：单元测试走独立链实例，不触碰全局单例）
@@ -1492,10 +1286,11 @@ pub fn register_into(chain: &TrafficFilterChain) {
     chain.register(std::sync::Arc::new(LinkEncryptionFilter));
 }
 
-/// 启动期装配：懒建身份 → 读 DB 配置进快照 → 同步注册
+/// 启动期装配：建身份 → 读库中的应用策略 → 同步注册
 ///
-/// 必须在 supervisor.start 之前完成（服务器收到的第一条流量就要被开关裁决）。
-/// 身份损坏时强制回退全关并 error 日志——加密不可用是可接受的降级，
+/// 必须在 supervisor.start 之前完成（服务器收到的第一条流量就要按应用策略裁决）。
+/// 身份损坏时策略中的 `required` 无法应用（[`load_app_policies_from_db`] 逐条
+/// error 留痕，该应用本启动期按 `off` 执行）——加密不可用是可接受的降级，
 /// 静默换钥破坏 pin 是不可接受的错误。
 ///
 /// server-lib-split：宿主壳负责解析应用数据目录与主库连接（`PathsPort` /
@@ -1503,33 +1298,15 @@ pub fn register_into(chain: &TrafficFilterChain) {
 /// 同步而非 `async`：`&Connection` 跨 `.await` 会让调用方的任务要求
 /// `Connection: Sync`（rusqlite 连接是 Send !Sync），装配本身无等待点。
 pub fn init_at_startup(data_dir: &std::path::Path, conn: &rusqlite::Connection) {
-    let mut identity_ready = false;
     match init_identity(data_dir) {
-        Ok(fp) => {
-            tracing::info!(fingerprint = fp, "link crypto identity ready");
-            identity_ready = true;
-        }
-        Err(e) => {
-            tracing::error!("link crypto identity init failed, encryption stays off: {e}")
-        }
+        Ok(fp) => tracing::info!(fingerprint = fp, "link crypto identity ready"),
+        Err(e) => tracing::error!("link crypto identity init failed, encryption stays off: {e}"),
     }
 
-    let mut config = load_config_from_db(conn);
-    if !identity_ready && config.host_floor() != EncryptionPolicy::Off {
-        // 加密不可用时把下限降到 off，且启用态同步（避免「floor=required 但
-        // 过滤器不在链上」的自相矛盾状态）；静默换钥破坏 pin 仍是不可接受的错误
-        tracing::warn!(
-            floor = %config.host_floor(),
-            "trafficEncryption active in settings but identity unavailable, forcing floor=off this boot"
-        );
-        config.floor = Some(EncryptionPolicy::Off);
-        config.enabled = false;
-    }
-
-    update_config(config);
+    let loaded = load_app_policies_from_db(conn);
     sync_registration();
     tracing::info!(
-        floor = %current_config().host_floor(),
+        apps = loaded,
         filter_registered = REGISTERED.load(Ordering::SeqCst),
         "link crypto initialized"
     );
@@ -1553,27 +1330,20 @@ mod tests {
 
     use crate::filter::Direction;
 
-    /// 触碰全局配置快照的测试必须持此锁串行执行：
-    /// cargo test 同模块用例默认多线程并行，否则 enabled 开关互踩产生偶发红
-    static SNAPSHOT_LOCK: Mutex<()> = Mutex::new(());
+    /// 触碰全局应用策略表的测试必须持此锁串行执行：
+    /// cargo test 同模块用例默认多线程并行，否则策略互踩产生偶发红
+    static POLICY_LOCK: Mutex<()> = Mutex::new(());
 
-    /// 在「迁移态主开关开 + 子通道全开」的隔离快照下执行断言，结束后还原
-    ///
-    /// 注意：迁移态下 `WsPlugin` 通道下限恒为 `off`（它历史上从未参与链路
-    /// 加密）——插件端点的策略必须由端点声明抬高。
-    fn with_all_enabled<T>(f: impl FnOnce() -> T) -> T {
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let original = current_config();
-        update_config(LinkCryptoConfig {
-            enabled: true,
-            ..LinkCryptoConfig::default()
-        });
+    /// 在「指定应用使用某策略」的隔离状态下执行断言，结束后移除该应用策略
+    fn with_app_policy<T>(owner: &str, policy: EncryptionPolicy, f: impl FnOnce() -> T) -> T {
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_app_policy(owner, policy).expect("测试策略写入失败");
         let out = f();
-        update_config(original);
+        remove_app_policy(owner);
         out
     }
 
-    /// 无端点身份的上下文（宿主自有面 / 未注册路径：按通道下限裁决）
+    /// 无属主身份的上下文（宿主自有面 / 未注册路径：没有应用策略 = 明文）
     fn mk_ctx<'a>(channel: TrafficChannel, peer: &'a str, route: &'a str) -> FilterContext<'a> {
         FilterContext {
             channel,
@@ -1588,7 +1358,7 @@ mod tests {
         }
     }
 
-    /// 带端点身份的上下文（策略按 `strictest(floor, declared)` 裁决）
+    /// 带属主身份的上下文（策略按应用策略裁决；endpoint 只用于日志/错误定位）
     fn mk_endpoint_ctx<'a>(
         channel: TrafficChannel,
         peer: &'a str,
@@ -1605,70 +1375,99 @@ mod tests {
 
     // ---------- 配置域 ----------
 
+    // ---------- 应用策略域 ----------
+
     #[test]
-    fn default_config_is_off_with_channels_on() {
-        let cfg = LinkCryptoConfig::default();
-        assert!(!cfg.enabled, "主开关必须默认关闭（opt-in 设计）");
-        assert!(cfg.encrypt_http && cfg.encrypt_ws_terminal && cfg.encrypt_ws_event);
-        assert!(cfg.allow_plaintext_fallback);
+    fn unregistered_app_defaults_to_off() {
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        remove_app_policy("test-default");
+        assert_eq!(app_policy("test-default"), EncryptionPolicy::Off);
+        assert_eq!(app_policy(""), EncryptionPolicy::Off, "宿主自有面没有应用策略");
     }
 
     #[test]
-    fn config_serde_roundtrip_and_unknown_field_rejection() {
-        let cfg = LinkCryptoConfig {
-            enabled: true,
-            ..LinkCryptoConfig::default()
-        };
-        let json = serde_json::to_string(&cfg).unwrap();
-        assert_eq!(serde_json::from_str::<LinkCryptoConfig>(&json).unwrap(), cfg);
+    fn app_policy_set_remove_and_snapshot() {
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let owner = "test-app-policy";
+        set_app_policy(owner, EncryptionPolicy::Preferred).unwrap();
+        assert_eq!(app_policy(owner), EncryptionPolicy::Preferred);
 
-        // 未知字段拒绝：前端拼错开关名不允许被静默吞掉
-        let bad = r#"{"enabled":true,"encryptHttp":false}"#;
-        assert!(serde_json::from_str::<LinkCryptoConfig>(bad).is_err());
+        let record = app_policies()
+            .into_iter()
+            .find(|r| r.owner == owner)
+            .expect("已登记策略应出现在审计快照中");
+        assert_eq!(record.policy, EncryptionPolicy::Preferred);
+        // wire 形状是前端接口镜像真源：字段名必须 camelCase
+        let json = serde_json::to_value(&record).unwrap();
+        assert!(json.get("owner").is_some() && json.get("policy").is_some(), "{json}");
 
-        // 部分字段省略走 serde default
-        let partial = r#"{"enabled":true}"#;
-        let parsed = serde_json::from_str::<LinkCryptoConfig>(partial).unwrap();
-        assert!(parsed.enabled && parsed.encrypt_http);
+        assert!(remove_app_policy(owner));
+        assert_eq!(app_policy(owner), EncryptionPolicy::Off);
+        assert!(!remove_app_policy(owner), "未知键回收幂等");
     }
 
     #[test]
-    fn config_db_roundtrip_and_corrupt_fallback() {
+    fn policy_validation_rejects_empty_owner_and_required_without_identity() {
+        assert!(validate_app_policy("  ", EncryptionPolicy::Off, true).is_err());
+        let err = validate_app_policy("com.example.app", EncryptionPolicy::Required, false)
+            .expect_err("无身份时 required 必须失败");
+        assert!(err.contains("identity") && err.contains("com.example.app"), "{err}");
+        // 无身份：preferred / off 不受阻（它们不要求本端必须能加密）
+        assert!(validate_app_policy("p", EncryptionPolicy::Preferred, false).is_ok());
+        assert!(validate_app_policy("p", EncryptionPolicy::Required, true).is_ok());
+    }
+
+    #[test]
+    fn app_policies_db_roundtrip_and_corrupt_fallback() {
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let conn = rusqlite::Connection::open(dir.path().join("test.db")).unwrap();
         conn.execute_batch("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);")
             .unwrap();
 
-        // 键不存在 → 默认全关
-        assert!(!load_config_from_db(&conn).enabled);
+        remove_app_policy("db-test-a");
+        remove_app_policy("db-test-b");
+        // 键不存在 → 不加载任何策略
+        assert_eq!(load_app_policies_from_db(&conn), 0);
 
-        let cfg = LinkCryptoConfig {
-            enabled: true,
-            encrypt_http: false,
-            ..LinkCryptoConfig::default()
-        };
-        persist_config_to_db(&conn, &cfg).unwrap();
-        assert_eq!(load_config_from_db(&conn), cfg);
+        set_app_policy("db-test-a", EncryptionPolicy::Preferred).unwrap();
+        set_app_policy("db-test-b", EncryptionPolicy::Off).unwrap();
+        let snapshot = app_policy_snapshot();
+        persist_app_policies_to_db(&conn, &snapshot).unwrap();
+        remove_app_policy("db-test-a");
+        remove_app_policy("db-test-b");
+        assert_eq!(load_app_policies_from_db(&conn), 2);
+        assert_eq!(app_policy("db-test-a"), EncryptionPolicy::Preferred);
+        assert_eq!(app_policy("db-test-b"), EncryptionPolicy::Off);
 
-        // 损坏 JSON → 回退默认不报错
+        // 损坏 JSON → 不加载、不 panic
         conn.execute(
             "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![SETTING_KEY, "{not-json", "now"],
+            rusqlite::params![APP_POLICY_SETTING_KEY, "{not-json", "now"],
         )
         .unwrap();
-        assert!(!load_config_from_db(&conn).enabled);
-    }
+        assert_eq!(load_app_policies_from_db(&conn), 0);
 
-    #[test]
-    fn snapshot_update_visible_to_readers() {
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let original = current_config();
-        let mut cfg = original.clone();
-        cfg.enabled = !cfg.enabled;
-        update_config(cfg);
-        assert_eq!(current_config().enabled, !original.enabled);
-        // 还原，避免污染其他测试
-        update_config(original);
+        // 未知策略值只跳过该条，其余照常（绝不静默当成明文）
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                APP_POLICY_SETTING_KEY,
+                r#"{"db-test-a":"preferred","db-test-b":"enabled"}"#,
+                "now"
+            ],
+        )
+        .unwrap();
+        assert_eq!(load_app_policies_from_db(&conn), 1);
+        assert_eq!(app_policy("db-test-a"), EncryptionPolicy::Preferred, "有效条目照常加载");
+        assert_eq!(
+            app_policy("db-test-b"),
+            EncryptionPolicy::Off,
+            "非法条目不得被当成明文以外的值"
+        );
+
+        remove_app_policy("db-test-a");
+        remove_app_policy("db-test-b");
     }
 
     // ---------- 身份密钥 ----------
@@ -1930,7 +1729,66 @@ mod tests {
         assert!(!ws_has_ciphers("t:1"), "断连清理后应无密码");
     }
 
+    /// 应用策略降到 off 后，已协商的 WS 连接仍必须继续加解密
+    ///
+    /// 回归：过滤器曾按「policy == Off ⇒ 直接放行」短路，应用关闭链路加密后，
+    /// 存量加密连接的下行密文会被原样投给插件、上行明文会被回给期待密文的客户端。
+    #[test]
+    fn encrypted_ws_connection_keeps_crypto_after_policy_off() {
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init_identity(tempfile::tempdir().unwrap().path()).unwrap();
+        let owner = "com.example.ws-downgrade";
+        let peer = "192.168.1.90:9001";
+        remove_app_policy(owner);
+        ws_remove_ciphers(peer);
+
+        let client_eph = wasmnest_crypto_engine::x25519::x25519_generate();
+        let handshake = derive_ws_session_ciphers(&b64_encode(client_eph.public())).unwrap();
+        let c2s = handshake.ciphers.client_to_server.clone();
+        let s2c = handshake.ciphers.server_to_client.clone();
+        ws_register_ciphers(peer, handshake.ciphers);
+
+        // 客户端视角封一帧（c2s，seq 0）
+        let sealed =
+            encrypt_ws_payload(&c2s, 0, b"hello", &ws_aad("ws-plugin", Direction::Inbound, ORIGIN_TEXT)).unwrap();
+        let envelope = serde_json::to_vec(&WsTextEnvelope {
+            v: WS_FRAME_VERSION,
+            seq: 0,
+            n: b64_encode(&sealed.nonce),
+            ct: b64_encode(&sealed.ciphertext),
+        })
+        .unwrap();
+
+        let mut inbound = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "text", owner, "wse-1");
+        inbound.data = envelope;
+        assert_eq!(LinkEncryptionFilter.on_inbound(&mut inbound), Verdict::Continue);
+        assert_eq!(inbound.data, b"hello", "策略 off 不得把存量密文直通给插件");
+
+        let mut outbound = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "text", owner, "wse-1");
+        outbound.direction = Direction::Outbound;
+        outbound.data = b"pong".to_vec();
+        assert_eq!(LinkEncryptionFilter.on_outbound(&mut outbound), Verdict::Continue);
+        assert_ne!(outbound.data, b"pong", "存量加密连接的出站帧仍须加密");
+        let out_env: WsTextEnvelope = serde_json::from_slice(&outbound.data).unwrap();
+        let opened = wasmnest_crypto_engine::aes_gcm::decrypt(
+            &s2c.key,
+            &ws_nonce(&s2c.nonce_prefix, out_env.seq),
+            &b64_decode(&out_env.ct).unwrap(),
+            Some(&ws_aad("ws-plugin", Direction::Outbound, ORIGIN_TEXT)),
+        )
+        .unwrap();
+        assert_eq!(opened, b"pong");
+
+        ws_remove_ciphers(peer);
+    }
+
     // ---------- 过滤器豁免与开关判定 ----------
+
+    /// WS AAD 通道字面量只有一份真源（桌面过滤器 ↔ 移动客户端共享常量）
+    #[test]
+    fn ws_plugin_channel_literal_matches_filter_channel() {
+        assert_eq!(TrafficChannel::WsPlugin.as_str(), WS_PLUGIN_CHANNEL);
+    }
 
     #[test]
     fn loopback_peer_always_exempt() {
@@ -1945,157 +1803,144 @@ mod tests {
         for peer in ["127.0.0.1:51000", "[::1]:51000"] {
             let ctx = mk_ctx(TrafficChannel::Http, peer, "/api/sessions");
             assert!(!LinkEncryptionFilter::should_process(&ctx), "环回 {peer} 应豁免");
+            assert!(is_loopback_peer(peer), "WS 升级门禁与过滤器必须同口径");
         }
+        assert!(!is_loopback_peer("192.168.1.42:51000"));
+        assert!(!is_loopback_peer("unknown"), "无法解析一律按远端（fail-safe）");
     }
 
-    /// 插件端点通道在迁移态仍不参与链路加密（旧行为保持），但端点一经声明
-    /// 策略就进入裁决（blanket「永不加密」已解除，spec §4）
+    /// 插件端点通道按应用策略裁决：未登记 = 明文，登记后进入加解密
     #[test]
-    fn ws_plugin_channel_follows_floor_then_endpoint_declaration() {
-        with_all_enabled(|| {
-            // 无声明 / 无端点身份 → 跟随迁移态通道下限（历史 = 不加密）
-            let ctx = mk_ctx(TrafficChannel::WsPlugin, "192.168.1.42:5001", "text");
-            assert!(
-                !LinkEncryptionFilter::should_process(&ctx),
-                "迁移态下插件端点通道下限为 off（旧行为）"
-            );
-
-            // 端点声明 preferred → 生效策略 preferred → 进入链路加密协商
-            let declared = mk_endpoint_ctx(
-                TrafficChannel::WsPlugin,
-                "192.168.1.42:5001",
-                "text",
-                "com.example.plugin",
-                "wse-declared",
-            );
-            declare_endpoint_policy(
-                "com.example.plugin",
-                "wse-declared",
-                "/ws/plugin/com.example.plugin/declared",
-                Some(EncryptionPolicy::Preferred),
-                TrafficChannel::WsPlugin,
-            )
-            .expect("preferred 不受下限约束");
-            assert!(LinkEncryptionFilter::should_process(&declared));
-            withdraw_endpoint_policy("com.example.plugin", "wse-declared");
+    fn ws_plugin_channel_follows_app_policy() {
+        let ctx = mk_endpoint_ctx(
+            TrafficChannel::WsPlugin,
+            "192.168.1.42:5001",
+            "text",
+            "com.example.plugin",
+            "wse-any",
+        );
+        assert!(!LinkEncryptionFilter::should_process(&ctx), "未设置策略的应用默认明文");
+        with_app_policy("com.example.plugin", EncryptionPolicy::Preferred, || {
+            assert!(LinkEncryptionFilter::should_process(&ctx));
         });
     }
 
     #[test]
     fn unparseable_peer_treated_as_remote_fail_safe() {
-        // peer 解析失败（如 "unknown"）不能当环回放行；需主开关开才进入处理判定
-        with_all_enabled(|| {
-            let ctx = mk_ctx(TrafficChannel::Http, "unknown", "/api/sessions");
+        with_app_policy("com.example.peer", EncryptionPolicy::Preferred, || {
+            let ctx = mk_endpoint_ctx(
+                TrafficChannel::Http,
+                "unknown",
+                "/api/sessions",
+                "com.example.peer",
+                "http-1",
+            );
             assert!(LinkEncryptionFilter::should_process(&ctx));
         });
     }
 
-    /// WS 帧在 peer 未注册 ciphers 时的明文 fallback 分支（票据 11 盲区）：
-    /// 生产代码仅 on_inbound/on_outbound 内部触达，此前从未被测试覆盖。
     #[test]
     fn ws_frame_no_ciphers_fallback_branch() {
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let original = current_config();
-        // 确保该 peer 无 ciphers（每个测试进程独立，但防御性清理）
-        ws_remove_ciphers("192.168.1.60:5555");
+        let dir = tempfile::tempdir().unwrap();
+        init_identity(dir.path()).unwrap();
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let owner = "com.example.fallback";
+        let peer = "192.168.1.60:5555";
+        ws_remove_ciphers(peer);
 
-        // 正向：allow_plaintext_fallback=true → Continue 且数据不变
-        update_config(LinkCryptoConfig {
-            enabled: true,
-            allow_plaintext_fallback: true,
-            ..LinkCryptoConfig::default()
-        });
-        let mut ctx = mk_ctx(TrafficChannel::WsTerminal, "192.168.1.60:5555", "text");
+        // preferred：无密码连接 → 明文放行且不改写
+        set_app_policy(owner, EncryptionPolicy::Preferred).unwrap();
+        let mut ctx = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "text", owner, "wse-fallback");
         assert!(LinkEncryptionFilter::should_process(&ctx));
         assert_eq!(LinkEncryptionFilter.on_inbound(&mut ctx), Verdict::Continue);
         assert_eq!(ctx.data, b"payload", "明文 fallback 不得改写载荷");
-        let mut ctx2 = mk_ctx(TrafficChannel::WsEvent, "192.168.1.60:5555", "text");
+        let mut ctx2 = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "text", owner, "wse-fallback");
         assert_eq!(LinkEncryptionFilter.on_outbound(&mut ctx2), Verdict::Continue);
 
-        // 负向：迁移态 allow_plaintext_fallback=false → 通道下限 required → Reject
-        update_config(LinkCryptoConfig {
-            enabled: true,
-            allow_plaintext_fallback: false,
-            ..LinkCryptoConfig::default()
-        });
-        let mut ctx3 = mk_ctx(TrafficChannel::WsTerminal, "192.168.1.60:5555", "binary");
-        let verdict = LinkEncryptionFilter.on_inbound(&mut ctx3);
-        match verdict {
-            Verdict::Reject(msg) => {
-                assert!(
-                    msg.contains("required") && msg.contains("no negotiated session cipher"),
-                    "拒绝消息应点名策略与缺口: {msg}"
-                )
-            }
+        // required：无密码连接 → 双向 fail-closed
+        set_app_policy(owner, EncryptionPolicy::Required).unwrap();
+        let mut ctx3 = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "binary", owner, "wse-fallback");
+        match LinkEncryptionFilter.on_inbound(&mut ctx3) {
+            Verdict::Reject(msg) => assert!(
+                msg.contains("required") && msg.contains("no negotiated session cipher"),
+                "拒绝消息应点名策略与缺口: {msg}"
+            ),
             other => panic!("期望 Reject，实际: {other:?}"),
         }
-        // 出站同样 fail-closed
-        let mut ctx4 = mk_ctx(TrafficChannel::WsEvent, "192.168.1.60:5555", "text");
+        let mut ctx4 = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "text", owner, "wse-fallback");
         assert!(matches!(
             LinkEncryptionFilter.on_outbound(&mut ctx4),
             Verdict::Reject(_)
         ));
 
-        update_config(original);
+        remove_app_policy(owner);
     }
 
     #[test]
     fn auth_and_health_routes_whitelisted_for_http_only() {
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        for route in ["/api/auth/pairing", "/api/auth/qr-connect", "/health", "/api/health"] {
-            let ctx = mk_ctx(TrafficChannel::Http, "192.168.1.50:4444", route);
-            assert!(!LinkEncryptionFilter::should_process(&ctx), "白名单路由 {route} 应豁免");
-        }
-        // 白名单只对 HTTP 生效；WS 帧类别叫 "text"/"binary"，天然不命中前缀。
-        // WS 非豁免路径会读快照，先临时开启避免依赖其它用例留下的状态
-        update_config(LinkCryptoConfig {
-            enabled: true,
-            ..LinkCryptoConfig::default()
-        });
-        let ws_ctx = mk_ctx(TrafficChannel::WsTerminal, "192.168.1.50:4444", "text");
-        assert!(LinkEncryptionFilter::should_process(&ws_ctx));
-        update_config(LinkCryptoConfig::default());
-    }
-
-    #[test]
-    fn remote_non_whitelisted_processed_when_enabled() {
-        with_all_enabled(|| {
-            let ctx = mk_ctx(TrafficChannel::Http, "192.168.1.50:4444", "/api/sessions");
-            assert!(LinkEncryptionFilter::should_process(&ctx));
-            // 骨架期直通不改数据
-            let mut mutable = ctx;
-            assert_eq!(LinkEncryptionFilter.on_inbound(&mut mutable), Verdict::Continue);
-            assert_eq!(mutable.data, b"payload");
-
-            let term = mk_ctx(TrafficChannel::WsTerminal, "192.168.1.50:4444", "binary");
-            assert!(LinkEncryptionFilter::should_process(&term));
-            let event = mk_ctx(TrafficChannel::WsEvent, "192.168.1.50:4444", "text");
-            assert!(LinkEncryptionFilter::should_process(&event));
+        with_app_policy("com.example.whitelist", EncryptionPolicy::Preferred, || {
+            for route in ["/api/auth/pairing", "/api/auth/qr-connect", "/health", "/api/health"] {
+                let ctx = mk_endpoint_ctx(
+                    TrafficChannel::Http,
+                    "192.168.1.50:4444",
+                    route,
+                    "com.example.whitelist",
+                    "http-1",
+                );
+                assert!(!LinkEncryptionFilter::should_process(&ctx), "白名单路由 {route} 应豁免");
+            }
+            // 白名单只对 HTTP 生效；WS 帧类别叫 "text"/"binary"，天然不命中前缀
+            let ws_ctx = mk_endpoint_ctx(
+                TrafficChannel::WsPlugin,
+                "192.168.1.50:4444",
+                "text",
+                "com.example.whitelist",
+                "wse-1",
+            );
+            assert!(LinkEncryptionFilter::should_process(&ws_ctx));
         });
     }
 
     #[test]
-    fn master_switch_off_blocks_everything() {
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        update_config(LinkCryptoConfig::default()); // enabled=false
-        let ctx = mk_ctx(TrafficChannel::Http, "192.168.1.50:4444", "/api/sessions");
+    fn remote_non_whitelisted_processed_when_app_encrypts() {
+        with_app_policy("com.example.remote", EncryptionPolicy::Preferred, || {
+            let mut http = mk_endpoint_ctx(
+                TrafficChannel::Http,
+                "192.168.1.50:4444",
+                "/api/sessions",
+                "com.example.remote",
+                "http-1",
+            );
+            assert!(LinkEncryptionFilter::should_process(&http));
+            assert_eq!(LinkEncryptionFilter.on_inbound(&mut http), Verdict::Continue);
+            assert_eq!(http.data, b"payload");
+
+            let ws = mk_endpoint_ctx(
+                TrafficChannel::WsPlugin,
+                "192.168.1.50:4444",
+                "text",
+                "com.example.remote",
+                "wse-1",
+            );
+            assert!(LinkEncryptionFilter::should_process(&ws));
+        });
+    }
+
+    #[test]
+    fn unconfigured_app_serves_plaintext() {
+        let owner = "com.example.unconfigured";
+        remove_app_policy(owner);
+        let ctx = mk_endpoint_ctx(
+            TrafficChannel::Http,
+            "192.168.1.50:4444",
+            "/api/sessions",
+            owner,
+            "http-1",
+        );
         assert!(!LinkEncryptionFilter::should_process(&ctx));
-    }
-
-    #[test]
-    fn per_channel_switch_gates_individually() {
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let original = current_config();
-        update_config(LinkCryptoConfig {
-            enabled: true,
-            encrypt_http: false,
-            ..LinkCryptoConfig::default()
-        });
-        let http = mk_ctx(TrafficChannel::Http, "192.168.1.50:4444", "/api/sessions");
-        assert!(!LinkEncryptionFilter::should_process(&http), "子开关关应跳过该通道");
-        let term = mk_ctx(TrafficChannel::WsTerminal, "192.168.1.50:4444", "text");
-        assert!(LinkEncryptionFilter::should_process(&term), "其余通道不受影响");
-        update_config(original);
+        // 宿主自有面（无属主）同样没有应用策略 → 明文
+        let host_ctx = mk_ctx(TrafficChannel::Http, "192.168.1.50:4444", "/api/sessions");
+        assert!(!LinkEncryptionFilter::should_process(&host_ctx));
     }
 
     #[test]
@@ -2105,7 +1950,7 @@ mod tests {
         // 全局链基线读两次做差分断言（而非「不得包含本过滤器」）——并行套件里
         // 兄弟用例可能已把过滤器注册进全局链，绝对断言会误红（flaky：单跑绿、
         // 全量并发红，2026-09-27 全量回归实测）
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let global_names_before = TrafficFilterChain::global().list_names();
         let chain = TrafficFilterChain::new();
         register_into(&chain);
@@ -2120,28 +1965,21 @@ mod tests {
 
     #[test]
     fn sync_registration_is_idempotent() {
-        // 同名节点重复注册会让链上出现重复项；swap 防护保证幂等
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let original = current_config();
-        // 用一个独立链替代全局链的注册目标不可行（sync_registration 固定用 global），
-        // 此处验证幂等机制本身：同一配置下重复同步不改变全局链节点数
-        update_config(LinkCryptoConfig {
-            enabled: true,
-            ..LinkCryptoConfig::default()
-        });
+        // 同名节点重复注册会让链上出现重复项；sync 防护保证幂等
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let owner = "com.example.sync";
+        set_app_policy(owner, EncryptionPolicy::Preferred).unwrap();
         let global = TrafficFilterChain::global();
         let before = global.list_names().len();
         sync_registration();
         sync_registration();
         sync_registration();
         let after = global.list_names().len();
-        // 幂等：三次同步后节点数相对基线仅增加 1（首次注册），不重复累积
         assert!(
             after <= before + 1,
             "重复 sync_registration 不得累积重复节点: {before} -> {after}"
         );
-        sync_registration();
-        update_config(original);
+        remove_app_policy(owner);
     }
 
     #[test]
@@ -2298,8 +2136,9 @@ mod tests {
     fn http_full_request_response_cycle_through_filter() {
         let dir = tempfile::tempdir().unwrap();
         init_identity(dir.path()).unwrap();
+        let owner = "com.example.cycle";
 
-        with_all_enabled(|| {
+        with_app_policy(owner, EncryptionPolicy::Preferred, || {
             use wasmnest_crypto_engine::x25519::{x25519_diffie_hellman, x25519_generate};
 
             // 客户端侧模拟：临时密钥对 + 对 Kd 公钥 ECDH 派生两方向密钥
@@ -2318,38 +2157,34 @@ mod tests {
                 &http_aad(Direction::Inbound, "/api/sessions"),
             )
             .unwrap();
-            let mut inbound = FilterContext {
-                channel: TrafficChannel::Http,
-                direction: Direction::Inbound,
-                peer: "192.168.1.9:55001",
-                route: "/api/sessions",
-                owner: "",
-                endpoint: "",
-                negotiation: &negotiation,
-                data: req_sealed,
-                outbound_headers: Vec::new(),
-            };
+            let mut inbound = mk_endpoint_ctx(
+                TrafficChannel::Http,
+                "192.168.1.9:55001",
+                "/api/sessions",
+                owner,
+                "http-1",
+            );
+            inbound.negotiation = &negotiation;
+            inbound.data = req_sealed;
             assert_eq!(LinkEncryptionFilter.on_inbound(&mut inbound), Verdict::Continue);
             assert_eq!(inbound.data, req_plain, "handler 应收到明文");
 
             // ---- 出站：明文响应 → 过滤器加密 → 客户端用 k_resp 解回 ----
             let resp_plain = br#"{"code":0,"data":[1,2]}"#.to_vec();
-            let mut outbound = FilterContext {
-                channel: TrafficChannel::Http,
-                direction: Direction::Outbound,
-                peer: "192.168.1.9:55001",
-                route: "/api/sessions",
-                owner: "",
-                endpoint: "",
-                negotiation: &negotiation,
-                data: resp_plain.clone(),
-                outbound_headers: Vec::new(),
-            };
+            let mut outbound = mk_endpoint_ctx(
+                TrafficChannel::Http,
+                "192.168.1.9:55001",
+                "/api/sessions",
+                owner,
+                "http-1",
+            );
+            outbound.direction = Direction::Outbound;
+            outbound.negotiation = &negotiation;
+            outbound.data = resp_plain.clone();
             assert_eq!(LinkEncryptionFilter.on_outbound(&mut outbound), Verdict::Continue);
             assert_ne!(outbound.data, resp_plain, "响应应已加密");
             // 加密响应必须回协商头标记（spec §4）：客户端据 `X-WasmNest-Crypto: v1`
-            // 识别并解密，缺失/值不符会导致客户端误判明文降级（值必须是 "v1"，
-            // 与移动端 `respHeader === 'v1'` 判定一致，非裸 "1"）
+            // 识别并解密，缺失/值不符会导致客户端误判明文降级（值必须是 "v1"）
             assert_eq!(
                 outbound.outbound_headers,
                 vec![(NEGOTIATION_HEADER.to_string(), format!("v{PROTOCOL_VERSION}"))],
@@ -2364,19 +2199,81 @@ mod tests {
             assert_eq!(decrypted, resp_plain);
 
             // ---- 缓存一次性：第二个同 peer/ek 响应无密钥可取 → 明文直通 ----
-            let mut second = FilterContext {
-                channel: TrafficChannel::Http,
-                direction: Direction::Outbound,
-                peer: "192.168.1.9:55001",
-                route: "/api/sessions",
-                owner: "",
-                endpoint: "",
-                negotiation: &negotiation,
-                data: b"late".to_vec(),
-                outbound_headers: Vec::new(),
-            };
+            let mut second = mk_endpoint_ctx(
+                TrafficChannel::Http,
+                "192.168.1.9:55001",
+                "/api/sessions",
+                owner,
+                "http-1",
+            );
+            second.direction = Direction::Outbound;
+            second.negotiation = &negotiation;
+            second.data = b"late".to_vec();
             assert_eq!(LinkEncryptionFilter.on_outbound(&mut second), Verdict::Continue);
             assert_eq!(second.data, b"late");
+        });
+    }
+
+    /// `off` = 不要求加密，不是禁止加密：客户端自愿加密时过滤器仍解密/回密
+    ///
+    /// 移动端只有一个全局链路加密开关，无法预知每个应用在对端宿主的策略；若
+    /// `off` 拒绝加密请求，开着全局开关的用户会打不开任何 `off` 应用的 HTTP。
+    /// 这里锁定「自愿加密被接受且成对回密」，同时保留「过滤器不在链上 → 中间件
+    /// fail-visible 400」那条真正的危险路径。
+    #[test]
+    fn http_off_accepts_client_initiated_encryption() {
+        let dir = tempfile::tempdir().unwrap();
+        init_identity(dir.path()).unwrap();
+        let owner = "com.example.off-voluntary";
+
+        with_app_policy(owner, EncryptionPolicy::Off, || {
+            use wasmnest_crypto_engine::x25519::{x25519_diffie_hellman, x25519_generate};
+
+            let client_eph = x25519_generate();
+            let (_, kd_pub_b64) = identity_parts().unwrap();
+            let kd_pub: [u8; 32] = b64_decode(&kd_pub_b64).unwrap().try_into().unwrap();
+            let shared = x25519_diffie_hellman(&client_eph, &kd_pub).unwrap();
+            let keys = derive_http_traffic_keys(shared.as_bytes(), "/api/sessions").unwrap();
+            let negotiation = format!("v1 {}", b64_encode(client_eph.public()));
+
+            let plain = br#"{"q":"off-app"}"#.to_vec();
+            let sealed =
+                encrypt_http_body(&keys.request, &plain, &http_aad(Direction::Inbound, "/api/sessions")).unwrap();
+            let mut inbound = mk_endpoint_ctx(
+                TrafficChannel::Http,
+                "192.168.1.77:55002",
+                "/api/sessions",
+                owner,
+                "http-1",
+            );
+            inbound.negotiation = &negotiation;
+            inbound.data = sealed;
+            assert_eq!(LinkEncryptionFilter.on_inbound(&mut inbound), Verdict::Continue);
+            assert_eq!(inbound.data, plain, "off 应用的加密请求仍应解出明文");
+
+            let mut outbound = mk_endpoint_ctx(
+                TrafficChannel::Http,
+                "192.168.1.77:55002",
+                "/api/sessions",
+                owner,
+                "http-1",
+            );
+            outbound.direction = Direction::Outbound;
+            outbound.negotiation = &negotiation;
+            outbound.data = br#"{"code":0}"#.to_vec();
+            assert_eq!(LinkEncryptionFilter.on_outbound(&mut outbound), Verdict::Continue);
+            assert_eq!(
+                outbound.outbound_headers,
+                vec![(NEGOTIATION_HEADER.to_string(), format!("v{PROTOCOL_VERSION}"))],
+                "自愿加密的请求必须成对回密（否则客户端判降级）"
+            );
+            let decrypted = decrypt_http_body(
+                &keys.response,
+                &outbound.data,
+                &http_aad(Direction::Outbound, "/api/sessions"),
+            )
+            .unwrap();
+            assert_eq!(decrypted, br#"{"code":0}"#);
         });
     }
 
@@ -2385,62 +2282,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         init_identity(dir.path()).unwrap();
 
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let original = current_config();
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let owner = "com.example.failclosed";
+        set_app_policy(owner, EncryptionPolicy::Required).unwrap();
 
-        // ① 强加密模式（fallback=false）：未协商请求直接拒绝
-        update_config(LinkCryptoConfig {
-            enabled: true,
-            allow_plaintext_fallback: false,
-            ..LinkCryptoConfig::default()
-        });
-        let mut no_neg = mk_ctx(TrafficChannel::Http, "192.168.1.9:55002", "/api/sessions");
+        // ① required：未协商请求直接拒绝
+        let mut no_neg = mk_endpoint_ctx(
+            TrafficChannel::Http,
+            "192.168.1.9:55002",
+            "/api/sessions",
+            owner,
+            "http-req",
+        );
         assert!(matches!(
             LinkEncryptionFilter.on_inbound(&mut no_neg),
             Verdict::Reject(msg) if msg.contains("required")
         ));
 
         // ② 已协商但载荷损坏 → Reject 且原因含 decrypt failed
-        update_config(LinkCryptoConfig {
-            enabled: true,
-            ..LinkCryptoConfig::default()
-        });
         let client_eph = wasmnest_crypto_engine::x25519::x25519_generate();
         let negotiation = format!("v1 {}", b64_encode(client_eph.public()));
-        let mut garbage = FilterContext {
-            channel: TrafficChannel::Http,
-            direction: Direction::Inbound,
-            peer: "192.168.1.9:55003",
-            route: "/api/sessions",
-            owner: "",
-            endpoint: "",
-            negotiation: &negotiation,
-            data: b"definitely-not-an-envelope".to_vec(),
-            outbound_headers: Vec::new(),
-        };
+        let mut garbage = mk_endpoint_ctx(
+            TrafficChannel::Http,
+            "192.168.1.9:55003",
+            "/api/sessions",
+            owner,
+            "http-req",
+        );
+        garbage.negotiation = &negotiation;
+        garbage.data = b"definitely-not-an-envelope".to_vec();
         assert!(matches!(
             LinkEncryptionFilter.on_inbound(&mut garbage),
             Verdict::Reject(msg) if msg.contains("decrypt failed")
         ));
 
         // ③ 非法公钥（非 base64/长度错）→ Reject
-        let mut bad_key = FilterContext {
-            channel: TrafficChannel::Http,
-            direction: Direction::Inbound,
-            peer: "192.168.1.9:55004",
-            route: "/api/sessions",
-            owner: "",
-            endpoint: "",
-            negotiation: "v1 !!!not-base64!!!",
-            data: vec![0u8; 16],
-            outbound_headers: Vec::new(),
-        };
+        let mut bad_key = mk_endpoint_ctx(
+            TrafficChannel::Http,
+            "192.168.1.9:55004",
+            "/api/sessions",
+            owner,
+            "http-req",
+        );
+        bad_key.negotiation = "v1 !!!not-base64!!!";
+        bad_key.data = vec![0u8; 16];
         assert!(matches!(
             LinkEncryptionFilter.on_inbound(&mut bad_key),
             Verdict::Reject(_)
         ));
 
-        update_config(original);
+        remove_app_policy(owner);
     }
 
     /// GET/HEAD 无请求体协商：空 body + 协商头 → 直接通过并缓存响应密钥，
@@ -2450,8 +2341,9 @@ mod tests {
     fn http_get_with_empty_body_negotiates_and_encrypts_response() {
         let dir = tempfile::tempdir().unwrap();
         init_identity(dir.path()).unwrap();
+        let owner = "com.example.get";
 
-        with_all_enabled(|| {
+        with_app_policy(owner, EncryptionPolicy::Preferred, || {
             use wasmnest_crypto_engine::x25519::{x25519_diffie_hellman, x25519_generate};
 
             let client_eph = x25519_generate();
@@ -2462,33 +2354,30 @@ mod tests {
             let negotiation = format!("v1 {}", b64_encode(client_eph.public()));
 
             // 入站：空 body（GET）→ 通过，不解信封（无载荷可解）
-            let mut inbound = FilterContext {
-                channel: TrafficChannel::Http,
-                direction: Direction::Inbound,
-                peer: "192.168.1.9:55005",
-                route: "/api/sessions",
-                owner: "",
-                endpoint: "",
-                negotiation: &negotiation,
-                data: Vec::new(),
-                outbound_headers: Vec::new(),
-            };
+            let mut inbound = mk_endpoint_ctx(
+                TrafficChannel::Http,
+                "192.168.1.9:55005",
+                "/api/sessions",
+                owner,
+                "http-1",
+            );
+            inbound.negotiation = &negotiation;
+            inbound.data = Vec::new();
             assert_eq!(LinkEncryptionFilter.on_inbound(&mut inbound), Verdict::Continue);
             assert!(inbound.data.is_empty(), "空 body 应原样透传");
 
             // 出站：响应加密 + 标记头（客户端据头解密）
             let resp_plain = br#"{"code":0,"data":[]}"#.to_vec();
-            let mut outbound = FilterContext {
-                channel: TrafficChannel::Http,
-                direction: Direction::Outbound,
-                peer: "192.168.1.9:55005",
-                route: "/api/sessions",
-                owner: "",
-                endpoint: "",
-                negotiation: &negotiation,
-                data: resp_plain.clone(),
-                outbound_headers: Vec::new(),
-            };
+            let mut outbound = mk_endpoint_ctx(
+                TrafficChannel::Http,
+                "192.168.1.9:55005",
+                "/api/sessions",
+                owner,
+                "http-1",
+            );
+            outbound.direction = Direction::Outbound;
+            outbound.negotiation = &negotiation;
+            outbound.data = resp_plain.clone();
             assert_eq!(LinkEncryptionFilter.on_outbound(&mut outbound), Verdict::Continue);
             assert_ne!(outbound.data, resp_plain, "GET 响应应加密");
             assert_eq!(
@@ -2533,357 +2422,136 @@ mod tests {
             EncryptionPolicy::parse(" required ").unwrap(),
             EncryptionPolicy::Required
         );
-        assert_eq!(
-            EncryptionPolicy::parse_opt(None, EncryptionPolicy::Preferred).unwrap(),
-            EncryptionPolicy::Preferred
-        );
-        assert_eq!(
-            EncryptionPolicy::parse_opt(Some("  "), EncryptionPolicy::Preferred).unwrap(),
-            EncryptionPolicy::Preferred
-        );
-
-        // 严格度序：off < preferred < required（「只升不降」的实现基础）
+        // 严格度序：off < preferred < required（日志/展示排序基础）
         assert!(EncryptionPolicy::Off < EncryptionPolicy::Preferred);
         assert!(EncryptionPolicy::Preferred < EncryptionPolicy::Required);
-        assert_eq!(
-            strictest(EncryptionPolicy::Off, EncryptionPolicy::Preferred),
-            EncryptionPolicy::Preferred
-        );
-        assert_eq!(
-            strictest(EncryptionPolicy::Required, EncryptionPolicy::Off),
-            EncryptionPolicy::Required
-        );
         assert!(!EncryptionPolicy::Required.allows_plaintext());
         assert!(EncryptionPolicy::Preferred.allows_plaintext());
         assert!(EncryptionPolicy::Off.allows_plaintext());
     }
 
-    /// 旧字段 → 下限的一次性迁移映射（spec §6）：映射必须可预测、可逆
+    /// 应用策略表：登记 / 审计快照 / 回收（全局表，本用例自清）
     #[test]
-    fn legacy_config_maps_to_floor() {
-        let off = LinkCryptoConfig {
-            enabled: false,
-            ..LinkCryptoConfig::default()
-        };
-        assert_eq!(off.host_floor(), EncryptionPolicy::Off);
-
-        let preferred = LinkCryptoConfig {
-            enabled: true,
-            allow_plaintext_fallback: true,
-            ..LinkCryptoConfig::default()
-        };
-        assert_eq!(preferred.host_floor(), EncryptionPolicy::Preferred);
-
-        let required = LinkCryptoConfig {
-            enabled: true,
-            allow_plaintext_fallback: false,
-            ..LinkCryptoConfig::default()
-        };
-        assert_eq!(required.host_floor(), EncryptionPolicy::Required);
-
-        // 迁移态逐通道子开关仍然生效；插件端点通道历史从未加密 → 恒 off
-        let http_off = LinkCryptoConfig {
-            enabled: true,
-            encrypt_http: false,
-            ..LinkCryptoConfig::default()
-        };
-        assert_eq!(http_off.channel_floor(TrafficChannel::Http), EncryptionPolicy::Off);
-        assert_eq!(
-            http_off.channel_floor(TrafficChannel::WsTerminal),
-            EncryptionPolicy::Preferred
-        );
-        assert_eq!(http_off.channel_floor(TrafficChannel::WsPlugin), EncryptionPolicy::Off);
-
-        // 显式 floor 为权威：旧子开关不再能把 required 降级成明文
-        let explicit = LinkCryptoConfig {
-            enabled: false,
-            encrypt_http: false,
-            floor: Some(EncryptionPolicy::Required),
-            ..LinkCryptoConfig::default()
-        };
-        assert_eq!(explicit.host_floor(), EncryptionPolicy::Required);
-        assert_eq!(explicit.channel_floor(TrafficChannel::Http), EncryptionPolicy::Required);
-        assert_eq!(
-            explicit.channel_floor(TrafficChannel::WsPlugin),
-            EncryptionPolicy::Required
-        );
-
-        // 写入口构造：floor 与 enabled 同源（不允许 floor=required + enabled=false）
-        let written = LinkCryptoConfig::from_floor(EncryptionPolicy::Preferred);
-        assert!(written.enabled && written.floor == Some(EncryptionPolicy::Preferred));
-        assert!(!LinkCryptoConfig::from_floor(EncryptionPolicy::Off).enabled);
-
-        // 落库往返：floor 保留（重启后姿态不变）
-        let json = serde_json::to_string(&written).unwrap();
-        assert_eq!(serde_json::from_str::<LinkCryptoConfig>(&json).unwrap(), written);
-        assert!(!json.contains("\"floor\":null"), "floor 缺省不序列化，旧读者仍可解析");
-    }
-
-    /// 声明判据（纯函数）：只能往上加、不能往下压；无身份不得声明 required
-    #[test]
-    fn declaration_checks_enforce_floor_and_identity() {
-        use TrafficChannel::Http;
-        // 下限 off：可声明 off / preferred / required（向上提）
-        for policy in [
-            EncryptionPolicy::Off,
-            EncryptionPolicy::Preferred,
-            EncryptionPolicy::Required,
-        ] {
-            assert!(
-                check_declaration("p", "http-1", policy, EncryptionPolicy::Off, Http, true).is_ok(),
-                "floor=off 时 {policy} 应允许"
-            );
-        }
-        // 下限 required：声明 off 拒绝，且文案点名端点 / 属主 / 通道 / 下限
-        let err = check_declaration(
-            "com.example.app",
-            "http-2",
-            EncryptionPolicy::Off,
-            EncryptionPolicy::Required,
-            Http,
-            true,
-        )
-        .expect_err("floor=required 时 off 必须失败");
-        assert!(
-            err.contains("off")
-                && err.contains("required")
-                && err.contains("http-2")
-                && err.contains("com.example.app")
-                && err.contains("http"),
-            "拒绝文案须点名端点/属主/通道/下限: {err}"
-        );
-        // 下限 required：preferred 允许（生效仍是 required）
-        assert!(check_declaration(
-            "p",
-            "http-3",
-            EncryptionPolicy::Preferred,
-            EncryptionPolicy::Required,
-            Http,
-            true
-        )
-        .is_ok());
-        // 无身份：required 拒绝（否则注册成功却无法加密）
-        let err = check_declaration(
-            "p",
-            "http-4",
-            EncryptionPolicy::Required,
-            EncryptionPolicy::Off,
-            Http,
-            false,
-        )
-        .expect_err("无身份时 required 必须失败");
-        assert!(err.contains("identity") && err.contains("http-4"), "{err}");
-        // 无身份：preferred / off 不受阻（它们不要求本端必须能加密）
-        assert!(check_declaration(
-            "p",
-            "http-5",
-            EncryptionPolicy::Preferred,
-            EncryptionPolicy::Off,
-            Http,
-            false
-        )
-        .is_ok());
-    }
-
-    /// 端点策略表：登记 / 生效值 / 回收（全局表，本用例自清）
-    #[test]
-    fn endpoint_policy_table_roundtrip_and_purge() {
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    fn app_policy_table_roundtrip_and_purge() {
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         init_identity(dir.path()).unwrap();
-        let original = current_config();
 
-        update_config(LinkCryptoConfig::from_floor(EncryptionPolicy::Off));
-        declare_endpoint_policy(
-            "policy-test",
-            "http-a",
-            "/api/plugin/policy-test/a",
-            Some(EncryptionPolicy::Required),
-            TrafficChannel::Http,
-        )
-        .expect("抬高下限必须允许");
-        assert_eq!(
-            effective_endpoint_policy("policy-test", "http-a", TrafficChannel::Http),
-            EncryptionPolicy::Required
-        );
-        declare_endpoint_policy(
-            "policy-test",
-            "http-b",
-            "/api/plugin/policy-test/b",
-            Some(EncryptionPolicy::Off),
-            TrafficChannel::Http,
-        )
-        .expect("floor=off 时 off 允许");
-        assert_eq!(
-            effective_endpoint_policy("policy-test", "http-b", TrafficChannel::Http),
-            EncryptionPolicy::Off
-        );
-        // 未登记端点跟随通道下限
-        assert_eq!(
-            effective_endpoint_policy("policy-test", "http-unknown", TrafficChannel::Http),
-            EncryptionPolicy::Off
-        );
-        // 无端点身份（宿主自有面）跟随通道下限
-        assert_eq!(
-            effective_endpoint_policy("", "", TrafficChannel::Http),
-            EncryptionPolicy::Off
-        );
+        remove_app_policy("policy-test");
+        remove_app_policy("policy-other");
+        set_app_policy("policy-test", EncryptionPolicy::Required).expect("required 允许（身份已就绪）");
+        assert_eq!(app_policy("policy-test"), EncryptionPolicy::Required);
+        set_app_policy("policy-other", EncryptionPolicy::Preferred).unwrap();
+        assert_eq!(app_policy("policy-other"), EncryptionPolicy::Preferred);
 
-        // 下限变严：声明 off 的端点不会因此被静默降级（已有声明保留，但生效值取更严者）
-        update_config(LinkCryptoConfig::from_floor(EncryptionPolicy::Required));
-        assert_eq!(
-            effective_endpoint_policy("policy-test", "http-b", TrafficChannel::Http),
-            EncryptionPolicy::Required,
-            "下限变严后旧 off 声明的生效值必须跟着变严"
-        );
-        assert_eq!(endpoint_policy("policy-test", "http-b"), Some(EncryptionPolicy::Off));
-
-        // 清单快照（排序稳定，供宿主设置页展示）：句柄之外必须带人可读定位与
-        // 生效值——审计面要能指名「哪个端点、哪种通道、现在真正生效什么」
-        let records = declared_endpoint_policies();
+        // 审计快照：排序稳定、wire camelCase、每条带 owner/policy
+        let records = app_policies();
         let record = records
             .iter()
-            .find(|r| r.owner == "policy-test" && r.endpoint == "http-a")
-            .expect("http-a 应在策略快照中");
-        assert_eq!(record.locator, "/api/plugin/policy-test/a");
-        assert_eq!(record.channel, TrafficChannel::Http);
+            .find(|r| r.owner == "policy-test")
+            .expect("策略快照缺 policy-test");
         assert_eq!(record.policy, EncryptionPolicy::Required);
-        assert_eq!(record.effective, EncryptionPolicy::Required);
-        // wire 形状是前端接口的镜像真源：字段名必须是 camelCase（多单词字段拼错
-        // = 前端默默读到 undefined，能力缺失/清单空掉，而不是报错）
-        let json = serde_json::to_value(record).expect("端点策略快照必须可序列化");
-        for key in ["owner", "endpoint", "locator", "channel", "policy", "effective"] {
-            assert!(json.get(key).is_some(), "端点策略 wire 缺字段 {key}: {json}");
+        let json = serde_json::to_value(record).expect("策略快照必须可序列化");
+        for key in ["owner", "policy"] {
+            assert!(json.get(key).is_some(), "策略 wire 缺字段 {key}: {json}");
         }
-        assert_eq!(json["channel"], "http", "通道 wire 字面量须与日志字段同源");
-        // 下限此时已调严到 required：未升级的 off 声明在快照里必须表现为
-        // effective=required（存储态声明不变）
-        let b = records
-            .iter()
-            .find(|r| r.owner == "policy-test" && r.endpoint == "http-b")
-            .expect("http-b 应在策略快照中");
-        assert_eq!(b.policy, EncryptionPolicy::Off);
-        assert_eq!(b.effective, EncryptionPolicy::Required);
+        assert!(
+            records.windows(2).all(|w| w[0].owner <= w[1].owner),
+            "快照须按属主稳定排序"
+        );
 
         // 回收只命中本人
-        declare_endpoint_policy(
-            "policy-other",
-            "http-c",
-            "/api/plugin/policy-other/c",
-            Some(EncryptionPolicy::Preferred),
-            TrafficChannel::Http,
-        )
-        .expect("floor=required 时 preferred 声明允许");
-        assert_eq!(withdraw_endpoint_policies("policy-test"), 2);
-        assert!(endpoint_policy("policy-test", "http-a").is_none());
-        assert!(endpoint_policy("policy-other", "http-c").is_some());
-        withdraw_endpoint_policies("policy-other");
-
-        update_config(original);
+        assert!(remove_app_policy("policy-test"));
+        assert_eq!(app_policy("policy-test"), EncryptionPolicy::Off);
+        assert_eq!(app_policy("policy-other"), EncryptionPolicy::Preferred);
+        remove_app_policy("policy-other");
     }
 
-    /// A/B 共存：同一宿主上 A 端点 required 拒绝明文、B 端点 off 保持明文
+    /// A/B 共存：同一宿主上 A 应用 required 拒绝明文、B 应用未设置（off）保持明文
     #[test]
-    fn http_required_and_off_endpoints_coexist() {
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    fn app_required_and_plaintext_traffic_coexist() {
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         init_identity(dir.path()).unwrap();
-        let original = current_config();
-        // floor=off（这台机器最低要求就是明文）：A 主动抬高到 required，B 显式 off
-        update_config(LinkCryptoConfig::from_floor(EncryptionPolicy::Off));
-
-        declare_endpoint_policy(
-            "com.example.a",
-            "http-req",
-            "/api/plugin/com.example.a/req",
-            Some(EncryptionPolicy::Required),
-            TrafficChannel::Http,
-        )
-        .expect("required 声明");
-        declare_endpoint_policy(
-            "com.example.b",
-            "http-plain",
-            "/api/plugin/com.example.b/plain",
-            Some(EncryptionPolicy::Off),
-            TrafficChannel::Http,
-        )
-        .expect("floor=off 时 off 声明允许");
+        let owner_a = "com.example.a";
+        let owner_b = "com.example.b";
+        set_app_policy(owner_a, EncryptionPolicy::Required).expect("required 策略");
+        remove_app_policy(owner_b);
 
         // A：未协商 → 拒绝，文案点名端点 / 属主 / 策略 / 协商头
         let mut a = mk_endpoint_ctx(
             TrafficChannel::Http,
             "192.168.1.9:6001",
             "/api/plugin/com.example.a/secret",
-            "com.example.a",
+            owner_a,
             "http-req",
         );
         match LinkEncryptionFilter.on_inbound(&mut a) {
             Verdict::Reject(msg) => assert!(
                 msg.contains("http-req")
-                    && msg.contains("com.example.a")
+                    && msg.contains(owner_a)
                     && msg.contains("required")
                     && msg.contains(NEGOTIATION_HEADER),
                 "拒绝文案须点名端点/属主/策略/协商头: {msg}"
             ),
-            other => panic!("required 端点未协商时必须拒绝，实际: {other:?}"),
+            other => panic!("required 应用未协商时必须拒绝，实际: {other:?}"),
         }
 
-        // B：明文端点不接受加密信封（密文会被下游当 JSON 解析，回出误导性业务码）
+        // B：off 端点接受明文；客户端自愿加密时照常解密（off = 不要求，不是禁止）
         let mut b = mk_endpoint_ctx(
             TrafficChannel::Http,
             "192.168.1.9:6002",
             "/api/plugin/com.example.b/status",
-            "com.example.b",
+            owner_b,
             "http-plain",
         );
         assert_eq!(LinkEncryptionFilter.on_inbound(&mut b), Verdict::Continue);
         assert_eq!(b.data, b"payload", "off 端点明文字节不得改写");
-        b.negotiation = "v1 AAA=";
-        match LinkEncryptionFilter.on_inbound(&mut b) {
-            Verdict::Reject(msg) => assert!(
-                msg.contains("off") && msg.contains("plaintext") && msg.contains("http-plain"),
-                "off 端点收到密文必须显性拒绝: {msg}"
-            ),
-            other => panic!("off 端点收到协商必须拒绝，实际: {other:?}"),
-        }
-        // 出站：off 端点不回加密信封
-        let mut b_out = mk_endpoint_ctx(
-            TrafficChannel::Http,
-            "192.168.1.9:6002",
-            "/api/plugin/com.example.b/status",
-            "com.example.b",
-            "http-plain",
-        );
-        b_out.direction = Direction::Outbound;
-        assert_eq!(LinkEncryptionFilter.on_outbound(&mut b_out), Verdict::Continue);
-        assert!(b_out.outbound_headers.is_empty(), "明文端点不得回加密标记头");
-        assert_eq!(b_out.data, b"payload");
 
-        withdraw_endpoint_policies("com.example.a");
-        withdraw_endpoint_policies("com.example.b");
-        update_config(original);
+        use wasmnest_crypto_engine::x25519::{x25519_diffie_hellman, x25519_generate};
+        let client_eph = x25519_generate();
+        let (_, kd_pub_b64) = identity_parts().unwrap();
+        let kd_pub: [u8; 32] = b64_decode(&kd_pub_b64).unwrap().try_into().unwrap();
+        let shared = x25519_diffie_hellman(&client_eph, &kd_pub).unwrap();
+        let route = "/api/plugin/com.example.b/status";
+        let keys = derive_http_traffic_keys(shared.as_bytes(), route).unwrap();
+        let negotiation = format!("v1 {}", b64_encode(client_eph.public()));
+        let voluntary = b"off-voluntary".to_vec();
+        b.negotiation = &negotiation;
+        b.data = encrypt_http_body(&keys.request, &voluntary, &http_aad(Direction::Inbound, route)).unwrap();
+        assert_eq!(LinkEncryptionFilter.on_inbound(&mut b), Verdict::Continue);
+        assert_eq!(b.data, voluntary, "off 应用的加密请求仍应解出明文");
+
+        // 出站：上行已缓存响应密钥 → 成对回密（不回密会让客户端判降级）
+        let mut b_out = mk_endpoint_ctx(TrafficChannel::Http, "192.168.1.9:6002", route, owner_b, "http-plain");
+        b_out.direction = Direction::Outbound;
+        b_out.negotiation = &negotiation;
+        b_out.data = b"payload".to_vec();
+        assert_eq!(LinkEncryptionFilter.on_outbound(&mut b_out), Verdict::Continue);
+        assert_eq!(
+            b_out.outbound_headers,
+            vec![(NEGOTIATION_HEADER.to_string(), format!("v{PROTOCOL_VERSION}"))],
+            "自愿加密必须成对回密"
+        );
+        let decrypted = decrypt_http_body(&keys.response, &b_out.data, &http_aad(Direction::Outbound, route)).unwrap();
+        assert_eq!(decrypted, b"payload");
+
+        remove_app_policy(owner_a);
+        remove_app_policy(owner_b);
     }
 
-    /// WS 端点 required + 未协商连接 → Reject（fail-visible，不降级成明文）
+    /// WS 应用 required + 未协商连接 → Reject（fail-visible，不降级成明文）
     #[test]
     fn ws_required_endpoint_rejects_unpaired_connection() {
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         init_identity(dir.path()).unwrap();
-        let original = current_config();
-        update_config(LinkCryptoConfig::from_floor(EncryptionPolicy::Preferred));
-        declare_endpoint_policy(
-            "com.example.ws",
-            "wse-req",
-            "/ws/plugin/com.example.ws/req",
-            Some(EncryptionPolicy::Required),
-            TrafficChannel::WsPlugin,
-        )
-        .expect("required 声明");
+        let owner = "com.example.ws";
         let peer = "192.168.1.70:7001";
         ws_remove_ciphers(peer);
 
-        let mut inbound = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "text", "com.example.ws", "wse-req");
+        set_app_policy(owner, EncryptionPolicy::Required).expect("required 策略");
+        let mut inbound = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "text", owner, "wse-req");
         match LinkEncryptionFilter.on_inbound(&mut inbound) {
             Verdict::Reject(msg) => assert!(
                 msg.contains("wse-req") && msg.contains("required") && msg.contains("no negotiated session cipher"),
@@ -2891,28 +2559,20 @@ mod tests {
             ),
             other => panic!("required 端点无会话密码时必须拒绝，实际: {other:?}"),
         }
-        let mut outbound = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "binary", "com.example.ws", "wse-req");
+        let mut outbound = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "binary", owner, "wse-req");
         outbound.direction = Direction::Outbound;
         assert!(matches!(
             LinkEncryptionFilter.on_outbound(&mut outbound),
             Verdict::Reject(_)
         ));
 
-        // 同宿主上声明 preferred 的 WS 端点：无密码连接仍然放行（机会主义）
-        declare_endpoint_policy(
-            "com.example.ws",
-            "wse-opt",
-            "/ws/plugin/com.example.ws/opt",
-            Some(EncryptionPolicy::Preferred),
-            TrafficChannel::WsPlugin,
-        )
-        .unwrap();
-        let mut opt = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "text", "com.example.ws", "wse-opt");
+        // 同一应用改为 preferred：无密码连接仍然放行（机会主义）
+        set_app_policy(owner, EncryptionPolicy::Preferred).unwrap();
+        let mut opt = mk_endpoint_ctx(TrafficChannel::WsPlugin, peer, "text", owner, "wse-req");
         assert_eq!(LinkEncryptionFilter.on_inbound(&mut opt), Verdict::Continue);
         assert_eq!(opt.data, b"payload");
 
-        withdraw_endpoint_policies("com.example.ws");
-        update_config(original);
+        remove_app_policy(owner);
     }
 
     /// 明文放行审计：同一端点只记首次（其余去重），无身份不记
@@ -2941,30 +2601,27 @@ mod tests {
         reset_plaintext_audit();
     }
 
-    /// 能力查询：per-endpoint 策略已支持、下限与身份如实上报
+    /// 能力查询：按应用策略已支持、身份如实上报
     #[test]
     fn capabilities_report_supported_policy_surface() {
-        // 读全局配置快照：与改快照的用例串行，避免并发读到别的用例临时设的下限
-        let _guard = SNAPSHOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let caps = capabilities();
-        assert!(caps.per_endpoint_policy, "本版本支持按端点声明策略");
-        assert_eq!(caps.endpoint_policies, vec!["required", "preferred", "off"]);
+        assert!(caps.app_scoped_policy, "本版本支持按应用设置策略");
+        assert_eq!(caps.policies, vec!["required", "preferred", "off"]);
         assert!(caps.key_models.contains(&"paired-http-path-bound"));
-        // 下限与配置快照同源
-        assert_eq!(caps.floor, current_config().host_floor());
-        // 身份可用时指纹随能力一起下发（应用注册 required 前用于确认）
+        assert!(caps.ws_session, "WS 升级期链路加密已接线，能力查询必须如实上报");
+        // 身份可用时指纹随能力一起下发（应用声明 required 前用于确认）
         if let Some(fp) = identity_fingerprint() {
             assert_eq!(caps.identity_fingerprint.as_deref(), Some(fp));
         }
         // wire 形状（serde camelCase）是前端接口镜像真源：多单词字段必须驼峰，
-        // 否则前端读 undefined 会误判「宿主不支持按端点策略」
+        // 否则前端读 undefined 会误判「宿主不支持按应用策略」
         let json = serde_json::to_value(&caps).expect("能力查询必须可序列化");
         for key in [
-            "perEndpointPolicy",
-            "endpointPolicies",
-            "floor",
+            "appScopedPolicy",
+            "policies",
             "identityFingerprint",
             "keyModels",
+            "wsSession",
         ] {
             assert!(json.get(key).is_some(), "能力查询 wire 缺字段 {key}: {json}");
         }

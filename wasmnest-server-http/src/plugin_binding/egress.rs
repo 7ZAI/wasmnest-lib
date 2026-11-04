@@ -43,7 +43,7 @@ use wasmnest_server_base::constants::{
 };
 use wasmnest_server_base::error_boundary::spawn_with_error_boundary;
 
-use crate::plugin_binding::ports::{block_on, HttpEventSink, HttpPorts, OutboundAuth};
+use crate::plugin_binding::ports::{block_on, HttpEventSink, HttpPorts, OutboundAuth, OutboundEnvelope};
 
 // ==================== 客户端池 ====================
 
@@ -275,9 +275,18 @@ pub fn http_fetch(
         } else {
             None
         };
+        // 链路信封（宿主裁决）：只在非流式路径应用（SSE chunk 级加密尚未实现；
+        // `required` 端点会在服务端显性 400，preferred 端点继续明文）。
+        let envelope = request
+            .get("url")
+            .and_then(|v| v.as_str())
+            .and_then(|url| ports.outbound_envelope(plugin_id, url));
         let request = request.clone();
-        let response = block_on(ports, async move { execute_http_request(&request, bearer).await })
-            .map_err(|e| format!("http error: {}", e))?;
+        let response = block_on(
+            ports,
+            async move { execute_http_request(&request, bearer, envelope).await },
+        )
+        .map_err(|e| format!("http error: {}", e))?;
         serde_json::to_string(&response)
             .map(Some)
             .map_err(|e| format!("http error: response serialization failed: {}", e))
@@ -297,6 +306,7 @@ pub fn http_fetch(
 pub(crate) async fn execute_http_request(
     request: &serde_json::Value,
     bearer: Option<String>,
+    envelope: Option<Arc<dyn OutboundEnvelope>>,
 ) -> anyhow::Result<serde_json::Value> {
     let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
     let url = request
@@ -306,9 +316,29 @@ pub(crate) async fn execute_http_request(
     let headers = request.get("headers").and_then(as_string_map);
     let body = request.get("body").and_then(|v| v.as_str());
 
+    // 链路信封：宿主裁决为「本次出站加密」时才 seal（改写头 + 加密 body）。
+    // 密封失败即上抛，不把明文发给 required 端点。
+    let sealed = match envelope.as_ref() {
+        Some(envelope) => {
+            let mut header_pairs: Vec<(String, String)> = headers
+                .as_ref()
+                .map(|map| map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default();
+            let sealed_body = envelope
+                .seal_request(&mut header_pairs, body.map(|b| b.as_bytes().to_vec()))
+                .map_err(|e| anyhow::anyhow!("http error: link encryption seal failed: {e}"))?;
+            Some((header_pairs, sealed_body))
+        }
+        None => None,
+    };
+
     let mut req_builder = client_for(url).request(method.parse()?, url);
 
-    if let Some(hdrs) = &headers {
+    if let Some((headers, _)) = &sealed {
+        for (key, value) in headers {
+            req_builder = req_builder.header(key.as_str(), value.as_str());
+        }
+    } else if let Some(hdrs) = &headers {
         for (key, value) in hdrs {
             req_builder = req_builder.header(key.as_str(), value.as_str());
         }
@@ -319,12 +349,22 @@ pub(crate) async fn execute_http_request(
         req_builder = req_builder.bearer_auth(token);
     }
 
-    if let Some(b) = body {
-        req_builder = req_builder.body(b.to_string());
+    let request_body = match &sealed {
+        Some((_, sealed_body)) => sealed_body.clone(),
+        None => body.map(|b| b.as_bytes().to_vec()),
+    };
+    if let Some(b) = request_body {
+        req_builder = req_builder.body(b);
     }
 
     let response = req_builder.send().await?;
     let status = response.status().as_u16();
+
+    let resp_header_pairs: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
+        .collect();
 
     let resp_headers: serde_json::Map<String, serde_json::Value> = response
         .headers()
@@ -352,6 +392,14 @@ pub(crate) async fn execute_http_request(
         }
         body_bytes.extend_from_slice(&chunk);
     }
+
+    // 响应解密（与请求 seal 成对；envelope 为 None 时字节零变化）
+    if let Some(envelope) = envelope.as_ref() {
+        body_bytes = envelope
+            .open_response(&resp_header_pairs, body_bytes)
+            .map_err(|e| anyhow::anyhow!("http error: link encryption open failed: {e}"))?;
+    }
+
     let resp_body =
         String::from_utf8(body_bytes).map_err(|e| anyhow::anyhow!("http error: response body is not UTF-8: {}", e))?;
 

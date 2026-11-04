@@ -61,9 +61,9 @@ use std::sync::{Arc, RwLock};
 
 /// 流量通道类型（过滤器可据此选择性处理）
 ///
-/// 参与序列化的唯一理由：端点策略审计快照需要告诉宿主「这条明文声明属于哪条
-/// 通道」（`link_crypto::EndpointPolicyRecord`）；wire 字面量与日志字段同源
-/// （[`TrafficChannel::as_str`]）。
+/// 参与序列化的唯一理由：审计/日志要能表达「这条流量属于哪条通道」；wire 字面量
+/// 与日志字段同源（[`TrafficChannel::as_str`]）。链路加密策略按应用（owner）
+/// 裁决，与通道无关。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TrafficChannel {
@@ -75,10 +75,9 @@ pub enum TrafficChannel {
     WsEvent,
     /// WS 插件端点通道（`/ws/plugin/{plugin_id}/{path}`，插件入站端点帧）
     ///
-    /// 参与流量过滤链（帧级 inbound / outbound）。是否进链路加密由**端点声明的
-    /// 策略**决定（`strictest(通道下限, 端点声明)`）：`required` 端点要求连接已有
-    /// 协商密码（未配对客户端在握手前被拒），`preferred` 机会主义，`off` 明文。
-    /// 历史 blanket「插件端点永不加密」已随 per-endpoint 策略解除。
+    /// 参与流量过滤链（帧级 inbound / outbound）。是否进链路加密由**应用策略**
+    /// 决定（`link_crypto::app_policy(owner)`）：`required` 要求连接已有协商密码
+    /// （未配对客户端在握手前被拒），`preferred` 机会主义，`off` 明文。
     WsPlugin,
 }
 
@@ -119,7 +118,7 @@ pub struct FilterContext<'a> {
     /// 属主插件 id（**由宿主端点注册表注入**，不解析 URL 猜、不接受客户端自报）
     ///
     /// 空串 = 宿主自有面（健康检查 / 配对引导 / 未注册路径），没有应用语义。
-    /// 按端点策略裁决时以本字段为身份真源（spec §3）。
+    /// 按应用策略裁决时以本字段为身份真源（owner 来自宿主注册表，不接受对端自报）。
     pub owner: &'a str,
     /// 端点标识（注册记录端点句柄 `http-*` / `wse-*`；空串 = 无端点维度）
     ///
@@ -267,7 +266,7 @@ impl TrafficFilterChain {
     /// 某名称的过滤器是否在链上（接线点按名判定「本端是否参与」；无分配）
     ///
     /// 供 HTTP 接线点做 fail-visible 裁决：请求带加密协商头、而本端对应能力
-    /// **未参与**（`trafficEncryption.enabled=false` ⇒ 过滤器未注册）时必须显性
+    /// **未参与**（没有任何应用启用链路加密 ⇒ 过滤器未注册）时必须显性
     /// 拒绝，而不是把密文原样透给下游业务解析（那会回出误导性业务码）。
     pub fn contains(&self, name: &str) -> bool {
         match self.inner.filters.read() {

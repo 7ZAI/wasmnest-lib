@@ -35,12 +35,14 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+use tokio_tungstenite::tungstenite::http::header::{
+    HeaderName, HeaderValue, SEC_WEBSOCKET_PROTOCOL,
+};
 use tokio_tungstenite::tungstenite::protocol::{
     frame::coding::CloseCode, CloseFrame, Message, WebSocketConfig,
 };
 
-use crate::ports::{WsClientPorts, WsTask};
+use crate::ports::{WsClientPorts, WsFrameCrypto, WsTask};
 use crate::wire::{
     ws_event_topic, ws_message_topic, WS_CLOSE, WS_ERROR, WS_FRAME_HEADER_LEN,
     WS_FRAME_KIND_BINARY, WS_FRAME_KIND_TEXT, WS_OPEN, WS_RECONNECT_SCHEDULED,
@@ -341,7 +343,20 @@ fn spawn_connection(
         let config = &config;
         let reconnect = reconnect.as_ref();
         let url = config.url.trim().to_string();
-        let request = build_request(&url, config)?;
+        // 帧加密工厂按“本次建连”新建（临时密钥 / 序号从零开始）；
+        // `None` = 明文连接。宿主在此裁决“本机开关 + 信任锚 + 目标是否已配对”。
+        let crypto_factory = ports.frame_crypto(owner, &url);
+        let mut request = build_request(&url, config)?;
+        if let Some(factory) = crypto_factory.as_ref() {
+            for (name, value) in factory.request_headers() {
+                let header_name = HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|e| format!("ws connect: invalid crypto header name '{name}': {e}"))?;
+                let header_value = HeaderValue::from_str(&value)
+                    .map_err(|e| format!("ws connect: invalid crypto header value: {e}"))?;
+                // 传输面头后写入：插件自带的同名头不得覆盖协商提案
+                request.headers_mut().insert(header_name, header_value);
+            }
+        };
         let timeout_secs = config
             .connect_timeout_secs
             .unwrap_or(CONNECT_TIMEOUT_SECS)
@@ -371,6 +386,26 @@ fn spawn_connection(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
 
+        // 链路加密握手完成：宿主看 101 响应头决定是否建立会话编解码器。
+        // `Ok(None)` = 服务端未接受提案 / 策略 off（明文继续，strict 裁决归宿主）。
+        // 错误 = 显性失败（不建立一条随后必被帧过滤器断开的连接）。
+        let crypto = match crypto_factory {
+            Some(factory) => {
+                let response_headers: Vec<(String, String)> = response
+                    .headers()
+                    .iter()
+                    .filter_map(|(name, value)| {
+                        value
+                            .to_str()
+                            .ok()
+                            .map(|value| (name.as_str().to_string(), value.to_string()))
+                    })
+                    .collect();
+                factory.complete(&response_headers)?
+            }
+            None => None,
+        };
+
         let handle = format!("wsc-{}", uuid::Uuid::new_v4());
         let open_state = Arc::new(AtomicU8::new(STATE_OPEN));
         let (tx, rx) = mpsc::channel(SEND_QUEUE_CAPACITY);
@@ -399,7 +434,7 @@ fn spawn_connection(
         // 执行：spawn_blocking / 纯 std 线程，裸 tokio::spawn 会 panic）
         let writer = ports.spawn(
             "ws_client_writer",
-            Box::pin(run_writer(write, rx, heartbeat)),
+            Box::pin(run_writer(write, rx, heartbeat, crypto.clone())),
         );
         let reader = ports.spawn(
             "ws_client_reader",
@@ -410,6 +445,7 @@ fn spawn_connection(
                 Arc::clone(&open_state),
                 Arc::clone(ports),
                 heartbeat,
+                crypto,
             )),
         );
 
@@ -718,6 +754,7 @@ async fn run_writer(
     mut write: WsSink,
     mut rx: mpsc::Receiver<OutboundFrame>,
     heartbeat: HeartbeatParams,
+    crypto: Option<Arc<dyn WsFrameCrypto>>,
 ) {
     use futures_util::SinkExt;
     let mut ping_tick = (heartbeat.ping_secs > 0).then(|| {
@@ -734,8 +771,20 @@ async fn run_writer(
             frame = rx.recv() => {
                 let Some(frame) = frame else { break; };
                 let (message, is_close) = match frame {
-                    OutboundFrame::Text(text) => (Message::Text(text), false),
-                    OutboundFrame::Binary(payload) => (Message::Binary(payload), false),
+                    OutboundFrame::Text(text) => match seal_text(&crypto, text) {
+                        Ok(text) => (Message::Text(text), false),
+                        Err(error) => {
+                            tracing::warn!(%error, "ws client frame encryption failed, closing");
+                            break;
+                        }
+                    },
+                    OutboundFrame::Binary(payload) => match seal_binary(&crypto, payload) {
+                        Ok(payload) => (Message::Binary(payload), false),
+                        Err(error) => {
+                            tracing::warn!(%error, "ws client frame encryption failed, closing");
+                            break;
+                        }
+                    },
                     OutboundFrame::Close { code, reason } => (
                         Message::Close(Some(CloseFrame {
                             code: CloseCode::from(code),
@@ -772,6 +821,44 @@ async fn run_writer(
     }
 }
 
+/// 出站文本帧加密（`None` = 明文直通；宿主未注入加密时字节零变化）
+fn seal_text(crypto: &Option<Arc<dyn WsFrameCrypto>>, text: String) -> Result<String, String> {
+    match crypto {
+        Some(crypto) => crypto.seal_text(text),
+        None => Ok(text),
+    }
+}
+
+/// 出站二进制帧加密
+fn seal_binary(
+    crypto: &Option<Arc<dyn WsFrameCrypto>>,
+    payload: Vec<u8>,
+) -> Result<Vec<u8>, String> {
+    match crypto {
+        Some(crypto) => crypto.seal_binary(payload),
+        None => Ok(payload),
+    }
+}
+
+/// 入站文本帧解密
+fn open_text(crypto: &Option<Arc<dyn WsFrameCrypto>>, text: String) -> Result<String, String> {
+    match crypto {
+        Some(crypto) => crypto.open_text(text),
+        None => Ok(text),
+    }
+}
+
+/// 入站二进制帧解密
+fn open_binary(
+    crypto: &Option<Arc<dyn WsFrameCrypto>>,
+    payload: Vec<u8>,
+) -> Result<Vec<u8>, String> {
+    match crypto {
+        Some(crypto) => crypto.open_binary(payload),
+        None => Ok(payload),
+    }
+}
+
 /// 读任务：帧回灌属主二进制 topic + 关闭事件上报（每连接恰好一次）+
 /// 心跳静默判死 + 自动重连触发
 ///
@@ -786,6 +873,7 @@ async fn run_reader(
     state: Arc<AtomicU8>,
     ports: Arc<dyn WsClientPorts>,
     heartbeat: HeartbeatParams,
+    crypto: Option<Arc<dyn WsFrameCrypto>>,
 ) {
     use futures_util::StreamExt;
     let close_reported = Arc::new(AtomicBool::new(false));
@@ -837,11 +925,55 @@ async fn run_reader(
         match incoming {
             Ok(Message::Text(text)) => {
                 last_activity_ms.store(now_millis(), Ordering::SeqCst);
-                publish_frame(&ports, &owner, WS_FRAME_KIND_TEXT, &handle, text.as_bytes());
+                match open_text(&crypto, text) {
+                    Ok(plain) => publish_frame(
+                        &ports,
+                        &owner,
+                        WS_FRAME_KIND_TEXT,
+                        &handle,
+                        plain.as_bytes(),
+                    ),
+                    Err(error) => {
+                        tracing::warn!(
+                            plugin_id = %owner,
+                            handle = %handle,
+                            %error,
+                            "ws inbound frame decryption failed, closing"
+                        );
+                        ports.publish(
+                            &ws_event_topic(WS_ERROR, &owner),
+                            serde_json::json!({
+                                "handle": handle.clone(),
+                                "message": format!("link crypto open failed: {error}"),
+                            }),
+                        );
+                        break;
+                    }
+                }
             }
             Ok(Message::Binary(payload)) => {
                 last_activity_ms.store(now_millis(), Ordering::SeqCst);
-                publish_frame(&ports, &owner, WS_FRAME_KIND_BINARY, &handle, &payload);
+                match open_binary(&crypto, payload) {
+                    Ok(plain) => {
+                        publish_frame(&ports, &owner, WS_FRAME_KIND_BINARY, &handle, &plain)
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            plugin_id = %owner,
+                            handle = %handle,
+                            %error,
+                            "ws inbound frame decryption failed, closing"
+                        );
+                        ports.publish(
+                            &ws_event_topic(WS_ERROR, &owner),
+                            serde_json::json!({
+                                "handle": handle.clone(),
+                                "message": format!("link crypto open failed: {error}"),
+                            }),
+                        );
+                        break;
+                    }
+                }
             }
             Ok(Message::Close(frame)) => {
                 let (code, reason) = match frame {

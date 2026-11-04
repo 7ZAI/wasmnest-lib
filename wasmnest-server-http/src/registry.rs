@@ -21,8 +21,6 @@ use crate::wire::EndpointAuth;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use wasmnest_server_base::constants::PLUGIN_HTTP_MAX_ENDPOINTS_PER_PLUGIN;
-use wasmnest_server_core::filter::TrafficChannel;
-use wasmnest_server_core::link_crypto::{declare_endpoint_policy, withdraw_endpoint_policy, EncryptionPolicy};
 
 /// 端点句柄前缀（`http-<uuid>`；与 WS 端点 `wse-<uuid>` 形态对称）
 pub const ENDPOINT_HANDLE_PREFIX: &str = "http-";
@@ -55,10 +53,6 @@ pub struct HttpRouteEntry {
     pub methods: Vec<String>,
     /// 认证档位（路由侧据此决定是否要求宿主已验签）
     pub auth: EndpointAuth,
-    /// 端点声明的链路加密策略（`None` = 未声明，跟随宿主下限；spec §2）
-    ///
-    /// 生效值由能力层 `strictest(floor, declared)` 计算，本表只存**声明事实**。
-    pub encryption: Option<EncryptionPolicy>,
 }
 
 /// 端点表：按句柄索引 + 内部路径反查 + host 别名（路径,方法）反查
@@ -154,16 +148,15 @@ fn hex_val(b: u8) -> Option<u8> {
 /// - `host_path`：对外别名（必须以 `/` 开头；支持 `{name}` 模板段）。
 /// - `methods`：host 别名的允许方法；空 → 缺省 `["GET"]`。
 /// - `auth`：认证档位（缺省语义由调用方给定：HTTP 面未声明即最严 `jwt`）。
-/// - `encryption`：端点声明的链路加密策略（`None` = 未声明，跟随宿主下限）。
-///   宿主下限更严时的 `off` 声明、无链路身份时的 `required` 声明都会被拒绝，
-///   且**不留下任何注册副作用**（spec §2 fail-visible）。
+///
+/// 链路加密策略按**应用**（owner）由宿主统一执行（应用在设置页决定，见
+/// `link_crypto::set_app_policy`），端点注册不携带加密声明。
 pub fn register(
     owner: &str,
     path: &str,
     host_path: Option<&str>,
     methods: &[String],
     auth: EndpointAuth,
-    encryption: Option<EncryptionPolicy>,
 ) -> Result<HttpRouteEntry, String> {
     let mut table = lock();
 
@@ -224,7 +217,6 @@ pub fn register(
 
     let entry = HttpRouteEntry {
         endpoint_id: format!("{ENDPOINT_HANDLE_PREFIX}{}", uuid::Uuid::new_v4()),
-        encryption,
         owner: owner.to_string(),
         path: path.to_string(),
         internal_path: internal_path.clone(),
@@ -232,15 +224,6 @@ pub fn register(
         methods: effective_methods.clone(),
         auth,
     };
-
-    // 策略登记先于挂牌：下限冲突 / 身份不可用 → 整体失败，不留无策略端点
-    declare_endpoint_policy(
-        owner,
-        &entry.endpoint_id,
-        &internal_path,
-        encryption,
-        TrafficChannel::Http,
-    )?;
 
     table.by_id.insert(entry.endpoint_id.clone(), entry.clone());
     table.id_by_internal.insert(internal_path, entry.endpoint_id.clone());
@@ -257,7 +240,6 @@ pub fn register(
         internal_path = %entry.internal_path,
         host_path = %host.as_deref().unwrap_or("(none)"),
         auth = auth.as_str(),
-        encryption = entry.encryption.map(|p| p.as_str()).unwrap_or("(host-floor)"),
         "plugin http endpoint registered"
     );
     Ok(entry)
@@ -381,7 +363,6 @@ pub fn remove_if_owner(endpoint_id: &str, owner: &str) -> Result<bool, String> {
             table.id_by_host.remove(&(h.clone(), m.clone()));
         }
     }
-    withdraw_endpoint_policy(owner, endpoint_id);
     tracing::info!(
         plugin_id = %owner,
         endpoint_id = %endpoint_id,
@@ -420,9 +401,7 @@ pub fn clear_all() {
     table.id_by_internal.clear();
     table.id_by_host.clear();
     drop(table);
-    for (owner, endpoint_id) in owners {
-        withdraw_endpoint_policy(&owner, &endpoint_id);
-    }
+    let _ = owners;
 }
 
 // ==================== Tests ====================
@@ -437,7 +416,7 @@ mod tests {
     }
 
     fn register_path(owner: &str, path: &str) -> Result<HttpRouteEntry, String> {
-        register(owner, path, None, &[], EndpointAuth::Jwt, None)
+        register(owner, path, None, &[], EndpointAuth::Jwt)
     }
 
     fn register_alias(
@@ -448,7 +427,7 @@ mod tests {
         auth: EndpointAuth,
     ) -> Result<HttpRouteEntry, String> {
         let methods: Vec<String> = methods.iter().map(|s| s.to_string()).collect();
-        register(owner, path, Some(host), &methods, auth, None)
+        register(owner, path, Some(host), &methods, auth)
     }
 
     #[test]

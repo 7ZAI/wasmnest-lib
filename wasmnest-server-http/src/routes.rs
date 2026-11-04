@@ -26,6 +26,13 @@ async fn health_check() -> HttpResponse {
         "status": "ok",
         "port": status_info.port,
         "uptime_secs": status_info.uptime_secs,
+        // 链路加密过滤器是否在链上（2026-11-04）：移动端据此决定是否为**应用发起**
+        // 的 HTTP 加信封。对端全 off 时链上没有过滤器，加信封只会被 fail-visible
+        // 400；这里只暴露布尔能力位，不暴露应用策略/清单。
+        "linkCryptoActive": wasmnest_server_core::link_crypto::filter_active(),
+        // 应用策略快照（未登记的应用不出现 = off）：只读、非机密；移动端据此决定
+        // 是否为**该应用**发起的 HTTP 加信封（off = 不要求，保持明文）。
+        "linkCryptoPolicies": wasmnest_server_core::link_crypto::app_policy_snapshot(),
     }))
 }
 

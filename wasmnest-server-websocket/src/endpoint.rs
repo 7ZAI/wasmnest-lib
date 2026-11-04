@@ -20,8 +20,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use wasmnest_server_base::constants::{PLUGIN_WS_MAX_CLIENTS_PER_ENDPOINT, PLUGIN_WS_MAX_ENDPOINTS_PER_PLUGIN};
 use wasmnest_server_base::ports::BusPort;
-use wasmnest_server_core::filter::TrafficChannel;
-use wasmnest_server_core::link_crypto::{declare_endpoint_policy, withdraw_endpoint_policy, EncryptionPolicy};
 
 /// 端点句柄前缀（`wse-<uuid>`；与客户端域 `wsc-<uuid>` 对称）
 pub const ENDPOINT_HANDLE_PREFIX: &str = "wse-";
@@ -58,11 +56,6 @@ pub struct EndpointEntry {
     /// 该端点的事件总线 + 帧投递端口（注册时宿主壳注入；连接侧不依赖
     /// 端口实现由宿主壳注入，测试可用自建假端口直接驱动与断言）
     pub bus: Arc<dyn BusPort>,
-    /// 端点声明的链路加密策略（`None` = 未声明，跟随宿主下限；spec §2）
-    ///
-    /// 生效值由能力层 `strictest(floor, declared)` 计算；`required` 端点在握手
-    /// 阶段就要求连接已有会话密码（未配对客户端拒绝，不降级成明文）。
-    pub encryption: Option<EncryptionPolicy>,
 }
 
 /// 手工 Debug（`dyn BusPort` 不实现 Debug；端点标识与上限是排障所需字段）
@@ -76,7 +69,6 @@ impl std::fmt::Debug for EndpointEntry {
             .field("auth", &self.auth)
             .field("max_clients", &self.max_clients)
             .field("max_message_bytes", &self.max_message_bytes)
-            .field("encryption", &self.encryption)
             .finish_non_exhaustive()
     }
 }
@@ -104,9 +96,9 @@ pub fn mount_path(owner: &str, path: &str) -> String {
 ///
 /// 冲突判定按**完整挂载路径**（含属主段）——同属主同后缀视为冲突，
 /// 不同属主物理上不可能相同（路径内嵌 plugin-id）。
-/// `encryption`：端点声明的链路加密策略（`None` = 未声明，跟随宿主下限）；
-/// 宿主下限更严时的 `off` 声明、无链路身份时的 `required` 声明都会被拒绝，
-/// 且不留下任何注册副作用。
+///
+/// 链路加密策略按**应用**（owner）由宿主统一执行（应用在设置页决定，见
+/// `link_crypto::set_app_policy`），端点注册不携带加密声明。
 pub fn register(
     owner: &str,
     path: &str,
@@ -114,7 +106,6 @@ pub fn register(
     max_clients: Option<usize>,
     max_message_bytes: Option<usize>,
     bus: Arc<dyn BusPort>,
-    encryption: Option<EncryptionPolicy>,
 ) -> Result<EndpointEntry, String> {
     let mut table = lock();
 
@@ -135,7 +126,6 @@ pub fn register(
     let host_limit = crate::routes::ws_frame_limit().max(1);
     let entry = EndpointEntry {
         endpoint_id: format!("{ENDPOINT_HANDLE_PREFIX}{}", uuid::Uuid::new_v4()),
-        encryption,
         owner: owner.to_string(),
         path: path.to_string(),
         mount_path: mount.clone(),
@@ -147,9 +137,6 @@ pub fn register(
         bus,
     };
 
-    // 策略登记先于挂牌：下限冲突 / 身份不可用 → 整体失败，不留无策略端点
-    declare_endpoint_policy(owner, &entry.endpoint_id, &mount, encryption, TrafficChannel::WsPlugin)?;
-
     table.id_by_mount.insert(mount, entry.endpoint_id.clone());
     table.by_id.insert(entry.endpoint_id.clone(), entry.clone());
     tracing::info!(
@@ -158,7 +145,6 @@ pub fn register(
         mount_path = %entry.mount_path,
         auth = entry.auth.as_str(),
         max_clients = entry.max_clients,
-        encryption = entry.encryption.map(|p| p.as_str()).unwrap_or("(host-floor)"),
         "plugin ws endpoint registered"
     );
     Ok(entry)
@@ -197,7 +183,6 @@ pub fn remove(endpoint_id: &str) -> Option<EndpointEntry> {
         table.id_by_mount.remove(&entry.mount_path);
         entry
     };
-    withdraw_endpoint_policy(&entry.owner, endpoint_id);
     Some(entry)
 }
 
@@ -235,20 +220,9 @@ pub fn list_all() -> Vec<EndpointEntry> {
 /// 清空全部端点（仅测试用：全局表在 test 进程内跨用例共享）
 #[cfg(test)]
 pub fn clear_all() {
-    let entries: Vec<(String, String)> = {
-        let mut table = lock();
-        let entries = table
-            .by_id
-            .values()
-            .map(|entry| (entry.owner.clone(), entry.endpoint_id.clone()))
-            .collect();
-        table.by_id.clear();
-        table.id_by_mount.clear();
-        entries
-    };
-    for (owner, endpoint_id) in entries {
-        withdraw_endpoint_policy(&owner, &endpoint_id);
-    }
+    let mut table = lock();
+    table.by_id.clear();
+    table.id_by_mount.clear();
 }
 
 #[cfg(test)]
@@ -262,7 +236,7 @@ mod tests {
     }
 
     fn register_path(owner: &str, path: &str) -> Result<EndpointEntry, String> {
-        register(owner, path, EndpointAuth::None, None, None, Arc::new(TestBus), None)
+        register(owner, path, EndpointAuth::None, None, None, Arc::new(TestBus))
     }
 
     /// 测试假总线（端点表只存句柄不调用；无头/单测上下文）
@@ -397,23 +371,14 @@ mod tests {
             Some(PLUGIN_WS_MAX_CLIENTS_PER_ENDPOINT + 1000),
             Some(usize::MAX),
             Arc::new(TestBus),
-            None,
         )
         .expect("register");
         assert_eq!(entry.max_clients, PLUGIN_WS_MAX_CLIENTS_PER_ENDPOINT);
         assert_eq!(entry.max_message_bytes, crate::routes::ws_frame_limit().max(1));
 
         // 下限保护：0 被抬到 1（不能注册出「任何连接都拒绝」的端点）
-        let zero = register(
-            &plugin,
-            "zero",
-            EndpointAuth::None,
-            Some(0),
-            Some(0),
-            Arc::new(TestBus),
-            None,
-        )
-        .expect("register");
+        let zero =
+            register(&plugin, "zero", EndpointAuth::None, Some(0), Some(0), Arc::new(TestBus)).expect("register");
         assert_eq!(zero.max_clients, 1);
         assert_eq!(zero.max_message_bytes, 1);
 

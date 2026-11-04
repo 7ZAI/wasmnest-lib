@@ -194,17 +194,10 @@ async fn registered_manifest_declared_ws_endpoints() {
         WsEndpointContribution::Declared {
             path: "chat".into(),
             auth: Some("jwt".into()),
-            encryption: Some("preferred".into()),
         },
         WsEndpointContribution::Declared {
             path: "bad/path".into(), // 含 `/` → 不登记
             auth: None,
-            encryption: None,
-        },
-        WsEndpointContribution::Declared {
-            path: "bad-policy".into(), // 未知加密策略 → 不登记（绝不静默当明文）
-            auth: None,
-            encryption: Some("encrypted".into()),
         },
     ];
     host.register_declared_ws_endpoints(plugin_id, &endpoints)
@@ -220,22 +213,9 @@ async fn registered_manifest_declared_ws_endpoints() {
     let chat =
         endpoint::find_by_mount(&endpoint::mount_path(plugin_id, "chat")).expect("chat registered");
     assert_eq!(chat.auth, EndpointAuth::Jwt, "显式 jwt 原样登记");
-    assert_eq!(
-        chat.encryption,
-        Some(wasmnest_server_websocket::EncryptionPolicy::Preferred),
-        "声明的加密策略必须随端点登记"
-    );
-    assert_eq!(
-        echo.encryption, None,
-        "未声明策略 = 跟随宿主下限（不写死 preferred）"
-    );
 
     let bad = endpoint::find_by_mount(&endpoint::mount_path(plugin_id, "bad/path"));
     assert!(bad.is_none(), "含 / 的声明不得登记（fail-visible）");
-    assert!(
-        endpoint::find_by_mount(&endpoint::mount_path(plugin_id, "bad-policy")).is_none(),
-        "未知加密策略不得登记（fail-visible）"
-    );
 
     // 清理（全局端点表在 test 进程内跨用例共享）
     endpoint::purge_for_plugin(plugin_id);

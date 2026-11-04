@@ -49,6 +49,26 @@ pub trait HttpEventSink: Send + Sync {
     fn emit(&self, event: &str, payload: serde_json::Value);
 }
 
+/// 出站链路信封（宿主能力；`None` = 本宿主无链路加密概念）
+///
+/// 与 WS 帧加密同源裁决（移动端主开关 + 已 pin + 目标是已配对桌面），但走 HTTP
+/// 信封协议（`X-WasmNest-Crypto` + 请求/响应双向密钥派生）。能力域只负责在请求
+/// 发出前 / 响应读完后**各调一次**，协议实现与策略裁决全留宿主。
+///
+/// 失败一律上抛（`http error: ...`）：信封密钥不匹配时继续明文回给 guest 会把
+/// 密文当业务 JSON，产生误导性业务码（与入站过滤器同一条 fail-visible 教训）。
+pub trait OutboundEnvelope: Send + Sync {
+    /// 密封请求：可追加/覆盖请求头，返回加密后的 body（`None` = 无 body）
+    fn seal_request(
+        &self,
+        headers: &mut Vec<(String, String)>,
+        body: Option<Vec<u8>>,
+    ) -> Result<Option<Vec<u8>>, String>;
+
+    /// 解密响应体（仅当请求已密封；`headers` 为响应头原文）
+    fn open_response(&self, headers: &[(String, String)], body: Vec<u8>) -> Result<Vec<u8>, String>;
+}
+
 /// 出站授权裁决三态（与宿主授权层的判定一一对应，**刻意不复用**宿主类型）
 ///
 /// 刻意不复用：宿主那份裁决类型住在安全闸门模块内（含业务化的 reason 词汇），
@@ -103,6 +123,14 @@ pub trait HttpPorts: Send + Sync + 'static {
     ///   晚失败不如早失败，**禁止**静默降级为匿名请求）。
     fn jwt_auth_token(&self, _plugin_id: &str) -> Result<Option<String>, String> {
         Ok(None)
+    }
+
+    /// 本次出站的链路信封；`None` = 明文（默认：本宿主无链路加密概念）
+    ///
+    /// 裁决（本机开关 / 信任锚 / 是否已配对桌面目标）归宿主，能力域只消费结果。
+    /// 流式请求不走信封（SSE chunk 级加密尚未实现）；`required` 端点会显性 400。
+    fn outbound_envelope(&self, _plugin_id: &str, _url: &str) -> Option<Arc<dyn OutboundEnvelope>> {
+        None
     }
 
     /// 在宿主运行时上**同步驱动**一段异步计算（guest host function 是同步的）

@@ -47,12 +47,6 @@ use wasmnest_server_core::TransportFace;
 pub use routes::configure_routes;
 pub use websocket_manager::{ServerEvent, WebSocketManager};
 
-/// 端点加密策略类型（[`endpoint::EndpointEntry::encryption`] 的公开字段类型）
-///
-/// 真源在 `wasmnest-server-core`（策略域与过滤器裁决同源）；此处再导出是因为
-/// 本 crate 的公开结构体带该字段，消费方（内核装配面）需要能命名它。
-pub use wasmnest_server_core::link_crypto::EncryptionPolicy;
-
 /// WS 面：只装配路由
 ///
 /// WS 没有 app 级中间件——帧级过滤在 `conn` 的收发点做（HTTP 面的 `TrafficFilter`

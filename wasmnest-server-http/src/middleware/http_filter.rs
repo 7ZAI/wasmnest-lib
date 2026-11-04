@@ -113,9 +113,9 @@ where
         // 哈希查）。换来的是不再出现「200 + 误导性业务码」。
         if !skip_filtering && !negotiation.is_empty() && !chain.contains(wasmnest_server_core::link_crypto::FILTER_NAME)
         {
-            let message = "encrypted request rejected: link-crypto capability is not active on this \
-server (trafficEncryption disabled, filter not registered). Enable 链路加密 on the desktop, \
-or turn off encryption on the mobile client."
+            let message = "encrypted request rejected: link-crypto is not active on this server \
+(no app has enabled link encryption). Enable link encryption in the target app's settings, \
+or turn off encryption on the client."
                 .to_string();
             return Box::pin(async move {
                 tracing::warn!(
@@ -215,8 +215,8 @@ fn resolve_route_identity(path: &str, method: &str) -> (String, String) {
 ///
 /// 与 `run_traffic_filter` 内部的过滤器 Reject 分支**同一个错误信封**（400 +
 /// `CODE_INVALID_REQUEST`），使客户端侧两种「拒绝」形状一致、便于按 code 归类。
-/// 消息**点名开关与两端各自的修法**（`trafficEncryption`），否则用户只会看到
-/// 一句无处置建议的 400。
+/// 消息**点名能力状态与两端各自的修法**（应用设置里的链路加密），否则用户只会
+/// 看到一句无处置建议的 400。
 fn reject_encrypted_request(req: ServiceRequest, message: String) -> ServiceResponse {
     let (http_req, _payload) = req.into_parts();
     let response = HttpResponse::BadRequest().json(ApiResponse::<()>::error(CODE_INVALID_REQUEST, &message));
@@ -522,11 +522,8 @@ mod tests {
         assert_eq!(res.status(), actix_web::http::StatusCode::BAD_REQUEST);
         let body = test::read_body(res).await;
         let text = String::from_utf8_lossy(&body);
-        // 消息必须点名开关，否则用户只看到一句无处置建议的 400
-        assert!(
-            text.contains("trafficEncryption"),
-            "拒绝消息应点名开关 trafficEncryption: {text}"
-        );
+        // 消息必须点名能力状态与修法，否则用户只看到一句无处置建议的 400
+        assert!(text.contains("link encryption"), "拒绝消息应点名链路加密设置: {text}");
         assert!(
             !text.contains("blocked by test"),
             "本端不参与时的拒绝必须来自协商裁决，不得落到链上其他过滤器: {text}"

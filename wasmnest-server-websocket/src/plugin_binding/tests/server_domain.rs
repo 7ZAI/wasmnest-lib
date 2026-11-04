@@ -191,117 +191,68 @@ async fn purge_for_plugin_removes_only_owner_endpoints() {
     drop_endpoint(&bystander_endpoint);
 }
 
-// ==================== 按端点链路加密策略（spec §1 / §2） ====================
+// ==================== 链路加密契约（按应用策略，端点不声明） ====================
 
-/// 触碰链路加密全局快照的用例必须串行
+/// 触碰链路加密全局策略表的用例必须串行
 static LINK_CRYPTO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// 未声明 `encryption` → 端点记录 `None`（跟随宿主下限）；声明值落在记录上；
-/// 未知取值 / 未知字段一律注册失败且零副作用
-#[tokio::test]
-async fn register_endpoint_parses_encryption_strictly() {
-    use wasmnest_server_core::link_crypto::{self, LinkCryptoConfig};
-
-    // 下限是进程级快照：本用例假设 floor=off，必须与改路径的用例串行
-    let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let original = link_crypto::current_config();
-    link_crypto::update_config(LinkCryptoConfig::default());
-
-    let plugin = test_plugin("ep-enc");
-    let ports: Arc<dyn WsPorts> = FakePorts::with(&[(&plugin, PERMISSION_WS_SERVER)]);
-
-    let follow = register_endpoint(&ports, &plugin, "follow");
-    assert_eq!(
-        crate::endpoint::get(&follow).unwrap().encryption,
-        None,
-        "未声明 = 跟随宿主下限"
-    );
-
-    let plain = ws_register_endpoint(&ports, &plugin, r#"{"path":"plain","encryption":"off"}"#)
-        .expect("默认下限（off）下 off 声明允许");
-    assert_eq!(
-        crate::endpoint::get(&plain).unwrap().encryption,
-        Some(wasmnest_server_core::link_crypto::EncryptionPolicy::Off)
-    );
-
-    for bad in ["required-all", "REQUIRED", "plain"] {
-        let err = ws_register_endpoint(
-            &ports,
-            &plugin,
-            &format!(r#"{{"path":"bad-{bad}","encryption":"{bad}"}}"#),
-        )
-        .expect_err("未知策略必须拒绝");
-        assert!(
-            err.contains(bad) && err.contains("required") && err.contains("preferred") && err.contains("off"),
-            "文案须点名非法取值与合法取值: {err}"
-        );
-    }
-    let err = ws_register_endpoint(&ports, &plugin, r#"{"path":"typo","encrypton":"required"}"#)
-        .expect_err("未知字段必须拒绝");
-    assert!(err.contains("encrypton"), "文案须点名未知字段: {err}");
-    assert!(crate::endpoint::find_by_mount(&crate::endpoint::mount_path(&plugin, "typo")).is_none());
-
-    // 清理（全局端点表跨用例共享）
-    for entry in crate::endpoint::list_by_owner(&plugin) {
-        crate::endpoint::remove(&entry.endpoint_id);
-    }
-    link_crypto::update_config(original);
+/// 链路身份就绪（`required` 策略要求本进程可加密）
+fn ready_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    wasmnest_server_core::link_crypto::init_identity(dir.path()).unwrap();
 }
 
-/// 宿主下限更严时 `off` 声明注册失败且零副作用（floor=required）
+/// 旧的端点级 `encryption` 字段必须显性拒绝，不得被静默忽略
 #[tokio::test]
-async fn register_endpoint_rejects_off_when_floor_is_required() {
-    use wasmnest_server_core::link_crypto::{self, EncryptionPolicy, LinkCryptoConfig};
-
-    let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let original = link_crypto::current_config();
-    link_crypto::update_config(LinkCryptoConfig::from_floor(EncryptionPolicy::Required));
-
-    let plugin = test_plugin("ep-floor");
+async fn register_endpoint_rejects_legacy_encryption_field() {
+    let plugin = test_plugin("ep-legacy-enc");
     let ports: Arc<dyn WsPorts> = FakePorts::with(&[(&plugin, PERMISSION_WS_SERVER)]);
-    let err = ws_register_endpoint(&ports, &plugin, r#"{"path":"plain","encryption":"off"}"#)
-        .expect_err("floor=required 时 off 必须拒绝");
+
+    let err = ws_register_endpoint(&ports, &plugin, r#"{"path":"legacy","encryption":"required"}"#)
+        .expect_err("端点级 encryption 字段已退役，必须显性拒绝");
+    assert!(err.contains("encryption"), "文案须点名未知字段: {err}");
     assert!(
-        err.contains("off") && err.contains("required") && err.contains(&plugin),
-        "文案须点名策略 / 下限 / 属主: {err}"
+        crate::endpoint::find_by_mount(&crate::endpoint::mount_path(&plugin, "legacy")).is_none(),
+        "拒绝不得留下端点"
     );
-    assert_eq!(crate::endpoint::count_by_owner(&plugin), 0, "拒绝不得留下端点");
-
-    // preferred 声明允许，生效值取更严的 required
-    let id = ws_register_endpoint(&ports, &plugin, r#"{"path":"ok","encryption":"preferred"}"#)
-        .expect("preferred 是向上/持平声明");
-    assert_eq!(
-        link_crypto::effective_endpoint_policy(&plugin, &id, wasmnest_server_core::filter::TrafficChannel::WsPlugin),
-        EncryptionPolicy::Required
-    );
-
-    for entry in crate::endpoint::list_by_owner(&plugin) {
-        crate::endpoint::remove(&entry.endpoint_id);
-    }
-    link_crypto::update_config(original);
 }
 
-/// 宿主下限运行期调严 → WS 协议升级前即拒绝（生效策略判据，spec §5 Phase 2）
+/// WS 会话握手已实现：`required` 应用注册 WS 端点不再被注册期拦截
 ///
-/// 回归：routes 曾直接读端点声明值（`entry.encryption == Some(Required)`），
-/// 下限调严后「声明 off 的存量端点」会先完成升级、再被帧过滤器断开——
-/// 与「不建立一条随后必被断开的连接」的判据相悖。判据必须是
-/// `strictest(floor, declared)`，且错误文案点名生效策略 / 声明值 / 端点。
+/// 升级期协商能拒无提案客户端（见 `ws_upgrade_rejects_required_app_policy`），
+/// 因此注册阶段不得再制造死端点以外的第二道拒绝。
 #[tokio::test]
-async fn ws_upgrade_rejects_required_effective_policy_from_floor() {
-    use actix_web::{test, App};
-    use wasmnest_server_core::link_crypto::{self, EncryptionPolicy, LinkCryptoConfig};
+async fn register_endpoint_allows_required_app_policy() {
+    use wasmnest_server_core::link_crypto::{self, EncryptionPolicy};
 
     let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let original = link_crypto::current_config();
-    let plugin = test_plugin("ep-floor-gate");
+    ready_identity();
+    let plugin = test_plugin("ep-policy-required");
     let ports: Arc<dyn WsPorts> = FakePorts::with(&[(&plugin, PERMISSION_WS_SERVER)]);
+    link_crypto::set_app_policy(&plugin, EncryptionPolicy::Required).expect("required 策略");
 
-    // 下限 off 时声明 off 合法；随后宿主设置页把下限调严（运行期动作）
-    link_crypto::update_config(LinkCryptoConfig::from_floor(EncryptionPolicy::Off));
-    let endpoint = ws_register_endpoint(&ports, &plugin, r#"{"path":"gated","encryption":"off"}"#)
-        .expect("floor=off 时 off 声明允许");
-    link_crypto::update_config(LinkCryptoConfig::from_floor(EncryptionPolicy::Required));
+    let endpoint = ws_register_endpoint(&ports, &plugin, r#"{"path":"gated"}"#)
+        .expect("required 应用可以注册 WS 端点（升级期协商负责门禁）");
+    assert_eq!(crate::endpoint::count_by_owner(&plugin), 1);
+
+    drop_endpoint(&endpoint);
+    link_crypto::remove_app_policy(&plugin);
+}
+
+/// 应用策略 required → 无提案的 WS 升级在协议升级前即拒绝
+/// （不建立一条随后必被帧过滤器断开的连接）
+#[tokio::test]
+async fn ws_upgrade_rejects_required_app_policy() {
+    use actix_web::{test, App};
+    use wasmnest_server_core::link_crypto::{self, EncryptionPolicy};
+
+    let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    ready_identity();
+
+    let plugin = test_plugin("ep-policy-gate");
+    let ports: Arc<dyn WsPorts> = FakePorts::with(&[(&plugin, PERMISSION_WS_SERVER)]);
+    let endpoint = ws_register_endpoint(&ports, &plugin, r#"{"path":"gated"}"#).expect("register");
+    link_crypto::set_app_policy(&plugin, EncryptionPolicy::Required).expect("required 策略");
 
     let app = test::init_service(App::new().configure(crate::routes::configure_routes)).await;
     let req = test::TestRequest::get()
@@ -312,13 +263,207 @@ async fn ws_upgrade_rejects_required_effective_policy_from_floor() {
     assert_eq!(resp.status(), actix_web::http::StatusCode::BAD_REQUEST);
     let body = test::read_body(resp).await;
     let text = String::from_utf8_lossy(&body);
-    assert!(
-        text.contains("effective policy 'required'"),
-        "错误须点名生效策略（下限调严）: {text}"
-    );
-    assert!(text.contains("declared 'off'"), "错误须点名端点声明值: {text}");
+    assert!(text.contains("app policy 'required'"), "错误须点名应用策略: {text}");
+    assert!(text.contains("X-WasmNest-Crypto"), "错误须点名协商头: {text}");
     assert!(text.contains(&endpoint), "错误须点名端点句柄: {text}");
+    assert!(text.contains(&plugin), "错误须点名属主: {text}");
 
     drop_endpoint(&endpoint);
-    link_crypto::update_config(original);
+    link_crypto::remove_app_policy(&plugin);
+}
+
+/// 带了协商头但形状非法 → 显性 400（不得按「未提案」静默处理）
+#[tokio::test]
+async fn ws_upgrade_rejects_malformed_offer() {
+    use actix_web::{test, App};
+
+    let plugin = test_plugin("ep-policy-malformed");
+    let ports: Arc<dyn WsPorts> = FakePorts::with(&[(&plugin, PERMISSION_WS_SERVER)]);
+    let endpoint = ws_register_endpoint(&ports, &plugin, r#"{"path":"bad-offer"}"#).expect("register");
+
+    let app = test::init_service(App::new().configure(crate::routes::configure_routes)).await;
+    let req = test::TestRequest::get()
+        .uri(&crate::endpoint::mount_path(&plugin, "bad-offer"))
+        .insert_header(("X-WasmNest-Crypto", "v2 QUJD"))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+
+    assert_eq!(resp.status(), actix_web::http::StatusCode::BAD_REQUEST);
+    let text = String::from_utf8_lossy(&test::read_body(resp).await).to_string();
+    assert!(
+        text.contains("invalid 'X-WasmNest-Crypto'"),
+        "错误须点名非法协商头: {text}"
+    );
+
+    drop_endpoint(&endpoint);
+}
+
+// ==================== 升级期协商：真链路（101 头 + 帧加解密） ====================
+
+/// 取本机非环回地址（UDP connect 只做路由选择，不发包）
+fn primary_non_loopback_ip() -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_loopback()).then_some(ip)
+}
+
+/// required + 合法提案：101 带策略/会话密钥头，注册的会话密码能解入站帧、加出站帧
+///
+/// 真链路只钉「升级响应头 + 密码注册 + 过滤器字节面」三件事：
+/// - 101 的 policy 头恒有、session key 仅接受提案时下发；
+/// - 服务端按对端 addr 注册密码（与过滤器查询键同源）；
+/// - 客户端 `ClientWsCrypto` 与服务端过滤器能在 `ws-plugin` 通道上互通
+///   （入站解出明文 / 出站被加密后客户端能解开）。
+///
+/// 帧投递到插件的路径依赖宿主运行时端口（无头上下文不派生投递任务），
+/// 由 channel/plugin 的既有用例覆盖，这里不重复。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ws_upgrade_negotiates_session_and_roundtrips_frames() {
+    use actix_web::{App, HttpServer};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::MaybeTlsStream;
+    use wasmnest_server_core::filter::{Direction, FilterContext, TrafficChannel, TrafficFilterChain};
+    use wasmnest_server_core::link_crypto::{self, ClientWsCrypto, EncryptionPolicy};
+
+    let _guard = LINK_CRYPTO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    ready_identity();
+    let (_, kd_public_b64) = link_crypto::identity_parts().expect("identity parts");
+
+    let plugin = test_plugin("ep-policy-negotiated");
+    let endpoint = crate::endpoint::register(
+        &plugin,
+        "gated",
+        crate::endpoint::EndpointAuth::None,
+        None,
+        None,
+        Arc::new(TestBus) as Arc<dyn wasmnest_server_base::ports::BusPort>,
+    )
+    .expect("register endpoint");
+    link_crypto::set_app_policy(&plugin, EncryptionPolicy::Required).expect("required 策略");
+
+    // 必须从**非环回**地址连接：环回与 HTTP 面同口径豁免（不要求协商），
+    // 否则本例会在 policy 门禁前就走本地明文分支。
+    let Some(bind_ip) = primary_non_loopback_ip() else {
+        eprintln!("skipping: no non-loopback interface available");
+        drop_endpoint(&endpoint.endpoint_id);
+        link_crypto::remove_app_policy(&plugin);
+        return;
+    };
+
+    // 真 HTTP 服务器（actix System 独占线程；结束时 stop 并回收线程）
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let server_thread = std::thread::spawn(move || {
+        let system = actix_web::rt::System::new();
+        system.block_on(async move {
+            let server = HttpServer::new(|| App::new().configure(crate::routes::configure_routes))
+                .workers(1)
+                .bind((bind_ip, 0))
+                .expect("bind test server");
+            let addr = server.addrs()[0];
+            let server = server.run();
+            ready_tx.send((addr, server.handle())).expect("send server addr");
+            if let Err(error) = server.await {
+                eprintln!("test ws server stopped with error: {error}");
+            }
+        });
+    });
+    let (addr, server_handle) = ready_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("test ws server ready");
+
+    // 客户端升级：带临时公钥提案
+    let (m_priv, m_pub) = link_crypto::generate_ephemeral();
+    let m_ek_b64 = link_crypto::b64_encode(&m_pub);
+    let mut request = format!("ws://{addr}{}", crate::endpoint::mount_path(&plugin, "gated"))
+        .into_client_request()
+        .expect("client request");
+    request.headers_mut().insert(
+        tokio_tungstenite::tungstenite::http::HeaderName::from_static("x-wasmnest-crypto"),
+        tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&format!("v1 {m_ek_b64}")).expect("offer header"),
+    );
+    let (mut ws, response) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("upgrade must be accepted");
+
+    assert_eq!(
+        response
+            .headers()
+            .get("x-wasmnest-crypto-policy")
+            .and_then(|v| v.to_str().ok()),
+        Some("required"),
+        "101 必须回策略头"
+    );
+    let s_ek_b64 = response
+        .headers()
+        .get("x-wasmnest-crypto")
+        .and_then(|v| v.to_str().ok())
+        .and_then(link_crypto::parse_negotiation)
+        .expect("101 must carry the server session key");
+
+    // 服务端按「客户端源地址」注册了密码（过滤器查询键 = 同一 addr）
+    let peer = match ws.get_ref() {
+        MaybeTlsStream::Plain(stream) => stream.local_addr().expect("client local addr").to_string(),
+        _ => panic!("plain ws expected"),
+    };
+    assert!(
+        link_crypto::ws_has_ciphers(&peer),
+        "升级接受提案后必须为对端地址注册会话密码"
+    );
+
+    let kd_public: [u8; 32] = link_crypto::b64_decode(&kd_public_b64)
+        .expect("pin b64")
+        .try_into()
+        .expect("pin length");
+    let mut crypto = ClientWsCrypto::derive(&m_priv, &m_ek_b64, s_ek_b64, &kd_public).expect("client derive");
+
+    // 入站：客户端密封 → 过滤器解出明文（插件看到的是明文，不是信封）
+    //
+    // 不真的把帧发给服务器 actor：帧投递依赖宿主运行时端口（无头上下文不派生），
+    // 且 actor 解密会推进服务端接收序号，使下面的字节面断言产生时序耦合。
+    // 这里直接驱动同一个全局过滤器，确定性验证「注册的密码 ↔ 客户端派生」互通。
+    let chain = TrafficFilterChain::global();
+    let mut inbound = FilterContext {
+        channel: TrafficChannel::WsPlugin,
+        direction: Direction::Inbound,
+        peer: &peer,
+        route: "text",
+        owner: &plugin,
+        endpoint: &endpoint.endpoint_id,
+        negotiation: "",
+        data: crypto
+            .seal_text(link_crypto::WS_PLUGIN_CHANNEL, "hello-sealed")
+            .expect("seal frame again")
+            .into_bytes(),
+        outbound_headers: Vec::new(),
+    };
+    chain.run_inbound(&mut inbound).expect("inbound must decrypt");
+    assert_eq!(inbound.data, b"hello-sealed");
+
+    // 出站：过滤器加密 → 客户端用同一会话解开（序号从 0 起）
+    let mut outbound = FilterContext {
+        channel: TrafficChannel::WsPlugin,
+        direction: Direction::Outbound,
+        peer: &peer,
+        route: "text",
+        owner: &plugin,
+        endpoint: &endpoint.endpoint_id,
+        negotiation: "",
+        data: b"reply-plain".to_vec(),
+        outbound_headers: Vec::new(),
+    };
+    chain.run_outbound(&mut outbound).expect("outbound must encrypt");
+    let opened = crypto
+        .open_text(
+            link_crypto::WS_PLUGIN_CHANNEL,
+            std::str::from_utf8(&outbound.data).expect("envelope is utf-8 json"),
+        )
+        .expect("client must decrypt outbound");
+    assert_eq!(opened, "reply-plain");
+
+    let _ = ws.close(None).await;
+    server_handle.stop(true).await;
+    let _ = server_thread.join();
+    drop_endpoint(&endpoint.endpoint_id);
+    link_crypto::remove_app_policy(&plugin);
 }

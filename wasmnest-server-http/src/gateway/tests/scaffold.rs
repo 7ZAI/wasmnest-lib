@@ -7,7 +7,7 @@ use crate::middleware::auth_gateway::auth_gateway;
 /// 注册一条测试别名（全局注册表跨用例共享：路径带用例唯一段）
 pub(super) fn register_test_alias(owner: &str, path: &str, host: &str, methods: &[&str], auth: EndpointAuth) {
     let methods: Vec<String> = methods.iter().map(|s| s.to_string()).collect();
-    registry::register(owner, path, Some(host), &methods, auth, None).expect("register test alias");
+    registry::register(owner, path, Some(host), &methods, auth).expect("register test alias");
 }
 
 pub(super) fn purge(owner: &str) {
@@ -211,7 +211,6 @@ pub(super) async fn plugin_required_response_keeps_existing_error_shape() {
         Some("/api/configs-shape"),
         &["GET".to_string()],
         EndpointAuth::Jwt,
-        None,
     )
     .expect("register");
     let resp = plugin_unavailable_response(&entry);
