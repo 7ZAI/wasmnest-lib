@@ -19,10 +19,11 @@
 //! ```
 //!
 //! **脱绑（能力域脱绑 P2）**：WIT 绑定层（`bindgen!` / `HostModule` / `inventory::submit!` /
-//! `impl Host`）以 `#[cfg(feature = "common-host")]` 门控——桌面宿主开 feature 后行为
-//! 逐字不变（ABI / WIT / 权限位 / 事件形状 / inventory 注册零变化），无 feature 的宿主
-//! （移动端 / 无头）拿纯引擎：机制（engine/advertiser/types）、端口（ports）、装配
-//! （`install` / `install_ports`）默认全部可用。
+//! `impl Host`）以 `#[cfg(feature = "common-host")]` 门控——**双端宿主**（桌面 /
+//! 移动）同开此 feature，行为逐字不变（ABI / WIT / 权限位 / 事件形状 / inventory
+//! 注册零变化）；不开 feature 的引用方（无头测试 / 第三方宿主）拿纯引擎：机制
+//! （engine/advertiser/types）、端口（ports）、装配（`install` / `install_ports`）
+//! 默认全部可用。
 //!
 //! 判定该域「非 POSIX 原生」的依据：WASI 预览 3 只提供
 //! `cli / clocks / filesystem / random / sockets`，组播 DNS 是应用层协议
@@ -130,8 +131,9 @@ static MODULE: DiscoveryModule = DiscoveryModule;
 // **依赖前提**：宿主必须有一行 `use wasmnest_discovery_engine as _;` 强制引用
 // （见 `wasm_core::manager::runtime::component`），否则本 rlib 不进最终二进制、
 // 静态不执行 ⇒ 注册丢失，且 guest 会在实例化期报「无该 import」。
-// 无 `common-host` feature 的宿主（移动端 / 无头）**不应**注册——它没有插件宿主
-// 机制，桌面侧强制引用行同步 `#[cfg(feature = "common-host")]`。
+// 不开 `common-host` 的引用方（无头测试 / 第三方宿主）**不应**注册——它没有插件
+// 宿主机制；双端宿主的强制引用行与 `expect_host_module!` 同处（桌面
+// `plugin/mdns.rs`、移动 `plugin/host_domains/mdns.rs`）。
 #[cfg(feature = "common-host")]
 inventory::submit! {
     ModuleEntry { module: &MODULE }

@@ -655,8 +655,9 @@ static MODULE: PeerNetModule = PeerNetModule;
 //
 // **依赖前提**：宿主必须有一行强制引用本 crate（见宿主的组件运行时接线处），
 // 否则本 rlib 不进最终二进制、静态不执行 ⇒ 注册丢失，且 guest 会在实例化期报
-// 「无该 import」。无 `common-host` feature 的宿主（移动端 / 无头）**不应**
-// 注册——它没有插件宿主机制，桌面侧强制引用行同步 `#[cfg(feature = "common-host")]`。
+// 「无该 import」。不开 `common-host` 的引用方（无头测试 / 第三方宿主）**不应**
+// 注册——它没有插件宿主机制；双端宿主的强制引用行与 `expect_host_module!` 同处
+// （桌面 `plugin/peer.rs`、移动 `plugin/peer_ports.rs`）。
 #[cfg(feature = "common-host")]
 inventory::submit! {
     ModuleEntry { module: &MODULE }

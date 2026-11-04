@@ -10,8 +10,9 @@ edition = "2021"
 [features]
 # 默认 = 纯引擎（任何宿主可引用：移动端 / 无头测试宿主 / 第三方宿主）
 default = []
-# 桌面宿主 WIT 绑定层（bindgen!/HostModule/inventory::submit!/impl Host）；
-# 语义 = 装配桌面 WIT 依赖，行为与开 feature 前逐字不变
+# 宿主 WIT 绑定层（bindgen!/HostModule/inventory::submit!/impl Host）；双端宿主
+# （桌面 / 移动）同开此 feature——`Host` impl 与能力模块自报都住 lib，宿主只注入
+# 平台差异端口。语义 = 装配 WIT 依赖，行为与开 feature 前逐字不变
 # （ABI / WIT / 权限位 / 事件形状 / inventory 注册零变化）。
 common-host = ["dep:wasmnest-host-kit", "dep:wasmtime", "dep:wit-bindgen", "dep:inventory"]
 
