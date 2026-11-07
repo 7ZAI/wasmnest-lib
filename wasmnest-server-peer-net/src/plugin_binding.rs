@@ -657,7 +657,7 @@ use wasmtime::component::{bindgen, Linker};
 pub const MODULE_NAME: &str = "peer-net";
 
 /// 本域提供的 WIT 接口（必须与 `wasmnest.wit` 逐字一致；改错即 guest import 失配）
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.2/host-peer"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:peer@0.0.1/host-peer"];
 
 /// 本域的权限位（必须与 `wasmnest.wit` / SDK 权限表逐字一致）
 pub const MODULE_PERMISSIONS: &[&str] = &["peer"];
@@ -685,7 +685,7 @@ impl HostModule for PeerNetModule {
     }
 
     fn register(&self, linker: &mut Linker<WasmPluginState>) -> wasmtime::Result<()> {
-        wasmnest::plugin::host_peer::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
+        wasmnest::peer::host_peer::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
     }
 }
 
@@ -751,7 +751,7 @@ bindgen!({
     // provider 侧。
     //
     // ⚠️ 由此产生的**硬约束**：本 crate 与宿主各自生成的
-    // `wasmnest::plugin::host_peer::Host` 是**同名但不同类型**的 trait。宿主必须
+    // `wasmnest::peer::host_peer::Host` 是**同名但不同类型**的 trait。宿主必须
     // 同时删掉自己的 peer `Host` impl 与 `add_to_linker` 行，否则同一个 interface
     // 被注册两次 → 装配期 `defined twice`。
     // 票 05 / ADR 0052 D2：契约面脱端——本文件是 `host-peer` 的**共享契约真源**
@@ -770,7 +770,7 @@ bindgen!({
 // 经端口问宿主结果），此层只做「取端口 → 转调 → 按 WIT `result` 形状返回」。
 
 #[cfg(feature = "common-host")]
-impl wasmnest::plugin::host_peer::Host for WasmPluginState {
+impl wasmnest::peer::host_peer::Host for WasmPluginState {
     fn dial_peer(&mut self, endpoint_json: String) -> Result<String, String> {
         peer_dial(&ports_for(self), &self.plugin_id, &endpoint_json)
     }
@@ -831,7 +831,7 @@ impl wasmnest::plugin::host_peer::Host for WasmPluginState {
         peer_set_download_dir(&ports_for(self), &self.plugin_id, &path)
     }
 
-    fn start_node(&mut self, config: wasmnest::plugin::host_peer::PeerNodeConfig) -> Result<bool, String> {
+    fn start_node(&mut self, config: wasmnest::peer::host_peer::PeerNodeConfig) -> Result<bool, String> {
         let local_config = crate::plugin_binding::ports::NodeStartConfig {
             data_dir: config.data_dir,
             device_name: config.device_name,

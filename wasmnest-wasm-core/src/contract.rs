@@ -12,9 +12,9 @@
 //! - 组件**导出实例**的键 = `ns:pkg/iface@version`（**版本在末尾**）；
 //! - 实例**内部**函数名的键 = **平名**（`on-message`），故 `ItemName` 的两段查找
 //!   （顶层按接口实例 → 实例内按平名）是唯一可用机制；
-//! - `ItemName` 字面量的版本**只能写在末尾**：`wasmnest:plugin@0.0.2/events.on-message`
+//! - `ItemName` 字面量的版本**只能写在末尾**：`wasmnest:plugin@<version>/events.on-message`
 //!   解析失败（wit-parser 在 `ns:pkg` 后强制要求 `/`），
-//!   `wasmnest:plugin/events.on-message@0.0.2` 才合法且命中。
+//!   `wasmnest:plugin/events.on-message@<version>` 才合法且命中。
 //!
 //! ## 版本真源
 //!
@@ -48,15 +48,33 @@ fn derive(key: String, make: impl FnOnce() -> String) -> &'static str {
     value
 }
 
+/// `host-mdns` 所在 WIT 包（ADR 0061 按能力域拆包后独立包全名）
+///
+/// 能力域接口不再属于 `wasmnest:plugin`：导出键的包段与版本段都变成该域自己的。
+/// 值由 `wasmnest-discovery-engine` 的 `EXPORTS` 字面量经内核
+/// `manager::capability` 的对偶锁逐字钉住（两侧各自持编译期常量，`concat!` 不能
+/// 插常量，故靠锁而非宏）。
+pub const MDNS_PACKAGE: &str = "wasmnest:mdns@0.0.1";
+
 /// 导出项名（`ItemName` 路径语法）：`ns:pkg/<interface>.<func>@<version>`
 ///
 /// 组件的接口导出是「接口实例」嵌套形态，实例内函数名按**平名**查找 ⇒ 必须用
 /// 点号路径语法，平名 `iface#func` 恒不命中（wasmtime 47 实证，本仓曾因此让
 /// 二进制导出从未真正被发现）。
+///
+/// 本函数派生 **`wasmnest:plugin` 包内**的接口；拆包后的能力域接口用
+/// [`export_item_in`] 显式给包。
 pub fn export_item(interface: &str, func: &str) -> &'static str {
-    let key = format!("{interface}.{func}");
+    export_item_in(PACKAGE, interface, func)
+}
+
+/// 导出项名（指定包）：`<package>/<interface>.<func>@<version>`
+///
+/// `package` 是含版本的包全名（`ns:pkg@version`，如 [`MDNS_PACKAGE`]）。
+pub fn export_item_in(package: &str, interface: &str, func: &str) -> &'static str {
+    let key = format!("{package}/{interface}.{func}");
     derive(key, || {
-        format!("{PACKAGE_NAME}/{interface}.{func}@{PACKAGE_VERSION}")
+        format!("{}/{interface}.{func}@{}", package_name(package), package_version(package))
     })
 }
 
@@ -64,10 +82,31 @@ pub fn export_item(interface: &str, func: &str) -> &'static str {
 ///
 /// 用于按接口整体探测（而非逐函数）；与 [`export_item`] 同池，重复派生返回同一指针。
 pub fn interface_path(interface: &str) -> &'static str {
-    let key = format!("iface:{interface}");
+    interface_path_in(PACKAGE, interface)
+}
+
+/// 接口全名（指定包）：`<package 的 ns:pkg>/<interface>@<version>`
+pub fn interface_path_in(package: &str, interface: &str) -> &'static str {
+    let key = format!("iface:{package}/{interface}");
     derive(key, || {
-        format!("{PACKAGE_NAME}/{interface}@{PACKAGE_VERSION}")
+        format!("{}/{interface}@{}", package_name(package), package_version(package))
     })
+}
+
+/// `ns:pkg@version` → `ns:pkg`（拆包后多包共用同一派生逻辑）
+fn package_name(package: &str) -> &str {
+    package
+        .rsplit_once('@')
+        .map(|(name, _)| name)
+        .unwrap_or(package)
+}
+
+/// `ns:pkg@version` → `version`（无 `@` 即红：派生名会缺版本而静默不命中）
+fn package_version(package: &str) -> &str {
+    package
+        .rsplit_once('@')
+        .unwrap_or_else(|| panic!("WIT 包全名缺版本段 `@x.y.z`：{package}"))
+        .1
 }
 
 #[cfg(test)]

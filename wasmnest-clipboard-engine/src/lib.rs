@@ -18,3 +18,27 @@
 //!
 //! 实现落点与权限语义的现行口径见 `wit/clipboard.wit` 的 interface 文档与各端
 //! 宿主 adapter（本文件不复制漂移源）。
+
+// ==================== 契约包身份（WIT 按包拆分，ADR 0061） ====================
+
+/// 本能力域 WIT 包全名（`namespace:name@version`）
+///
+/// 与 `wit/clipboard.wit` 的 `package` 行逐字一致（下方锁测试断言），也是宿主
+/// `MODULE_INTERFACES` 各项的前缀。拆包后每个能力域独立版本：只在本包 WIT
+/// 变更时 bump，不再随 `wasmnest:plugin` 全局版本前进。
+pub const WIT_PACKAGE: &str = "wasmnest:clipboard@0.0.1";
+
+#[cfg(test)]
+mod wit_package_lock {
+    /// 常量 ↔ 分片真源 package 行（两侧任一手改即红）
+    #[test]
+    fn wit_package_matches_slice_package_line() {
+        let raw = include_str!("../wit/clipboard.wit");
+        let line = raw
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("package "))
+            .expect("WIT 分片缺 package 行");
+        assert_eq!(line, format!("package {};", super::WIT_PACKAGE));
+    }
+}

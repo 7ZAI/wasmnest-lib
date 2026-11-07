@@ -28,7 +28,7 @@
 /// **导出**实例的键同样带版本（`ns:pkg/<iface>@<version>`，实例内函数名按平名），
 /// 故运行期探测导出必须用 `contract::export_item` / `interface_path` 派生带版本的
 /// 名字——平名或漏版本的写法对版本化产物恒不命中。
-package wasmnest:plugin@0.0.2;
+package wasmnest:plugin@0.1.0;
 /// 插件 KV 存储（原 storage.rs：storage_get/set/delete）
 interface host-storage {
     get: func(key: string) -> result<option<string>, string>;

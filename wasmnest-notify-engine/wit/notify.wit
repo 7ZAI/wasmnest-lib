@@ -1,4 +1,4 @@
-package wasmnest:plugin@0.0.2;
+package wasmnest:notify@0.0.1;
 // ======================================================================
 // 通知域共享契约（唯一真源；ADR 0052 D2/D3 · domain-owned-contracts 票 04）
 //
@@ -14,7 +14,7 @@ package wasmnest:plugin@0.0.2;
 //   `host-notify.notify(title, body, options-json)` 合并为本接口的单一签名；
 //   桌面 `host-events-desktop` 整 interface 退役。
 // - 移动附加的权限查询 / 请求、即时震动、提示音 4 函数不是交集（桌面无
-//   对应平台概念），改名 `host-notify-mobile` 留移动端 cap（`cap-mobile.wit`）。
+//   对应平台概念），改名 `host-notify-mobile` 留移动端独立包（`cap-notify-mobile.wit`，ADR 0061）。
 //
 // ## options-json 契约
 //

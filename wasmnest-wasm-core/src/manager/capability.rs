@@ -832,7 +832,7 @@ mod tests {
         );
     }
 
-    /// 调用面词汇（内核经 `contract::export_item("host-mdns", …)` 派生，wasm 编译期
+    /// 调用面词汇（内核经 `contract::export_item_in(MDNS_PACKAGE, "host-mdns", …)` 派生，wasm 编译期
     /// 具名，机制）与域自报词汇（`wasmnest-discovery-engine::routing::EXPORTS` 的字面量）
     /// 必须**逐字一致**
     ///
@@ -880,7 +880,10 @@ mod tests {
         let domain_values = export_literals(&domain_src);
         let kernel_values: Vec<String> = kernel_funcs
             .iter()
-            .map(|func| crate::contract::export_item("host-mdns", func).to_string())
+            .map(|func| {
+                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", func)
+                    .to_string()
+            })
             .collect();
         let mut domain_sorted = domain_values.clone();
         domain_sorted.sort();
@@ -894,7 +897,8 @@ mod tests {
 
     /// 抽出源码里**未转义**的 host-mdns 导出名字面量（去重排序）
     ///
-    /// 匹配前缀 `wasmnest:plugin/host-mdns.` 对**有版本 / 无版本**两种形态都成立
+    /// 匹配前缀 `wasmnest:mdns/host-mdns.`（拆包后 host-mdns 属能力域包）对**有版本 /
+    /// 无版本**两种形态都成立
     /// （版本在末尾），故本抽取对版本位置变化免疫；版本一致性由值层比对与
     /// `wit_package_version_lock.rs` 负责。
     ///
@@ -902,7 +906,7 @@ mod tests {
     /// 都不算——否则锁会把自己的模式串当成一条词汇（两条都踩过）。
     fn export_literals(src: &str) -> Vec<&str> {
         let mut out: Vec<&str> = src
-            .match_indices("\"wasmnest:plugin/host-mdns.")
+            .match_indices("\"wasmnest:mdns/host-mdns.")
             .filter(|(idx, _)| !src[..*idx].ends_with('\\'))
             .filter_map(|(idx, _)| {
                 let rest = &src[idx + 1..];
@@ -914,7 +918,7 @@ mod tests {
         out
     }
 
-    /// 抽源码里 `export_item("host-mdns", "<func>")` 形态的函数名（去重排序）
+    /// 抽源码里 `export_item_in(<pkg>, "host-mdns", "<func>")` 形态的函数名（去重排序）
     ///
     /// **逐行跳过注释**（`//` / `///` / `//!` 开头）：文档里的示例形态（如
     /// `"<func>"` 占位）不是词汇，不排掉锁会把自己的文档当成一条导出名。
@@ -925,7 +929,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let mut out: Vec<String> = Vec::new();
-        let needle = "export_item(\"host-mdns\", \"";
+        let needle = "\"host-mdns\", \"";
         let mut rest = code.as_str();
         while let Some(idx) = rest.find(needle) {
             let after = &rest[idx + needle.len()..];

@@ -81,7 +81,7 @@ pub use type_hub::{
 /// 能力模块名（白名单键；`HostModuleDesc::name` 的真源）
 pub const MODULE_NAME: &str = "discovery";
 /// 本模块提供的 guest interface 路径
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.2/host-mdns"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:mdns@0.0.1/host-mdns"];
 /// 本模块读写的权限位
 pub const MODULE_PERMISSIONS: &[&str] = &["network:mdns"];
 
@@ -114,7 +114,7 @@ impl HostModule for DiscoveryModule {
     }
 
     fn register(&self, linker: &mut Linker<WasmPluginState>) -> wasmtime::Result<()> {
-        wasmnest::plugin::host_mdns::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
+        wasmnest::mdns::host_mdns::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
     }
 }
 
@@ -147,7 +147,7 @@ bindgen!({
     // provider 侧。
     //
     // ⚠️ 由此产生的**硬约束**：本 crate 与宿主各自生成的
-    // `wasmnest::plugin::host_mdns::Host` 是**同名但不同类型**的 trait。宿主必须
+    // `wasmnest::mdns::host_mdns::Host` 是**同名但不同类型**的 trait。宿主必须
     // 同时删掉自己的 mdns `Host` impl 与 `add_to_linker` 行，否则同一个
     // interface 被注册两次 → 装配期 `defined twice`。
     // 票 05 / ADR 0052 D2：契约面脱端——本文件是 `host-mdns` 的**共享契约真源**
@@ -166,7 +166,7 @@ bindgen!({
 // 同迁），此层只做「拿端口 → 转调 → 按 WIT `result` 形状返回」。
 
 #[cfg(feature = "common-host")]
-impl wasmnest::plugin::host_mdns::Host for WasmPluginState {
+impl wasmnest::mdns::host_mdns::Host for WasmPluginState {
     fn browse(&mut self, service_type: String) -> Result<String, String> {
         engine::browse(&ports::ports(), &self.plugin_id, &service_type)
     }
@@ -225,3 +225,39 @@ pub static HOOKS: wasmnest_host_kit::DomainHooks = wasmnest_host_kit::DomainHook
 
 #[cfg(feature = "common-host")]
 wasmnest_host_kit::submit_hooks!(HOOKS);
+
+// ==================== 契约包身份（WIT 按包拆分，ADR 0061） ====================
+
+/// 本能力域 WIT 包全名（`namespace:name@version`）
+///
+/// 与 `wit/mdns.wit` 的 `package` 行逐字一致（下方锁测试断言），也是宿主
+/// `MODULE_INTERFACES` 各项的前缀。拆包后每个能力域独立版本：只在本包 WIT
+/// 变更时 bump，不再随 `wasmnest:plugin` 全局版本前进。
+pub const WIT_PACKAGE: &str = "wasmnest:mdns@0.0.1";
+
+#[cfg(test)]
+mod wit_package_lock {
+    /// 常量 ↔ 分片真源 package 行（两侧任一手改即红）
+    #[test]
+    fn wit_package_matches_slice_package_line() {
+        let raw = include_str!("../wit/mdns.wit");
+        let line = raw
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("package "))
+            .expect("WIT 分片缺 package 行");
+        assert_eq!(line, format!("package {};", super::WIT_PACKAGE));
+    }
+
+    /// 宿主模块接口路径必须属于本包（包名/版本漂移＝运行期 import 失配，编译面不红）
+    #[test]
+    fn module_interfaces_belong_to_wit_package() {
+        for iface in super::MODULE_INTERFACES {
+            assert!(
+                iface.starts_with(&format!("{}/", super::WIT_PACKAGE)),
+                "MODULE_INTERFACES 项 {iface} 不属于 {}",
+                super::WIT_PACKAGE
+            );
+        }
+    }
+}

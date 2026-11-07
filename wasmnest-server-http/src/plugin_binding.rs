@@ -149,7 +149,7 @@ pub const MODULE_NAME: &str = "http";
 /// ADR 0052 D2/D4：`host-http`（出站交集）契约真源在本 crate `wit/http.wit`；
 /// 服务端域 `host-http-endpoint`（桌面扩展）的 WIT 声明与 `impl Host` 已归桌面
 /// 宿主（本模块不再注册/声明它）。
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.2/host-http"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:http@0.0.1/host-http"];
 
 /// 本域的权限位（必须与 `wasmnest.wit` / SDK 权限表逐字一致）
 pub const MODULE_PERMISSIONS: &[&str] = &["network:http"];
@@ -177,7 +177,7 @@ impl HostModule for HttpModule {
     }
 
     fn register(&self, linker: &mut Linker<WasmPluginState>) -> wasmtime::Result<()> {
-        wasmnest::plugin::host_http::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
+        wasmnest::http::host_http::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
     }
 }
 
@@ -275,7 +275,7 @@ bindgen!({
     // provider 侧。
     //
     // ⚠️ 由此产生的**硬约束**：本 crate 与宿主各自生成的
-    // `wasmnest::plugin::host_http::Host` 是**同名但不同类型**的 trait。宿主必须
+    // `wasmnest::http::host_http::Host` 是**同名但不同类型**的 trait。宿主必须
     // 同时删掉自己的 http `Host` impl 与 `add_to_linker` 行，否则同一个 interface
     // 被注册两次 → 装配期 `defined twice`。
     // 票 05：契约面脱端——bindgen 改指本 crate 自持分片 `wit/http.wit`
@@ -295,7 +295,7 @@ bindgen!({
 // 经端口问宿主结果），此层只做「取端口 → 转调 → 按 WIT `result` 形状返回」。
 
 #[cfg(feature = "common-host")]
-impl wasmnest::plugin::host_http::Host for WasmPluginState {
+impl wasmnest::http::host_http::Host for WasmPluginState {
     fn fetch(&mut self, request_json: String) -> Result<Option<String>, String> {
         // may_prompt = true：插件主流程（guest 调用栈）可弹窗询问出站授权
         egress::http_fetch(&ports_for(self), &self.plugin_id, &request_json, true)

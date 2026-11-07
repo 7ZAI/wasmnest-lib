@@ -44,3 +44,39 @@ pub mod wire;
 
 pub use face::HttpTransportFace;
 pub use routes::configure_routes;
+
+// ==================== 契约包身份（WIT 按包拆分，ADR 0061） ====================
+
+/// 本能力域 WIT 包全名（`namespace:name@version`）
+///
+/// 与 `wit/http.wit` 的 `package` 行逐字一致（下方锁测试断言），也是宿主
+/// `MODULE_INTERFACES` 各项的前缀。拆包后每个能力域独立版本：只在本包 WIT
+/// 变更时 bump，不再随 `wasmnest:plugin` 全局版本前进。
+pub const WIT_PACKAGE: &str = "wasmnest:http@0.0.1";
+
+#[cfg(test)]
+mod wit_package_lock {
+    /// 常量 ↔ 分片真源 package 行（两侧任一手改即红）
+    #[test]
+    fn wit_package_matches_slice_package_line() {
+        let raw = include_str!("../wit/http.wit");
+        let line = raw
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("package "))
+            .expect("WIT 分片缺 package 行");
+        assert_eq!(line, format!("package {};", super::WIT_PACKAGE));
+    }
+
+    /// 宿主模块接口路径必须属于本包（包名/版本漂移＝运行期 import 失配，编译面不红）
+    #[test]
+    fn module_interfaces_belong_to_wit_package() {
+        for iface in crate::plugin_binding::MODULE_INTERFACES {
+            assert!(
+                iface.starts_with(&format!("{}/", super::WIT_PACKAGE)),
+                "MODULE_INTERFACES 项 {iface} 不属于 {}",
+                super::WIT_PACKAGE
+            );
+        }
+    }
+}

@@ -45,11 +45,11 @@ pub const FORWARD_PREFIX: &str = "mdns";
 /// `manager::capability` 的 `mdns_call_surface_names_match_the_domain_self_report`
 /// （与内核调用面对偶）。
 pub const EXPORTS: &[&str] = &[
-    "wasmnest:plugin/host-mdns.browse@0.0.2",
-    "wasmnest:plugin/host-mdns.stop-browse@0.0.2",
-    "wasmnest:plugin/host-mdns.advertise@0.0.2",
-    "wasmnest:plugin/host-mdns.stop-advertise@0.0.2",
-    "wasmnest:plugin/host-mdns.is-advertising@0.0.2",
+    "wasmnest:mdns/host-mdns.browse@0.0.1",
+    "wasmnest:mdns/host-mdns.stop-browse@0.0.1",
+    "wasmnest:mdns/host-mdns.advertise@0.0.1",
+    "wasmnest:mdns/host-mdns.stop-advertise@0.0.1",
+    "wasmnest:mdns/host-mdns.is-advertising@0.0.1",
 ];
 
 /// 自报项（`inventory` 静态）

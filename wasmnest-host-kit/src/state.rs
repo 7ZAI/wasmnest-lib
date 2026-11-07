@@ -3,7 +3,7 @@
 //! ## 归属说明
 //!
 //! 本类型住在 `wasmnest-host-kit` 而非宿主 bin crate，**不是风格选择而是结构必需**：
-//! `wasmnest::plugin::host_*::add_to_linker::<S, D>` 的 `S` 是单态类型参数，能力 crate
+//! `wasmnest::<pkg>::host_*::add_to_linker::<S, D>` 的 `S` 是单态类型参数，能力 crate
 //! 必须能命名它（否则要么退回宿主侧逐接口硬编码，要么与宿主构成 Cargo 环）。
 //!
 //! 字段只有**机制属性**：实例身份、WASI 上下文、资源上限快照、指标句柄、可选导出

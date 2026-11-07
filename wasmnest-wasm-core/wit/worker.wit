@@ -1,4 +1,4 @@
-package wasmnest:plugin@0.0.2;
+package wasmnest:plugin@0.1.0;
 
 /// worker 计算接口（worker 组件的唯一导出；1 submit = 1 run）
 ///

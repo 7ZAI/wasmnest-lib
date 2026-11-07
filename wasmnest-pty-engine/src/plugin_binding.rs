@@ -72,7 +72,7 @@ use wasmtime::component::{bindgen, Linker};
 pub const MODULE_NAME: &str = "pty";
 
 /// 能力模块接口路径（与 WIT 契约逐字一致；纯字符串，默认可用）
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.2/host-pty"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:pty@0.0.1/host-pty"];
 
 /// 能力模块权限位（`pty:spawn` / `pty:io`；纯字符串，默认可用）
 pub const MODULE_PERMISSIONS: &[&str] = &["pty:spawn", "pty:io"];
@@ -105,7 +105,7 @@ impl HostModule for PtyModule {
     }
 
     fn register(&self, linker: &mut Linker<WasmPluginState>) -> wasmtime::Result<()> {
-        wasmnest::plugin::host_pty::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
+        wasmnest::pty::host_pty::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
     }
 }
 
@@ -258,7 +258,7 @@ bindgen!({
     // provider 侧。
     //
     // ⚠️ 由此产生的**硬约束**：本 crate 与宿主各自生成的
-    // `wasmnest::plugin::host_pty::Host` 是**同名但不同类型**的 trait。宿主必须
+    // `wasmnest::pty::host_pty::Host` 是**同名但不同类型**的 trait。宿主必须
     // 同时删掉自己的 pty `Host` impl 与 `add_to_linker` 行，否则同一个 interface
     // 被注册两次 → 装配期 `defined twice`（本次迁移同批删除，见 spec §3.2）。
     // 票 05：契约面脱端——bindgen 改指本 crate 自持分片 `wit/pty.wit`
@@ -310,7 +310,7 @@ pub fn ports_for(state: &WasmPluginState) -> Arc<dyn PtyPorts> {
 // 经端口问宿主结果），此层只做「取端口 → 转调 → 按 WIT `result` 形状返回」。
 
 #[cfg(feature = "common-host")]
-impl wasmnest::plugin::host_pty::Host for WasmPluginState {
+impl wasmnest::pty::host_pty::Host for WasmPluginState {
     fn spawn(&mut self, config_json: String) -> Result<String, String> {
         primitives::pty_spawn(&ports_for(self), &self.plugin_id, &config_json)
     }
@@ -332,7 +332,7 @@ impl wasmnest::plugin::host_pty::Host for WasmPluginState {
         pty_id: String,
         from_offset: u64,
         max_bytes: u32,
-    ) -> Result<Option<wasmnest::plugin::host_pty::RingFetchResult>, String> {
+    ) -> Result<Option<wasmnest::pty::host_pty::RingFetchResult>, String> {
         primitives::pty_ring_fetch(
             &ports_for(self),
             &self.plugin_id,
@@ -341,7 +341,7 @@ impl wasmnest::plugin::host_pty::Host for WasmPluginState {
             max_bytes,
         )
         .map(|fetched| {
-            fetched.map(|ring| wasmnest::plugin::host_pty::RingFetchResult {
+            fetched.map(|ring| wasmnest::pty::host_pty::RingFetchResult {
                 data: ring.data,
                 next_offset: ring.next_offset,
                 truncated: ring.truncated,

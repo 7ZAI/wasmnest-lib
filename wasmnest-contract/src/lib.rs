@@ -48,10 +48,10 @@
 pub const PACKAGE_NAME: &str = "wasmnest:plugin";
 
 /// 契约包版本（三段 semver）
-pub const PACKAGE_VERSION: &str = "0.0.2";
+pub const PACKAGE_VERSION: &str = "0.1.0";
 
 /// 契约包全名（`namespace:name@version`）——组件**导出实例**的键形态
-pub const PACKAGE: &str = "wasmnest:plugin@0.0.2";
+pub const PACKAGE: &str = "wasmnest:plugin@0.1.0";
 
 /// worker 接口名（worker 组件的唯一导出接口，`wasmnest:plugin/worker@<version>`）
 ///

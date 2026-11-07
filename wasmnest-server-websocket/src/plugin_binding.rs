@@ -1079,7 +1079,7 @@ pub const MODULE_NAME: &str = "websocket";
 /// `wasmnest-ws-client-engine/wit/ws.wit`，本 crate 的 `common-host` 绑定暂留客户端实现
 /// （Q4 裁决；双轨收敛另行立项）；服务端域 `host-websocket-server`（桌面扩展）的
 /// WIT 声明与 `impl Host` 已归桌面宿主（本模块不再注册/声明它）。
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.2/host-websocket"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:ws@0.0.1/host-websocket"];
 
 /// 本域的权限位（必须与 WIT / SDK 权限表逐字一致）
 ///
@@ -1106,7 +1106,7 @@ impl HostModule for WebsocketModule {
     }
 
     fn register(&self, linker: &mut Linker<WasmPluginState>) -> wasmtime::Result<()> {
-        wasmnest::plugin::host_websocket::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
+        wasmnest::ws::host_websocket::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
     }
 }
 
@@ -1209,7 +1209,7 @@ bindgen!({
     // provider 侧。
     //
     // ⚠️ 由此产生的**硬约束**：本 crate 与宿主各自生成的
-    // `wasmnest::plugin::host_websocket::Host` 是**同名但不同类型**的 trait。宿主必须
+    // `wasmnest::ws::host_websocket::Host` 是**同名但不同类型**的 trait。宿主必须
     // 同时删掉自己的 ws `Host` impl 与 `add_to_linker` 行，否则同一个 interface
     // 被注册两次 → 装配期 `defined twice`。
     // 票 05 / ADR 0052 D2：契约面脱端——客户端域契约真源住能力域 crate
@@ -1230,7 +1230,7 @@ bindgen!({
 // 经端口问宿主结果），此层只做「取端口 → 转调 → 按 WIT `result` 形状返回」。
 
 #[cfg(feature = "common-host")]
-impl wasmnest::plugin::host_websocket::Host for WasmPluginState {
+impl wasmnest::ws::host_websocket::Host for WasmPluginState {
     // ==================== 客户端域（出站） ====================
 
     fn connect(&mut self, config_json: String) -> Result<String, String> {
