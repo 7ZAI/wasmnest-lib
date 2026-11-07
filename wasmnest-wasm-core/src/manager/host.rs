@@ -1023,6 +1023,8 @@ mod boot;
 mod commands;
 mod errors;
 mod install;
+// 卸载 / 安装策略类型随 `PluginHost` 一并公开（宿主层做数据保留选择）
+pub use install::{InstallOptions, UninstallOptions};
 // 票 06 P1：插件实例属主任务（`event-loop` 调用模型）——装配条目
 // （`WasmInstanceEntry`）在 `event-loop` 分支消费它
 // （`pub(crate)`：属主测试在 `manager::runtime::tests::owner_e2e` 直接驱动句柄）

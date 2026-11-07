@@ -3,7 +3,7 @@
 //! Tauri commands — 前端 PluginContext 的每个 API 调用通过 Tauri invoke 到达此桥接层
 //! Rust 端做权限校验后执行操作
 
-use super::PluginHost;
+use super::{InstallOptions, PluginHost};
 use crate::manager::types::HostPluginInfo;
 use crate::security::fs_auth::FsAuthChecker;
 use std::sync::Arc;
@@ -736,12 +736,15 @@ pub async fn plugin_auth_remove_record(
 /// 仅接收已下载的本地文件路径：解压与身份/路径校验在 Rust 端完成。
 /// `upgrade`（应用版本更新链路，缺省 false）：对同 id **用户安装**插件就地升级
 /// （保数据换代码，运行中 / 非 user-installed 拒绝，见 `install.rs::install_from_zip`）。
+/// `restore_data`（fresh install，缺省 false）：是否恢复 keep-data 卸载留下的旧数据；
+/// 未安装同 id 时安装器会替换残留目录，默认丢弃旧数据（壳层先提示用户选择）。
 #[tauri::command]
 pub async fn plugin_install_from_file(
     webview: tauri::Webview,
     path: String,
     credential: String,
     upgrade: Option<bool>,
+    restore_data: Option<bool>,
     plugin_host: State<'_, Arc<PluginHost>>,
 ) -> crate::Result<String> {
     require_host_surface(
@@ -752,8 +755,11 @@ pub async fn plugin_install_from_file(
         "plugin installation must be requested by the host frontend",
     )?;
     let upgrade = upgrade.unwrap_or(false);
-    tracing::info!(path = %path, upgrade, "[API] plugin_install_from_file");
-    let result = plugin_host.install_from_zip(&path, upgrade).await;
+    let restore_data = restore_data.unwrap_or(false);
+    tracing::info!(path = %path, upgrade, restore_data, "[API] plugin_install_from_file");
+    let result = plugin_host
+        .install_from_zip_with_options(&path, upgrade, InstallOptions { restore_data })
+        .await;
     if let Err(ref e) = result {
         tracing::error!(error = %e, "[API] plugin_install_from_file failed");
     }

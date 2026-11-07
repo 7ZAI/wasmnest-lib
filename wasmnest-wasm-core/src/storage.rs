@@ -163,6 +163,19 @@ impl PluginStorage {
         Ok(())
     }
 
+    /// 插件是否还有任何存储行（重装前置：判断是否存在可恢复的旧 KV）
+    ///
+    /// 只读判定，与 [`Self::clear_all`] 同一张表：keep_data 卸载后主库 KV 行仍在，
+    /// 重装时由壳层据此提示「是否恢复旧应用数据」。
+    pub async fn has_any(&self, plugin_id: &str) -> crate::Result<bool> {
+        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT EXISTS(SELECT 1 FROM plugin_storage WHERE plugin_id = ?1)")?;
+        let exists: i64 = stmt.query_row(rusqlite::params![plugin_id], |row| row.get(0))?;
+        Ok(exists != 0)
+    }
+
     /// 清空插件所有存储（插件卸载时使用）
     pub async fn clear_all(&self, plugin_id: &str) -> crate::Result<()> {
         let db = self.db.lock().expect("plugin storage db lock poisoned");
@@ -320,6 +333,29 @@ mod tests {
 
         storage.delete("plugin-1", "key1").await.unwrap();
         assert!(storage.get("plugin-1", "key1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_storage_has_any_tracks_retained_kv() {
+        let db = test_db().await;
+        let storage = PluginStorage::new(db);
+
+        assert!(
+            !storage.has_any("plugin-1").await.unwrap(),
+            "空表 = 无旧数据"
+        );
+        storage
+            .set("plugin-1", "key1", serde_json::json!("v"))
+            .await
+            .unwrap();
+        assert!(storage.has_any("plugin-1").await.unwrap());
+        assert!(
+            !storage.has_any("plugin-2").await.unwrap(),
+            "判据必须按插件隔离"
+        );
+
+        storage.clear_all("plugin-1").await.unwrap();
+        assert!(!storage.has_any("plugin-1").await.unwrap());
     }
 
     #[tokio::test]

@@ -54,6 +54,53 @@ impl Default for ZipLimits {
 /// 插件下载安装器
 pub struct PluginDownloader;
 
+/// fresh install 替换同 id 残留目录时的数据策略（宿主裁决后传入、默认丢弃）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallDataPolicy {
+    /// 丢弃旧数据：残留目录整体清除（含 `plugin.db` 家族）
+    Discard,
+    /// 恢复旧数据：只保留 `plugin.db` 家族，代码文件全部换新
+    Restore,
+}
+
+/// 安装模式（内部；决定同 id 目录能否替换、私有库是否保留）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallMode {
+    /// 新装：同 id 有效安装目录一律拒绝覆盖
+    RejectExisting,
+    /// 升级：替换目录内容，恒保留私有库
+    Upgrade,
+    /// 替换残留：宿主已确认该 id 无运行时安装，按策略替换
+    ReplaceResidue(InstallDataPolicy),
+}
+
+impl InstallMode {
+    /// 同 id 目录存在时是否允许替换
+    fn allows_replace(self) -> bool {
+        !matches!(self, Self::RejectExisting)
+    }
+
+    /// 是否保留同 id 目录里的 `plugin.db` 家族
+    fn preserves_private_db(self) -> bool {
+        match self {
+            // 新装遇到无 plugin.json 的孤儿目录（keep-data 残留）时保留私有库：
+            // 与升级同口径，目录本身不构成有效安装，删除前先搬走数据。
+            Self::RejectExisting | Self::Upgrade => true,
+            Self::ReplaceResidue(policy) => matches!(policy, InstallDataPolicy::Restore),
+        }
+    }
+
+    /// 日志标签
+    fn label(self) -> &'static str {
+        match self {
+            Self::RejectExisting => "fresh",
+            Self::Upgrade => "upgrade",
+            Self::ReplaceResidue(InstallDataPolicy::Discard) => "replace-residue-discard",
+            Self::ReplaceResidue(InstallDataPolicy::Restore) => "replace-residue-restore",
+        }
+    }
+}
+
 impl PluginDownloader {
     /// 从本地 zip 插件包安装
     ///
@@ -73,7 +120,36 @@ impl PluginDownloader {
                 zip_path.display()
             )));
         }
-        Self::install_zip(zip_path, user_plugins_dir, false)
+        Self::install_zip(zip_path, user_plugins_dir, InstallMode::RejectExisting)
+    }
+
+    /// 宿主已裁决「同 id 无运行时安装」后的 fresh install
+    ///
+    /// 磁盘上的同 id 目录不可能是当前生效安装，只可能是：
+    /// - `keep_data` 卸载留下的私有库目录（无 plugin.json）；
+    /// - 装载期重复裁决被拒的休眠副本 / tombstone 后的内置重装残留（含 plugin.json）。
+    ///
+    /// 这类目录不能交给 `install_from_file`（它按「有效安装」拒绝覆盖），否则
+    /// 重装被旧目录卡死。是否保留旧数据由 `data_policy` 决定——**默认丢弃**，
+    /// 只有用户显式选择恢复才保留 `plugin.db` 家族。manifest / 身份 / 路径 /
+    /// 摘要 / platform 门禁与普通安装完全一致。
+    pub fn install_from_file_replacing_residue(
+        zip_path: &str,
+        user_plugins_dir: &Path,
+        data_policy: InstallDataPolicy,
+    ) -> Result<String> {
+        let zip_path = Path::new(zip_path);
+        if !zip_path.exists() {
+            return Err(crate::AppError::Plugin(format!(
+                "Plugin package not found: {}",
+                zip_path.display()
+            )));
+        }
+        Self::install_zip(
+            zip_path,
+            user_plugins_dir,
+            InstallMode::ReplaceResidue(data_policy),
+        )
     }
 
     /// 升级安装（同 id 已装时替换目录内容；升级的应用版本更新链路专用）
@@ -91,7 +167,7 @@ impl PluginDownloader {
                 zip_path.display()
             )));
         }
-        Self::install_zip(zip_path, user_plugins_dir, true)
+        Self::install_zip(zip_path, user_plugins_dir, InstallMode::Upgrade)
     }
 
     /// 读取 zip 内 plugin.json 的插件 id（升级前置：宿主层先于任何落盘动作裁决运行态）
@@ -122,8 +198,8 @@ impl PluginDownloader {
         Ok(manifest.id)
     }
 
-    /// zip 解压安装（本地文件；`allow_upgrade` 见 `upgrade_from_file`）
-    fn install_zip(zip_path: &Path, user_plugins_dir: &Path, allow_upgrade: bool) -> Result<String> {
+    /// zip 解压安装（本地文件；模式见 [`InstallMode`]）
+    fn install_zip(zip_path: &Path, user_plugins_dir: &Path, mode: InstallMode) -> Result<String> {
         // 1. 打开 zip
         let file = std::fs::File::open(zip_path).map_err(|e| {
             crate::AppError::Plugin(format!("Failed to open plugin package: {}", e))
@@ -253,26 +329,37 @@ impl PluginDownloader {
 
         // 6. 移动到最终目录
         //
-        // 拒绝覆盖已存在的同 id 插件：无签名链时无法区分「同作者更新」与
+        // 默认拒绝覆盖已存在的同 id 有效安装：无签名链时无法区分「同作者更新」与
         // 「冒名顶替替换」，静默替换会让既有权限继续作用于被替换后的新代码，
-        // 是权限门禁的旁路。升级需先卸载旧版本。
+        // 是权限门禁的旁路。只有两种模式允许替换：
+        // - `Upgrade`：宿主已裁决可更新（保数据换代码）；
+        // - `ReplaceResidue`：宿主已确认该 id **无运行时安装**，目录只能是残留
+        //   （keep-data 卸载 / 被重复裁决拒绝的休眠副本 / tombstone 后重装），
+        //   按 `InstallDataPolicy` 决定是否保留旧数据（默认丢弃）。
         //
-        // 例外：目录内无 plugin.json 的「孤儿残留」不构成有效安装——这类目录
-        // 通常是历史安装/激活遗留的插件私有数据库（plugin.db），loader 因缺
-        // plugin.json 会跳过它（UI 不可见、卸载按 extension_path 也够不着），
-        // 但磁盘查重会误判为已安装，卡死同 id 重装。此处识别后清除再安装。
+        // 例外：目录内无 plugin.json 的「孤儿残留」不构成有效安装，默认新装也
+        // 先搬走私有库再清目录；Discard 策略则连私有库一起删。
         let final_dir = user_plugins_dir.join(&plugin_id);
+        let preserves_db = mode.preserves_private_db();
         if final_dir.exists() && final_dir.join(PLUGIN_MANIFEST_FILE).exists() {
-            if !allow_upgrade {
+            if !mode.allows_replace() {
                 let _ = std::fs::remove_dir_all(&temp_dir);
                 return Err(crate::AppError::Plugin(format!(
                     "Plugin '{}' is already installed. Uninstall it first to install a new version.",
                     plugin_id
                 )));
             }
-            // 升级：私有库（plugin.db 家族）先搬进新包临时目录，再整体换目录——
-            // 主库侧的插件存储 / 审批记录按 plugin_id 键存续（宿主层不经卸载路径）
-            Self::preserve_private_db(&final_dir, &temp_dir)?;
+            if preserves_db {
+                // 私有库（plugin.db 家族）先搬进新包临时目录，再整体换目录——
+                // 主库侧的插件存储 / 审批记录按 plugin_id 键存续（宿主层不经卸载路径）
+                Self::preserve_private_db(&final_dir, &temp_dir)?;
+            } else {
+                tracing::info!(
+                    plugin_id = %plugin_id,
+                    dir = %final_dir.display(),
+                    "[PluginDownloader] Discarding retained plugin data before install"
+                );
+            }
             std::fs::remove_dir_all(&final_dir).map_err(|e| {
                 crate::AppError::Plugin(format!(
                     "Failed to remove old plugin dir '{}': {}",
@@ -281,11 +368,23 @@ impl PluginDownloader {
                 ))
             })?;
         } else if final_dir.exists() {
-            tracing::warn!(
-                plugin_id = %plugin_id,
-                dir = %final_dir.display(),
-                "[PluginDownloader] Removing orphan residue dir (no plugin.json) before install"
-            );
+            // 无 plugin.json 的孤儿目录（历史安装 / keep-data 卸载留下的插件私有库）：
+            // 默认先保留 `plugin.db` 家族再清目录（否则重装会静默丢数据）；
+            // Discard 策略按用户选择丢弃旧数据。
+            if preserves_db {
+                Self::preserve_private_db(&final_dir, &temp_dir)?;
+                tracing::warn!(
+                    plugin_id = %plugin_id,
+                    dir = %final_dir.display(),
+                    "[PluginDownloader] Preserving private db from orphan residue dir (no plugin.json) before install"
+                );
+            } else {
+                tracing::info!(
+                    plugin_id = %plugin_id,
+                    dir = %final_dir.display(),
+                    "[PluginDownloader] Discarding orphan residue dir (no plugin.json) before install"
+                );
+            }
             std::fs::remove_dir_all(&final_dir).map_err(|e| {
                 crate::AppError::Plugin(format!(
                     "Failed to remove orphan dir '{}': {}",
@@ -299,11 +398,11 @@ impl PluginDownloader {
         })?;
 
         tracing::info!(
-            "[PluginDownloader] Plugin '{}' installed to {:?} (source: {}, upgrade: {})",
+            "[PluginDownloader] Plugin '{}' installed to {:?} (source: {}, mode: {})",
             plugin_id,
             final_dir,
             SOURCE_FILE_INSTALL,
-            allow_upgrade
+            mode.label()
         );
         Ok(plugin_id)
     }
@@ -703,8 +802,12 @@ mod tests {
             PluginDownloader::install_from_file(zip_path.to_str().unwrap(), &plugins_dir).unwrap();
         assert_eq!(installed, id);
 
-        // 孤儿残留被清除：plugin.db 消失，新插件文件就位
-        assert!(!orphan_dir.join("plugin.db").exists());
+        // 孤儿残留被替换：新插件文件就位；默认入口保留私有库（keep-data 重装语义，
+        // 是否丢弃由宿主调用 `install_from_file_replacing_residue(Discard)` 决定）
+        assert_eq!(
+            std::fs::read(orphan_dir.join("plugin.db")).unwrap(),
+            b"orphan db"
+        );
         assert!(orphan_dir.join("plugin.json").exists());
         assert!(orphan_dir.join("index.js").exists());
     }
@@ -738,6 +841,119 @@ mod tests {
             "old"
         );
         assert!(!plugins_dir.join(PLUGIN_DOWNLOAD_TEMP_DIR).join(id).exists());
+    }
+
+    /// 宿主裁决「无运行时安装」后替换残留（含 plugin.json 的休眠副本）：默认丢弃旧数据
+    #[test]
+    fn install_replacing_residue_discards_private_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let id = "com.test.residue-discard";
+
+        // 预置带 plugin.json 的同 id 残留（装载期重复裁决留下的休眠副本）
+        let residue = plugins_dir.join(id);
+        std::fs::create_dir_all(&residue).unwrap();
+        std::fs::write(
+            residue.join("plugin.json"),
+            r#"{"id":"com.test.residue-discard"}"#,
+        )
+        .unwrap();
+        std::fs::write(residue.join("index.js"), "old").unwrap();
+        std::fs::write(residue.join("plugin.db"), b"old-db").unwrap();
+        std::fs::write(residue.join("plugin.db-wal"), b"old-wal").unwrap();
+
+        let zip_path = build_plugin_zip(tmp.path(), id, false, false);
+        let installed = PluginDownloader::install_from_file_replacing_residue(
+            zip_path.to_str().unwrap(),
+            &plugins_dir,
+            InstallDataPolicy::Discard,
+        )
+        .unwrap();
+        assert_eq!(installed, id);
+
+        // 包内容换新；旧数据（私有库 + 伴生文件）全部丢弃
+        assert_eq!(
+            std::fs::read_to_string(residue.join("index.js")).unwrap(),
+            "console.log('test')"
+        );
+        assert!(
+            !residue.join("plugin.db").exists(),
+            "Discard 必须删除 plugin.db"
+        );
+        assert!(
+            !residue.join("plugin.db-wal").exists(),
+            "Discard 必须删除 plugin.db-wal"
+        );
+        assert!(!plugins_dir.join(PLUGIN_DOWNLOAD_TEMP_DIR).join(id).exists());
+    }
+
+    /// 恢复旧数据：只保留 plugin.db 家族，代码文件全部换新
+    #[test]
+    fn install_replacing_residue_restores_private_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let id = "com.test.residue-restore";
+
+        let residue = plugins_dir.join(id);
+        std::fs::create_dir_all(&residue).unwrap();
+        std::fs::write(
+            residue.join("plugin.json"),
+            r#"{"id":"com.test.residue-restore"}"#,
+        )
+        .unwrap();
+        std::fs::write(residue.join("index.js"), "old").unwrap();
+        std::fs::write(residue.join("plugin.db"), b"keep-db").unwrap();
+        std::fs::write(residue.join("plugin.db-wal"), b"keep-wal").unwrap();
+
+        let zip_path = build_plugin_zip(tmp.path(), id, false, false);
+        let installed = PluginDownloader::install_from_file_replacing_residue(
+            zip_path.to_str().unwrap(),
+            &plugins_dir,
+            InstallDataPolicy::Restore,
+        )
+        .unwrap();
+        assert_eq!(installed, id);
+
+        // 代码换新，私有库与伴生文件保留
+        assert_eq!(
+            std::fs::read_to_string(residue.join("index.js")).unwrap(),
+            "console.log('test')"
+        );
+        assert_eq!(
+            std::fs::read(residue.join("plugin.db")).unwrap(),
+            b"keep-db"
+        );
+        assert_eq!(
+            std::fs::read(residue.join("plugin.db-wal")).unwrap(),
+            b"keep-wal"
+        );
+        assert!(!plugins_dir.join(PLUGIN_DOWNLOAD_TEMP_DIR).join(id).exists());
+    }
+
+    /// 数据-only 孤儿目录 + Discard：旧私有库不得复活到新包
+    #[test]
+    fn install_replacing_residue_discards_orphan_private_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let id = "com.test.orphan-discard";
+
+        let orphan = plugins_dir.join(id);
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("plugin.db"), b"orphan-db").unwrap();
+
+        let zip_path = build_plugin_zip(tmp.path(), id, false, false);
+        PluginDownloader::install_from_file_replacing_residue(
+            zip_path.to_str().unwrap(),
+            &plugins_dir,
+            InstallDataPolicy::Discard,
+        )
+        .unwrap();
+
+        assert!(orphan.join("plugin.json").exists(), "新包已落地");
+        assert!(
+            !orphan.join("plugin.db").exists(),
+            "Discard 必须丢弃孤儿私有库"
+        );
     }
 
     #[test]
@@ -1082,7 +1298,10 @@ mod tests {
         })
         .to_string();
         writer
-            .start_file(PLUGIN_MANIFEST_FILE, zip::write::SimpleFileOptions::default())
+            .start_file(
+                PLUGIN_MANIFEST_FILE,
+                zip::write::SimpleFileOptions::default(),
+            )
             .unwrap();
         writer.write_all(manifest.as_bytes()).unwrap();
         writer
@@ -1164,11 +1383,9 @@ mod tests {
         PluginDownloader::install_from_file(v1.to_str().unwrap(), &plugins_dir).unwrap();
         std::fs::write(plugins_dir.join(id).join("plugin.db"), b"keep").unwrap();
 
-        let mobile_only =
-            build_plugin_zip_with_platform(tmp.path(), id, false, false, "mobile");
-        let err =
-            PluginDownloader::upgrade_from_file(mobile_only.to_str().unwrap(), &plugins_dir)
-                .unwrap_err();
+        let mobile_only = build_plugin_zip_with_platform(tmp.path(), id, false, false, "mobile");
+        let err = PluginDownloader::upgrade_from_file(mobile_only.to_str().unwrap(), &plugins_dir)
+            .unwrap_err();
         assert!(err.to_string().contains("platform"), "实际: {err}");
         assert_eq!(
             std::fs::read_to_string(plugins_dir.join(id).join("plugin.db")).unwrap(),
@@ -1189,13 +1406,21 @@ mod tests {
         let plugins_dir = tmp.path().join("plugins");
         let id = "com.test.upgrade-digest";
 
-        let v1 = build_wasm_zip(tmp.path(), id, b"REAL-WASM-V1", &sha256_hex(b"REAL-WASM-V1"));
+        let v1 = build_wasm_zip(
+            tmp.path(),
+            id,
+            b"REAL-WASM-V1",
+            &sha256_hex(b"REAL-WASM-V1"),
+        );
         PluginDownloader::install_from_file(v1.to_str().unwrap(), &plugins_dir).unwrap();
 
         let v2 = build_wasm_zip(tmp.path(), id, b"REAL-WASM-V2", &sha256_hex(b"TAMPERED"));
-        let err = PluginDownloader::upgrade_from_file(v2.to_str().unwrap(), &plugins_dir)
-            .unwrap_err();
-        assert!(err.to_string().contains("WASM content mismatch"), "实际: {err}");
+        let err =
+            PluginDownloader::upgrade_from_file(v2.to_str().unwrap(), &plugins_dir).unwrap_err();
+        assert!(
+            err.to_string().contains("WASM content mismatch"),
+            "实际: {err}"
+        );
         let wasm_name = format!("lib_{}", id.replace('.', "_"));
         assert_eq!(
             std::fs::read(plugins_dir.join(id).join(format!("{wasm_name}.wasm"))).unwrap(),
