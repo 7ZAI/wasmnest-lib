@@ -51,6 +51,24 @@
 //!
 //! 任务单元（core-task 池线程）**不得触发弹窗**——判据由调用侧走 [`FsAuthChecker::is_granted`]，
 //! 未授权直接 fail-visible 拒绝（见宿主侧 task 域实现）。
+//!
+//! ## 内容 URI（Android SAF）不属于本校验器的判据面
+//!
+//! 移动端系统选择器交回的是 `content://…/tree/<docId>` 树 URI，不是文件路径：
+//! 它无法规范化、也不能按路径前缀比较。它的操作权由 Android 侧持久 URI 授权
+//! （`takePersistableUriPermission`，用户选择时即落）与 `ContentResolver` 兜底，
+//! 本校验器只认形状（[`is_content_uri`]）：
+//!
+//! - **批量预授权 / 选择器结果**（[`FsAuthChecker::check_batch`] /
+//!   [`FsAuthChecker::authorize_picked`]）：内容 URI **静默放行**——它本来就是
+//!   「用户已通过系统 UI 授权的目标」，再按路径判一遍只会把用户刚选的目录报成
+//!   「未授权」（2026-11-06 移动端 file-transfer 添加共享目录的实际故障）；
+//! - **单路径读写校验**（[`FsAuthChecker::check`] / [`FsAuthChecker::is_granted`]）：
+//!   内容 URI **显性拒绝**——`host-fs` 原语的落盘是真实路径 IO，喂它 URI 只会失败；
+//!   SAF 目标必须走宿主 SAF 原语（`ContentResolver` 自己会做访问检查）。
+//!
+//! 只有 `content://` 开这道分支：`file://` / `http://` 等其它 scheme 仍按普通路径
+//! 走进规范化（并失败），不得借它绕开路径授权。
 
 use crate::security::auth_policy::{
     AuthPolicyStore, AuthRecordSource, AuthResource, AuthStrategy, GrantOutcome, AUTH_EFFECT_ALLOW,
@@ -474,6 +492,19 @@ impl FsAuthChecker {
     /// 判定顺序：硬拒绝记录 → 免弹窗层（第一方 / 记录 / 旧记录）→ 弹窗。
     /// 返回 true 表示允许访问，false 表示拒绝。
     pub async fn check(&self, plugin_id: &str, path: &str, operation: FsOp) -> bool {
+        // 内容 URI 不走本校验器（判据见 [`is_content_uri`]）：放行它等于凭宿主
+        // picker 交回的一条 URI 就给 `host-fs` 原语开门，而 `host-fs` 的读 / 写
+        // 是真实路径 IO，喂它 `content://` 只会失败。显性拒绝比「规范化失败」
+        // 更能说明调用方用错了原语。
+        if is_content_uri(path) {
+            tracing::warn!(
+                plugin_id = %plugin_id,
+                path = %path,
+                "fs_auth: content uri passed to the path-based fs check; \
+                 SAF targets must be accessed through the host SAF primitives"
+            );
+            return false;
+        }
         let canonical = match Self::canonicalize_path(path) {
             Some(p) => p,
             None => {
@@ -919,12 +950,24 @@ impl FsAuthChecker {
     /// 记录里存**规范化路径**（spec §5.1），判定侧同一规范化，避免 `\\?\` 前缀 /
     /// 符号链接造成「明明授权了却仍弹窗」。规范化失败（路径不存在且无父目录，极少）
     /// 返回 `None`，调用方跳过落账而不是存一个永远匹配不上的目标。
+    ///
+    /// 内容 URI（SAF，[`is_content_uri`]）不受规范化影响，按原样落账（见
+    /// [`authorization_key`]）；目录粒度对它退化为精确——内容 URI 不是路径，
+    /// 「父目录」这个概念不存在（树 URI 本身就是目录，文档 URI 上溯会得到
+    /// authority 前缀这种既非目录也不可比较的目标）。
     fn grant_target(path: &str, scope: GrantScope) -> Option<String> {
-        let canonical = Self::canonicalize_path(path)?;
-        let canonical = canonical.to_string_lossy().to_string();
+        let key = match authorization_key(path) {
+            Some(key) => key.to_string_lossy().to_string(),
+            None => {
+                // 规范化失败的既有口径由调用方点名（各调用点有各自的上下文日志），
+                // 这里不再重复打印
+                return None;
+            }
+        };
         Some(match scope {
-            GrantScope::Exact => canonical,
-            GrantScope::Directory => directory_scope_target(&canonical),
+            GrantScope::Exact => key,
+            GrantScope::Directory if is_content_uri(&key) => key,
+            GrantScope::Directory => directory_scope_target(&key),
         })
     }
 
@@ -978,6 +1021,15 @@ impl FsAuthChecker {
         let mut ask_strategy: Option<AuthStrategy> = None;
 
         for path in paths {
+            // 内容 URI（Android SAF 树 / 文档 URI）不是路径：规范化与授权记录
+            // （按路径前缀比较）都不适用。它由系统选择器产生、授权由系统侧持久
+            // （`takePersistableUriPermission`）持有，本校验器对它的判据只有
+            // 「形状合法」（[`is_content_uri`]）——合法即静默放行，不弹框。
+            // 这里必须**显式**分支：走下面的 `canonicalize_path` 会把一条合法的
+            // 树 URI 判成规范化失败，把「用户刚选的目录」报成「未授权」。
+            if is_content_uri(path) {
+                continue;
+            }
             let canonical = match Self::canonicalize_path(path) {
                 Some(c) => c,
                 None => {
@@ -1033,6 +1085,10 @@ impl FsAuthChecker {
     /// 任务单元按单元种类。**带操作集是必须的**：否则「授权读」就等于「读写都行」，
     /// 无弹窗面会把弹窗面刚做的操作拆分原地架空。
     pub async fn is_granted(&self, plugin_id: &str, path: &str, needed: FsOps) -> bool {
+        // 内容 URI：本校验器不持有其授权（同 [`Self::check`] 的分支理由）
+        if is_content_uri(path) {
+            return false;
+        }
         let Some(canonical) = Self::canonicalize_path(path) else {
             return false;
         };
@@ -1370,6 +1426,43 @@ impl FsAuthChecker {
     pub fn resolve_for_io(path: &str) -> Option<PathBuf> {
         Self::canonicalize_path(path)
     }
+}
+
+/// 是否内容 URI（Android SAF：`content://<authority>/tree/<docId>` 或 `/document/<docId>`）
+///
+/// ## 为什么授权判定需要它
+///
+/// 移动端系统目录选择器交回的是 SAF 树 URI，不是文件路径。整套授权链是按「路径」
+/// 建的（规范化 → 前缀比较 → 记录落账），`content://` 既不是绝对路径、也无法
+/// `canonicalize`：过去它在 [`FsAuthChecker::canonicalize_path`] 处被判成规范化
+/// 失败，于是用户刚选中的目录立刻被报「未授权」。
+///
+/// 判据口径：
+/// - 这类目标的操作权**不在本校验器**——由 Android 持久的 URI 授权
+///   （`takePersistableUriPermission`，选择时即落）与 `ContentResolver` 访问检查
+///   兜底；插件对这些 URI 的原语访问不经 `host-fs`（宿主侧 SAF 访问执行者自己会
+///   撞 `SecurityException`），所以这里不再叠一层路径授权。
+/// - 本函数只做**形状**判定，且不额外收紧：共享目录注册表
+///   （`wasmnest-server-peer-net` 的 `SharedDirStore`）与宿主 picker 端口都只挡
+///   「不以 `content://` 开头」的输入，三条入口必须同尺（同一 URI 不能一边能注册
+///   一边被授权门拒掉）。URI 语法本身的细节（authority 合法性等）交给
+///   `ContentResolver` 报错，不在这里二次猜测。
+/// - 仅 `content://` 开这一道：`file://` / `http://` / `data:` 等其它 scheme 仍按
+///   普通路径走进规范化（并失败），不得借这条分支绕开路径授权。
+pub fn is_content_uri(path: &str) -> bool {
+    path.starts_with("content://")
+}
+
+/// 授权判定 / 落账用的目标键：内容 URI 原样保留，其余走真实路径规范化
+///
+/// 两者不能混用：内容 URI 交给 `canonicalize_path` 恒失败，而路径若跳过规范化
+/// 就会丢掉 `..` / 符号链接解析（2026-11-02 审查 #40 的洞）。唯一的分派点在此，
+/// 判定侧（[`FsAuthChecker::check`] 等）与落账侧（`grant_target`）都经它取键。
+fn authorization_key(path: &str) -> Option<PathBuf> {
+    if is_content_uri(path) {
+        return Some(PathBuf::from(path));
+    }
+    FsAuthChecker::canonicalize_path(path)
 }
 
 /// 「目录粒度」授权的落账目标：选到目录 → 目录本身；选到文件 → 所在父目录
@@ -1914,6 +2007,127 @@ mod tests {
             fake.replace('/', "\\"),
             "resolved path must use backslash on Windows"
         );
+    }
+
+    // ==================== 内容 URI（Android SAF） ====================
+
+    /// SAF 树 URI 字面量（移动系统目录选择器的真实产物形状）
+    const SAF_TREE_URI: &str =
+        "content://com.android.externalstorage.documents/tree/primary%3A%E8%91%AC%E9%80%81%E7%9A%84%E8%8A%99%E8%8E%89%E8%8E%B2";
+
+    /// 形状判定只认 `content://`：其它 scheme 不得借道（它们的授权仍归路径链）
+    #[test]
+    fn is_content_uri_only_accepts_content_scheme() {
+        assert!(is_content_uri(SAF_TREE_URI));
+        assert!(is_content_uri("content://media/external/images/media/42"));
+        for other in [
+            "file:///sdcard/a",
+            "http://example.com/a",
+            "data:text/plain,x",
+            "/storage/emulated/0/Download",
+            "content",
+            "",
+        ] {
+            assert!(!is_content_uri(other), "必须拒绝 {other}");
+        }
+    }
+
+    /// 授权键：内容 URI 原样保留（路径链对它会规范化为 None）
+    #[test]
+    fn authorization_key_keeps_content_uri_verbatim() {
+        let key = authorization_key(SAF_TREE_URI).expect("内容 URI 必须有授权键");
+        assert_eq!(key.to_string_lossy(), SAF_TREE_URI);
+        assert!(
+            FsAuthChecker::canonicalize_path(SAF_TREE_URI).is_none(),
+            "前置：路径链确实规范化不了内容 URI（这正是原故障点）"
+        );
+    }
+
+    /// 选择器结果门：SAF 树 URI 必须放行（不弹框、不回退成「未授权」）
+    ///
+    /// 这是 2026-11-06 移动端 file-transfer「添加共享目录必失败」的回归锁：
+    /// 旧实现把它送进 `canonicalize_path` → 判规范化失败 → 整批拒绝。
+    #[tokio::test]
+    async fn picked_saf_tree_uri_is_authorized_without_prompt() {
+        let checker = headless_checker().await;
+        let picked = vec![SAF_TREE_URI.to_string()];
+
+        assert!(
+            checker.authorize_picked("com.wasmnest.test", &picked).await,
+            "系统选择器交回的 SAF 树 URI 必须放行（授权由 Android 持久 URI 授权持有）"
+        );
+        assert!(
+            checker.pending_requests.lock().await.is_empty(),
+            "内容 URI 不得弹授权框（无头也没有通道，弹了就是必然失败）"
+        );
+    }
+
+    /// 落账：内容 URI 按原样落账，目录粒度不退化成 authority 前缀
+    #[test]
+    fn content_uri_grant_target_is_verbatim_for_both_scopes() {
+        let exact = FsAuthChecker::grant_target(SAF_TREE_URI, GrantScope::Exact);
+        let directory = FsAuthChecker::grant_target(SAF_TREE_URI, GrantScope::Directory);
+        assert_eq!(exact.as_deref(), Some(SAF_TREE_URI));
+        assert_eq!(
+            directory.as_deref(),
+            Some(SAF_TREE_URI),
+            "内容 URI 没有父目录：目录粒度必须退化为精确，不能产出 authority 前缀"
+        );
+    }
+
+    /// 路径 IO 的单路径校验：内容 URI 显性拒绝（`host-fs` 落盘是真实路径 IO）
+    #[tokio::test]
+    async fn path_based_check_rejects_content_uri() {
+        let checker = headless_checker().await;
+        assert!(
+            !checker
+                .check("com.wasmnest.test", SAF_TREE_URI, FsOp::Read)
+                .await,
+            "内容 URI 不得经 host-fs 路径校验放行（访问走宿主 SAF 原语）"
+        );
+        assert!(
+            !checker
+                .is_granted("com.wasmnest.test", SAF_TREE_URI, FsOps::READ_WRITE)
+                .await,
+            "无弹窗判据同尺：内容 URI 不在本校验器的授权面内"
+        );
+    }
+
+    /// 批量预授权（移动宿主启用期读 `preauth_paths`）：SAF 根不得把启用拦死
+    ///
+    /// 混合批次（真实路径 + 内容 URI）也必须过：内容 URI 跳过判据，其余仍按
+    /// 路径正常判——不能因为批里有一条 URI 就整批失败。
+    #[tokio::test]
+    async fn batch_preauth_skips_content_uri_but_still_judges_paths() {
+        let checker = headless_checker().await;
+        let dir = fixture_dir("fs-auth-content-uri-batch");
+        let inside = dir.to_string_lossy().to_string();
+        checker
+            .seed_legacy_granted_path("com.wasmnest.test", &inside)
+            .await
+            .expect("seed grant");
+
+        let batch = vec![SAF_TREE_URI.to_string(), inside.clone()];
+        assert!(
+            checker
+                .check_batch("com.wasmnest.test", &batch, FsOps::READ_WRITE)
+                .await,
+            "内容 URI 应跳过判据，已授权路径应放行"
+        );
+
+        // 反向：批里的普通未授权路径仍要被拒（内容 URI 分支不得整批短路）
+        let ungranted = canonical_temp_dir()
+            .join("fs-auth-content-uri-ungranted")
+            .to_string_lossy()
+            .to_string();
+        let mixed = vec![SAF_TREE_URI.to_string(), ungranted];
+        assert!(
+            !checker
+                .check_batch("com.wasmnest.test", &mixed, FsOps::READ_WRITE)
+                .await,
+            "内容 URI 的分支不得连坐放行同一批里的未授权普通路径"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// #40 / P0-1 回归锁：`..` 必须被**解析**掉，而不是当作普通组件留在结果里

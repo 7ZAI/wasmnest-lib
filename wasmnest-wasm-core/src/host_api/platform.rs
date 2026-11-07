@@ -331,6 +331,26 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 移动端 SAF 目录树：选择器交回的 `content://` 树 URI 必须原样交付给插件
+    ///
+    /// 这是「移动端 file-transfer 添加共享目录必失败」的端到端锁：旧链路里
+    /// 这条 URI 会死在结果门的路径规范化上（`canonicalize_path` 对 URI 返回
+    /// `None`），用户刚选的目录被报成「未授权」。
+    #[tokio::test]
+    async fn saf_tree_uri_from_picker_is_delivered_verbatim() {
+        let ctx = build_host_ctx();
+        grant_permissions(&ctx, PLUGIN, &[PERMISSION_FS_PICK]);
+        let uri = "content://com.android.externalstorage.documents/tree/primary%3ADownload";
+        let picker = fake(Vec::new(), vec![uri.to_string()]);
+
+        let json = platform_pick_folders(ctx.as_ref(), ctx.as_ref(), picker.as_ref(), PLUGIN)
+            .expect("SAF 树 URI 必须交付（授权归 Android 持久 URI 授权）");
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&json).expect("json"),
+            vec![uri.to_string()]
+        );
+    }
+
     /// 取消（空选择）不等价于「被拒」：直接回空数组，不需要任何授权弹窗通道
     #[tokio::test]
     async fn cancelled_pick_returns_empty_without_authorization_prompt() {
