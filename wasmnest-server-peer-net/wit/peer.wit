@@ -40,8 +40,20 @@ interface host-peer {
     /// endpoint = `{ nodeId, addr, port }`（camelCase JSON，插件从自身设备缓存/
     /// mdns 事件解析后显式传入；宿主不内藏 node-id → 地址解析表）。握手期
     /// 「证书指纹 ↔ nodeId 绑定 + 信任检查」语义不变。成功返回 session 句柄
-    /// （`sess-<uuid>`，后续按句柄寻址）；denied/unreachable 以错误上抛
+    /// （`sess-<uuid>`，后续按句柄寻址）；denied/unreachable 以错误上抛。
+    /// 会话句柄记忆该地址作为唯一候选，数据面断线重拨按它重试。
     dial-peer: func(endpoint-json: string) -> result<string, string>;
+    /// 多地址拨号（T11 方案 B；旧 `dial-peer` 语义不变）：endpoint =
+    /// `{ nodeId, addrs: [multiaddr...] }`（camelCase JSON）。
+    ///
+    /// - `addrs` 顺序 = 调用方拨号策略顺序（设计 §4.6：先 LAN，只有 §4.9
+    ///   判定明确不在内网才把 relay 候选放进列表）；宿主逐候选按短超时尝试，
+    ///   **不排序、不自动切换**——策略真源在应用层；
+    /// - 成功返回 session 句柄，句柄记忆**全部**候选地址；数据面
+    ///   `send-files` / `list-shared-roots` / `browse-directory` / `pull-files`
+    ///   断线重拨按同一顺序复用，**不再要求对端在 mDNS 发现缓存里**；
+    /// - 全候选失败以错误上抛（含逐候选成因）；denied 与 unreachable 不合并。
+    dial-peer-addrs: func(endpoint-json: string) -> result<string, string>;
     /// 统一资源关闭（ADR 0022 v2）：session 句柄 = 断开连接；传输句柄 = 取消传输
     /// （先发送批取消、后接收批取消——pending 接收批被关闭即拒绝，闸门 fail-safe
     /// 的自然结果）。返回是否命中并关闭了任意资源
@@ -52,6 +64,17 @@ interface host-peer {
     list-trusted: func() -> result<string, string>;
     /// 撤销对指定节点的信任（返回是否删除了条目）
     revoke-trusted: func(node-id: string) -> result<bool, string>;
+    /// 登记可信对端（与 `revoke-trusted` 对称的**唯一信任写入原语**）。
+    ///
+    /// 隧道准入的「已匹配」判据 = 传输层信任表命中（`PeerLink` / `TrustStore`），
+    /// 而配对流程走一次性票据窗口、不经过首连确认弹窗，因此配对成功后必须由
+    /// 应用显式落一条信任——否则第二次连隧道仍被判未匹配。
+    ///
+    /// `node-id` 必须是宿主已验证的对端身份（peer face 注入的 `peerNodeId`），
+    /// 调用方不得把客户端自报值写进信任表；`display-name` 可空（已存在且缺名时
+    /// 补注，不覆盖已有名，与首连确认同语义）。返回是否为新加入（幂等）。
+    /// 落盘失败显性上抛（内存说可信、磁盘没有会让重启后重连重新走首连确认）。
+    trust-node: func(node-id: string, display-name: option<string>) -> result<bool, string>;
     /// 向单个对端发送一批文件（目录递归展开、同名去重由宿主完成；
     /// 扇出 = 对多个对端各调一次，各批相互独立）→ 传输句柄（batch-id 字符串）
     ///

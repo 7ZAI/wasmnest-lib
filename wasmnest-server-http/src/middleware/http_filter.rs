@@ -114,17 +114,26 @@ where
         // 哈希查）。换来的是不再出现「200 + 误导性业务码」。
         if !skip_filtering && !negotiation.is_empty() && !chain.contains(wasmnest_server_core::link_crypto::FILTER_NAME)
         {
-            let message = "encrypted request rejected: link-crypto is not active on this server \
+            // 拒绝码 = `encryption-required`：对端**发起过**协商，是本端没参与
+            // （旧服务端 / 没开加密的端）。与「对端压根没协商」（unsupported）分开。
+            let message = wasmnest_server_core::link_crypto::coded_reason(
+                wasmnest_server_core::link_crypto::CODE_ENCRYPTION_REQUIRED,
+                "encrypted request rejected: link-crypto is not active on this server \
 (no app has enabled link encryption). Enable link encryption in the target app's settings, \
-or turn off encryption on the client."
-                .to_string();
+or turn off encryption on the client.",
+            );
             return Box::pin(async move {
                 tracing::warn!(
                     path = %req.path(),
                     method = %req.method(),
                     "HTTP inbound rejected: encryption negotiated but server not participating"
                 );
-                Ok(reject_encrypted_request(req, message))
+                let (http_req, _payload) = req.into_parts();
+                Ok(reject_with_crypto_code(
+                    http_req,
+                    message,
+                    Some(wasmnest_server_core::link_crypto::CODE_ENCRYPTION_REQUIRED),
+                ))
             });
         }
 
@@ -151,16 +160,26 @@ or turn off encryption on the client."
             if LinkEncryptionFilter::policy_of(&probe) == Some(EncryptionPolicy::Required)
                 && negotiation.trim().is_empty()
             {
-                let message = format!(
-                    "link encryption required but this request carries no negotiation header: \
-                     endpoint '{endpoint}' of plugin '{owner}' (channel 'http', policy 'required')"
+                // HEAD 与 GET 同判据、同拒绝码：HEAD 是明文探测通道，也是旧客户端
+                // 唯一可能「看起来成功」的路径，不能在这里放宽成无码拒绝。
+                let message = wasmnest_server_core::link_crypto::coded_reason(
+                    wasmnest_server_core::link_crypto::CODE_ENCRYPTION_UNSUPPORTED,
+                    format!(
+                        "link encryption required but this request carries no negotiation header: \
+                         endpoint '{endpoint}' of plugin '{owner}' (channel 'http', policy 'required')"
+                    ),
                 );
                 return Box::pin(async move {
                     tracing::warn!(
                         path = %req.path(),
                         "HTTP HEAD rejected: required endpoint without link encryption negotiation"
                     );
-                    Ok(reject_encrypted_request(req, message))
+                    let (http_req, _payload) = req.into_parts();
+                    Ok(reject_with_crypto_code(
+                        http_req,
+                        message,
+                        Some(wasmnest_server_core::link_crypto::CODE_ENCRYPTION_UNSUPPORTED),
+                    ))
                 });
             }
         }
@@ -208,25 +227,36 @@ fn resolve_route_identity(path: &str, method: &str) -> (String, String) {
     (String::new(), String::new())
 }
 
+/// 400 拒绝响应 + 链路加密拒绝码头（`code = None` = 普通拒绝，不下码）
+///
+/// 码是**机器可读**的 fail-visible 出口（内网穿透 T07）：客户端据此把「对端不会
+/// 协商」（`encryption-unsupported`）与「协商建不起来」（`encryption-required`）
+/// 映射成两条不同的用户出路，不必从自由文本里猜。正文同样带 `<code>: ` 前缀，
+/// 头与正文同源（`link_crypto::coded_reason`），不会出现「头一个码、正文另一套词」。
+///
+/// 与 `run_traffic_filter` 内部的过滤器 Reject 分支**同一个错误信封**（400 +
+/// `CODE_INVALID_REQUEST`），使客户端侧两种「拒绝」形状一致、便于按 code 归类。
+/// 消息**点名能力状态与两端各自的修法**（应用设置里的链路加密），否则用户只会
+/// 看到一句无处置建议的 400。
+fn reject_with_crypto_code(
+    http_req: actix_web::HttpRequest,
+    message: String,
+    code: Option<&'static str>,
+) -> ServiceResponse {
+    let mut builder = HttpResponse::BadRequest();
+    if let Some(code) = code {
+        builder.insert_header((wasmnest_server_core::link_crypto::ERROR_HEADER, code));
+    }
+    let response = builder.json(ApiResponse::<()>::error(CODE_INVALID_REQUEST, &message));
+    ServiceResponse::new(http_req, response)
+}
+
 /// 完整过滤流程：入站请求体 → 下游 → 出站响应体
 ///
 /// 单一出口统一记录请求完成事件（01 全路径日志）：请求结束按结果记
 /// `status` + `duration_ms` 结构化字段，级别按结果语义（成功 **trace** 不刷屏 /
 /// 4xx warn / 5xx+异常 error），成功分支另带 `requests_in_window` 秒级聚合计数
 /// （见 [`super::http_stats`]）；`request_id`/`method`/`path` 由外层 span 字段继承。
-///
-/// 协商头在、本端却不参与时的显性拒绝（不进下游、不碰 body）
-///
-/// 与 `run_traffic_filter` 内部的过滤器 Reject 分支**同一个错误信封**（400 +
-/// `CODE_INVALID_REQUEST`），使客户端侧两种「拒绝」形状一致、便于按 code 归类。
-/// 消息**点名能力状态与两端各自的修法**（应用设置里的链路加密），否则用户只会
-/// 看到一句无处置建议的 400。
-fn reject_encrypted_request(req: ServiceRequest, message: String) -> ServiceResponse {
-    let (http_req, _payload) = req.into_parts();
-    let response = HttpResponse::BadRequest().json(ApiResponse::<()>::error(CODE_INVALID_REQUEST, &message));
-    ServiceResponse::new(http_req, response)
-}
-
 async fn run_traffic_filter<S, B>(
     req: ServiceRequest,
     service: Rc<S>,
@@ -268,11 +298,15 @@ where
         };
         if let Err(rej) = chain.run_inbound(&mut ctx) {
             tracing::warn!(peer = %peer, route = %path, %rej, "HTTP inbound request rejected by traffic filter");
-            let response = HttpResponse::BadRequest().json(ApiResponse::<()>::error(
-                CODE_INVALID_REQUEST,
-                &format!("Traffic filter rejected request: {rej}"),
-            ));
-            return Ok(ServiceResponse::new(http_req, response));
+            // 链路加密的拒绝自带稳定码（`<code>: ` 前缀，见 link_crypto）→ 回给
+            // 对端的 400 带上码，客户端不必从自由文本猜分类；其他过滤器的拒绝
+            // 不带码，维持原有「Traffic filter rejected request」文案。
+            let response = reject_with_crypto_code(
+                http_req,
+                format!("Traffic filter rejected request: {rej}"),
+                wasmnest_server_core::link_crypto::reason_code(&rej.reason),
+            );
+            return Ok(response);
         }
 
         let service_req = ServiceRequest::from_parts(http_req, Payload::from(Bytes::from(ctx.data)));
@@ -299,7 +333,11 @@ where
         };
         if let Err(rej) = chain.run_outbound(&mut out_ctx) {
             tracing::warn!(peer = %peer, route = %path, %rej, "HTTP outbound response rejected by traffic filter");
-            let response = HttpResponse::InternalServerError().json(ApiResponse::<()>::error(
+            let mut response = HttpResponse::InternalServerError();
+            if let Some(code) = wasmnest_server_core::link_crypto::reason_code(&rej.reason) {
+                response.insert_header((wasmnest_server_core::link_crypto::ERROR_HEADER, code));
+            }
+            let response = response.json(ApiResponse::<()>::error(
                 CODE_INVALID_REQUEST,
                 &format!("Traffic filter rejected response: {rej}"),
             ));
@@ -567,6 +605,80 @@ mod tests {
             res.status()
         );
         chain.clear();
+    }
+
+    /// 内网穿透 T07 端到端锁：旧客户端（不协商）在 `required` 端点上的 400 必须
+    /// 带 `X-WasmNest-Crypto-Error: encryption-unsupported`，且**不落到 handler**
+    ///
+    /// 与 server-core 的过滤器单测互补：那条锁「裁决与码」，这条锁「码真的走到了
+    /// HTTP 响应头」——客户端（移动宿主 / 桌面应用）按头分类，不从自由文本里猜。
+    #[actix_web::test]
+    async fn required_endpoint_without_negotiation_answers_unsupported_code() {
+        use crate::wire::EndpointAuth;
+        use wasmnest_server_core::link_crypto::{
+            self as crypto, CODE_ENCRYPTION_REQUIRED, CODE_ENCRYPTION_UNSUPPORTED, ERROR_HEADER,
+        };
+
+        let _guard = GLOBAL_CHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        crypto::init_identity(dir.path()).unwrap();
+
+        let owner = "com.example.t07-legacy-http";
+        let path = "/api/plugin/com.example.t07-legacy-http/sessions";
+        crate::registry::register(owner, "/sessions", None, &[], EndpointAuth::Jwt).expect("测试端点注册失败");
+        crypto::set_app_policy(owner, EncryptionPolicy::Required).unwrap();
+
+        let chain = TrafficFilterChain::global();
+        chain.clear();
+        chain.register(std::sync::Arc::new(LinkEncryptionFilter));
+
+        let app = test::init_service(
+            App::new()
+                .wrap(TrafficFilter)
+                .route("/api/plugin/{owner}/{rest:.*}", web::post().to(echo_handler)),
+        )
+        .await;
+
+        // ① 无协商头 = 旧客户端 → encryption-unsupported
+        let res = test::call_service(
+            &app,
+            test::TestRequest::post().uri(path).set_payload("hello").to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), actix_web::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            res.headers().get(ERROR_HEADER).and_then(|v| v.to_str().ok()),
+            Some(CODE_ENCRYPTION_UNSUPPORTED),
+            "无协商头的拒绝码必须是 encryption-unsupported"
+        );
+        let body = test::read_body(res).await;
+        let text = String::from_utf8_lossy(&body);
+        assert!(!text.contains("received"), "拒绝不得落到 handler（无明文回退）: {text}");
+        assert!(text.contains("upgrade the peer"), "必须给升级提示: {text}");
+        assert!(text.contains(CODE_ENCRYPTION_UNSUPPORTED), "正文与响应头同源: {text}");
+
+        // ② 协商已发起但载荷损坏 → encryption-required（两类不得混码）
+        let (_, public) = crypto::generate_ephemeral();
+        let negotiation = format!("v1 {}", crypto::b64_encode(&public));
+        let res = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(path)
+                .insert_header((crypto::NEGOTIATION_HEADER, negotiation))
+                .set_payload("not-an-envelope")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(res.status(), actix_web::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            res.headers().get(ERROR_HEADER).and_then(|v| v.to_str().ok()),
+            Some(CODE_ENCRYPTION_REQUIRED),
+            "坏协商必须归 encryption-required"
+        );
+
+        chain.clear();
+        crate::registry::purge_for_plugin(owner);
+        crypto::remove_app_policy(owner);
     }
 
     /// 默认态回归：桌面端不开加密（过滤器不在链）时，**无协商头的明文请求照常通过**

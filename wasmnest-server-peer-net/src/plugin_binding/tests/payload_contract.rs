@@ -5,7 +5,7 @@
 //! 字段检测都在域内完成，既不依赖 `peer_ctx` 也不依赖真实节点，是「机制自持」的
 //! 直接证据。
 
-use super::scaffold::{drop_handle, mint, FakePorts};
+use super::scaffold::{drop_handle, mint, FakePorts, RELAY_DIAL_ADDR};
 use super::*;
 
 fn granted() -> Arc<dyn PeerPorts> {
@@ -149,4 +149,109 @@ fn set_shared_roots_rejects_entry_without_root_field() {
     let err = super::peer_set_shared_roots(&ports, "com.wasmnest.owner-a", r#"[{"id":"x","name":"n"}]"#)
         .expect_err("缺根字段必须显性报错");
     assert!(err.contains("missing 'path' or 'safTreeUri'"), "got: {err}");
+}
+
+// ==================== T11 多地址拨号（dial-peer-addrs） ====================
+
+/// 新原语同样过权限门（无授权的探测不触候选表/引擎）
+#[test]
+fn dial_peer_addrs_denied_without_permission() {
+    let ports = FakePorts::with(&[]);
+    assert_eq!(
+        super::peer_dial_addrs(&ports, "com.wasmnest.no-peer", "{}").unwrap_err(),
+        denied()
+    );
+}
+
+/// JSON 形状错：逐字保留（插件据此区分「载荷错」与「引擎错」）
+#[test]
+fn dial_peer_addrs_reports_invalid_json_verbatim() {
+    let ports = granted();
+    let err = super::peer_dial_addrs(&ports, "com.wasmnest.owner-a", "not-json").expect_err("非法 JSON 必须报错");
+    assert!(err.starts_with("dial addrs: invalid json:"), "got: {err}");
+}
+
+/// 空候选表：在取引擎上下文**之前**显性拒绝——空列表若放行会表现为
+/// 「对端离线」，归因成本极高
+#[test]
+fn dial_peer_addrs_rejects_empty_candidates_before_engine() {
+    let ports = granted();
+    let err = super::peer_dial_addrs(&ports, "com.wasmnest.owner-a", r#"{"nodeId":"aa","addrs":[]}"#)
+        .expect_err("空候选必须显性报错");
+    assert!(err.contains("peer addrs must not be empty"), "got: {err}");
+    assert_eq!(err, "Invalid input: peer addrs must not be empty", "got: {err}");
+}
+
+/// 非法候选逐条点名（含原串）：不静默丢候选
+#[test]
+fn dial_peer_addrs_names_invalid_candidate() {
+    let ports = granted();
+    let err = super::peer_dial_addrs(
+        &ports,
+        "com.wasmnest.owner-a",
+        r#"{"nodeId":"aa","addrs":["not-a-multiaddr"]}"#,
+    )
+    .expect_err("非法 multiaddr 必须显性报错");
+    assert!(err.contains("invalid multiaddr 'not-a-multiaddr'"), "got: {err}");
+}
+
+/// 正例（防「恒拒绝」假绿）：LAN 在前、relay 在后的合法候选过校验后落到
+/// 无头口径——顺序原样保留，绑定层不改写候选表
+#[test]
+fn dial_peer_addrs_accepts_ordered_candidates_past_validation() {
+    let ports = granted();
+    let payload = serde_json::json!({
+        "nodeId": "aa",
+        "addrs": ["/ip4/192.168.1.5/tcp/47821", RELAY_DIAL_ADDR],
+    });
+    let err =
+        super::peer_dial_addrs(&ports, "com.wasmnest.owner-a", &payload.to_string()).expect_err("无头上下文取不到引擎");
+    assert_eq!(err, ports::HEADLESS_UNAVAILABLE, "合法候选应过校验: {err}");
+}
+
+// ==================== T07/T08 信任写入（trust-node） ====================
+
+/// 与 `revoke-trusted` 同档的权限门：无 `peer` 授权不触信任表
+#[test]
+fn trust_node_denied_without_permission() {
+    let ports = FakePorts::with(&[]);
+    assert_eq!(
+        super::peer_trust_node(&ports, "com.wasmnest.no-peer", "aa", None).unwrap_err(),
+        denied()
+    );
+}
+
+/// 非法 node id 在取信任表之前显性点名（不把脏值写进信任表 / 不静默跳过）
+#[test]
+fn trust_node_rejects_invalid_node_id_before_engine() {
+    let ctx = crate::test_ctx::headless_ctx();
+    let ports = FakePorts::with_ctx(&[("com.wasmnest.owner-a", PERMISSION_PEER)], ctx);
+    let err = super::peer_trust_node(&ports, "com.wasmnest.owner-a", "NOT-64-HEX", None)
+        .expect_err("非法 node id 必须显性报错");
+    assert!(err.contains("invalid node id"), "got: {err}");
+}
+
+/// 正例 + 幂等：首次返回 true，第二次返回 false；展示名只在缺名时补注
+/// （既有名不覆盖，与首连确认 `add_with_metadata` 同语义）
+#[test]
+fn trust_node_roundtrip_is_idempotent_and_keeps_first_display_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = crate::test_ctx::headless_ctx_with_data_dir(dir.path().to_path_buf());
+    let ports = FakePorts::with_ctx(&[("com.wasmnest.owner-a", PERMISSION_PEER)], ctx);
+    let node_id = "a".repeat(64);
+
+    assert!(
+        super::peer_trust_node(&ports, "com.wasmnest.owner-a", &node_id, Some("Phone")).expect("首次写入信任"),
+        "首次必须是新加入"
+    );
+    assert!(
+        !super::peer_trust_node(&ports, "com.wasmnest.owner-a", &node_id, Some("另一个名字")).expect("重复写入幂等"),
+        "已信任时必须返回 false（幂等）"
+    );
+
+    let list = super::peer_list_trusted(&ports, "com.wasmnest.owner-a").expect("列表可读");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&list).expect("valid json array");
+    assert_eq!(rows.len(), 1, "信任表只应有一条: {list}");
+    assert_eq!(rows[0]["nodeId"], node_id);
+    assert_eq!(rows[0]["displayName"], "Phone", "已有名不得被后续写入覆盖");
 }

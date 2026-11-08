@@ -171,6 +171,7 @@ impl TunnelEngine for FakeEngine {
         NodeSnapshot {
             started: self.state.lock().unwrap().node_started,
             node_id: Some(NODE.into()),
+            addrs: Vec::new(),
         }
     }
 }
@@ -677,6 +678,47 @@ async fn closing_last_handle_marks_peer_offline() {
         .events()
         .iter()
         .any(|(event, payload)| event == "tunnel-state" && payload["state"] == "closed"));
+}
+
+/// 可拨地址投影：通配监听展开为接口 IP、环回丢弃、relay circuit 追加在最后
+#[test]
+fn dialable_addrs_expand_wildcard_and_append_relay_circuit() {
+    let wildcard: std::net::SocketAddr = "0.0.0.0:39000".parse().unwrap();
+    let loopback: std::net::SocketAddr = "127.0.0.1:39000".parse().unwrap();
+    let local = vec!["192.168.1.7".parse::<std::net::IpAddr>().unwrap()];
+    let addrs = dialable_addrs(
+        &[wildcard, loopback],
+        &local,
+        Some(&format!("/ip4/203.0.113.9/tcp/4001/p2p/{RELAY_PEER}")),
+        TARGET_PEER,
+    );
+    assert_eq!(
+        addrs,
+        vec![
+            // 通配地址展开成本机 IPv4（`/ip4/0.0.0.0` 不可拨）
+            format!("/ip4/192.168.1.7/tcp/39000/p2p/{TARGET_PEER}"),
+            // relay circuit 是本节点经中继的地址，排在 LAN 候选之后
+            format!("/ip4/203.0.113.9/tcp/4001/p2p/{RELAY_PEER}/p2p-circuit/p2p/{TARGET_PEER}"),
+        ],
+        "环回监听地址不外发；relay 候选追加在 LAN 之后"
+    );
+}
+
+/// 无 relay 预留 / 端口未就绪 / 无 LAN 事实时不得产出伪造地址
+#[test]
+fn dialable_addrs_never_invents_addresses() {
+    let pending: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
+    assert!(
+        dialable_addrs(&[pending], &[], None, TARGET_PEER).is_empty(),
+        "端口 0（系统尚未分配）与空接口事实 → 空列表，不猜"
+    );
+
+    let concrete: std::net::SocketAddr = "10.0.0.5:39000".parse().unwrap();
+    assert_eq!(
+        dialable_addrs(&[concrete], &[], None, TARGET_PEER),
+        vec![format!("/ip4/10.0.0.5/tcp/39000/p2p/{TARGET_PEER}")],
+        "非通配监听地址原样外发"
+    );
 }
 
 /// 全局事件名 → 插件总线 topic 的映射锁（设计 §7.2 四个事件）

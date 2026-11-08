@@ -37,13 +37,14 @@ pub mod ports;
 
 // ==================== v2 句柄路由（ADR 0022）====================
 
-/// session 句柄路由表条目：拨号时铸造 `sess-<uuid>` 并记忆 endpoint 三元组，
-/// 数据面断线自动重拨的寻址依据。
+/// session 句柄路由表条目：拨号时铸造 `sess-<uuid>` 并记忆**全部**候选地址
+/// （T11：旧形态只记一个 endpoint，多地址拨号后数据面重拨会退化成单点）。
+/// 数据面断线重拨按同一顺序复用该列表，不再查 mDNS 发现缓存。
 #[derive(Debug, Clone)]
 pub struct SessionEntry {
     pub node_id: String,
-    pub addr: String,
-    pub port: u16,
+    /// 有序候选 multiaddr（调用方拨号策略顺序：先 LAN，明确不在内网才 relay）
+    pub addrs: Vec<String>,
     /// 拨号方插件 id（票 04）：句柄只有属主可继续操作
     ///
     /// 此前句柄表没有 owner 列——`sess-<uuid>` 虽是随机不可猜，但一旦泄露给另一插件
@@ -113,36 +114,15 @@ fn sync_result<T>(r: crate::Result<T>) -> Result<T, String> {
     r.map_err(|e| e.to_string())
 }
 
-/// 数据面自动重拨包装：仅接受 session 句柄；操作报错且命中引擎「发现缓存
-/// 缺失」字样（连接已断/缓存被 TTL 清扫）时，以句柄记忆的 endpoint 重走
-/// 引擎握手后重试一次。denied/unreachable 等其他错误原样上抛。
-fn with_auto_redial<T>(
-    ports: &Arc<dyn PeerPorts>,
-    plugin_id: &str,
-    handle: &str,
-    op: impl Fn(&str) -> Result<T, String>,
-) -> Result<T, String> {
+/// 数据面会话寻址：仅接受 session 句柄，返回属主的 node_id + 句柄记忆的有序
+/// 候选地址（T11）。属主判定与候选表校验先于任何引擎访问；数据面每次操作都
+/// 按该列表重新拨号，因此**不再需要**目标在 mDNS 发现缓存里。
+fn session_target(plugin_id: &str, handle: &str) -> Result<(String, Vec<wasmnest_p2p_engine::Multiaddr>), String> {
     let entry =
         with_handles(|t| t.resolve_session(handle)).ok_or_else(|| format!("invalid session handle: {handle}"))?;
     ensure_handle_owner(&entry, plugin_id, handle)?;
-    match op(&entry.node_id) {
-        Ok(v) => Ok(v),
-        Err(e) if e.contains("discovery cache") || e.contains("not in discovery cache") => {
-            let ctx = ports.peer_ctx()?;
-            let endpoint = crate::DialEndpoint {
-                node_id: entry.node_id.clone(),
-                addr: entry.addr.clone(),
-                port: entry.port,
-            };
-            tracing::info!(
-                node_id = %entry.node_id,
-                "peer data-plane auto-redial (handle-remembered endpoint)"
-            );
-            sync_result(block_on(ports, crate::dial_peer_endpoint(ctx, endpoint)))?;
-            op(&entry.node_id)
-        }
-        Err(e) => Err(e),
-    }
+    let addrs = crate::parse_peer_addrs(&entry.addrs).map_err(|e| e.to_string())?;
+    Ok((entry.node_id, addrs))
 }
 
 pub fn peer_dial(ports: &Arc<dyn PeerPorts>, plugin_id: &str, endpoint_json: &str) -> Result<String, String> {
@@ -159,17 +139,48 @@ pub fn peer_dial(ports: &Arc<dyn PeerPorts>, plugin_id: &str, endpoint_json: &st
     let node_id = endpoint.node_id.clone();
     let addr = endpoint.addr.clone();
     let port = endpoint.port;
+    // 单地址路径同样把地址记成「一条候选」：会话句柄形状统一（数据面按候选表重拨）
+    let socket: std::net::SocketAddr = format!("{}:{}", addr.trim(), port)
+        .parse()
+        .map_err(|_| format!("dial endpoint: invalid endpoint addr '{addr}:{port}'"))?;
+    let addrs = vec![wasmnest_p2p_engine::engine::socket_addr_to_multiaddr(socket).to_string()];
     let dto = sync_result(block_on(ports, crate::dial_peer_endpoint(ctx, endpoint)))?;
     match dto.status.as_str() {
         "connected" => Ok(with_handles(|t| {
             t.mint_session(SessionEntry {
                 node_id,
-                addr,
-                port,
+                addrs,
                 owner: plugin_id.to_string(),
             })
         })),
         other => Err(format!("dial endpoint failed: peer {other}")),
+    }
+}
+
+/// 多地址拨号（host-peer `dial-peer-addrs` 原语，T11 方案 B）：
+/// `{ nodeId, addrs: [multiaddr...] }`。addrs 顺序 = 调用方策略顺序；成功后会话
+/// 句柄记忆**全部**候选地址，数据面断线重拨按同一顺序复用（不查发现缓存）。
+pub fn peer_dial_addrs(ports: &Arc<dyn PeerPorts>, plugin_id: &str, endpoint_json: &str) -> Result<String, String> {
+    if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_dial_addrs") {
+        return Err(denied());
+    }
+    let endpoint: crate::DialAddrsEndpoint =
+        serde_json::from_str(endpoint_json).map_err(|e| format!("dial addrs: invalid json: {e}"))?;
+    // 先校验并规范化候选表：非法候选在触引擎前点名；成功后句柄记忆同一份列表
+    let parsed = crate::parse_peer_addrs(&endpoint.addrs).map_err(|e| e.to_string())?;
+    let addrs: Vec<String> = parsed.iter().map(ToString::to_string).collect();
+    let node_id = endpoint.node_id;
+    let ctx = ports.peer_ctx()?;
+    let dto = sync_result(block_on(ports, crate::dial_peer_addrs(ctx, node_id.clone(), parsed)))?;
+    match dto.status.as_str() {
+        "connected" => Ok(with_handles(|t| {
+            t.mint_session(SessionEntry {
+                node_id,
+                addrs,
+                owner: plugin_id.to_string(),
+            })
+        })),
+        other => Err(format!("dial addrs failed: peer {other}")),
     }
 }
 
@@ -236,6 +247,25 @@ pub fn peer_revoke_trusted(ports: &Arc<dyn PeerPorts>, plugin_id: &str, node_id:
     sync_result(block_on(ports, crate::revoke_trusted_peer(ctx, node_id)))
 }
 
+/// 登记可信对端（T07/T08：配对成功落信任的唯一写入入口）。
+///
+/// 参数形状与 `revoke-trusted` 对称；`display_name` 为 WIT `option<string>`。
+/// 权限门仍是 `peer`（信任面与拨号/撤销同档），不新增权限词表。
+pub fn peer_trust_node(
+    ports: &Arc<dyn PeerPorts>,
+    plugin_id: &str,
+    node_id: &str,
+    display_name: Option<&str>,
+) -> Result<bool, String> {
+    if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_trust_node") {
+        return Err(denied());
+    }
+    let ctx = ports.peer_ctx()?;
+    let node_id = node_id.to_string();
+    let display_name = display_name.map(str::to_string);
+    sync_result(block_on(ports, crate::trust_peer_node(ctx, node_id, display_name)))
+}
+
 pub fn peer_send_files(
     ports: &Arc<dyn PeerPorts>,
     plugin_id: &str,
@@ -245,6 +275,8 @@ pub fn peer_send_files(
     if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_send_files") {
         return Err(denied());
     }
+    // 属主 + 句柄候选表先于载荷解析（与 browse/pull 同口径：越权探测不因载荷错而变脸）
+    let (node_id, addrs) = session_target(plugin_id, session)?;
     // 载荷双形态（issue 13 Phase 3 步骤 5）：纯 string 兼容保留；对象元素
     // `{ path, encrypt? }` 携带逐文件加密意图，任一 true → 批量强制加密
     #[derive(serde::Deserialize)]
@@ -285,19 +317,18 @@ pub fn peer_send_files(
         }
     }
     // 返回值已收窄为传输句柄（batch-id）；v31 起一次调用 = 一个会话立即发起
-    // （宿主并发闸门删除）。断线场景由 with_auto_redial 以记忆 endpoint 重拨
-    let batch_id = with_auto_redial(ports, plugin_id, session, |node_id| {
-        let ctx = ports.peer_ctx()?;
-        sync_result(block_on(
-            ports,
-            crate::send_files_for_plugin(
-                ctx,
-                node_id.to_string(),
-                paths.clone(),
-                if force_encrypt { Some(true) } else { None },
-            ),
-        ))
-    })?;
+    // （宿主并发闸门删除）。数据面每次会话都按句柄记忆的候选表重拨（T11）
+    let ctx = ports.peer_ctx()?;
+    let batch_id = sync_result(block_on(
+        ports,
+        crate::send_files_for_plugin(
+            ctx,
+            node_id,
+            addrs,
+            paths,
+            if force_encrypt { Some(true) } else { None },
+        ),
+    ))?;
     Ok(batch_id)
 }
 
@@ -438,13 +469,12 @@ pub fn peer_list_shared_roots(ports: &Arc<dyn PeerPorts>, plugin_id: &str, sessi
     if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_list_shared_roots") {
         return Err(denied());
     }
-    let roots = with_auto_redial(ports, plugin_id, session, |node_id| {
-        let ctx = ports.peer_ctx()?;
-        sync_result(block_on(
-            ports,
-            crate::list_remote_roots_for_plugin(ctx, node_id.to_string()),
-        ))
-    })?;
+    let (node_id, addrs) = session_target(plugin_id, session)?;
+    let ctx = ports.peer_ctx()?;
+    let roots = sync_result(block_on(
+        ports,
+        crate::list_remote_roots_for_plugin(ctx, node_id, addrs),
+    ))?;
     serde_json::to_string(&roots).map_err(|e| format!("serialize shared roots failed: {e}"))
 }
 
@@ -458,14 +488,13 @@ pub fn peer_browse_directory(
     if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_browse_directory") {
         return Err(denied());
     }
+    let (node_id, addrs) = session_target(plugin_id, session)?;
     let (dir_id, rel_path) = (dir_id.to_string(), rel_path.to_string());
-    let dto = with_auto_redial(ports, plugin_id, session, |node_id| {
-        let ctx = ports.peer_ctx()?;
-        sync_result(block_on(
-            ports,
-            crate::browse_remote_for_plugin(ctx, node_id.to_string(), dir_id.clone(), rel_path.clone()),
-        ))
-    })?;
+    let ctx = ports.peer_ctx()?;
+    let dto = sync_result(block_on(
+        ports,
+        crate::browse_remote_for_plugin(ctx, node_id, addrs, dir_id, rel_path),
+    ))?;
     serde_json::to_string(&dto).map_err(|e| format!("serialize browse listing failed: {e}"))
 }
 
@@ -479,19 +508,17 @@ pub fn peer_pull_files(
     if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_pull_files") {
         return Err(denied());
     }
-    // RemotePullFileDto 未实现 Clone：闭包内按 JSON 串重复解析（重拨场景才二次执行）
+    let (node_id, addrs) = session_target(plugin_id, session)?;
     let dir_id = dir_id.to_string();
-    let files_json_owned = files_json.to_string();
-    // 引擎入参已是 `u32`（v31 收窄后无窄化转换），原语直接返回它
-    with_auto_redial(ports, plugin_id, session, |node_id| {
-        let files: Vec<crate::RemotePullFileDto> =
-            serde_json::from_str(&files_json_owned).map_err(|e| format!("pull files: invalid files json: {e}"))?;
-        let ctx = ports.peer_ctx()?;
-        sync_result(block_on(
-            ports,
-            crate::pull_files_for_plugin(ctx, node_id.to_string(), dir_id.clone(), files),
-        ))
-    })
+    // 引擎入参已是 `u32`（v31 收窄后无窄化转换），原语直接返回它；属主判定已先于
+    // 载荷解析完成（session_target 在当前函数开头）
+    let files: Vec<crate::RemotePullFileDto> =
+        serde_json::from_str(files_json).map_err(|e| format!("pull files: invalid files json: {e}"))?;
+    let ctx = ports.peer_ctx()?;
+    sync_result(block_on(
+        ports,
+        crate::pull_files_for_plugin(ctx, node_id, addrs, dir_id, files),
+    ))
 }
 
 pub fn peer_set_download_dir(ports: &Arc<dyn PeerPorts>, plugin_id: &str, path: &str) -> Result<(), String> {
@@ -775,6 +802,10 @@ impl wasmnest::peer::host_peer::Host for WasmPluginState {
         peer_dial(&ports_for(self), &self.plugin_id, &endpoint_json)
     }
 
+    fn dial_peer_addrs(&mut self, endpoint_json: String) -> Result<String, String> {
+        peer_dial_addrs(&ports_for(self), &self.plugin_id, &endpoint_json)
+    }
+
     fn close(&mut self, handle: String) -> Result<bool, String> {
         peer_close(&ports_for(self), &self.plugin_id, &handle)
     }
@@ -789,6 +820,10 @@ impl wasmnest::peer::host_peer::Host for WasmPluginState {
 
     fn revoke_trusted(&mut self, node_id: String) -> Result<bool, String> {
         peer_revoke_trusted(&ports_for(self), &self.plugin_id, &node_id)
+    }
+
+    fn trust_node(&mut self, node_id: String, display_name: Option<String>) -> Result<bool, String> {
+        peer_trust_node(&ports_for(self), &self.plugin_id, &node_id, display_name.as_deref())
     }
 
     fn send_files(&mut self, session: String, paths_json: String) -> Result<String, String> {
