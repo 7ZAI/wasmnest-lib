@@ -39,22 +39,22 @@ use tokio::task::JoinHandle;
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
 
 use wasmnest_p2p_engine::admission::AdmissionConfig;
-use wasmnest_p2p_engine::engine::{socket_addr_to_multiaddr, P2pEngine, P2pNodeConfig, RunningNode as P2pRunningNode};
+use wasmnest_p2p_engine::engine::{multiaddr_to_socket_addr, P2pEngine, P2pNodeConfig, RunningNode as P2pRunningNode};
 use wasmnest_p2p_engine::error::P2pError;
 use wasmnest_p2p_engine::identity_bridge::{NodeId as P2pNodeId, NodeKey};
 use wasmnest_p2p_engine::links::LinkAdmission;
 use wasmnest_p2p_engine::ports::{
     DialFailed, P2pEventSink, P2pPorts, PeerAdmissionPort, PeerConnected, PeerDenied, PeerDisconnected,
 };
+use wasmnest_p2p_engine::relay::Transport;
 use wasmnest_p2p_engine::stream_proto;
-use wasmnest_p2p_engine::{InboundStream, IncomingStreams, P2pStream, PeerId as P2pPeerId};
+use wasmnest_p2p_engine::{InboundStream, IncomingStreams, Multiaddr, P2pStream, PeerId as P2pPeerId};
 
 use crate::base::error::{PeerNetError, Result};
 use crate::base::frame::{
     read_frame, read_hello, write_frame, write_hello, TrustHelloFrame, TrustStatus, TrustStatusFrame,
 };
 use crate::base::identity::{NodeId, NodeIdentity};
-use crate::base::node::StaticPeerRecord;
 use crate::base::trust_store::TrustStore;
 
 /// 首连确认超时：留足用户读弹窗时间；超时按拒绝处理（引擎闸门结算）
@@ -93,6 +93,8 @@ pub struct Connection {
     io: Compat<P2pStream>,
     peer_node_id: NodeId,
     peer_addr: SocketAddr,
+    /// 拨号命中的传输形态（出站拨号才有；入站流不携带引擎链路形态，故为 None）
+    transport: Option<Transport>,
 }
 
 impl std::fmt::Debug for Connection {
@@ -100,16 +102,23 @@ impl std::fmt::Debug for Connection {
         f.debug_struct("Connection")
             .field("peer_node_id", &self.peer_node_id)
             .field("peer_addr", &self.peer_addr)
+            .field("transport", &self.transport)
             .finish_non_exhaustive()
     }
 }
 
 impl Connection {
-    pub(crate) fn new(stream: P2pStream, peer_node_id: NodeId, peer_addr: SocketAddr) -> Self {
+    pub(crate) fn new(
+        stream: P2pStream,
+        peer_node_id: NodeId,
+        peer_addr: SocketAddr,
+        transport: Option<Transport>,
+    ) -> Self {
         Self {
             io: stream.compat(),
             peer_node_id,
             peer_addr,
+            transport,
         }
     }
 
@@ -118,9 +127,14 @@ impl Connection {
         &self.peer_node_id
     }
 
-    /// 对端地址（供日志/UI 展示）
+    /// 对端地址（供日志/UI 展示；relay 连接取的是中继端点）
     pub fn peer_addr(&self) -> SocketAddr {
         self.peer_addr
+    }
+
+    /// 拨号命中的传输形态（`lan-direct` / `wan-relay`；入站连接未知）
+    pub fn transport(&self) -> Option<Transport> {
+        self.transport
     }
 }
 
@@ -243,24 +257,42 @@ impl P2pEventSink for LogEventSink {
 
 // ==================== 拨号 ====================
 
-/// 拨号对端：引擎连接/校验 → Hello 信任握手 → 开指定业务流
+/// 多地址拨号（T11 方案 B）：按调用方给定顺序逐个候选尝试，首个成功即用
 ///
-/// - 对端身份与记录不符 → [`PeerNetError::IdentityMismatch`]（引擎握手后校验）；
-/// - 对端 `Denied` → [`PeerNetError::DialDeniedByPeer`]（用户拒绝/超时/资源拒绝）；
-/// - 中间态 `PendingConfirmation` → 继续等终态帧（窗口见 [`CONFIRM_TIMEOUT`]）。
-pub(crate) async fn dial(
+/// - **顺序 = 入参顺序**：先 LAN、明确不在内网才 relay 的策略由调用方（应用层）
+///   决定，本层不排序、不自动把 relay 提前，也不在 LAN 失败后自行切换；
+/// - **逐候选短超时**：`per_addr_timeout` 由调用方给（设计 §4.9 的 LAN 2~3s 口径），
+///   失败继续下一个，全部失败由引擎 [`P2pError::DialAllFailed`] 带逐候选成因上抛；
+/// - 成功后走与单地址拨号**完全相同**的信任握手与具名流开流，并记录命中的
+///   传输形态（`lan-direct` / `wan-relay`）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn dial_addrs(
     p2p: &P2pRunningNode,
     identity: &NodeIdentity,
     trust: &Arc<TrustStore>,
-    record: &StaticPeerRecord,
+    node_id: &NodeId,
+    addrs: &[Multiaddr],
+    per_addr_timeout: Duration,
     protocol: &'static str,
 ) -> Result<Connection> {
-    let expected = P2pNodeId::parse(record.node_id.as_str()).map_err(|e| PeerNetError::Transport {
+    if addrs.is_empty() {
+        return Err(PeerNetError::Transport {
+            detail: "dial candidates must not be empty".to_string(),
+        });
+    }
+    let expected = P2pNodeId::parse(node_id.as_str()).map_err(|e| PeerNetError::Transport {
         detail: format!("invalid node id: {e}"),
     })?;
-    p2p.dial(socket_addr_to_multiaddr(record.addr), expected.clone())
+    let outcome = p2p
+        .dial_addrs(addrs, expected.clone(), per_addr_timeout)
         .await
         .map_err(map_p2p_error)?;
+    let peer_addr = multiaddr_to_socket_addr(&outcome.addr).unwrap_or_else(|| {
+        // relay 候选没有「对端监听地址」，引擎只回带命中 multiaddr：展示层用
+        // 全零地址并留痕，不把中继端点伪装成对端监听地址。
+        tracing::debug!(addr = %outcome.addr, "dial outcome has no socket address component");
+        SocketAddr::from(([0, 0, 0, 0], 0))
+    });
 
     // 信任状态流：Hello 声明期望对端，接听方校验后才请求准入
     let trust_stream = p2p
@@ -268,16 +300,16 @@ pub(crate) async fn dial(
         .await
         .map_err(map_p2p_error)?;
     let mut trust_io = trust_stream.compat();
-    write_hello(&mut trust_io, &TrustHelloFrame::new(&record.node_id))
+    write_hello(&mut trust_io, &TrustHelloFrame::new(node_id))
         .await
-        .map_err(|e| control_frame_error(record.addr, e))?;
+        .map_err(|e| control_frame_error(peer_addr, e))?;
 
     loop {
         let frame = read_frame(&mut trust_io)
             .await
-            .map_err(|e| control_frame_error(record.addr, e))?;
+            .map_err(|e| control_frame_error(peer_addr, e))?;
         let subject = NodeId::parse(&frame.node_id).map_err(|_| PeerNetError::ControlFrame {
-            peer_addr: record.addr,
+            peer_addr,
             detail: format!("status frame carries invalid node id: {}", frame.node_id),
         })?;
         // 状态帧的 node_id 指拨入方（本节）自身：不符说明对端状态机错乱
@@ -288,13 +320,13 @@ pub(crate) async fn dial(
         match frame.status {
             TrustStatus::Accepted => {
                 // 发起侧半边落库；持久化失败仅影响重启后免确认，连接仍有效
-                if let Err(e) = trust.add(&record.node_id) {
-                    tracing::error!(node_id = %record.node_id, "persist trusted peer after accepted dial failed: {e}");
+                if let Err(e) = trust.add(node_id) {
+                    tracing::error!(node_id = %node_id, "persist trusted peer after accepted dial failed: {e}");
                 }
                 tracing::info!(
-                    node_id = %record.node_id,
-                    short = %record.node_id.short_fingerprint(),
-                    peer = %record.addr,
+                    node_id = %node_id,
+                    short = %node_id.short_fingerprint(),
+                    peer = %peer_addr,
                     protocol,
                     "dial accepted by peer"
                 );
@@ -302,18 +334,18 @@ pub(crate) async fn dial(
             }
             TrustStatus::Denied => {
                 tracing::info!(
-                    node_id = %record.node_id,
-                    peer = %record.addr,
+                    node_id = %node_id,
+                    peer = %peer_addr,
                     "dial denied by peer"
                 );
                 return Err(PeerNetError::DialDeniedByPeer {
-                    node_id: record.node_id.clone(),
+                    node_id: node_id.clone(),
                 });
             }
             TrustStatus::PendingConfirmation => {
                 tracing::debug!(
-                    node_id = %record.node_id,
-                    peer = %record.addr,
+                    node_id = %node_id,
+                    peer = %peer_addr,
                     "peer confirmation gate open, waiting for verdict"
                 );
                 continue;
@@ -322,7 +354,12 @@ pub(crate) async fn dial(
     }
 
     let stream = p2p.open_stream(&expected, protocol).await.map_err(map_p2p_error)?;
-    Ok(Connection::new(stream, record.node_id.clone(), record.addr))
+    Ok(Connection::new(
+        stream,
+        node_id.clone(),
+        peer_addr,
+        Some(outcome.transport),
+    ))
 }
 
 // ==================== 入站协议接收 ====================
@@ -339,7 +376,7 @@ async fn accept_business_streams(
             tracing::warn!(protocol, raw = %inbound.node_id, "inbound stream carries invalid node id");
             continue;
         };
-        let conn = Connection::new(inbound.stream, node_id, inbound.remote_addr);
+        let conn = Connection::new(inbound.stream, node_id, inbound.remote_addr, None);
         let handler = Arc::clone(&handler);
         tokio::spawn(async move {
             handler.handle(conn).await;

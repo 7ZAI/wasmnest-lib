@@ -177,13 +177,43 @@ impl PeerNetNode {
 
     /// 拨号并打开指定业务流（协议名取 `wasmnest_p2p_engine::stream_proto`）
     pub async fn dial_with(&self, record: &StaticPeerRecord, protocol: &'static str) -> Result<Connection> {
+        let addr = wasmnest_p2p_engine::engine::socket_addr_to_multiaddr(record.addr);
+        self.dial_addrs_with(
+            &record.node_id,
+            &[addr],
+            wasmnest_p2p_engine::engine::DIAL_TIMEOUT,
+            protocol,
+        )
+        .await
+    }
+
+    /// 多地址拨号并打开指定业务流（T11 方案 B）
+    ///
+    /// 候选顺序 = 调用方给定顺序（设计 §4.6：先 LAN、明确不在内网才 relay 的
+    /// 策略归应用层）；每个候选按 `per_addr_timeout` 结算，首个成功即用。
+    pub async fn dial_addrs_with(
+        &self,
+        node_id: &NodeId,
+        addrs: &[wasmnest_p2p_engine::Multiaddr],
+        per_addr_timeout: std::time::Duration,
+        protocol: &'static str,
+    ) -> Result<Connection> {
         let p2p = self
             .runtime
             .lock()
             .expect("peer runtime lock poisoned")
             .clone()
             .ok_or(PeerNetError::NodeNotStarted)?;
-        crate::base::transport::dial(&p2p, &self.config.identity, &self.trust_store, record, protocol).await
+        crate::base::transport::dial_addrs(
+            &p2p,
+            &self.config.identity,
+            &self.trust_store,
+            node_id,
+            addrs,
+            per_addr_timeout,
+            protocol,
+        )
+        .await
     }
 
     /// 共享可信存储句柄（测试断言 / 宿主撤销入口）
@@ -209,5 +239,73 @@ impl PeerNetNode {
     /// 已注入的静态对端记录
     pub fn static_peers(&self) -> &[StaticPeerRecord] {
         &self.config.static_peers
+    }
+}
+
+#[cfg(test)]
+mod dial_addrs_tests {
+    use super::*;
+    use crate::base::transport::{ConnectionHandler, HandlerFuture};
+    use std::time::Duration;
+    use wasmnest_p2p_engine::engine::socket_addr_to_multiaddr;
+    use wasmnest_p2p_engine::relay::Transport;
+
+    /// 入站业务流处理器：本组只验证连接可达，不做线协议交互
+    struct NoopHandler;
+
+    impl ConnectionHandler for NoopHandler {
+        fn handle(&self, _conn: Connection) -> HandlerFuture {
+            Box::pin(async {})
+        }
+    }
+
+    fn node(dir: &std::path::Path) -> PeerNetNode {
+        let identity = NodeIdentity::load_or_create(dir).expect("node identity");
+        PeerNetNode::new(PeerNetNodeConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            identity,
+            static_peers: Vec::new(),
+        })
+        .expect("peer net node")
+    }
+
+    /// 一个已释放的回环端口（候选表首条 = 不可达，验证顺序回退）
+    fn released_loopback_addr() -> SocketAddr {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("probe bind");
+        let addr = listener.local_addr().expect("probe addr");
+        drop(listener);
+        addr
+    }
+
+    /// T11 核心判据：候选按调用方顺序逐个尝试，首条不可达时**继续下一条**，
+    /// 命中后 `Connection.transport` 记录传输形态（lan-direct）
+    #[tokio::test]
+    async fn dial_addrs_falls_through_to_next_candidate_in_caller_order() {
+        let dir_a = tempfile::tempdir().expect("dir a");
+        let dir_b = tempfile::tempdir().expect("dir b");
+        let a = node(dir_a.path());
+        let b = node(dir_b.path());
+
+        let (events_a, _rx_a) = mpsc::channel(8);
+        let (events_b, _rx_b) = mpsc::channel(8);
+        let _running_a = a.start(events_a, Arc::new(NoopHandler)).expect("start a");
+        let running_b = b.start(events_b, Arc::new(NoopHandler)).expect("start b");
+        // 接听侧信任拨号方：准入闸门直接放行（本组只锁多地址拨号通路）
+        b.trust().add(a.node_id()).expect("trust a");
+
+        let addrs = vec![
+            socket_addr_to_multiaddr(released_loopback_addr()),
+            socket_addr_to_multiaddr(running_b.local_addr()),
+        ];
+        let conn = a
+            .dial_addrs_with(b.node_id(), &addrs, Duration::from_millis(800), stream_proto::SESSION)
+            .await
+            .expect("second candidate must connect");
+        assert_eq!(conn.peer_node_id(), b.node_id());
+        assert_eq!(
+            conn.transport(),
+            Some(Transport::LanDirect),
+            "LAN 候选命中必须记录 lan-direct（T12 的 UI 判据）"
+        );
     }
 }

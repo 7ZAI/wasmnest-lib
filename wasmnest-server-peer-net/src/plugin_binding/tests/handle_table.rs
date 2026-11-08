@@ -1,6 +1,6 @@
 //! 句柄表与属主仲裁（自宿主迁入的 `handle_table` 组）
 
-use super::scaffold::entry;
+use super::scaffold::{entry, RELAY_DIAL_ADDR};
 use super::*;
 
 /// 属主登记与判定（票 04）：句柄只有拨号方可继续操作
@@ -35,8 +35,18 @@ fn mint_and_resolve_roundtrip_keeps_endpoint() {
     assert!(h.starts_with("sess-"));
     let got = t.resolve_session(&h).expect("resolved");
     assert_eq!(got.node_id, "aa");
-    assert_eq!(got.addr, "192.168.1.5");
-    assert_eq!(got.port, 47821);
+    assert_eq!(got.addrs, vec!["/ip4/192.168.1.5/tcp/47821".to_string()]);
+}
+
+/// T11：句柄记忆**全部**候选地址且保持调用方顺序（断线重拨按同序复用）
+#[test]
+fn session_handle_remembers_all_candidate_addrs_in_order() {
+    let mut t = PeerHandleTable::default();
+    let mut e = entry("multi");
+    e.addrs = vec!["/ip4/192.168.1.5/tcp/47821".to_string(), RELAY_DIAL_ADDR.to_string()];
+    let h = t.mint_session(e.clone());
+    let got = t.resolve_session(&h).expect("resolved");
+    assert_eq!(got.addrs, e.addrs, "候选表不得去重/重排");
 }
 
 #[test]

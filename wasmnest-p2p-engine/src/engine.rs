@@ -1716,7 +1716,10 @@ pub fn socket_addr_to_multiaddr(addr: SocketAddr) -> Multiaddr {
 }
 
 /// multiaddr → SocketAddr（取首个 IP 组件 + TCP 端口；其余形态 None）
-pub(crate) fn multiaddr_to_socket_addr(ma: &Multiaddr) -> Option<SocketAddr> {
+///
+/// 公开给上层 peer-net：多地址拨号成功后要把命中地址回填到 `Connection` 的
+/// 展示/日志字段（relay 地址取的是中继端点，不是对端监听地址）。
+pub fn multiaddr_to_socket_addr(ma: &Multiaddr) -> Option<SocketAddr> {
     let mut ip = None;
     let mut port = None;
     for p in ma.iter() {

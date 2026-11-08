@@ -265,6 +265,10 @@ pub struct DialPeerResultDto {
     pub status: String,
     /// 对端设备名（缓存解析；离线缺失为 null）
     pub device_name: Option<String>,
+    /// 成功命中的传输形态（`lan-direct` / `wan-relay`；denied/unreachable 为 null）。
+    /// T12 据此显示「内网直连 / 外网中继」——宿主侧 `PeerLink.transport` 的同源事实。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
 }
 
 /// 节点当前是否在跑（无头兼容路径的「本次是否真正拉起」判据）
@@ -344,6 +348,44 @@ pub struct DialEndpoint {
     pub port: u16,
 }
 
+/// 多地址拨号入参（T11 方案 B）：`{ nodeId, addrs: [multiaddr...] }`
+///
+/// `addrs` 顺序即调用方拨号策略顺序（设计 §4.6：先 LAN，只有 §4.9 判定明确
+/// 不在内网才把 relay 候选放进列表）；宿主按顺序逐个尝试，**不排序、不自动
+/// 切换**——策略真源在应用层。
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DialAddrsEndpoint {
+    /// 对端节点 ID（64 位小写 hex 公钥指纹）
+    pub node_id: String,
+    /// 有序候选地址（每条一个 multiaddr；可含 LAN 直连与 relay 拨号地址）
+    pub addrs: Vec<String>,
+}
+
+/// 多地址拨号的单候选短超时（设计 §4.9 的 LAN 2~3s 口径）
+///
+/// 逐候选结算：LAN 候选超时即换下一个；relay 候选同一窗口——中继客户端握手
+/// 在窗口内未完成按失败显性上报，不无限挂起。
+pub(crate) const DIAL_PER_ADDR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// 候选地址字符串 → multiaddr 列表（多地址拨号入口与数据面重拨共用）
+///
+/// fail-visible：空列表与任何一条非法地址都显性报错并点名。静默丢弃候选会让
+/// 「少试一条地址」表现成「对端离线」，属最难归因的假故障。
+pub fn parse_peer_addrs(addrs: &[String]) -> Result<Vec<wasmnest_p2p_engine::Multiaddr>> {
+    if addrs.is_empty() {
+        return Err(AppError::InvalidInput("peer addrs must not be empty".to_string()));
+    }
+    let mut parsed = Vec::with_capacity(addrs.len());
+    for raw in addrs {
+        let addr = raw
+            .parse::<wasmnest_p2p_engine::Multiaddr>()
+            .map_err(|e| AppError::InvalidInput(format!("invalid multiaddr '{raw}': {e}")))?;
+        parsed.push(addr);
+    }
+    Ok(parsed)
+}
+
 /// 按 endpoint 拨号连接（host-peer `dial-peer-endpoint` 原语的引擎入口）
 ///
 /// 与已退役的 dial_peer 发现缓存路径唯一差异是寻址来源：不再要求目标在发现缓存中。缓存命中时
@@ -385,33 +427,9 @@ pub async fn dial_peer_endpoint(ctx: Arc<PeerCtx>, endpoint: DialEndpoint) -> Re
     };
     match node.dial(&static_record).await {
         Ok(connection) => {
-            // 会话连接移交常驻活性泵（同 dial_peer：对端断开泵感知，本机断开
-            // 经泵信号落地；同节点重复拨号以最新会话为准）
-            let (session_close, session_close_rx) = tokio::sync::watch::channel(false);
-            let session_id = NEXT_SESSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if let Some(old) = state
-                .connections
-                .lock()
-                .expect("connections table lock poisoned")
-                .insert(
-                    parsed.to_string(),
-                    OutboundSession {
-                        close: session_close,
-                        id: session_id,
-                    },
-                )
-            {
-                let _ = old.close.send(true);
-            }
-            spawn_session_watch(
-                ctx.clone(),
-                parsed.to_string(),
-                session_id,
-                session_close_rx,
-                connection,
-            );
+            let transport = connection.transport().map(|t| t.as_str().to_string());
             // 过渡期桥接：缓存未命中时补一条回退记录，让按 node-id 寻址的
-            // 数据面函数可用（见函数文档，Phase 4 退役）
+            // UI 面可用（数据面自 T11 起按句柄候选表寻址，不再依赖该记录）
             if cache_miss {
                 if let Some((_, cache)) = runtime_snapshot(&ctx).await {
                     cache.observe(DiscoveredPeerRecord {
@@ -429,14 +447,11 @@ pub async fn dial_peer_endpoint(ctx: Arc<PeerCtx>, endpoint: DialEndpoint) -> Re
                 short = %parsed.short_fingerprint(),
                 "peer dialed via endpoint and connected"
             );
-            emit_json(
-                &ctx,
-                "peer-connected",
-                dial_connected_payload(parsed.as_str(), &device_name),
-            );
+            register_outbound_session(&ctx, &parsed, &device_name, connection, transport.as_deref());
             Ok(DialPeerResultDto {
                 status: "connected".to_string(),
                 device_name: Some(device_name),
+                transport,
             })
         }
         Err(PeerNetError::DialDeniedByPeer { .. }) => {
@@ -444,6 +459,7 @@ pub async fn dial_peer_endpoint(ctx: Arc<PeerCtx>, endpoint: DialEndpoint) -> Re
             Ok(DialPeerResultDto {
                 status: "denied".to_string(),
                 device_name: Some(device_name),
+                transport: None,
             })
         }
         Err(e) => {
@@ -451,9 +467,130 @@ pub async fn dial_peer_endpoint(ctx: Arc<PeerCtx>, endpoint: DialEndpoint) -> Re
             Ok(DialPeerResultDto {
                 status: "unreachable".to_string(),
                 device_name: Some(device_name),
+                transport: None,
             })
         }
     }
+}
+
+/// 多地址拨号（host-peer `dial-peer-addrs` 原语的引擎入口，T11 方案 B）
+///
+/// 保留旧 [`dial_peer_endpoint`] 不动，本函数是**新增**多地址路径：候选顺序、
+/// 逐候选短超时由本层保证，§4.9 的「何时把 relay 排进候选表」由调用方决定。
+/// 会话句柄由绑定层铸造并记忆**全部**候选地址，数据面断线重拨按同一顺序复用
+/// （不再依赖 mDNS 发现缓存）。
+pub async fn dial_peer_addrs(
+    ctx: Arc<PeerCtx>,
+    node_id: String,
+    addrs: Vec<wasmnest_p2p_engine::Multiaddr>,
+) -> Result<DialPeerResultDto> {
+    let parsed = parse_node_id(&node_id)?;
+    if addrs.is_empty() {
+        return Err(AppError::InvalidInput("peer addrs must not be empty".to_string()));
+    }
+    tracing::info!(
+        node_id = %parsed,
+        short = %parsed.short_fingerprint(),
+        candidates = addrs.len(),
+        "peer multi-address dial requested"
+    );
+    let state = &ctx.state;
+
+    let (node, cached_record) = {
+        let guard = state.runtime.lock().await;
+        let runtime = guard
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("peer-net dial failed: node not started".to_string()))?;
+        (runtime.node.clone(), runtime.cache.get(&parsed))
+    };
+    let device_name = cached_record
+        .map(|r| r.device_name)
+        .unwrap_or_else(|| format!("node-{}", parsed.short_fingerprint()));
+
+    match node
+        .dial_addrs_with(
+            &parsed,
+            &addrs,
+            DIAL_PER_ADDR_TIMEOUT,
+            wasmnest_p2p_engine::stream_proto::SESSION,
+        )
+        .await
+    {
+        Ok(connection) => {
+            let transport = connection.transport().map(|t| t.as_str().to_string());
+            tracing::info!(
+                node_id = %parsed,
+                short = %parsed.short_fingerprint(),
+                transport = transport.as_deref().unwrap_or("unknown"),
+                "peer dialed via multi-address and connected"
+            );
+            register_outbound_session(&ctx, &parsed, &device_name, connection, transport.as_deref());
+            Ok(DialPeerResultDto {
+                status: "connected".to_string(),
+                device_name: Some(device_name),
+                transport,
+            })
+        }
+        Err(PeerNetError::DialDeniedByPeer { .. }) => {
+            tracing::info!(node_id = %parsed, "peer multi-address dial denied by remote");
+            Ok(DialPeerResultDto {
+                status: "denied".to_string(),
+                device_name: Some(device_name),
+                transport: None,
+            })
+        }
+        Err(e) => {
+            tracing::warn!(node_id = %parsed, "peer multi-address dial unreachable: {e}");
+            Ok(DialPeerResultDto {
+                status: "unreachable".to_string(),
+                device_name: Some(device_name),
+                transport: None,
+            })
+        }
+    }
+}
+
+/// 出站会话登记：连接移交常驻活性泵（对端断开泵感知，本机断开经泵信号落地；
+/// 同节点重复拨号以最新会话为准）并发 `peer-connected`。
+///
+/// 两条拨号路径（单地址 / 多地址）共用——事件载荷里的 `transport` 是 T12 的
+/// UI 判据（内网直连 / 外网中继），漏带会让状态栏退化成「未知」。
+fn register_outbound_session(
+    ctx: &Arc<PeerCtx>,
+    parsed: &NodeId,
+    device_name: &str,
+    connection: Connection,
+    transport: Option<&str>,
+) {
+    let state = &ctx.state;
+    let (session_close, session_close_rx) = tokio::sync::watch::channel(false);
+    let session_id = NEXT_SESSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Some(old) = state
+        .connections
+        .lock()
+        .expect("connections table lock poisoned")
+        .insert(
+            parsed.to_string(),
+            OutboundSession {
+                close: session_close,
+                id: session_id,
+            },
+        )
+    {
+        let _ = old.close.send(true);
+    }
+    spawn_session_watch(
+        ctx.clone(),
+        parsed.to_string(),
+        session_id,
+        session_close_rx,
+        connection,
+    );
+    emit_json(
+        ctx,
+        "peer-connected",
+        dial_connected_payload(parsed.as_str(), device_name, transport),
+    );
 }
 
 /// 断开对等连接：出站会话通知活性泵关闭（drop 连接 → 对端经 EOF 感知）、
@@ -692,10 +829,11 @@ pub use self::peer_engine_remote::{PeerSharedRootDto, RemoteBrowseDto, RemotePul
 pub async fn send_files_for_plugin(
     ctx: Arc<PeerCtx>,
     node_id: String,
+    addrs: Vec<wasmnest_p2p_engine::Multiaddr>,
     paths: Vec<String>,
     encrypt: Option<bool>,
 ) -> Result<String> {
-    self::peer_engine_transfer::send_files_to_peer(ctx, node_id, paths, encrypt).await
+    self::peer_engine_transfer::send_files_to_peer(ctx, node_id, addrs, paths, encrypt).await
 }
 
 pub async fn cancel_transfer_for_plugin(ctx: Arc<PeerCtx>, batch_id: String) -> Result<bool> {
@@ -724,26 +862,32 @@ pub async fn resume_transfer_for_plugin(ctx: Arc<PeerCtx>, batch_id: String) -> 
     self::peer_engine_transfer::resume_peer_transfer(ctx, batch_id).await
 }
 
-pub async fn list_remote_roots_for_plugin(ctx: Arc<PeerCtx>, node_id: String) -> Result<Vec<PeerSharedRootDto>> {
-    self::peer_engine_remote::list_peer_shared_roots(ctx, node_id).await
+pub async fn list_remote_roots_for_plugin(
+    ctx: Arc<PeerCtx>,
+    node_id: String,
+    addrs: Vec<wasmnest_p2p_engine::Multiaddr>,
+) -> Result<Vec<PeerSharedRootDto>> {
+    self::peer_engine_remote::list_peer_shared_roots(ctx, node_id, addrs).await
 }
 
 pub async fn browse_remote_for_plugin(
     ctx: Arc<PeerCtx>,
     node_id: String,
+    addrs: Vec<wasmnest_p2p_engine::Multiaddr>,
     dir_id: String,
     rel_path: String,
 ) -> Result<RemoteBrowseDto> {
-    self::peer_engine_remote::browse_peer_directory(ctx, node_id, dir_id, rel_path).await
+    self::peer_engine_remote::browse_peer_directory(ctx, node_id, addrs, dir_id, rel_path).await
 }
 
 pub async fn pull_files_for_plugin(
     ctx: Arc<PeerCtx>,
     node_id: String,
+    addrs: Vec<wasmnest_p2p_engine::Multiaddr>,
     dir_id: String,
     files: Vec<RemotePullFileDto>,
 ) -> Result<u32> {
-    Ok(self::peer_engine_remote::pull_peer_files(ctx, node_id, dir_id, files).await? as u32)
+    Ok(self::peer_engine_remote::pull_peer_files(ctx, node_id, addrs, dir_id, files).await? as u32)
 }
 
 pub async fn set_download_dir_for_plugin(ctx: Arc<PeerCtx>, path: Option<String>) -> Result<()> {
@@ -1603,8 +1747,13 @@ fn bus_topic_for(event: &str) -> Option<&'static str> {
 /// `connected` 是插件前端 handleConnectionChanged 的连接判据：缺失即按断开
 /// 处理，会把 dial-peer 命令成功后前端的 markConnected 回滚成「未连接」。
 /// 出站拨号路径曾漏发该字段（入站桥/刷新重发/断开事件均带），集中构造防再漏
-fn dial_connected_payload(node_id: &str, device_name: &str) -> serde_json::Value {
-    serde_json::json!({ "nodeId": node_id, "deviceName": device_name, "connected": true })
+fn dial_connected_payload(node_id: &str, device_name: &str, transport: Option<&str>) -> serde_json::Value {
+    let mut payload = serde_json::json!({ "nodeId": node_id, "deviceName": device_name, "connected": true });
+    // 传输形态是 T12 状态栏判据（lan-direct / wan-relay）；入站桥等未知路径不带该字段
+    if let Some(transport) = transport {
+        payload["transport"] = serde_json::Value::String(transport.to_string());
+    }
+    payload
 }
 
 /// 运行时句柄快照（issue 09 发送编排用）：节点句柄 + 发现缓存
@@ -1687,10 +1836,52 @@ mod dial_payload_tests {
 
     #[test]
     fn dial_connected_payload_carries_connected_true() {
-        let payload = dial_connected_payload("aa", "Pixel 9");
+        let payload = dial_connected_payload("aa", "Pixel 9", Some("wan-relay"));
         assert_eq!(payload["nodeId"], "aa");
         assert_eq!(payload["deviceName"], "Pixel 9");
         assert_eq!(payload["connected"], true);
+        assert_eq!(payload["transport"], "wan-relay");
+    }
+
+    #[test]
+    fn dial_connected_payload_omits_unknown_transport() {
+        let payload = dial_connected_payload("aa", "Pixel 9", None);
+        assert!(payload.get("transport").is_none(), "未知传输形态不得编造: {payload}");
+    }
+}
+
+/// T11 多地址拨号契约：候选表解析/校验的唯一入口
+#[cfg(test)]
+mod peer_addrs_contract_tests {
+    use super::*;
+
+    const LAN: &str = "/ip4/192.168.1.5/tcp/47821";
+    const RELAY: &str = concat!(
+        "/ip4/203.0.113.9/tcp/4001/p2p/12D3KooWPbYEEfpRvnRKk2YLu43F28fLZgU22wic2M5m6Spkv9ZA",
+        "/p2p-circuit/p2p/12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA"
+    );
+
+    #[test]
+    fn parse_peer_addrs_keeps_caller_order() {
+        let parsed = parse_peer_addrs(&[LAN.to_string(), RELAY.to_string()]).expect("valid candidates");
+        // 顺序 = 调用方策略顺序（先 LAN，明确不在内网才 relay）；本层不得重排
+        assert_eq!(parsed[0].to_string(), LAN);
+        assert_eq!(parsed[1].to_string(), RELAY);
+    }
+
+    #[test]
+    fn parse_peer_addrs_rejects_empty_list() {
+        let err = parse_peer_addrs(&[]).expect_err("空候选必须报错");
+        assert_eq!(err.to_string(), "Invalid input: peer addrs must not be empty");
+    }
+
+    #[test]
+    fn parse_peer_addrs_names_the_invalid_candidate() {
+        let err = parse_peer_addrs(&[LAN.to_string(), "not-a-multiaddr".to_string()]).expect_err("非法候选必须报错");
+        let text = err.to_string();
+        assert!(text.contains("invalid multiaddr 'not-a-multiaddr'"), "got: {text}");
+        // 点名原串但不泄漏其他候选（只报出错那条）
+        assert!(!text.contains(LAN), "错误文案不得回显其他候选: {text}");
     }
 }
 

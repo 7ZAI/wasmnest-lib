@@ -5,7 +5,7 @@
 //! 字段检测都在域内完成，既不依赖 `peer_ctx` 也不依赖真实节点，是「机制自持」的
 //! 直接证据。
 
-use super::scaffold::{drop_handle, mint, FakePorts};
+use super::scaffold::{drop_handle, mint, FakePorts, RELAY_DIAL_ADDR};
 use super::*;
 
 fn granted() -> Arc<dyn PeerPorts> {
@@ -149,4 +149,62 @@ fn set_shared_roots_rejects_entry_without_root_field() {
     let err = super::peer_set_shared_roots(&ports, "com.wasmnest.owner-a", r#"[{"id":"x","name":"n"}]"#)
         .expect_err("缺根字段必须显性报错");
     assert!(err.contains("missing 'path' or 'safTreeUri'"), "got: {err}");
+}
+
+// ==================== T11 多地址拨号（dial-peer-addrs） ====================
+
+/// 新原语同样过权限门（无授权的探测不触候选表/引擎）
+#[test]
+fn dial_peer_addrs_denied_without_permission() {
+    let ports = FakePorts::with(&[]);
+    assert_eq!(
+        super::peer_dial_addrs(&ports, "com.wasmnest.no-peer", "{}").unwrap_err(),
+        denied()
+    );
+}
+
+/// JSON 形状错：逐字保留（插件据此区分「载荷错」与「引擎错」）
+#[test]
+fn dial_peer_addrs_reports_invalid_json_verbatim() {
+    let ports = granted();
+    let err = super::peer_dial_addrs(&ports, "com.wasmnest.owner-a", "not-json").expect_err("非法 JSON 必须报错");
+    assert!(err.starts_with("dial addrs: invalid json:"), "got: {err}");
+}
+
+/// 空候选表：在取引擎上下文**之前**显性拒绝——空列表若放行会表现为
+/// 「对端离线」，归因成本极高
+#[test]
+fn dial_peer_addrs_rejects_empty_candidates_before_engine() {
+    let ports = granted();
+    let err = super::peer_dial_addrs(&ports, "com.wasmnest.owner-a", r#"{"nodeId":"aa","addrs":[]}"#)
+        .expect_err("空候选必须显性报错");
+    assert!(err.contains("peer addrs must not be empty"), "got: {err}");
+    assert_eq!(err, "Invalid input: peer addrs must not be empty", "got: {err}");
+}
+
+/// 非法候选逐条点名（含原串）：不静默丢候选
+#[test]
+fn dial_peer_addrs_names_invalid_candidate() {
+    let ports = granted();
+    let err = super::peer_dial_addrs(
+        &ports,
+        "com.wasmnest.owner-a",
+        r#"{"nodeId":"aa","addrs":["not-a-multiaddr"]}"#,
+    )
+    .expect_err("非法 multiaddr 必须显性报错");
+    assert!(err.contains("invalid multiaddr 'not-a-multiaddr'"), "got: {err}");
+}
+
+/// 正例（防「恒拒绝」假绿）：LAN 在前、relay 在后的合法候选过校验后落到
+/// 无头口径——顺序原样保留，绑定层不改写候选表
+#[test]
+fn dial_peer_addrs_accepts_ordered_candidates_past_validation() {
+    let ports = granted();
+    let payload = serde_json::json!({
+        "nodeId": "aa",
+        "addrs": ["/ip4/192.168.1.5/tcp/47821", RELAY_DIAL_ADDR],
+    });
+    let err =
+        super::peer_dial_addrs(&ports, "com.wasmnest.owner-a", &payload.to_string()).expect_err("无头上下文取不到引擎");
+    assert_eq!(err, ports::HEADLESS_UNAVAILABLE, "合法候选应过校验: {err}");
 }
