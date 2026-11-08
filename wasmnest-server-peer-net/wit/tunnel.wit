@@ -1,0 +1,67 @@
+package wasmnest:tunnel@0.0.1;
+// ======================================================================
+// 内网穿透通道契约分片（独立包、独立版本轴）
+//
+// 与对等网络基础能力解耦：通道机制自行演进，不牵动对等网络接口的导入名。
+// 本文件只声明能力原语；ACL / 票据 / 配对窗口 / 本地代理的判定与生命周期在
+// 实现侧，端组合由宿主侧清单驱动（本分片不声明 union world）。
+//
+// 安全口径：默认不暴露任何端口；只有已匹配 peer 可开业务通道，未匹配 peer
+// 仅能凭一次性配对票据进入短命配对窗口。配对票据绑定目标端口、TTL ≤ 120s，
+// 且不绑定接入路径（LAN 直连与中继两路径均可使用）。
+//
+// 版本纪律：T06 增加 `configure` 原语（allowWan / relay 地址），仍属 0.0.1
+// 预发布线——本包首个消费者（T07/T09）落地前不承诺兼容。
+// ======================================================================
+
+interface host-tunnel {
+    /// 暴露规则：kind = "http" 时 port 只是逻辑端口标识，后端恒为对等
+    /// HTTP/WS 面；kind = "tcp" 时原样转发到回环端口，且拒绝宿主管理端口
+    record expose-config {
+        port: u16,
+        kind: string,
+        label: string,
+        /// 空 = 所有已匹配 peer；非空 = 仅列出的已验证 node id
+        allowed-peers: list<string>,
+    }
+
+    /// 通道配置（应用自持的网络设置，宿主只做计数与拨号）
+    ///
+    /// `allow-wan` 关闭时即使存在 expose 规则也不建立 / 保留中继预留（LAN 入口
+    /// 不受影响）；`relay-addrs-json` 是 multiaddr 字符串数组，空 = 未配置中继。
+    /// 本原语只改隧道管理器的引用计数，不直接建立 / 释放 reservation。
+    record tunnel-config {
+        allow-wan: bool,
+        relay-addrs-json: string,
+    }
+
+    /// 服务端 + 客户端：写入本插件的通道配置（幂等全量替换），返回 true = 已写入。
+    /// 声明 `tunnel:serve` 或 `tunnel:connect` 任一即可调用
+    configure: func(config: tunnel-config) -> result<bool, string>;
+
+    /// 服务端：登记一条暴露规则，返回规则 id。幂等地确保全局节点就绪；
+    /// 中继预留的建立与释放由宿主统一引用计数，不在本原语内管理
+    expose: func(config: expose-config) -> result<string, string>;
+
+    /// 服务端：撤销一条暴露规则（返回是否命中）
+    unexpose: func(rule-id: string) -> result<bool, string>;
+
+    /// 客户端：把对端 <node-id>:<port> 映射到本机回环临时端口。
+    /// addrs-json = multiaddr 字符串数组；pairing-ticket 仅首次配对传入，
+    /// 由宿主写入通道首帧。返回可关闭的句柄
+    connect: func(node-id: string, port: u16, kind: string, addrs-json: string, pairing-ticket: option<string>) -> result<string, string>;
+
+    /// 客户端：关闭句柄对应的 listener 与全部在飞流
+    close: func(handle: string) -> result<bool, string>;
+
+    /// 服务端：签发一次性配对票据（只开配对窗口，不建立应用信任）。
+    /// 票据绑定目标端口 + TTL（≤120s）；签发方不得把明文票据写入日志
+    issue-pairing-ticket: func(port: u16, ttl-secs: u32) -> result<string, string>;
+
+    /// 传输状态：direct / relay / relay-reserved / offline + addrs + rtt
+    status: func() -> result<string, string>;
+}
+
+world cap-tunnel {
+    import host-tunnel;
+}
