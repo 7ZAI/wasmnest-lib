@@ -111,6 +111,61 @@ fn is_link_local(addr: IpAddr) -> bool {
     }
 }
 
+/// 接口清单 → 可拨 IPv4 列表（纯函数，可测）
+///
+/// 用于把通配监听地址（`0.0.0.0`）展开成对端真能拨的地址（`status.node.addrs`）。
+/// 丢三类：环回 / 链路本地 / 未指定；另丢**虚拟接口**（docker / veth / tun / tailscale…）
+/// ——这些地址在同事网段对端不可达，放进候选只会让对端多试一次必然失败的地址。
+pub fn dialable_ipv4_from(interfaces: &[InterfaceFact]) -> Vec<IpAddr> {
+    let mut out: Vec<IpAddr> = Vec::new();
+    for item in interfaces {
+        if !matches!(item.addr, IpAddr::V4(_)) {
+            continue;
+        }
+        if is_link_local(item.addr) {
+            continue;
+        }
+        if matches!(
+            classify_interface(&item.name),
+            InterfaceKind::Loopback | InterfaceKind::Virtual
+        ) {
+            continue;
+        }
+        if !out.contains(&item.addr) {
+            out.push(item.addr);
+        }
+    }
+    out
+}
+
+/// 读取本机可拨 IPv4（枚举失败 = 空列表：调用方只能拿到 relay 候选，不猜地址）
+pub fn dialable_ipv4_addrs() -> Vec<IpAddr> {
+    match get_if_addrs() {
+        Ok(list) => {
+            let facts: Vec<InterfaceFact> = list
+                .into_iter()
+                .filter_map(|interface| match interface.addr {
+                    IfAddr::V4(v4) => Some(InterfaceFact {
+                        name: interface.name,
+                        addr: IpAddr::V4(v4.ip),
+                        prefix: v4.prefixlen,
+                    }),
+                    IfAddr::V6(v6) => Some(InterfaceFact {
+                        name: interface.name,
+                        addr: IpAddr::V6(v6.ip),
+                        prefix: v6.prefixlen,
+                    }),
+                })
+                .collect();
+            dialable_ipv4_from(&facts)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "interface enumeration failed; dialable addresses fall back to relay only");
+            Vec::new()
+        }
+    }
+}
+
 /// 读取本机接口事实（失败 = 未知，不抛错：判据层会把未知当「不明确」）
 pub fn system_network_facts() -> NetworkFacts {
     match get_if_addrs() {
@@ -194,5 +249,34 @@ mod tests {
     fn virtual_interfaces_do_not_mask_cellular() {
         let facts = facts_from(&[fact("rmnet_data0", "10.42.0.9", 30), fact("tun0", "172.19.0.1", 16)]);
         assert!(facts.cellular, "VPN 接口不改变「只有蜂窝上行」的事实");
+    }
+
+    /// 可拨地址：只留真实 LAN IPv4，丢环回 / 链路本地 / 虚拟接口 / IPv6
+    #[test]
+    fn dialable_ipv4_keeps_only_lan_addresses() {
+        let addrs = dialable_ipv4_from(&[
+            fact("lo", "127.0.0.1", 8),
+            fact("wlan0", "192.168.1.7", 24),
+            fact("wlan0", "169.254.10.3", 16),
+            fact("docker0", "172.17.0.1", 16),
+            fact("tailscale0", "100.64.0.2", 32),
+            fact("enp3s0", "10.0.0.5", 24),
+            fact("enp3s0", "10.0.0.5", 24),
+            fact("wlan0", "fe80::1", 64),
+        ]);
+        assert_eq!(
+            addrs,
+            vec![
+                "192.168.1.7".parse::<IpAddr>().unwrap(),
+                "10.0.0.5".parse::<IpAddr>().unwrap(),
+            ],
+            "只留 LAN IPv4（去重、保序），虚拟与链路本地地址不外发"
+        );
+    }
+
+    /// 只有环回 / 虚拟接口时回空（调用方只能给 relay 候选，不猜地址）
+    #[test]
+    fn dialable_ipv4_is_empty_without_lan_interfaces() {
+        assert!(dialable_ipv4_from(&[fact("lo", "127.0.0.1", 8), fact("docker0", "172.17.0.1", 16)]).is_empty());
     }
 }

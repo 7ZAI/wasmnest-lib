@@ -119,6 +119,13 @@ pub struct RelaySnapshot {
 pub struct NodeSnapshot {
     pub started: bool,
     pub node_id: Option<String>,
+    /// 本节点**可拨** multiaddr（LAN 直连在前、relay circuit 在后，去重保序）
+    ///
+    /// 为什么状态里要有它：应用把「怎么找到我」写进配对载荷（QR v2 的
+    /// `peer.addrs`，T08），这是唯一一处宿主知道真实监听端口的出口。
+    /// 通配监听地址（`0.0.0.0` / `::`）必须展开成本机可用 IPv4——
+    /// `/ip4/0.0.0.0` 在 multiaddr 里不是可拨地址，直接外发会让对端永远拨不通。
+    pub addrs: Vec<String>,
 }
 
 // ==================== 对等面启动端口 ====================
@@ -924,6 +931,64 @@ async fn run_inbound_loop(engine: Arc<dyn TunnelEngine>, server: Arc<TunnelServe
     }
 }
 
+// ==================== 可拨地址投影 ====================
+
+/// 本节点可拨 multiaddr 列表（LAN 直连在前、relay circuit 在后；去重保序）
+///
+/// 判据：
+/// - 通配监听地址（`0.0.0.0` / `::`）→ 展开为 `local_ipv4` 里的每个地址（同端口）；
+/// - 环回 / 链路本地 / 组播 / 未指定端口 → 丢弃（对端拨不到，只会增加无效候选）；
+/// - `relay_addr`（对端可达的中继 multiaddr）→ 追加 `<relay>/p2p-circuit/p2p/<self>`，
+///   这是跨网唯一可达路径。
+///
+/// 纯函数：接口枚举在调用方（[`crate::tunnel::netinfo`]），便于单测锁定判据。
+pub fn dialable_addrs(
+    listen: &[std::net::SocketAddr],
+    local_ipv4: &[std::net::IpAddr],
+    relay_addr: Option<&str>,
+    peer_id: &str,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |addr: String| {
+        if !out.contains(&addr) {
+            out.push(addr);
+        }
+    };
+
+    for addr in listen {
+        let port = addr.port();
+        if port == 0 {
+            continue;
+        }
+        let ip = addr.ip();
+        if ip.is_unspecified() {
+            for local in local_ipv4 {
+                push(format!("/ip4/{local}/tcp/{port}/p2p/{peer_id}"));
+            }
+            continue;
+        }
+        if ip.is_loopback() || ip.is_multicast() || is_link_local_ip(ip) {
+            continue;
+        }
+        match ip {
+            std::net::IpAddr::V4(v4) => push(format!("/ip4/{v4}/tcp/{port}/p2p/{peer_id}")),
+            std::net::IpAddr::V6(v6) => push(format!("/ip6/{v6}/tcp/{port}/p2p/{peer_id}")),
+        }
+    }
+
+    if let Some(relay) = relay_addr.map(str::trim).filter(|a| !a.is_empty()) {
+        push(format!("{relay}/p2p-circuit/p2p/{peer_id}"));
+    }
+    out
+}
+
+fn is_link_local_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+    }
+}
+
 // ==================== 生产引擎适配 ====================
 
 /// 直接接 `PeerCtx` 的引擎实现（桌面 / 移动同一份；无宿主类型）
@@ -1076,10 +1141,22 @@ impl TunnelEngine for PeerCtxEngine {
     async fn node_snapshot(&self) -> NodeSnapshot {
         let guard = self.ctx.state.runtime.lock().await;
         match guard.as_ref() {
-            Some(runtime) => NodeSnapshot {
-                started: true,
-                node_id: Some(runtime.node_id.clone()),
-            },
+            Some(runtime) => {
+                let running = runtime.running.p2p_handle();
+                // relay 预留生效时 `relay_addr` 才为 Some：此时 circuit 地址对本节点是
+                // 可达的（对端经中继找过来），作为跨网候选追加在 LAN 候选之后。
+                let relay_addr = running.relay_status().relay_addr.map(|a| a.to_string());
+                NodeSnapshot {
+                    started: true,
+                    node_id: Some(runtime.node_id.clone()),
+                    addrs: dialable_addrs(
+                        &running.listen_addresses(),
+                        &crate::tunnel::netinfo::dialable_ipv4_addrs(),
+                        relay_addr.as_deref(),
+                        &running.peer_id().to_string(),
+                    ),
+                }
+            }
             None => NodeSnapshot::default(),
         }
     }
