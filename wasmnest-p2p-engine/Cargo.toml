@@ -17,6 +17,18 @@ license = "MIT"
 repository = "https://github.com/7ZAI/wasmnest-lib"
 edition = "2021"
 
+[features]
+default = []
+# T01/T02：libp2p Circuit Relay v2 **客户端**（跨 NAT 基线）。默认关闭——宿主按需
+# 显式开启（`--features relay` 或依赖方 `features = ["relay"]`），保证未启用 relay
+# 的构建（含 Android）依赖树与今天逐字一致。
+#
+# 依赖面影响（T01 验收项）：`libp2p/relay` 只拉入 `libp2p-relay`（纯 Rust 协议实现，
+# 无 rustls / quinn / aws-lc-rs / openssl-sys）；relay 客户端构造函数需要 rand 0.10
+# （与 `libp2p-swarm 0.48` 同版本轴，保证同一份 rand 在依赖图里）。
+# relay **服务端**不属本 crate：独立守护进程 `wasmnest-relay`（T13）。
+relay = ["libp2p/relay", "dep:rand"]
+
 [dependencies]
 # libp2p 机制引擎本体（2026-10-25 定版 0.57.1，MSRV Rust 1.88，本机 1.98.1 满足）。
 # feature 显式收窄（default-features = false 去掉默认 dns——LAN 场景拨 IP 字面量
@@ -55,3 +67,7 @@ async-trait = "0.1"
 tracing = "0.1"
 # 引擎错误枚举
 thiserror = "1"
+# relay 客户端构造需要随机源（circuit reservation 的请求 id）。版本与
+# `libp2p-swarm 0.48` 依赖的 rand 同轴（0.10），避免依赖图出现两份 rand。
+# 仅 `relay` feature 开启时进入依赖树。
+rand = { version = "0.10", optional = true }
