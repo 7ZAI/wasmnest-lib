@@ -41,7 +41,7 @@ use actix_web::{web, Error, FromRequest, HttpResponse};
 use serde_json::Value;
 
 use crate::controllers::plugin_controller::{
-    caller_identity, filter_plugin_request_headers, forward_to_plugin, HttpCaller, PluginHttpRequest,
+    caller_identity, filter_plugin_request_headers, forward_to_plugin, request_face, PluginHttpRequest,
 };
 use crate::dtos::{ApiResponse, CODE_INVALID_REQUEST, CODE_PLUGIN_AUTH_FAILED};
 use crate::registry;
@@ -170,7 +170,9 @@ where
     // 调用方身份（票 08）：device 档 = 宿主 JWT 中间件已验签并注入 claims。
     // 环回 / 匿名两档只在插件把该端点显式注册成 `auth: "none"` 时才可能走到转发。
     let (caller, device) = caller_identity(req.request());
-    let verified = matches!(caller, HttpCaller::Device);
+    // peer 面上 caller 恒为 Peer（不能当 localhost），故「已验签」只看宿主注入的
+    // 设备上下文，不再由 caller 档位反推（设计 §4.5：带 JWT 的请求不受影响）。
+    let verified = device.is_some();
     // 无端口（无头 / 库级测试 / 初始化中间态）= 插件面不可判定 → 交回链条，
     // 绝不凭注册表就把请求递给不存在的插件
     let decision = match wasmnest_server_base::ports::get() {
@@ -235,6 +237,7 @@ where
                 params,
                 caller,
                 device,
+                face: request_face(&http_req),
             };
             let resp = forward_to_plugin(&entry.owner, &request).await;
             Ok(ServiceResponse::new(http_req, resp))

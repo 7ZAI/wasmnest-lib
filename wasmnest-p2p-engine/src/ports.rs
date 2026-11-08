@@ -12,9 +12,10 @@
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
-use libp2p::PeerId;
+use libp2p::{Multiaddr, PeerId};
 
 use crate::identity_bridge::NodeId;
+use crate::relay::{RelayState, Transport};
 
 /// 入站准入端口：首连确认闸门的决策方
 ///
@@ -90,7 +91,35 @@ pub struct DialFailed {
     pub cause: String,
 }
 
+/// 链路传输形态确定（连接可用时按所拨 / 来源地址判定）
+///
+/// 设计 §7.2 的 `peer:transport` 事件：`lan-direct`（直连）/ `wan-relay`（经 relay）。
+/// **不携带数据面内容**——宿主据此点亮「内网直连 / 外网中继」状态，不下发地址细节。
+#[derive(Debug, Clone)]
+pub struct TransportChanged {
+    /// 对端 node_id（已验证）
+    pub node_id: NodeId,
+    /// 传输形态
+    pub transport: Transport,
+    /// 完整 multiaddr（relayed 地址含 `/p2p-circuit`；诊断用）
+    pub address: Multiaddr,
+}
+
+/// relay 控制面状态变化（`relay-reserved` / `relay-lost` 等）
+#[derive(Debug, Clone)]
+pub struct RelayStatusChanged {
+    /// 新状态
+    pub state: RelayState,
+    /// 当前 relay 端点（`None` = 未配置 / 已释放）
+    pub relay_addr: Option<Multiaddr>,
+    /// 人读细节（失败原因 / 退避信息；不含秘密）
+    pub detail: String,
+}
+
 /// 引擎事件出口：连接态事件全部经此推送（同步、不回压——宿主实现自行缓冲/丢弃策略）
+///
+/// relay / 传输形态两类事件以**默认空实现**加入：现有宿主实现（peer-net 的
+/// `LogEventSink`）无需改动即可编译；要消费的宿主覆盖对应方法。
 pub trait P2pEventSink: Send + Sync + 'static {
     /// 监听地址集合变化（快照全量）
     fn listening_changed(&self, addrs: Vec<SocketAddr>);
@@ -102,6 +131,10 @@ pub trait P2pEventSink: Send + Sync + 'static {
     fn peer_denied(&self, ev: PeerDenied);
     /// 拨号失败（只会有出站方向）
     fn dial_failed(&self, ev: DialFailed);
+    /// 链路传输形态（lan-direct / wan-relay）
+    fn transport_changed(&self, _ev: TransportChanged) {}
+    /// relay 预留生命周期
+    fn relay_status_changed(&self, _ev: RelayStatusChanged) {}
 }
 
 /// 引擎端口聚合（字段即装配面）

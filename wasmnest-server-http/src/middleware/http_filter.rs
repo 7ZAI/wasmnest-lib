@@ -20,11 +20,12 @@ use actix_web::{
     http::header::CONTENT_LENGTH,
     web,
     web::Bytes,
-    FromRequest, HttpResponse, Result,
+    FromRequest, HttpMessage, HttpResponse, Result,
 };
 use tracing::{Instrument, Level};
 
 use crate::dtos::common_dto::{ApiResponse, CODE_INVALID_REQUEST};
+use wasmnest_server_base::face::RequestFace;
 use wasmnest_server_core::filter::{Direction, FilterContext, TrafficChannel, TrafficFilterChain};
 use wasmnest_server_core::link_crypto::{EncryptionPolicy, LinkEncryptionFilter};
 
@@ -133,6 +134,8 @@ or turn off encryption on the client."
         // 取策略裁决（本地豁免 / 白名单逻辑复用过滤器同一实现），不驱动责任链。
         if req.method() == actix_web::http::Method::HEAD {
             let (owner, endpoint) = resolve_route_identity(req.path(), "HEAD");
+            // 内网穿透 T04：面标记由 listener 注入，HEAD 快速路径同样要按面裁决
+            let face = req.extensions().get::<RequestFace>().cloned().unwrap_or_default();
             let probe = FilterContext {
                 channel: TrafficChannel::Http,
                 direction: Direction::Inbound,
@@ -143,6 +146,7 @@ or turn off encryption on the client."
                 negotiation: &negotiation,
                 data: Vec::new(),
                 outbound_headers: Vec::new(),
+                face: face.clone(),
             };
             if LinkEncryptionFilter::policy_of(&probe) == Some(EncryptionPolicy::Required)
                 && negotiation.trim().is_empty()
@@ -236,6 +240,9 @@ where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>,
     B: MessageBody + 'static,
 {
+    // 内网穿透 T04：面标记随 FilterContext 进入链加密判据；缺省 = 普通面，
+    // 既有环回豁免行为不回归。
+    let face = req.extensions().get::<RequestFace>().cloned().unwrap_or_default();
     let started = std::time::Instant::now();
 
     // 主体流程包进 async 块：错误经 `?` 上抛到单一出口（不再散落 return），
@@ -257,6 +264,7 @@ where
             negotiation: &negotiation,
             data: body.to_vec(),
             outbound_headers: Vec::new(),
+            face: face.clone(),
         };
         if let Err(rej) = chain.run_inbound(&mut ctx) {
             tracing::warn!(peer = %peer, route = %path, %rej, "HTTP inbound request rejected by traffic filter");
@@ -287,6 +295,7 @@ where
             negotiation: &negotiation,
             data: res_bytes,
             outbound_headers: Vec::new(),
+            face: face.clone(),
         };
         if let Err(rej) = chain.run_outbound(&mut out_ctx) {
             tracing::warn!(peer = %peer, route = %path, %rej, "HTTP outbound response rejected by traffic filter");
@@ -624,6 +633,101 @@ mod tests {
         assert!(text.contains("ENCRYPTED"), "响应体应经过出站过滤: {text}");
         assert!(text.contains("HELLO"), "handler 应收到入站过滤后的大写请求体: {text}");
 
+        chain.clear();
+    }
+
+    /// 测试用中间件：模拟对等面 listener 在 extensions 注入 `RequestFace`
+    struct InsertPeerFace;
+
+    impl<S, B> actix_web::dev::Transform<S, ServiceRequest> for InsertPeerFace
+    where
+        S: actix_web::dev::Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>,
+        S::Future: 'static,
+        B: 'static,
+    {
+        type Response = ServiceResponse<B>;
+        type Error = actix_web::Error;
+        type InitError = ();
+        type Transform = InsertPeerFaceMiddleware<S>;
+        type Future = std::future::Ready<Result<Self::Transform, Self::InitError>>;
+
+        fn new_transform(&self, service: S) -> Self::Future {
+            std::future::ready(Ok(InsertPeerFaceMiddleware { service }))
+        }
+    }
+
+    struct InsertPeerFaceMiddleware<S> {
+        service: S,
+    }
+
+    impl<S, B> actix_web::dev::Service<ServiceRequest> for InsertPeerFaceMiddleware<S>
+    where
+        S: actix_web::dev::Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>,
+        S::Future: 'static,
+        B: 'static,
+    {
+        type Response = ServiceResponse<B>;
+        type Error = actix_web::Error;
+        type Future = S::Future;
+
+        fn poll_ready(&self, ctx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+            self.service.poll_ready(ctx)
+        }
+
+        fn call(&self, req: ServiceRequest) -> Self::Future {
+            req.extensions_mut()
+                .insert(RequestFace::peer_face(Some("peer-node-test".to_string()), false));
+            self.service.call(req)
+        }
+    }
+
+    /// 探针过滤器：记录每次过滤上下文里的面标记
+    struct FaceProbe(std::sync::Arc<std::sync::Mutex<Vec<RequestFace>>>);
+
+    impl TrafficFilter for FaceProbe {
+        fn name(&self) -> &str {
+            "face-probe"
+        }
+        fn on_inbound(&self, ctx: &mut FilterContext<'_>) -> Verdict {
+            self.0.lock().unwrap().push(ctx.face.clone());
+            Verdict::Continue
+        }
+        fn on_outbound(&self, ctx: &mut FilterContext<'_>) -> Verdict {
+            self.0.lock().unwrap().push(ctx.face.clone());
+            Verdict::Continue
+        }
+    }
+
+    /// 不变量 15 服务级锁：listener 注入的 `RequestFace` 必须原样进入
+    /// `FilterContext.face`（链加密豁免判据的唯一来源），入站 / 出站一致。
+    #[actix_web::test]
+    async fn listener_face_marker_reaches_filter_context() {
+        let _guard = GLOBAL_CHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let chain = TrafficFilterChain::global();
+        chain.clear();
+        chain.register(std::sync::Arc::new(FaceProbe(std::sync::Arc::clone(&captured))));
+
+        // `.wrap(TrafficFilter).wrap(InsertPeerFace)`：后者在外层，先注入再过滤
+        let app = test::init_service(
+            App::new()
+                .wrap(TrafficFilter)
+                .wrap(InsertPeerFace)
+                .route("/echo", web::post().to(echo_handler)),
+        )
+        .await;
+        let req = test::TestRequest::post().uri("/echo").set_payload("x").to_request();
+        let res = test::call_service(&app, req).await;
+        assert!(res.status().is_success());
+
+        let faces = captured.lock().unwrap();
+        assert_eq!(faces.len(), 2, "入站与出站各进一次过滤链");
+        for face in faces.iter() {
+            assert!(face.is_peer(), "面标记必须随请求进入过滤上下文");
+            assert_eq!(face.peer_node_id.as_deref(), Some("peer-node-test"));
+            assert!(!face.is_pairing());
+        }
+        drop(faces);
         chain.clear();
     }
 

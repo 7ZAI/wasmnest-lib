@@ -55,4 +55,26 @@ pub enum P2pError {
     /// 开流超时（对端未接受该协议）
     #[error("开流超时（{0}）：窗口内未完成协议协商")]
     StreamTimeout(String),
+    /// relay 地址 / 预留操作失败（成因点名，含地址形状与失败原因）
+    #[error("relay 操作失败：{0}")]
+    Relay(String),
+    /// relay 端点 PeerId 与钉住值不一致（安全红线：拒绝同址不同身份替换）
+    #[error("relay 身份不匹配：期望 {expected}，实得 {actual}（拒绝同 IP 不同 PeerId 替换）")]
+    RelayPeerMismatch {
+        /// 调用方钉住的 relay PeerId
+        expected: String,
+        /// 地址里实际携带的 PeerId
+        actual: String,
+    },
+    /// 本构建未启用 `relay` feature（宿主需显式开启；不做静默降级）
+    #[error("relay 未启用：本构建未编译 relay feature（宿主显式开启后重试）")]
+    RelayDisabled,
+    /// 多地址拨号全部候选失败（逐个成因汇总，便于定位 LAN/relay 哪条路不通）
+    #[error("全部候选地址拨号失败（{attempts} 个）：{detail}")]
+    DialAllFailed {
+        /// 尝试过的候选数
+        attempts: usize,
+        /// 逐候选失败成因（`addr => cause`，分号分隔）
+        detail: String,
+    },
 }

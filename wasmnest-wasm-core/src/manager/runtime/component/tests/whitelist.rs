@@ -7,10 +7,13 @@ use super::*;
 
 // 单形态（2026-10-13）：lib test 二进制经 dev-deps 开启 server crates 的
 // `common-host`（DomainHooks 停用回收钩子必需）——其 HostModule 自报进测试
-// 二进制，白名单（纯 `expected_host_modules`）须在此声明同 3 个模块名才能双向
-// 匹配（与生产形态解耦：桌面宿主在生产二进制声明，移动不自报）。
+// 二进制，白名单（纯 `expected_host_modules`）须在此声明同名模块才能双向匹配
+// （与生产形态解耦：桌面宿主在生产二进制声明，移动不自报）。
 wasmnest_host_kit::expect_host_module!(wasmnest_server_websocket::plugin_binding::MODULE_NAME);
 wasmnest_host_kit::expect_host_module!(wasmnest_server_peer_net::plugin_binding::MODULE_NAME);
+wasmnest_host_kit::expect_host_module!(
+    wasmnest_server_peer_net::tunnel::plugin_binding::MODULE_NAME
+);
 wasmnest_host_kit::expect_host_module!(wasmnest_server_http::plugin_binding::MODULE_NAME);
 
 /// 自动收集到的能力模块集与树内白名单**完全相等**（双向）

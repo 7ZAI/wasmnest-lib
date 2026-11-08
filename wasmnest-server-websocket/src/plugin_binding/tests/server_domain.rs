@@ -436,6 +436,7 @@ async fn ws_upgrade_negotiates_session_and_roundtrips_frames() {
             .expect("seal frame again")
             .into_bytes(),
         outbound_headers: Vec::new(),
+        face: wasmnest_server_base::face::RequestFace::default(),
     };
     chain.run_inbound(&mut inbound).expect("inbound must decrypt");
     assert_eq!(inbound.data, b"hello-sealed");
@@ -451,6 +452,7 @@ async fn ws_upgrade_negotiates_session_and_roundtrips_frames() {
         negotiation: "",
         data: b"reply-plain".to_vec(),
         outbound_headers: Vec::new(),
+        face: wasmnest_server_base::face::RequestFace::default(),
     };
     chain.run_outbound(&mut outbound).expect("outbound must encrypt");
     let opened = crypto

@@ -35,6 +35,14 @@ impl TransportFace for HttpTransportFace {
             .now_or_never()
             .and_then(|result| result.ok())
             .expect("TrafficFilter 中间件装配失败（new_transform 契约为 Ready + InitError=()）");
-        actix_service::boxed::service(service)
+        let service = actix_service::boxed::service(service);
+        // 配对窗口路径闸门挂最外层：被拒请求不进入缓冲/过滤链。
+        // 普通面与已匹配 peer 面的 `pairing=false`，零介入。
+        let guarded = actix_web::middleware::from_fn(crate::peer_face::peer_face_guard)
+            .new_transform(service)
+            .now_or_never()
+            .and_then(|result| result.ok())
+            .expect("peer face guard 中间件装配失败（new_transform 契约为 Ready + InitError=()）");
+        actix_service::boxed::service(guarded)
     }
 }

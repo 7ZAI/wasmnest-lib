@@ -50,9 +50,17 @@ use crate::admission::{AdmissionGate, AdmissionSettled, GateRequest};
 use crate::error::P2pError;
 use crate::identity_bridge::{node_id_from_peer_id, verify_peer_identity, NodeId, NodeKey};
 use crate::links::{IncomingStreams, LinkAdmission, LinkRegistry, LinkRegistryInner, PeerLink};
+#[cfg(feature = "relay")]
+use crate::ports::RelayStatusChanged;
 use crate::ports::{
     DenyCause, DialFailed, P2pEventSink, P2pPorts, PeerConnected, PeerDenied, PeerDisconnected,
+    TransportChanged,
 };
+use crate::relay::{relayed_dial_target, RelayStatus, Transport};
+#[cfg(feature = "relay")]
+use crate::relay::{retry_delay, RelayEndpoint, RelayState, RESERVATION_TIMEOUT};
+#[cfg(feature = "relay")]
+use libp2p::core::transport::ListenerId;
 
 /// 拨号完成的超时窗口（握手 + node_id 校验；多路在飞时失败归属的兜底结算）
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -69,11 +77,34 @@ const DENY_GRACE: Duration = Duration::from_secs(3);
 /// 拒绝态回收扫描周期
 const DENY_REAPER_INTERVAL: Duration = Duration::from_millis(500);
 
-/// 节点行为面：ping 保活 + 具名流协议协商
+/// 多地址拨号结果：命中的候选地址与传输形态
+#[derive(Debug, Clone)]
+pub struct DialOutcome {
+    /// 成功的候选地址（relayed 地址含 `/p2p-circuit`）
+    pub addr: Multiaddr,
+    /// 由地址判定的传输形态（宿主据此点亮「内网直连 / 外网中继」）
+    pub transport: Transport,
+}
+
+/// 节点行为面：ping 保活 + 具名流协议协商（默认构建）
+#[cfg(not(feature = "relay"))]
 #[derive(NetworkBehaviour)]
 pub(crate) struct NodeBehaviour {
     ping: ping::Behaviour,
     stream: libp2p_stream::Behaviour,
+}
+
+/// 节点行为面（`relay` feature）：额外挂 Circuit Relay v2 客户端
+///
+/// 为什么用两份定义而不是 `#[cfg]` 字段：`#[derive(NetworkBehaviour)]` 生成的
+/// 事件枚举是行为面的公开投影，字段级 cfg 在不同宏版本行为不一致；两份定义让
+/// 「开关 = 换一份装配」显性化，事件匹配处同样 cfg 分支，不存在半开状态。
+#[cfg(feature = "relay")]
+#[derive(NetworkBehaviour)]
+pub(crate) struct NodeBehaviour {
+    ping: ping::Behaviour,
+    stream: libp2p_stream::Behaviour,
+    relay_client: libp2p::relay::client::Behaviour,
 }
 
 // ==================== 节点配置 ====================
@@ -114,6 +145,8 @@ enum EngineCmd {
     Dial {
         addr: Multiaddr,
         expected: NodeId,
+        /// 经 relay 拨号时的 relay PeerId（其控制连接不登记为业务对端）
+        infra_peer: Option<PeerId>,
         reply: oneshot::Sender<Result<(), P2pError>>,
     },
     /// 取消在飞拨号（dial 超时后清账，防止迟到连接误命中）
@@ -136,6 +169,13 @@ enum EngineCmd {
         peer_id: PeerId,
         reply: oneshot::Sender<Result<(), P2pError>>,
     },
+    /// 建立 relay 预留（按给定端点顺序尝试；feature 关闭时显性失败）
+    RelayReserve {
+        addrs: Vec<Multiaddr>,
+        reply: oneshot::Sender<Result<Multiaddr, P2pError>>,
+    },
+    /// 释放 relay 预留（幂等；返回是否命中在管预留）
+    RelayRelease { reply: oneshot::Sender<bool> },
     /// 关停（泵退出前回执）
     Shutdown { reply: oneshot::Sender<()> },
 }
@@ -151,6 +191,8 @@ struct RunningNodeInner {
     /// 拨号串行闸：同一时刻只让一个 dial 走完「检查链路 → 发命令 → 等校验」，
     /// 并发拨同一对端时后到者直接命中已建立的链路。
     dial_gate: Arc<Mutex<()>>,
+    /// relay 控制面状态快照（泵写、句柄读；`status()` 的数据面）
+    relay_status: Arc<RwLock<RelayStatus>>,
     /// 泵任务（shutdown 取走；克隆句柄共享同一 Option）
     pump: Mutex<Option<JoinHandle<()>>>,
 }
@@ -202,6 +244,20 @@ impl RunningNode {
     /// - 存在同址 `Pending` / `Denied` 链路：返回 [`P2pError::NotAdmitted`]；
     /// - 否则发起拨号。返回时机 = 校验通过或失败 / 超时（连接已被引擎断开）。
     pub async fn dial(&self, addr: Multiaddr, expected_node_id: NodeId) -> Result<(), P2pError> {
+        self.dial_with_timeout(addr, expected_node_id, DIAL_TIMEOUT)
+            .await
+    }
+
+    /// [`Self::dial`] 的显式超时版本
+    ///
+    /// 多地址拨号（[`Self::dial_addrs`]）按候选给短窗口（LAN 2~3s，见设计 §4.9）；
+    /// 超时结算与清理语义与 [`Self::dial`] 完全一致（清在飞登记，防迟到连接误命中）。
+    pub async fn dial_with_timeout(
+        &self,
+        addr: Multiaddr,
+        expected_node_id: NodeId,
+        timeout: Duration,
+    ) -> Result<(), P2pError> {
         let _gate = self.inner.dial_gate.lock().await;
         let dial_addr = multiaddr_to_socket_addr(&addr);
         let mut must_redial = false;
@@ -248,13 +304,14 @@ impl RunningNode {
         self.inner
             .cmd
             .send(EngineCmd::Dial {
+                infra_peer: crate::relay::relay_peer_of_dial_addr(&addr),
                 addr: addr.clone(),
                 expected: expected_node_id.clone(),
                 reply: tx,
             })
             .await
             .map_err(|_| P2pError::NotRunning)?;
-        match tokio::time::timeout(DIAL_TIMEOUT, rx).await {
+        match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_recv)) => Err(P2pError::NotRunning),
             Err(_elapsed) => {
@@ -270,6 +327,100 @@ impl RunningNode {
                 Err(P2pError::DialTimeout)
             }
         }
+    }
+
+    /// 多地址拨号：按调用方给定顺序逐个尝试，首个成功即返回
+    ///
+    /// 设计 §4.9 的拨号策略落在调用方（先 LAN、明确不在内网才 relay），引擎只保证
+    /// **顺序 + 逐候选短超时 + 失败成因逐条可见**：
+    ///
+    /// - 顺序 = 入参顺序（不排序、不去重、不自动把 relay 提前）；
+    /// - 每个候选按 `per_addr_timeout` 结算（LAN 建议 2~3s；relay 候选可给长一些）；
+    /// - 某候选失败继续下一个；全部失败返回 [`P2pError::DialAllFailed`]（含逐候选成因）；
+    /// - 经 relay 的候选先做形状校验（必须 `.../p2p-circuit/p2p/<target>`，且 target
+    ///   与期望 node_id 一致），形状非法直接报错——不把「注定失败」的地址塞给 swarm。
+    pub async fn dial_addrs(
+        &self,
+        addrs: &[Multiaddr],
+        expected_node_id: NodeId,
+        per_addr_timeout: Duration,
+    ) -> Result<DialOutcome, P2pError> {
+        if addrs.is_empty() {
+            return Err(P2pError::Dial("候选地址为空".to_string()));
+        }
+        // 先整体校验经 relay 的候选形状：身份不匹配是配置错误，不该靠逐个拨号试出来
+        for addr in addrs {
+            if let Some(target) = relayed_dial_target(addr)? {
+                verify_peer_identity(&target, &expected_node_id)?;
+            }
+        }
+        let mut failures = Vec::new();
+        for addr in addrs {
+            match self
+                .dial_with_timeout(addr.clone(), expected_node_id.clone(), per_addr_timeout)
+                .await
+            {
+                Ok(()) => {
+                    return Ok(DialOutcome {
+                        transport: Transport::from_multiaddr(addr),
+                        addr: addr.clone(),
+                    });
+                }
+                Err(err) => {
+                    tracing::debug!(%addr, error = %err, "候选地址拨号失败，尝试下一个");
+                    failures.push(format!("{addr} => {err}"));
+                }
+            }
+        }
+        Err(P2pError::DialAllFailed {
+            attempts: addrs.len(),
+            detail: failures.join("；"),
+        })
+    }
+
+    /// 建立 relay 预留（Circuit Relay v2 client）：`relay_addrs` 按顺序尝试
+    ///
+    /// - 地址必须已钉住 relay PeerId（见 [`crate::relay::RelayEndpoint::parse`]）；域名地址先用
+    ///   [`crate::relay::resolve_relay_addr`] 解析成 IP；
+    /// - 成功后返回实际预留的 relay 端点（含 `/p2p/<relay>`，不含 `/p2p-circuit`）；
+    /// - 失败 / relay 重启 → 引擎按指数退避（1s → 60s 封顶）自动重连，状态经
+    ///   [`P2pEventSink::relay_status_changed`] 与 [`Self::relay_status`] 可见；
+    /// - 幂等：重复调用会以新列表替换旧配置（旧预留先释放）；
+    /// - **reference counting 在宿主隧道管理器**（T06）：引擎只提供建立/释放原语。
+    pub async fn reserve_relay(&self, relay_addrs: Vec<Multiaddr>) -> Result<Multiaddr, P2pError> {
+        if relay_addrs.is_empty() {
+            return Err(P2pError::Relay("relay 地址列表为空".to_string()));
+        }
+        let (tx, rx) = oneshot::channel();
+        self.inner
+            .cmd
+            .send(EngineCmd::RelayReserve {
+                addrs: relay_addrs,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| P2pError::NotRunning)?;
+        rx.await.map_err(|_| P2pError::NotRunning)?
+    }
+
+    /// 释放 relay 预留（幂等；返回是否命中在管预留）
+    pub async fn release_relay(&self) -> Result<bool, P2pError> {
+        let (tx, rx) = oneshot::channel();
+        self.inner
+            .cmd
+            .send(EngineCmd::RelayRelease { reply: tx })
+            .await
+            .map_err(|_| P2pError::NotRunning)?;
+        rx.await.map_err(|_| P2pError::NotRunning)
+    }
+
+    /// relay 控制面状态快照（未启用时 `state = Idle`）
+    pub fn relay_status(&self) -> RelayStatus {
+        self.inner
+            .relay_status
+            .read()
+            .expect("relay 状态快照中毒")
+            .clone()
     }
 
     /// 按 node_id 断开在连对端（返回是否命中）
@@ -467,14 +618,32 @@ impl P2pEngine {
             );
         }
 
-        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(key.into_keypair())
+        let base_builder = libp2p::SwarmBuilder::with_existing_identity(key.into_keypair())
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
                 noise::Config::new,
                 yamux::Config::default,
             )
-            .map_err(|e| P2pError::Build(format!("TCP/noise/yamux 传输栈装配失败：{e}")))?
+            .map_err(|e| P2pError::Build(format!("TCP/noise/yamux 传输栈装配失败：{e}")))?;
+
+        // relay 客户端 = 行为面 + 一条组合传输（`OrTransport`：circuit 地址走 relay，
+        // 其余走 TCP）。`with_relay_client` 由 libp2p 装配这两半，避免手写升级栈。
+        #[cfg(feature = "relay")]
+        let mut swarm = base_builder
+            .with_relay_client(noise::Config::new, yamux::Config::default)
+            .map_err(|e| P2pError::Build(format!("relay 客户端传输装配失败：{e}")))?
+            .with_behaviour(|_key, relay_client| NodeBehaviour {
+                ping: ping::Behaviour::new(ping::Config::new()),
+                stream: stream_behaviour,
+                relay_client,
+            })
+            .map_err(|e| P2pError::Build(format!("行为面装配失败：{e}")))?
+            .with_swarm_config(|c| c.with_idle_connection_timeout(IDLE_CONNECTION_TIMEOUT))
+            .build();
+
+        #[cfg(not(feature = "relay"))]
+        let mut swarm = base_builder
             .with_behaviour(|_key| NodeBehaviour {
                 ping: ping::Behaviour::new(ping::Config::new()),
                 stream: stream_behaviour,
@@ -491,6 +660,7 @@ impl P2pEngine {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let (settle_tx, settle_rx) = mpsc::channel(64);
         let listen_addrs: Arc<RwLock<Vec<SocketAddr>>> = Arc::new(RwLock::new(Vec::new()));
+        let relay_status: Arc<RwLock<RelayStatus>> = Arc::new(RwLock::new(RelayStatus::default()));
 
         let pump = tokio::spawn(run_pump(
             swarm,
@@ -501,6 +671,7 @@ impl P2pEngine {
             ports,
             Arc::clone(&listen_addrs),
             Arc::clone(&links),
+            Arc::clone(&relay_status),
             config.admit_on_connect,
         ));
 
@@ -513,6 +684,7 @@ impl P2pEngine {
                 links,
                 control: Arc::new(Mutex::new(control)),
                 dial_gate: Arc::new(Mutex::new(())),
+                relay_status,
                 pump: Mutex::new(Some(pump)),
             }),
         };
@@ -541,12 +713,315 @@ struct ConnState {
     remote_addr: SocketAddr,
     /// 同 PeerId 的存活连接数
     connections: usize,
+    /// 传输形态（lan-direct / wan-relay）
+    transport: Transport,
 }
 
 /// 拨号在飞登记（按所拨 multiaddr 键控：established 事件回带同一地址）
 struct PendingDial {
     expected: NodeId,
     reply: oneshot::Sender<Result<(), P2pError>>,
+}
+
+// ==================== relay 预留运行时（feature = relay） ====================
+
+/// relay 预留运行时：端点轮换、请求硬超时、指数退避、状态发布
+///
+/// 一个节点同时只维护**一个**预留（设计 §4.8：reservation 由宿主隧道管理器单一
+/// 引用计数所有；引擎不并行为多个 relay 建预留）。多端点语义是「按顺序 failover」，
+/// 不是「全建」——避免同一节点在多 relay 上散落孤儿预留。
+#[cfg(feature = "relay")]
+#[derive(Default)]
+struct RelayRuntime {
+    /// 已启用的端点（按调用方顺序轮换）
+    endpoints: Vec<RelayEndpoint>,
+    /// 当前尝试的端点下标
+    current: usize,
+    /// 连续失败次数（退避指数）
+    attempt: u32,
+    /// 当前 circuit 监听（预留句柄）
+    listener: Option<ListenerId>,
+    /// 对外状态
+    state: RelayState,
+    /// 首次预留的回执（首个失败即结算为 Err；后台继续退避重试）
+    pending_reply: Option<oneshot::Sender<Result<Multiaddr, P2pError>>>,
+    /// 本次预留请求起始时刻（硬超时判据）
+    waiting_since: Option<Instant>,
+    /// 下次重试时刻
+    next_retry: Option<Instant>,
+    /// 最近一次失败原因（人读）
+    last_error: String,
+}
+
+#[cfg(feature = "relay")]
+impl RelayRuntime {
+    /// 当前端点基础地址（不含 `/p2p-circuit`）
+    fn addr(&self) -> Option<Multiaddr> {
+        self.endpoints.get(self.current).map(|e| e.base().clone())
+    }
+
+    /// 发布状态快照 + 推事件（唯一写入口，保证两者一致）
+    fn publish(&self, events: &Arc<dyn P2pEventSink>, status: &Arc<RwLock<RelayStatus>>) {
+        let snapshot = RelayStatus {
+            state: self.state,
+            relay_addr: self.addr(),
+            detail: self.last_error.clone(),
+        };
+        *status.write().expect("relay 状态快照中毒") = snapshot.clone();
+        events.relay_status_changed(RelayStatusChanged {
+            state: snapshot.state,
+            relay_addr: snapshot.relay_addr,
+            detail: snapshot.detail,
+        });
+    }
+
+    /// 校验端点列表（形状 / PeerId 钉住）；纯地址面，失败不改变运行时状态
+    fn parse_endpoints(addrs: &[Multiaddr]) -> Result<Vec<RelayEndpoint>, P2pError> {
+        addrs
+            .iter()
+            .map(|addr| RelayEndpoint::parse(addr, None))
+            .collect()
+    }
+
+    /// 启用/替换 relay 端点配置（重复调用 = 先释放旧预留再按新列表建）
+    ///
+    /// 入参已过 [`Self::parse_endpoints`] 校验，这里只做接管与首轮尝试。
+    fn enable(
+        &mut self,
+        endpoints: Vec<RelayEndpoint>,
+        reply: oneshot::Sender<Result<Multiaddr, P2pError>>,
+        swarm: &mut Swarm<NodeBehaviour>,
+        events: &Arc<dyn P2pEventSink>,
+        status: &Arc<RwLock<RelayStatus>>,
+    ) {
+        let _ = self.release(swarm, events, status);
+        self.endpoints = endpoints;
+        self.current = 0;
+        self.attempt = 0;
+        self.state = RelayState::Connecting;
+        self.last_error.clear();
+        self.pending_reply = Some(reply);
+        self.waiting_since = None;
+        self.next_retry = None;
+        self.start_attempt(swarm, events, status);
+    }
+
+    /// 对当前端点发起预留（circuit 监听）；失败即轮换到下一个端点并排退避
+    fn start_attempt(
+        &mut self,
+        swarm: &mut Swarm<NodeBehaviour>,
+        events: &Arc<dyn P2pEventSink>,
+        status: &Arc<RwLock<RelayStatus>>,
+    ) {
+        let Some(endpoint) = self.endpoints.get(self.current).cloned() else {
+            self.fail(swarm, "没有可用的 relay 端点".to_string(), events, status);
+            return;
+        };
+        let addr = endpoint.reservation_addr();
+        match swarm.listen_on(addr.clone()) {
+            Ok(listener) => {
+                self.listener = Some(listener);
+                self.state = RelayState::Connecting;
+                self.waiting_since = Some(Instant::now());
+                self.next_retry = None;
+                self.last_error.clear();
+                tracing::info!(
+                    relay = %endpoint.peer_id(),
+                    %addr,
+                    "relay 预留请求已发出（等待 ReservationReqAccepted）"
+                );
+                self.publish(events, status);
+            }
+            Err(e) => {
+                self.fail(
+                    swarm,
+                    format!("circuit 监听失败（{addr}）：{e}"),
+                    events,
+                    status,
+                );
+            }
+        }
+    }
+
+    /// 结算一次失败：撤监听、轮换端点、排指数退避
+    fn fail(
+        &mut self,
+        swarm: &mut Swarm<NodeBehaviour>,
+        cause: String,
+        events: &Arc<dyn P2pEventSink>,
+        status: &Arc<RwLock<RelayStatus>>,
+    ) {
+        if let Some(listener) = self.listener.take() {
+            let _ = swarm.remove_listener(listener);
+        }
+        self.waiting_since = None;
+        let delay = retry_delay(self.attempt);
+        self.attempt = self.attempt.saturating_add(1);
+        if !self.endpoints.is_empty() {
+            self.current = (self.current + 1) % self.endpoints.len();
+        }
+        self.next_retry = Some(Instant::now() + delay);
+        self.state = RelayState::Lost;
+        self.last_error = format!("{cause}（{delay:?} 后重试）");
+        tracing::warn!(%cause, retry_in = ?delay, "relay 预留失败，进入退避重试");
+        // 首次调用方拿到显性失败；后台重试继续（状态经 relay_status 可见）
+        if let Some(reply) = self.pending_reply.take() {
+            let _ = reply.send(Err(P2pError::Relay(cause)));
+        }
+        self.publish(events, status);
+    }
+
+    /// 预留被 relay 接受（`ReservationReqAccepted`；renewal 也走这里）
+    fn on_accepted(
+        &mut self,
+        relay_peer: PeerId,
+        renewal: bool,
+        events: &Arc<dyn P2pEventSink>,
+        status: &Arc<RwLock<RelayStatus>>,
+    ) {
+        let Some(endpoint) = self.endpoints.get(self.current).cloned() else {
+            return;
+        };
+        if endpoint.peer_id() != relay_peer {
+            // 钉住校验：地址里声明的 relay 与实际接受预留的 relay 必须是同一身份
+            tracing::warn!(
+                expected = %endpoint.peer_id(),
+                actual = %relay_peer,
+                "relay 预留被非预期 PeerId 接受，忽略（钉住校验）"
+            );
+            return;
+        }
+        self.state = RelayState::Reserved;
+        self.attempt = 0;
+        self.waiting_since = None;
+        self.next_retry = None;
+        self.last_error.clear();
+        tracing::info!(
+            relay = %relay_peer,
+            renewal,
+            addr = %endpoint.base(),
+            "relay 预留已建立"
+        );
+        if let Some(reply) = self.pending_reply.take() {
+            let _ = reply.send(Ok(endpoint.base().clone()));
+        }
+        self.publish(events, status);
+    }
+
+    /// 释放预留（幂等）；返回是否命中在管预留或非 Idle 状态
+    fn release(
+        &mut self,
+        swarm: &mut Swarm<NodeBehaviour>,
+        events: &Arc<dyn P2pEventSink>,
+        status: &Arc<RwLock<RelayStatus>>,
+    ) -> bool {
+        let had_listener = self.listener.take().is_some_and(|listener| {
+            let _ = swarm.remove_listener(listener);
+            true
+        });
+        let was_active = had_listener || self.state != RelayState::Idle;
+        if let Some(reply) = self.pending_reply.take() {
+            let _ = reply.send(Err(P2pError::Relay("预留已取消".to_string())));
+        }
+        self.endpoints.clear();
+        self.current = 0;
+        self.attempt = 0;
+        self.state = RelayState::Idle;
+        self.waiting_since = None;
+        self.next_retry = None;
+        self.last_error.clear();
+        if was_active {
+            tracing::info!("relay 预留已释放");
+            self.publish(events, status);
+        }
+        was_active
+    }
+
+    /// 定时驱动：请求硬超时 / 退避到点重试
+    fn tick(
+        &mut self,
+        swarm: &mut Swarm<NodeBehaviour>,
+        events: &Arc<dyn P2pEventSink>,
+        status: &Arc<RwLock<RelayStatus>>,
+    ) {
+        match self.state {
+            RelayState::Connecting => {
+                if self
+                    .waiting_since
+                    .is_some_and(|since| since.elapsed() >= RESERVATION_TIMEOUT)
+                {
+                    let cause = format!("relay 预留请求超时（{}s）", RESERVATION_TIMEOUT.as_secs());
+                    self.fail(swarm, cause, events, status);
+                }
+            }
+            RelayState::Lost => {
+                if self.next_retry.is_some_and(|at| Instant::now() >= at) {
+                    self.state = RelayState::Connecting;
+                    self.start_attempt(swarm, events, status);
+                }
+            }
+            RelayState::Idle | RelayState::Reserved => {}
+        }
+    }
+
+    /// 消费 relay 相关的 swarm 事件（其余事件由主处理器兜底）
+    fn on_swarm_event(
+        &mut self,
+        ev: &SwarmEvent<NodeBehaviourEvent>,
+        swarm: &mut Swarm<NodeBehaviour>,
+        events: &Arc<dyn P2pEventSink>,
+        status: &Arc<RwLock<RelayStatus>>,
+    ) {
+        match ev {
+            SwarmEvent::Behaviour(NodeBehaviourEvent::RelayClient(
+                libp2p::relay::client::Event::ReservationReqAccepted {
+                    relay_peer_id,
+                    renewal,
+                    ..
+                },
+            )) => {
+                self.on_accepted(*relay_peer_id, *renewal, events, status);
+            }
+            SwarmEvent::ListenerClosed {
+                listener_id,
+                reason,
+                ..
+            } if Some(*listener_id) == self.listener => {
+                let cause = format!("relay circuit 监听关闭：{reason:?}");
+                self.on_lost(cause, swarm, events, status);
+            }
+            SwarmEvent::ListenerError { listener_id, error }
+                if Some(*listener_id) == self.listener =>
+            {
+                let cause = format!("relay circuit 监听出错：{error}");
+                self.on_lost(cause, swarm, events, status);
+            }
+            // relay 连接断开时，relay client 把已确认的 circuit 地址标记为过期
+            // （`ToSwarm::ExternalAddrExpired`）——这是「预留丢失」的权威信号。
+            SwarmEvent::ExternalAddrExpired { address, .. }
+                if Transport::from_multiaddr(address) == Transport::WanRelay
+                    && self.state == RelayState::Reserved =>
+            {
+                let cause = format!("relay circuit 地址过期（{address}）");
+                self.on_lost(cause, swarm, events, status);
+            }
+            _ => {}
+        }
+    }
+
+    /// 预留丢失（listener 被关 / listener 出错）：进入退避
+    fn on_lost(
+        &mut self,
+        cause: String,
+        swarm: &mut Swarm<NodeBehaviour>,
+        events: &Arc<dyn P2pEventSink>,
+        status: &Arc<RwLock<RelayStatus>>,
+    ) {
+        if self.state == RelayState::Idle {
+            return;
+        }
+        self.fail(swarm, cause, events, status);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -559,10 +1034,17 @@ async fn run_pump(
     ports: P2pPorts,
     listen_addrs: Arc<RwLock<Vec<SocketAddr>>>,
     links: LinkRegistry,
+    // relay feature 关闭时该快照没有写入方（始终 Idle），参数保留以稳定装配面
+    #[allow(unused_variables)] relay_status: Arc<RwLock<RelayStatus>>,
     admit_on_connect: bool,
 ) {
     let mut conns: HashMap<PeerId, ConnState> = HashMap::new();
     let mut pending_dials: HashMap<Multiaddr, PendingDial> = HashMap::new();
+    // relay 是基础设施，不是业务对端：经 relay 拨号时其控制连接不登记链路、
+    // 不发 peer_connected（宿主设备列表不应出现 relay）。
+    let mut infra_peers: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
+    #[cfg(feature = "relay")]
+    let mut relay = RelayRuntime::default();
     let mut reaper = tokio::time::interval(DENY_REAPER_INTERVAL);
     reaper.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -579,7 +1061,48 @@ async fn run_pump(
                         pending_dials.remove(&addr);
                     }
                 }
-                Some(EngineCmd::Dial { addr, expected, reply }) => {
+                Some(EngineCmd::RelayReserve { addrs, reply }) => {
+                    #[cfg(feature = "relay")]
+                    {
+                        match RelayRuntime::parse_endpoints(&addrs) {
+                            Ok(endpoints) => {
+                                infra_peers.extend(endpoints.iter().map(|e| e.peer_id()));
+                                relay.enable(
+                                    endpoints,
+                                    reply,
+                                    &mut swarm,
+                                    &ports.events,
+                                    &relay_status,
+                                );
+                            }
+                            Err(err) => {
+                                // 地址面错误（形状 / 钉住）不进入退避，直接回给调用方
+                                tracing::warn!(error = %err, "relay 端点配置被拒绝");
+                                let _ = reply.send(Err(err));
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "relay"))]
+                    {
+                        let _ = addrs;
+                        let _ = reply.send(Err(P2pError::RelayDisabled));
+                    }
+                }
+                Some(EngineCmd::RelayRelease { reply }) => {
+                    #[cfg(feature = "relay")]
+                    {
+                        let hit = relay.release(&mut swarm, &ports.events, &relay_status);
+                        let _ = reply.send(hit);
+                    }
+                    #[cfg(not(feature = "relay"))]
+                    {
+                        let _ = reply.send(false);
+                    }
+                }
+                Some(EngineCmd::Dial { addr, expected, infra_peer, reply }) => {
+                    if let Some(peer) = infra_peer {
+                        infra_peers.insert(peer);
+                    }
                     if let Err(e) = swarm.dial(addr.clone()) {
                         let _ = reply.send(Err(P2pError::Dial(e.to_string())));
                         ports.events.dial_failed(DialFailed {
@@ -732,9 +1255,14 @@ async fn run_pump(
                     }
                     let _ = swarm.disconnect_peer_id(pid);
                 }
+                // relay 退避重试 / 预留硬超时共用同一条 500ms 心跳
+                #[cfg(feature = "relay")]
+                relay.tick(&mut swarm, &ports.events, &relay_status);
             }
 
             ev = swarm.select_next_some() => {
+                #[cfg(feature = "relay")]
+                relay.on_swarm_event(&ev, &mut swarm, &ports.events, &relay_status);
                 handle_swarm_event(
                     &mut swarm,
                     &mut conns,
@@ -744,6 +1272,7 @@ async fn run_pump(
                     &ports,
                     &listen_addrs,
                     &links,
+                    &infra_peers,
                     admit_on_connect,
                     ev,
                 );
@@ -766,11 +1295,18 @@ fn handle_swarm_event(
     ports: &P2pPorts,
     listen_addrs: &Arc<RwLock<Vec<SocketAddr>>>,
     links: &LinkRegistry,
+    // 基础设施 PeerId（relay）：其控制连接不登记为业务对端
+    infra_peers: &std::collections::HashSet<PeerId>,
     admit_on_connect: bool,
     ev: SwarmEvent<NodeBehaviourEvent>,
 ) {
     match ev {
         SwarmEvent::NewListenAddr { address, .. } => {
+            // circuit 地址不是本机 socket 监听面（IP/TCP 属于 relay），relay 状态
+            // 由 RelayRuntime 按 ReservationReqAccepted 维护——不混进 listen_addresses。
+            if Transport::from_multiaddr(&address) == Transport::WanRelay {
+                return;
+            }
             if let Some(sa) = multiaddr_to_socket_addr(&address) {
                 let mut snap = listen_addrs.write().expect("监听地址快照中毒");
                 if !snap.contains(&sa) {
@@ -781,6 +1317,9 @@ fn handle_swarm_event(
             }
         }
         SwarmEvent::ExpiredListenAddr { address, .. } => {
+            if Transport::from_multiaddr(&address) == Transport::WanRelay {
+                return;
+            }
             if let Some(sa) = multiaddr_to_socket_addr(&address) {
                 let mut snap = listen_addrs.write().expect("监听地址快照中毒");
                 snap.retain(|a| *a != sa);
@@ -791,6 +1330,12 @@ fn handle_swarm_event(
             peer_id, endpoint, ..
         } => match endpoint {
             ConnectedPoint::Dialer { address, .. } => {
+                // relay 控制连接是基础设施连接：不登记链路、不发 peer_connected，
+                // 否则宿主设备列表会把 relay 当业务对端（设计 §4.1「relay 不是信任点」）。
+                if infra_peers.contains(&peer_id) {
+                    tracing::debug!(%peer_id, "relay 控制连接已建立（不登记为业务对端）");
+                    return;
+                }
                 let actual = match node_id_from_peer_id(&peer_id) {
                     Ok(id) => id,
                     Err(e) => {
@@ -801,6 +1346,12 @@ fn handle_swarm_event(
                     }
                 };
                 let remote_addr = socket_addr_or_zero(&address);
+                let transport = Transport::from_multiaddr(&address);
+                ports.events.transport_changed(TransportChanged {
+                    node_id: actual.clone(),
+                    transport,
+                    address: address.clone(),
+                });
 
                 // 同 PeerId 已有连接：只累加计数；出站方向把 pending 入站链路提升
                 if let Some(st) = conns.get_mut(&peer_id) {
@@ -810,6 +1361,7 @@ fn handle_swarm_event(
                     st.denied = false;
                     st.denied_at = None;
                     st.remote_addr = remote_addr;
+                    st.transport = transport;
                     links.write().expect("链路登记表中毒").insert(PeerLink {
                         node_id: actual.clone(),
                         peer_id,
@@ -817,6 +1369,7 @@ fn handle_swarm_event(
                         outbound: true,
                         admission: LinkAdmission::Admitted,
                         connections: 1,
+                        transport,
                     });
                     if let Some((_, pending)) = take_pending_dial(pending_dials, &address, &actual)
                     {
@@ -844,6 +1397,7 @@ fn handle_swarm_event(
                             by_local: false,
                             remote_addr,
                             connections: 1,
+                            transport,
                         },
                     );
                     ports.events.peer_connected(PeerConnected {
@@ -870,6 +1424,7 @@ fn handle_swarm_event(
                                 by_local: false,
                                 remote_addr,
                                 connections: 1,
+                                transport,
                             },
                         );
                         let _ = reply.send(Ok(()));
@@ -909,6 +1464,12 @@ fn handle_swarm_event(
                     }
                 };
                 let remote_addr = socket_addr_or_zero(&send_back_addr);
+                let transport = Transport::from_multiaddr(&send_back_addr);
+                ports.events.transport_changed(TransportChanged {
+                    node_id: node_id.clone(),
+                    transport,
+                    address: send_back_addr.clone(),
+                });
 
                 // 同 PeerId 已有连接：只累加计数；已准入则不再走闸门
                 if let Some(st) = conns.get_mut(&peer_id) {
@@ -916,6 +1477,7 @@ fn handle_swarm_event(
                     if st.remote_addr.port() == 0 {
                         st.remote_addr = remote_addr;
                     }
+                    st.transport = transport;
                     links.write().expect("链路登记表中毒").insert(PeerLink {
                         node_id: node_id.clone(),
                         peer_id,
@@ -929,6 +1491,7 @@ fn handle_swarm_event(
                             LinkAdmission::Pending
                         },
                         connections: 1,
+                        transport,
                     });
                     return;
                 }
@@ -947,6 +1510,7 @@ fn handle_swarm_event(
                         by_local: false,
                         remote_addr,
                         connections: 1,
+                        transport,
                     },
                 );
                 // 自动闸门（P0 语义）与显式闸门（信任状态流校验后请求）二选一：
@@ -1092,6 +1656,7 @@ fn insert_link_with_peer(
             LinkAdmission::Pending
         },
         connections: 1,
+        transport: state.transport,
     };
     links.write().expect("链路登记表中毒").insert(info);
     conns.insert(peer_id, state);
@@ -1220,6 +1785,17 @@ mod tests {
         }
         fn dial_failed(&self, ev: DialFailed) {
             let _ = self.tx.send(format!("dial_failed cause={}", ev.cause));
+        }
+        fn transport_changed(&self, ev: TransportChanged) {
+            let _ = self.tx.send(format!(
+                "transport node={} kind={} addr={}",
+                ev.node_id,
+                ev.transport.as_str(),
+                ev.address
+            ));
+        }
+        fn relay_status_changed(&self, ev: crate::ports::RelayStatusChanged) {
+            let _ = self.tx.send(format!("relay state={}", ev.state.as_str()));
         }
     }
 
@@ -1716,5 +2292,456 @@ mod tests {
 
         a.shutdown().await;
         b.shutdown().await;
+    }
+
+    // ==================== 多地址拨号（T02） ====================
+
+    /// 取一个「刚释放」的本地端口作为死地址（连接立即 ECONNREFUSED，不占测试窗口）
+    fn free_local_port() -> u16 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("取空闲端口");
+        listener.local_addr().expect("本地地址").port()
+    }
+
+    #[tokio::test]
+    async fn 多地址拨号_按入参顺序回退_并上报传输形态() {
+        let (a_ports, _a_rx) = ports_with(Arc::new(AutoAdmit));
+        let a = P2pEngine::start(NodeKey::generate(), localhost_config(), a_ports).unwrap();
+        let a_addr = wait_listen(&a).await;
+
+        let (b_ports, b_rx) = ports_with(Arc::new(AutoAdmit));
+        let b = P2pEngine::start(NodeKey::generate(), localhost_config(), b_ports).unwrap();
+
+        let dead = listen_multiaddr(IpAddr::from([127, 0, 0, 1]), free_local_port());
+        let live = listen_multiaddr(IpAddr::from([127, 0, 0, 1]), a_addr.port());
+
+        let outcome = b
+            .dial_addrs(
+                &[dead, live],
+                a.node_id().clone(),
+                Duration::from_millis(800),
+            )
+            .await
+            .expect("首个候选失败后应回退到第二个");
+        assert_eq!(outcome.transport, Transport::LanDirect);
+        assert_eq!(
+            outcome.addr,
+            listen_multiaddr(IpAddr::from([127, 0, 0, 1]), a_addr.port())
+        );
+
+        let b_rx = AsyncMutex::new(b_rx);
+        // 注意 needle 不能用裸 "transport"：dial_failed 的成因文案里也含该词
+        let ev = await_event(&b_rx, "kind=lan-direct").await;
+        assert!(
+            ev.contains("kind=lan-direct"),
+            "直连应上报 lan-direct：{ev}"
+        );
+
+        a.shutdown().await;
+        b.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn 多地址拨号_候选全失败_逐条成因显性返回() {
+        let (a_ports, _a_rx) = ports_with(Arc::new(AutoAdmit));
+        let a = P2pEngine::start(NodeKey::generate(), localhost_config(), a_ports).unwrap();
+        let dead1 = listen_multiaddr(IpAddr::from([127, 0, 0, 1]), free_local_port());
+        let dead2 = listen_multiaddr(IpAddr::from([127, 0, 0, 1]), free_local_port());
+
+        let (b_ports, _b_rx) = ports_with(Arc::new(AutoAdmit));
+        let b = P2pEngine::start(NodeKey::generate(), localhost_config(), b_ports).unwrap();
+        let err = b
+            .dial_addrs(
+                &[dead1, dead2],
+                a.node_id().clone(),
+                Duration::from_millis(500),
+            )
+            .await
+            .expect_err("全部候选不可达应显性失败");
+        match err {
+            P2pError::DialAllFailed { attempts, detail } => {
+                assert_eq!(attempts, 2);
+                assert!(detail.contains("=>"), "应逐条给成因：{detail}");
+            }
+            other => panic!("应为 DialAllFailed：{other:?}"),
+        }
+
+        a.shutdown().await;
+        b.shutdown().await;
+    }
+
+    #[cfg(not(feature = "relay"))]
+    #[tokio::test]
+    async fn relay_feature_未启用时_预留显性失败() {
+        let (ports, _rx) = ports_with(Arc::new(AutoAdmit));
+        let node = P2pEngine::start(NodeKey::generate(), localhost_config(), ports).unwrap();
+        let endpoint: Multiaddr = format!("/ip4/127.0.0.1/tcp/4001/p2p/{}", PeerId::random())
+            .parse()
+            .unwrap();
+        let err = node
+            .reserve_relay(vec![endpoint])
+            .await
+            .expect_err("未编译 relay feature 必须显性失败");
+        assert!(
+            matches!(err, P2pError::RelayDisabled),
+            "应为 RelayDisabled：{err:?}"
+        );
+        assert_eq!(node.relay_status().state, crate::relay::RelayState::Idle);
+        node.shutdown().await;
+    }
+
+    // ==================== relay 端到端（T01/T02，feature = relay） ====================
+
+    #[cfg(feature = "relay")]
+    mod relay_flow {
+        use super::*;
+        use crate::relay::{RelayEndpoint, RelayState};
+        use crate::stream_proto::SESSION;
+        use futures_util::io::{AsyncReadExt, AsyncWriteExt};
+        use futures_util::StreamExt;
+        use libp2p::identity::Keypair;
+        use libp2p::relay;
+        use libp2p::SwarmBuilder;
+        use tokio::sync::oneshot;
+
+        /// 测试用 relay v2 服务端（固定身份/端口可重启，验证预留自动恢复）
+        struct RelayServer {
+            addr: Multiaddr,
+            peer_id: PeerId,
+            stop: Option<oneshot::Sender<()>>,
+            task: Option<tokio::task::JoinHandle<()>>,
+        }
+
+        impl RelayServer {
+            async fn start(key: Keypair, port: u16) -> Self {
+                let peer_id = key.public().to_peer_id();
+                // 默认 128KiB / 2min 会把 1MiB 与 100MiB 用例掐断（T01 吞吐验收）
+                let config = relay::Config {
+                    max_circuit_bytes: 256 * 1024 * 1024,
+                    max_circuit_duration: Duration::from_secs(600),
+                    reservation_duration: Duration::from_secs(600),
+                    ..Default::default()
+                };
+                let mut swarm = SwarmBuilder::with_existing_identity(key)
+                    .with_tokio()
+                    .with_tcp(
+                        tcp::Config::default(),
+                        noise::Config::new,
+                        yamux::Config::default,
+                    )
+                    .expect("relay TCP 传输")
+                    .with_behaviour(|_| {
+                        let mut behaviour = relay::Behaviour::new(peer_id, config);
+                        // 默认 Status::Disable 不对外通告 HOP 协议（客户端会得到
+                        // Reservation(Unsupported)）；测试 relay 固定开启，等价于
+                        // T13 部署里的显式启用。
+                        behaviour.set_status(Some(relay::Status::Enable));
+                        behaviour
+                    })
+                    .expect("relay 服务端行为")
+                    .build();
+                swarm
+                    .listen_on(
+                        format!("/ip4/127.0.0.1/tcp/{port}")
+                            .parse()
+                            .expect("relay 监听地址"),
+                    )
+                    .expect("relay 监听");
+                let addr = loop {
+                    if let SwarmEvent::NewListenAddr { address, .. } =
+                        swarm.select_next_some().await
+                    {
+                        break address;
+                    }
+                };
+                // reservation 响应必须携带 relay 的对外地址（否则客户端收到
+                // `NoAddressesInReservation`）——测试里把监听地址声明为 external。
+                swarm.add_external_address(addr.clone());
+                let (stop, mut rx) = oneshot::channel();
+                let task = tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            _ = &mut rx => break,
+                            _ = swarm.select_next_some() => {}
+                        }
+                    }
+                });
+                Self {
+                    addr,
+                    peer_id,
+                    stop: Some(stop),
+                    task: Some(task),
+                }
+            }
+
+            fn endpoint(&self) -> Multiaddr {
+                self.addr.clone().with(Protocol::P2p(self.peer_id))
+            }
+
+            async fn shutdown(mut self) {
+                if let Some(stop) = self.stop.take() {
+                    let _ = stop.send(());
+                }
+                if let Some(task) = self.task.take() {
+                    let _ = task.await;
+                }
+            }
+        }
+
+        async fn wait_relay_state(node: &RunningNode, want: RelayState, timeout: Duration) -> bool {
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline {
+                if node.relay_status().state == want {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            false
+        }
+
+        /// T01 核心用例：A 预留 → B 经 relay 拨 A → `/wasmnest/session/1` 往返 1MiB
+        #[tokio::test]
+        async fn 经_relay_预留_拨号_并往返_1mib_具名流() {
+            let relay = RelayServer::start(Keypair::generate_ed25519(), 0).await;
+            let relay_addr = relay.endpoint();
+
+            // A：被访问方（预留 + 接收 SESSION 流）
+            let (a_ports, a_rx) = ports_with(Arc::new(AutoAdmit));
+            let (a, mut streams) = P2pEngine::start_with_protocols(
+                NodeKey::generate(),
+                localhost_config(),
+                a_ports,
+                &[SESSION],
+            )
+            .unwrap();
+            let reserved = a
+                .reserve_relay(vec![relay_addr.clone()])
+                .await
+                .expect("relay 预留应被接受");
+            assert_eq!(reserved, relay_addr, "预留成功应回带钉住的 relay 端点");
+            assert_eq!(a.relay_status().state, RelayState::Reserved);
+
+            // B：拨号方（不预留；经 relay 拨 A）
+            let (b_ports, b_rx) = ports_with(Arc::new(AutoAdmit));
+            let b = P2pEngine::start(NodeKey::generate(), localhost_config(), b_ports).unwrap();
+
+            let relay_ep = RelayEndpoint::parse(&relay_addr, None).expect("relay 端点");
+            let dial_addr = relay_ep.dial_addr(a.peer_id());
+            let outcome = b
+                .dial_addrs(&[dial_addr], a.node_id().clone(), Duration::from_secs(20))
+                .await
+                .expect("经 relay 拨号应成功");
+            assert_eq!(
+                outcome.transport,
+                Transport::WanRelay,
+                "含 /p2p-circuit 的地址应判为 wan-relay"
+            );
+
+            // 1MiB 往返：payload 用非零变化字节，能发现截断/乱序
+            let payload: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
+            let expect = payload.clone();
+            let mut incoming = streams.remove(SESSION).expect("SESSION 接收器");
+            let server = tokio::spawn(async move {
+                let mut inbound = incoming.next().await.expect("relay 上应收到业务流");
+                let mut buf = vec![0u8; expect.len()];
+                inbound.stream.read_exact(&mut buf).await.expect("读 1MiB");
+                assert_eq!(buf, expect, "relay 上的 1MiB 载荷应逐字一致");
+                inbound.stream.write_all(&buf).await.expect("回写 1MiB");
+                inbound.stream.flush().await.expect("flush");
+            });
+
+            let mut stream = b
+                .open_stream(&a.node_id().clone(), SESSION)
+                .await
+                .expect("经 relay 开流");
+            stream.write_all(&payload).await.expect("写 1MiB");
+            stream.flush().await.expect("flush");
+            let mut buf = vec![0u8; payload.len()];
+            stream.read_exact(&mut buf).await.expect("读回 1MiB");
+            assert_eq!(buf, payload, "往返载荷应逐字一致");
+
+            server.await.expect("server task");
+
+            // 事件面：A 侧 relay-reserved；B 侧 wan-relay
+            let a_rx = AsyncMutex::new(a_rx);
+            let ev = await_event(&a_rx, "relay state=relay-reserved").await;
+            assert!(ev.contains("relay-reserved"), "{ev}");
+            let b_rx = AsyncMutex::new(b_rx);
+            let ev = await_event(&b_rx, "transport").await;
+            assert!(
+                ev.contains("kind=wan-relay"),
+                "relay 拨号应上报 wan-relay：{ev}"
+            );
+
+            a.shutdown().await;
+            b.shutdown().await;
+            relay.shutdown().await;
+        }
+
+        #[tokio::test]
+        async fn relay_预留_释放幂等_状态回到_idle() {
+            let relay = RelayServer::start(Keypair::generate_ed25519(), 0).await;
+            let (ports, _rx) = ports_with(Arc::new(AutoAdmit));
+            let a = P2pEngine::start(NodeKey::generate(), localhost_config(), ports).unwrap();
+            a.reserve_relay(vec![relay.endpoint()]).await.expect("预留");
+            assert!(a.release_relay().await.expect("释放命中"));
+            assert_eq!(a.relay_status().state, RelayState::Idle);
+            assert!(!a.release_relay().await.expect("重复释放不命中"));
+            a.shutdown().await;
+            relay.shutdown().await;
+        }
+
+        #[tokio::test]
+        async fn relay_端点地址非法_显性拒绝_不进退避() {
+            let (ports, _rx) = ports_with(Arc::new(AutoAdmit));
+            let a = P2pEngine::start(NodeKey::generate(), localhost_config(), ports).unwrap();
+            let missing_peer: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+            let err = a
+                .reserve_relay(vec![missing_peer])
+                .await
+                .expect_err("缺 /p2p/<relay> 应拒绝");
+            assert!(
+                matches!(err, P2pError::Relay(_)),
+                "应为 Relay 错误：{err:?}"
+            );
+            assert_eq!(a.relay_status().state, RelayState::Idle);
+            a.shutdown().await;
+        }
+
+        /// T01 PoC 指标（手动跑）：
+        /// `cargo test --features relay relay_poc_metrics -- --ignored --nocapture`
+        ///
+        /// 记录：预留建立耗时 / 环回 relay RTT / 1MiB 与 100MiB 吞吐。
+        /// **这是 loopback 数据**，只能作实现正确性与数量级参考；真机跨网数据
+        /// 必须按 T10 在「手机蜂窝 ↔ 家庭宽带」上另测（本机无法代替）。
+        #[tokio::test]
+        #[ignore = "PoC 指标测量，手动运行（--ignored --nocapture）"]
+        async fn relay_poc_metrics() {
+            let relay = RelayServer::start(Keypair::generate_ed25519(), 0).await;
+            let relay_addr = relay.endpoint();
+
+            let (a_ports, _a_rx) = ports_with(Arc::new(AutoAdmit));
+            let (a, mut streams) = P2pEngine::start_with_protocols(
+                NodeKey::generate(),
+                localhost_config(),
+                a_ports,
+                &[SESSION],
+            )
+            .unwrap();
+            let t0 = Instant::now();
+            a.reserve_relay(vec![relay_addr.clone()])
+                .await
+                .expect("relay 预留");
+            println!("[poc] reservation_ms={}", t0.elapsed().as_millis());
+
+            let (b_ports, _b_rx) = ports_with(Arc::new(AutoAdmit));
+            let b = P2pEngine::start(NodeKey::generate(), localhost_config(), b_ports).unwrap();
+            let relay_ep = RelayEndpoint::parse(&relay_addr, None).unwrap();
+            let t_dial = Instant::now();
+            b.dial_addrs(
+                &[relay_ep.dial_addr(a.peer_id())],
+                a.node_id().clone(),
+                Duration::from_secs(20),
+            )
+            .await
+            .expect("relay 拨号");
+            println!("[poc] dial_via_relay_ms={}", t_dial.elapsed().as_millis());
+
+            let mut incoming = streams.remove(SESSION).expect("SESSION 接收器");
+            let echo = tokio::spawn(async move {
+                while let Some(mut inbound) = incoming.next().await {
+                    tokio::spawn(async move {
+                        let mut buf = vec![0u8; 64 * 1024];
+                        loop {
+                            match inbound.stream.read(&mut buf).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    if inbound.stream.write_all(&buf[..n]).await.is_err() {
+                                        break;
+                                    }
+                                    let _ = inbound.stream.flush().await;
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+
+            // RTT：1KiB 往返 10 次取均值。**读写必须并发**：单流 echo 下
+            // 「写完再读」会被 Yamux 流控卡死在接收窗口（大载荷死锁）。
+            let stream = b.open_stream(&a.node_id().clone(), SESSION).await.unwrap();
+            let (mut reader, mut writer) = stream.split();
+            let mut rtt_total = Duration::ZERO;
+            for _ in 0..10 {
+                let t = Instant::now();
+                writer.write_all(&[7u8; 1024]).await.unwrap();
+                writer.flush().await.unwrap();
+                let mut buf = [0u8; 1024];
+                reader.read_exact(&mut buf).await.unwrap();
+                rtt_total += t.elapsed();
+            }
+            println!(
+                "[poc] rtt_1kib_avg_ms={:.2}",
+                rtt_total.as_secs_f64() * 1000.0 / 10.0
+            );
+
+            for mib in [1usize, 100] {
+                let payload = vec![0xA5u8; mib * 1024 * 1024];
+                let mut received = vec![0u8; payload.len()];
+                let t = Instant::now();
+                let write = async {
+                    writer.write_all(&payload).await.unwrap();
+                    writer.flush().await.unwrap();
+                };
+                let read = async {
+                    reader.read_exact(&mut received).await.unwrap();
+                };
+                tokio::join!(write, read);
+                let secs = t.elapsed().as_secs_f64();
+                assert_eq!(received, payload, "{mib}MiB 往返应逐字一致");
+                println!(
+                    "[poc] echo_{mib}mib_secs={secs:.3} throughput_mib_s={:.1}",
+                    (mib as f64) / secs
+                );
+            }
+
+            echo.abort();
+            a.shutdown().await;
+            b.shutdown().await;
+            relay.shutdown().await;
+        }
+
+        /// T02：relay 重启（同身份同端口）后，引擎退避重试应自动恢复预留
+        #[tokio::test]
+        async fn relay_重启后自动恢复预留() {
+            let key = Keypair::generate_ed25519();
+            let port = free_local_port();
+            let relay = RelayServer::start(key.clone(), port).await;
+            let endpoint = relay.endpoint();
+
+            let (ports, _rx) = ports_with(Arc::new(AutoAdmit));
+            let a = P2pEngine::start(NodeKey::generate(), localhost_config(), ports).unwrap();
+            a.reserve_relay(vec![endpoint]).await.expect("首次预留");
+            assert_eq!(a.relay_status().state, RelayState::Reserved);
+
+            // relay 下线：relay client 把 circuit 地址标记过期 → 引擎应转 Lost 并重试
+            relay.shutdown().await;
+            assert!(
+                wait_relay_state(&a, RelayState::Lost, Duration::from_secs(10)).await,
+                "relay 下线后应进入 Lost（当前 {:?}）",
+                a.relay_status().state
+            );
+
+            // 同身份同端口回来：退避重试应重建预留
+            let relay2 = RelayServer::start(key, port).await;
+            assert!(
+                wait_relay_state(&a, RelayState::Reserved, Duration::from_secs(30)).await,
+                "relay 恢复后应自动重建预留（当前 {:?} / {}）",
+                a.relay_status().state,
+                a.relay_status().detail
+            );
+
+            a.shutdown().await;
+            relay2.shutdown().await;
+        }
     }
 }

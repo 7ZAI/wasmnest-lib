@@ -12,13 +12,20 @@
 //! 依赖方向（不变量 I2 / I1）：本文件只**向下**依赖 `wasmnest-server-core` 与系统常量，
 //! 与 `http` 面零横向 import（I1，票 08 加锁）。
 
-use actix_web::{web, Error, HttpRequest, HttpResponse};
+use actix_web::{web, Error, HttpMessage, HttpRequest, HttpResponse};
 use actix_web_actors::ws as actix_ws;
 
 use crate::channel::plugin::PluginChannel;
 use crate::conn::{ConnSpec, WsConnBase};
 use crate::registry::WsSessionRegistry;
 use wasmnest_server_base::constants::PLACEHOLDER_PEER_ADDR;
+use wasmnest_server_base::face::RequestFace;
+
+/// 配对窗口不放行任何 WS 升级：配对端点只有 HTTP 的 `/api/auth/*`
+/// （设计 §4.1）。peer 面标记由 listener 注入，终端端点仍按端点档位要求 JWT。
+fn pairing_ws_upgrade_allowed(face: &RequestFace) -> bool {
+    !face.is_pairing()
+}
 use wasmnest_server_core::link_crypto::{
     app_policy, derive_ws_session_ciphers, is_loopback_peer, parse_negotiation, ws_register_ciphers, ws_remove_ciphers,
     EncryptionPolicy, NEGOTIATION_HEADER, PROTOCOL_VERSION, WS_POLICY_HEADER,
@@ -76,6 +83,12 @@ async fn plugin_endpoint_ws(
         .peer_addr()
         .unwrap_or_else(|| PLACEHOLDER_PEER_ADDR.parse().unwrap());
     let client_id = addr.to_string();
+    // 内网穿透 T03：面标记由 listener 注入；配对窗口不放行任何 WS 升级
+    let face = req.extensions().get::<RequestFace>().cloned().unwrap_or_default();
+    if !pairing_ws_upgrade_allowed(&face) {
+        tracing::warn!(plugin_id = %plugin_id, "pairing window rejected WS upgrade");
+        return Ok(HttpResponse::Forbidden().finish());
+    }
 
     // ==================== 链路加密：升级期协商（应用策略裁决） ====================
     //
@@ -109,7 +122,8 @@ async fn plugin_endpoint_ws(
     };
     // 环回与 HTTP 面同口径（本地豁免）：本机客户端不要求协商，也不接受协商——
     // 过滤器对环回流量不介入，注册了密码反而会把本机客户端的密文直投插件。
-    let local_peer = is_loopback_peer(&client_id);
+    // peer 面（隧道入口）虽来自 loopback，但代表远端设备，不得享受本地豁免
+    let local_peer = !face.is_peer() && is_loopback_peer(&client_id);
     if policy == EncryptionPolicy::Required && !local_peer && offer.is_none() {
         tracing::warn!(
             plugin_id = %plugin_id,
@@ -215,6 +229,7 @@ async fn plugin_endpoint_ws(
         ConnSpec {
             owner: Some(entry.owner.clone()),
             endpoint_id: Some(entry.endpoint_id.clone()),
+            face,
             ..ConnSpec::new(addr)
         },
         Box::new(channel),
@@ -372,4 +387,35 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     // 旧 `/ws/event` 与 `/ws/terminal/session/{id}` 已随 websocket 业务下沉
     // 票 08 删除——旧客户端不在兼容范围（spec §0.4）。
     cfg.route("/ws/plugin/{plugin_id}/{path:.*}", web::get().to(plugin_endpoint_ws));
+}
+
+// ==================== 内网穿透 T03 测试锁 ====================
+
+#[cfg(test)]
+mod tunnel_face_tests {
+    use super::*;
+
+    /// 内网穿透 T03：peer 面标记在 WS 握手请求上下文可读
+    #[test]
+    fn peer_face_marker_is_readable_at_ws_handshake() {
+        let req = actix_web::test::TestRequest::get()
+            .uri("/ws/plugin/com.wasmnest.bedcode/terminal")
+            .to_http_request();
+        req.extensions_mut()
+            .insert(RequestFace::peer_face(Some("node-1".to_string()), false));
+        let face = req.extensions().get::<RequestFace>().cloned().unwrap_or_default();
+        assert!(face.is_peer());
+        assert_eq!(face.peer_node_id.as_deref(), Some("node-1"));
+    }
+
+    /// 配对窗口不放行 WS 升级；普通面与已匹配 peer 面不受影响
+    #[test]
+    fn pairing_window_never_upgrades_ws() {
+        assert!(pairing_ws_upgrade_allowed(&RequestFace::local()));
+        assert!(pairing_ws_upgrade_allowed(&RequestFace::peer_face(
+            Some("node-1".to_string()),
+            false
+        )));
+        assert!(!pairing_ws_upgrade_allowed(&RequestFace::peer_face(None, true)));
+    }
 }

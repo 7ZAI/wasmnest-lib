@@ -33,6 +33,7 @@ use libp2p::PeerId;
 use tokio::sync::watch;
 
 use crate::identity_bridge::NodeId;
+use crate::relay::Transport;
 
 /// 入站准入状态（对外只读词汇）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,8 @@ pub struct PeerLink {
     pub admission: LinkAdmission,
     /// 同 PeerId 的存活连接数（≥1）
     pub connections: usize,
+    /// 传输形态：LAN 直连 / 经 relay（宿主据此显示「内网直连 / 外网中继」）
+    pub transport: Transport,
 }
 
 /// 入站流：已按协议名筛选，消费方可直接交给线协议处理
@@ -124,6 +127,9 @@ impl LinkRegistryInner {
             if info.remote_addr.port() != 0 {
                 entry.info.remote_addr = info.remote_addr;
             }
+            // 同对端可能同时有 LAN / relay 连接：快照按「最后一条连接」的形态呈现
+            // （宿主状态栏只显示当前活跃路径，不做混合态展示）
+            entry.info.transport = info.transport;
             if info.admission == LinkAdmission::Admitted
                 && entry.info.admission != LinkAdmission::Admitted
             {
@@ -285,6 +291,7 @@ mod tests {
             outbound: false,
             admission,
             connections: 1,
+            transport: Transport::LanDirect,
         }
     }
 

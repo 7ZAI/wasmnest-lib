@@ -478,6 +478,18 @@ fn map_p2p_error(e: P2pError) -> PeerNetError {
         P2pError::StreamTimeout(protocol) => PeerNetError::Transport {
             detail: format!("open stream timeout: {protocol}"),
         },
+        // T02：relay 控制面 / 多地址拨号的失败一律归入 Transport 明细（宿主按
+        // 文案与 `peer:transport` 事件区分「relay 不可达 / 候选全失败」）
+        P2pError::Relay(detail) => PeerNetError::Transport { detail },
+        P2pError::RelayPeerMismatch { expected, actual } => PeerNetError::Transport {
+            detail: format!("relay peer mismatch: expected {expected}, got {actual}"),
+        },
+        P2pError::RelayDisabled => PeerNetError::Transport {
+            detail: "relay disabled in this build".to_string(),
+        },
+        P2pError::DialAllFailed { attempts, detail } => PeerNetError::Transport {
+            detail: format!("all {attempts} dial candidates failed: {detail}"),
+        },
     }
 }
 
@@ -502,6 +514,12 @@ impl RunningNode {
     /// 引擎节点句柄（`PeerNetNode::dial` 与诊断用）
     pub(crate) fn p2p(&self) -> &P2pRunningNode {
         &self.p2p
+    }
+
+    /// 引擎句柄的克隆（隧道管理器 T06：开流 / 收流 / relay 预留都在引擎句柄上，
+    /// 而本层 `RunningNode` 持有接收任务句柄、不可整体 Clone）
+    pub(crate) fn p2p_handle(&self) -> P2pRunningNode {
+        self.p2p.clone()
     }
 
     /// 优雅关停：停引擎（关闭全部连接/流）→ 中止本层接收循环

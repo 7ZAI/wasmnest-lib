@@ -40,6 +40,7 @@ pub mod dtos;
 pub mod face;
 pub mod gateway;
 pub mod middleware;
+pub mod peer_face;
 pub mod plugin_binding;
 pub mod registry;
 pub mod routes;

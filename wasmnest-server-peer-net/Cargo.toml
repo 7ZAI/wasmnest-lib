@@ -17,6 +17,9 @@ default = []
 # 平台差异端口。语义 = 装配 WIT 依赖，行为与开 feature 前逐字不变
 # （ABI / WIT / 权限位 / 事件形状 / inventory 注册零变化）。
 common-host = ["dep:wasmnest-host-kit", "dep:wasmtime", "dep:wit-bindgen", "dep:inventory"]
+# 内网穿透 T06：把引擎的 Circuit Relay v2 客户端（预留 / 释放）透给宿主。
+# 默认关闭，宿主按端显式开启（桌面 / 移动 P1 都需要；无头测试保持默认形态）。
+relay = ["wasmnest-p2p-engine/relay"]
 
 [dependencies]
 # 异步运行时（节点运行时 tokio::Mutex/Semaphore、会话表 watch/mpsc、派生任务、
@@ -55,6 +58,9 @@ hex = "0.4"
 thiserror = "1"
 # 虚拟网卡过滤的接口枚举（两端宿主均已有 0.6，无版本漂移）
 local-ip-address = "0.6"
+# §4.9 传输模式判定：接口子网（含 netmask）与接口名分类（蜂窝 / Wi-Fi / 以太）
+# ——`local-ip-address` 不暴露前缀长度，故直接依赖其底层 if-addrs（Android 走 getifaddrs）
+if-addrs = "0.15"
 # 可信对端元数据时间戳（added_at）；两端宿主均已有 0.4，无版本漂移
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 # --- 传输应用层加密（Offer/Decision 自定义头协商）：x25519 ECDH / HKDF-SHA256 /

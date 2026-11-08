@@ -24,3 +24,8 @@
 
 /// 权限位：`peer`（与桌面 SDK `wasmnest_plugin_api::permission` 逐字一致）
 pub const PERMISSION_PEER: &str = "peer";
+
+// 内网穿透 T06 权限位（非 doc 注释：上面的 `PERMISSION_PEER` doc 块由测试仓
+// 漂移锁按文本比对，新增位不得混进该块）。
+pub const PERMISSION_TUNNEL_SERVE: &str = "tunnel:serve";
+pub const PERMISSION_TUNNEL_CONNECT: &str = "tunnel:connect";

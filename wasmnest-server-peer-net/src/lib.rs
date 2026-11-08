@@ -55,6 +55,10 @@ pub mod plugin_binding;
 /// `net.peer-node` 应用作用域服务（节点生命周期的租约适配）
 pub mod service;
 pub mod source_collect;
+/// 内网穿透通道机制（T05）：`/wasmnest/tunnel/1` 首帧、暴露规则与准入、
+/// 一次性配对票据、配对连接注册表、回环本地代理。纯机制 + 端口抽象，
+/// WIT 绑定 / 引擎流接收器 / 对等面生命周期由宿主装配（T06）。
+pub mod tunnel;
 /// wire 契约词汇自持副本（能力域脱绑 P4：权限位判据字符串，
 /// 与桌面 SDK 原版逐字一致由测试仓漂移锁 `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs` 钉死）
 pub mod wire;
@@ -140,7 +144,7 @@ pub fn init_node_identity(data_dir: &Path) -> crate::base::Result<NodeIdentity> 
 ///
 /// 固定值便于防火墙放行与排查；被占则回退 `:0` 由系统分配（mDNS 广播实际端口，
 /// 不依赖此常量的确定性）。两端宿主须保持一致。
-const DEFAULT_PEER_PORT: u16 = 47613;
+pub const DEFAULT_PEER_PORT: u16 = 47613;
 
 /// 发现缓存变更推送周期：远小于 TTL，保证上下线在 1-2 个周期内可见；
 /// 仅快照比对无变化时不发事件，LAN 规模下成本可忽略
@@ -1582,6 +1586,11 @@ fn bus_topic_for(event: &str) -> Option<&'static str> {
         // （issue 13 Phase 4：设备列表由插件经 host-mdns 自建）
         "peer-connected" | "peer-disconnected" => Some("peer:connection"),
         "peer-consent-requested" => Some("peer:consent"),
+        // 隧道域事件（设计 §7.2）：传输路径 / 模式 / 通道生命周期 / 通道错误
+        "peer-transport" => Some("peer:transport"),
+        "peer-mode" => Some("peer:mode"),
+        "tunnel-state" => Some("tunnel:state"),
+        "tunnel-error" => Some("tunnel:error"),
         // "peer-transfer-changed" / "peer-receive-changed" → 旧快照 topic
         // peer:transfer / peer:receive 已随传输编排下沉票 3 退役（状态机
         // 删除后无快照可推；插件消费 peer:transfer-event / peer:receive-event）
