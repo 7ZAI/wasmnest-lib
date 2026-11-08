@@ -531,17 +531,47 @@ impl ModeMachine {
         changed
     }
 
+    /// `wan-active` 期间的一次 LAN 探测结果记账（**不改模式**）
+    ///
+    /// 返回 `true` = 连续成功已达回切阈值（[`LAN_RESTORE_PROBES`]）。调用方负责先做
+    /// **真实 LAN 拨号**，成功后才改 `lan-active`——不让「探测通了但链路仍在 relay」
+    /// 的中间态出现在 `status` / `peer:mode` 里。
+    ///
+    /// 非 `wan-active` 对端不记账（探测只在 wan-active 有意义）；失败一律清零。
+    pub fn record_lan_probe(&mut self, node_id: &str, success: bool) -> bool {
+        let state = self.peers.entry(node_id.to_string()).or_default();
+        if state.mode != TransferMode::WanActive {
+            return false;
+        }
+        state.updated_at_ms = now_ms();
+        if !success {
+            state.lan_probe_wins = 0;
+            return false;
+        }
+        state.lan_probe_wins = state.lan_probe_wins.saturating_add(1);
+        state.lan_probe_wins >= LAN_RESTORE_PROBES
+    }
+
+    /// 处于指定模式的对端 node id（探测循环枚举 `wan-active` 目标用；排序保证可复现）
+    pub fn nodes_in(&self, mode: TransferMode) -> Vec<String> {
+        let mut nodes: Vec<String> = self
+            .peers
+            .iter()
+            .filter(|(_, state)| state.mode == mode)
+            .map(|(node, _)| node.clone())
+            .collect();
+        nodes.sort();
+        nodes
+    }
+
     /// `wan-active` 期间周期 / 换网探测 LAN 成功：连续两次才回切（防抖）
     ///
     /// 返回 `Some(view)` = 已回切 `lan-active`；未到次数返回 `None`。
+    ///
+    /// 生产路径不用本方法直接回切（探测循环要先真实拨号成功再改模式），
+    /// 保留它是为了「调用方已自行完成链路切换」的场景与既有语义。
     pub fn on_lan_probe_success(&mut self, node_id: &str) -> Option<PeerModeView> {
-        let state = self.peers.entry(node_id.to_string()).or_default();
-        if state.mode != TransferMode::WanActive {
-            return None;
-        }
-        state.lan_probe_wins = state.lan_probe_wins.saturating_add(1);
-        state.updated_at_ms = now_ms();
-        if state.lan_probe_wins < LAN_RESTORE_PROBES {
+        if !self.record_lan_probe(node_id, true) {
             return None;
         }
         self.set(node_id, TransferMode::LanActive, Some(ModeReason::LanRestored))
@@ -549,9 +579,7 @@ impl ModeMachine {
 
     /// LAN 探测失败：计数归零（不因单次失败改变当前 wan 模式）
     pub fn on_lan_probe_failure(&mut self, node_id: &str) {
-        if let Some(state) = self.peers.get_mut(node_id) {
-            state.lan_probe_wins = 0;
-        }
+        self.record_lan_probe(node_id, false);
     }
 }
 
@@ -817,6 +845,48 @@ mod tests {
         let view = machine.on_lan_probe_success("n1").unwrap();
         assert_eq!(view.mode, TransferMode::LanActive);
         assert_eq!(view.reason, Some(ModeReason::LanRestored));
+    }
+
+    /// `record_lan_probe` 只记账不改模式（生产路径先真实拨号，成功才改模式）
+    #[test]
+    fn record_lan_probe_counts_without_switching_mode() {
+        let mut machine = ModeMachine::new();
+        machine.begin("n1", WanAvailability::Ready);
+        machine.mark_wan_connecting("n1", ModeReason::Cellular);
+        machine.mark_wan_active("n1", ModeReason::Cellular);
+
+        assert!(!machine.record_lan_probe("n1", true));
+        assert_eq!(
+            machine.view("n1").unwrap().mode,
+            TransferMode::WanActive,
+            "未达阀值不切模式"
+        );
+        assert!(!machine.record_lan_probe("n1", false), "失败立即清零");
+        assert_eq!(machine.view("n1").unwrap().lan_probe_wins, 0);
+        assert!(!machine.record_lan_probe("n1", true));
+        assert!(machine.record_lan_probe("n1", true), "连续两次才达阀值");
+        assert_eq!(machine.view("n1").unwrap().mode, TransferMode::WanActive);
+    }
+
+    /// 非 `wan-active` 对端不记账（探测只在 wan-active 有意义）
+    #[test]
+    fn record_lan_probe_ignores_non_wan_active_peers() {
+        let mut machine = ModeMachine::new();
+        machine.mark_lan_active("n1");
+        assert!(!machine.record_lan_probe("n1", true));
+        assert_eq!(machine.view("n1").unwrap().lan_probe_wins, 0);
+    }
+
+    /// `nodes_in` 只枚举目标模式的对端（探测循环的候选来源）
+    #[test]
+    fn nodes_in_filters_by_mode() {
+        let mut machine = ModeMachine::new();
+        machine.mark_wan_connecting("n1", ModeReason::Cellular);
+        machine.mark_wan_active("n1", ModeReason::Cellular);
+        machine.mark_lan_active("n2");
+
+        assert_eq!(machine.nodes_in(TransferMode::WanActive), vec!["n1".to_string()]);
+        assert!(machine.nodes_in(TransferMode::Pairing).is_empty());
     }
 
     #[test]

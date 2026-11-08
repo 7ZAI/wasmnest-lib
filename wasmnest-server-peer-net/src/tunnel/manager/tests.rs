@@ -46,6 +46,12 @@ struct FakeState {
     inbound_none_left: usize,
     facts: NetworkFacts,
     events: Vec<(String, serde_json::Value)>,
+    /// LAN 探活结果（`probe_results` 非空时按序消费，否则看 `probe_ok`）
+    probe_ok: bool,
+    probe_results: Vec<bool>,
+    probe_calls: usize,
+    /// 每轮探活拿到的候选（断言只探 LAN、不探 relay）
+    probe_addrs: Vec<Vec<String>>,
 }
 
 struct FakeEngine {
@@ -117,6 +123,26 @@ impl FakeEngine {
         self.state.lock().unwrap().facts = facts;
     }
 
+    /// 固定探活结果
+    fn set_probe(&self, ok: bool) {
+        let mut state = self.state.lock().unwrap();
+        state.probe_ok = ok;
+        state.probe_results.clear();
+    }
+
+    /// 按序消费的探活结果序列（`[true, false, true]` = 成功 / 失败 / 成功）
+    fn set_probe_sequence(&self, results: Vec<bool>) {
+        self.state.lock().unwrap().probe_results = results;
+    }
+
+    fn probe_calls(&self) -> usize {
+        self.state.lock().unwrap().probe_calls
+    }
+
+    fn probe_addrs(&self) -> Vec<Vec<String>> {
+        self.state.lock().unwrap().probe_addrs.clone()
+    }
+
     fn events(&self) -> Vec<(String, serde_json::Value)> {
         self.state.lock().unwrap().events.clone()
     }
@@ -184,6 +210,22 @@ impl TunnelEngine for FakeEngine {
 
     async fn network_facts(&self) -> NetworkFacts {
         self.state.lock().unwrap().facts.clone()
+    }
+
+    async fn probe_lan(&self, addrs: &[Multiaddr], _timeout: Duration) -> std::result::Result<(), DialFailure> {
+        let mut state = self.state.lock().unwrap();
+        state.probe_calls += 1;
+        state.probe_addrs.push(addrs.iter().map(|a| a.to_string()).collect());
+        let ok = if state.probe_results.is_empty() {
+            state.probe_ok
+        } else {
+            state.probe_results.remove(0)
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(DialFailure::new(LanFailure::Timeout, "fake probe failure"))
+        }
     }
 
     fn emit(&self, event: &str, payload: serde_json::Value) {
@@ -1169,8 +1211,235 @@ fn manager_with(
         peer_face: tokio::sync::Mutex::new(None),
         inbound_task: Mutex::new(None),
         inbound_cancel: Mutex::new(None),
-        state: Mutex::new(ManagerState::default()),
+        probe_task: Mutex::new(None),
+        probe_interval_ms: AtomicU64::new(LAN_PROBE_INTERVAL.as_millis() as u64),
+        state: Arc::new(Mutex::new(ManagerState::default())),
         start_gate: tokio::sync::Mutex::new(()),
         recount_gate: tokio::sync::Mutex::new(()),
     })
+}
+
+// ==================== §4.9 wan-active 回切探测（T06 第四轮）====================
+
+/// 蜂窝事实：`connect` 直切 wan（准备 wan-active 现场）
+fn cellular_facts() -> NetworkFacts {
+    NetworkFacts {
+        known: true,
+        cellular: true,
+        local_subnets: vec![],
+        mdns_known: false,
+    }
+}
+
+async fn connect_wan(engine: &Arc<FakeEngine>, manager: &Arc<TunnelManager>) -> ConnectEntry {
+    engine.set_facts(cellular_facts());
+    manager.configure("p", relay_config()).await.unwrap();
+    let entry = manager
+        .connect("p", NODE, 8765, "http", &lan_and_relay_addrs(), None)
+        .await
+        .unwrap();
+    assert_eq!(manager.status("p").await.modes[0].mode.as_str(), "wan-active");
+    entry
+}
+
+/// 探活连续两次成功才回切；回切前不动现役链路（只用 TCP 探活，不 `dial`）
+#[tokio::test]
+async fn wan_active_restores_lan_only_after_two_probes() {
+    let engine = FakeEngine::new();
+    let (manager, _) = manager(engine.clone());
+    let entry = connect_wan(&engine, &manager).await;
+    engine.set_probe(true);
+    let dials_before = engine.dials().len();
+
+    manager.probe_wan_peers_once().await;
+    assert_eq!(
+        manager.status("p").await.modes[0].mode.as_str(),
+        "wan-active",
+        "一次成功不够（防抖）"
+    );
+    assert_eq!(engine.dials().len(), dials_before, "探活不走 `dial`（不断现役链路）");
+
+    manager.probe_wan_peers_once().await;
+    let status = manager.status("p").await;
+    assert_eq!(status.modes[0].mode.as_str(), "lan-active");
+    assert_eq!(status.modes[0].reason, Some(ModeReason::LanRestored));
+    // 回切是真的拨了一次 LAN（成功才改模式）
+    let last = engine.dials().last().cloned().unwrap();
+    assert!(last.1.iter().all(|a| !a.contains("p2p-circuit")), "回切只拨 LAN 候选");
+    assert!(engine.events().iter().any(|(event, payload)| event == "peer-transport"
+        && payload.get("transport").and_then(|v| v.as_str()) == Some("lan-direct")));
+    manager.close("p", &entry.handle).await.unwrap();
+}
+
+/// 中间失败清零：`成功 → 失败 → 成功` 不得回切
+#[tokio::test]
+async fn probe_failure_resets_the_restore_counter() {
+    let engine = FakeEngine::new();
+    let (manager, _) = manager(engine.clone());
+    let entry = connect_wan(&engine, &manager).await;
+    engine.set_probe_sequence(vec![true, false, true]);
+
+    manager.probe_wan_peers_once().await;
+    manager.probe_wan_peers_once().await;
+    manager.probe_wan_peers_once().await;
+
+    let status = manager.status("p").await;
+    assert_eq!(status.modes[0].mode.as_str(), "wan-active", "计数被失败清零");
+    assert_eq!(status.modes[0].lan_probe_wins, 1);
+    manager.close("p", &entry.handle).await.unwrap();
+}
+
+/// 探活通但真实拨号失败：保持 wan-active（不提前宣告回内网），计数清零
+#[tokio::test]
+async fn restore_dial_failure_keeps_wan_active() {
+    let engine = FakeEngine::new();
+    let (manager, _) = manager(engine.clone());
+    let entry = connect_wan(&engine, &manager).await;
+    engine.set_probe(true);
+    engine.set_failure(LanFailure::Timeout);
+
+    manager.probe_wan_peers_once().await;
+    manager.probe_wan_peers_once().await;
+
+    let status = manager.status("p").await;
+    assert_eq!(status.modes[0].mode.as_str(), "wan-active");
+    assert_eq!(status.modes[0].lan_probe_wins, 0);
+    manager.close("p", &entry.handle).await.unwrap();
+}
+
+/// 手动「尝试外网」是用户本次会话的裁定：探测不把它改回 LAN
+#[tokio::test]
+async fn manual_wan_is_not_overridden_by_probe() {
+    let engine = FakeEngine::new();
+    let (manager, _) = manager(engine.clone());
+    let entry = connect_wan(&engine, &manager).await;
+    engine.set_probe(true);
+    manager.set_manual_wan(NODE, true);
+
+    manager.probe_wan_peers_once().await;
+    manager.probe_wan_peers_once().await;
+
+    assert_eq!(manager.status("p").await.modes[0].mode.as_str(), "wan-active");
+    assert_eq!(engine.probe_calls(), 0, "手动外网不参与自动探测");
+    manager.close("p", &entry.handle).await.unwrap();
+}
+
+/// 探活只拿 LAN 候选（relay circuit 不是回切依据）
+#[tokio::test]
+async fn probe_only_uses_lan_candidates() {
+    let engine = FakeEngine::new();
+    let (manager, _) = manager(engine.clone());
+    let entry = connect_wan(&engine, &manager).await;
+    engine.set_probe(true);
+
+    manager.probe_wan_peers_once().await;
+
+    let probed = engine.probe_addrs();
+    assert_eq!(probed.len(), 1);
+    assert!(
+        probed[0].iter().all(|addr| !addr.contains("p2p-circuit")),
+        "relay 候选不进回切探测：{probed:?}"
+    );
+    manager.close("p", &entry.handle).await.unwrap();
+}
+
+/// 探测循环真的按周期跑（周期可在测试里覆盖）
+#[tokio::test]
+async fn probe_loop_runs_on_interval() {
+    let engine = FakeEngine::new();
+    let (manager, _) = manager(engine.clone());
+    let entry = connect_wan(&engine, &manager).await;
+    manager.set_probe_interval(Duration::from_millis(20));
+    engine.set_probe(true);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if manager.status("p").await.modes[0].mode.as_str() == "lan-active" {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "探测循环未在 3s 内完成回切");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(engine.probe_calls() >= 2);
+    manager.close("p", &entry.handle).await.unwrap();
+}
+
+/// 配对窗口：未匹配 + 票据先在拨号期投影 `pairing`，返回后回到真实传输模式；
+/// 已匹配对端带票据不得投影 `pairing`（按一次性消费，不降级）
+#[tokio::test]
+async fn pairing_ticket_for_untrusted_peer_marks_pairing_during_dial_only() {
+    let engine = FakeEngine::new();
+    engine.set_facts(wifi_facts());
+    let (manager, _) = manager(engine.clone());
+    manager.configure("p", relay_config()).await.unwrap();
+
+    let entry = manager
+        .connect("p", NODE, 8765, "http", &lan_addrs(), Some("ticket-1".into()))
+        .await
+        .unwrap();
+    let modes = engine.event_modes();
+    assert!(modes.contains(&"pairing".to_string()), "拨号期先进 pairing：{modes:?}");
+    assert_eq!(
+        manager.status("p").await.modes[0].mode.as_str(),
+        "lan-active",
+        "链路就绪后回到真实传输模式（否则配对完成后一直显示「配对中」）"
+    );
+    manager.close("p", &entry.handle).await.unwrap();
+
+    engine.set_trusted(true);
+    let before = engine.event_modes().len();
+    let entry = manager
+        .connect("p", NODE, 8765, "http", &lan_addrs(), Some("ticket-2".into()))
+        .await
+        .unwrap();
+    let added = &engine.event_modes()[before..];
+    assert!(
+        !added.contains(&"pairing".to_string()),
+        "已匹配对端不走 pairing：{added:?}"
+    );
+    assert_eq!(manager.status("p").await.modes[0].mode.as_str(), "lan-active");
+    manager.close("p", &entry.handle).await.unwrap();
+}
+
+/// 入站未匹配隧道流：投影 `pairing`，配对窗口结束后回到 `offline`
+#[tokio::test]
+async fn inbound_unmatched_stream_marks_pairing_then_offline() {
+    let engine = FakeEngine::new();
+    let (manager, _) = manager(engine.clone());
+    manager.configure("p", relay_config()).await.unwrap();
+    manager.start().await.unwrap();
+
+    let (mut client, server_io) = tokio::io::duplex(4096);
+    engine.push_inbound(NODE, Box::new(server_io));
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let modes = manager.status("p").await.modes;
+        if modes.first().is_some_and(|m| m.mode.as_str() == "pairing") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "入站未匹配流未投影 pairing");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // 首帧票据非法 → 配对窗口被拒并结束，模式回到 offline
+    client
+        .write_all(
+            &TunnelHello::new(8765, TunnelKind::Http, Some("bogus".into()))
+                .encode()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let _ = read_reply(&mut client).await;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let modes = manager.status("p").await.modes;
+        if modes.first().is_some_and(|m| m.mode.as_str() == "offline") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "配对窗口结束后未回到 offline");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    manager.stop().await.unwrap();
 }

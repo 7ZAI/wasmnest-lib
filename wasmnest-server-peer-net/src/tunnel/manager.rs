@@ -27,6 +27,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -60,6 +61,12 @@ use crate::tunnel::{
 /// 单次拨号候选的短超时（LAN 2~3s 口径，设计 §4.9）；relay 候选由引擎按同一窗口结算。
 const DIAL_PER_ADDR_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// `wan-active` 期间 LAN 回切探测周期（设计 §4.9 建议 30s；测试可覆盖）。
+const LAN_PROBE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// 单次探活的短超时：探活只判「LAN 又通了吗」，不承担握手/准入（比拨号更短）。
+const LAN_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+
 // ==================== 引擎端口（宿主注入 / 测试替身） ====================
 
 /// 引擎侧需要隧道管理器驱动的全部机制（开流 / 收流 / 拨号 / 信任 / relay 预留）。
@@ -88,6 +95,17 @@ pub trait TunnelEngine: Send + Sync {
     /// 默认未知 = 判据不明确 → 先试 LAN、不自动切 wan（不猜、不静默降级）。
     async fn network_facts(&self) -> NetworkFacts {
         NetworkFacts::unknown()
+    }
+    /// `wan-active` 回切探测：对 LAN 候选做**非破坏性**探活（只判可达，不动现役链路）。
+    ///
+    /// 不能复用 [`Self::dial`] / [`Self::dial_classified`]：引擎在「已准入链路但拨号
+    /// 地址不同」时会先断旧链路再重拨（wan-active 期间那样会打断经 relay 的现役流）。
+    ///
+    /// 默认实现一律失败：宿主没实现探活时保持当前模式（绝不因「探不了」误判 LAN
+    /// 恢复、更不把流量从 relay 挪走）。
+    async fn probe_lan(&self, addrs: &[Multiaddr], timeout: Duration) -> std::result::Result<(), DialFailure> {
+        let _ = (addrs, timeout);
+        Err(DialFailure::new(LanFailure::Other, "宿主未实现 LAN 探活"))
     }
     /// 事件出口（`peer:mode` / `peer:transport` / `tunnel:state` / `tunnel:error`）。
     /// fire-and-forget：默认丢弃（无头上下文 / 未接总线的测试替身）。
@@ -248,6 +266,7 @@ struct ConnectHandle {
     owner: String,
     /// 每对端模式归因用：最后一个句柄关闭才把该对端置 `offline`
     node_id: String,
+    /// 本地回环代理地址（关闭时不再使用；保留供诊断）
     #[allow(dead_code)]
     address: SocketAddr,
     shutdown: watch::Sender<bool>,
@@ -264,6 +283,10 @@ struct ManagerState {
     reserved: bool,
     /// 当前 reservation 实际使用的 relay 地址（`configure` 改地址时必须重建）
     reserved_addrs: Vec<Multiaddr>,
+    /// 每对端最近一次 `connect` 给的 LAN 候选（回切探测用；**不持久化**）
+    ///
+    /// 只在候选非空时更新：`tryWan` 这类只带 relay 的拨号不得把已知 LAN 候选冲掉。
+    lan_candidates: HashMap<String, Vec<Multiaddr>>,
     /// 每对端模式表（§4.9；模式是每对端的，不是全局开关）
     modes: ModeMachine,
 }
@@ -281,7 +304,12 @@ pub struct TunnelManager {
     inbound_task: Mutex<Option<JoinHandle<()>>>,
     /// 入站循环与在飞流共用的取消令牌：`stop` 时一并取消（在飞配对 / 业务流必须关）
     inbound_cancel: Mutex<Option<CancellationToken>>,
-    state: Mutex<ManagerState>,
+    /// `wan-active` LAN 回切探测循环（懒启动；弱引用，不延长管理器寿命）
+    probe_task: Mutex<Option<JoinHandle<()>>>,
+    /// 探测周期（毫秒；测试可覆盖，生产 = [`LAN_PROBE_INTERVAL`]）
+    probe_interval_ms: AtomicU64,
+    /// 与入站接收循环共享（配对态投影需要写模式表）
+    state: Arc<Mutex<ManagerState>>,
     start_gate: tokio::sync::Mutex<()>,
     recount_gate: tokio::sync::Mutex<()>,
 }
@@ -316,7 +344,9 @@ impl TunnelManager {
             peer_face: tokio::sync::Mutex::new(None),
             inbound_task: Mutex::new(None),
             inbound_cancel: Mutex::new(None),
-            state: Mutex::new(ManagerState::default()),
+            probe_task: Mutex::new(None),
+            probe_interval_ms: AtomicU64::new(LAN_PROBE_INTERVAL.as_millis() as u64),
+            state: Arc::new(Mutex::new(ManagerState::default())),
             start_gate: tokio::sync::Mutex::new(()),
             recount_gate: tokio::sync::Mutex::new(()),
         })
@@ -350,6 +380,10 @@ impl TunnelManager {
         if let Some(task) = self.inbound_task.lock().expect("inbound task lock poisoned").take() {
             task.abort();
         }
+        // 回切探测循环也随租约停：stop 后没有对端模式可探测（下一轮 connect 重新拉起）
+        if let Some(task) = self.probe_task.lock().expect("probe task lock poisoned").take() {
+            task.abort();
+        }
         // 规则不只在计数表里清：`TunnelPolicy` 是准入真源，stop 后旧端口不得仍可准入
         // （stop → start 后 `port-not-exposed`）。
         for rule in self.policy.rules() {
@@ -369,6 +403,7 @@ impl TunnelManager {
             state.rules.clear();
             state.configs.clear();
             state.inbound_wan.clear();
+            state.lan_candidates.clear();
             state.modes = ModeMachine::new();
             held
         };
@@ -504,7 +539,7 @@ impl TunnelManager {
     /// 同网段 timeout / `ECONNREFUSED` / 认证失败**保持 LAN** 并显性
     /// `lan-unreachable`（给手动「尝试外网」出路，不自动烧中继流量）。
     pub async fn connect(
-        &self,
+        self: &Arc<Self>,
         plugin_id: &str,
         node_id: &str,
         port: u16,
@@ -547,13 +582,28 @@ impl TunnelManager {
         let plan = self.plan_mode(plugin_id, &node_key, &lan_addrs, &wan_addrs).await?;
         self.ensure_running().await?;
 
+        // 配对窗口（未匹配 + 一次性票据）单独一态：配对期间不展示 lan / wan 模式，
+        // 配对成功后应用写信任并重建隧道，那时才回到正常模式判定（设计 §4.9 状态机）。
+        let pairing = pairing_ticket.as_deref().is_some_and(|t| !t.trim().is_empty())
+            && !self.engine.trust_contains(&node_id).await;
+        // 记住 LAN 候选：wan-active 回切探测只拨这里记过的地址，不重新猜。
+        // 只带 relay 的拨号（手动「尝试外网」）**不得**冲掉已知候选，否则回切探测永远没目标。
+        if !lan_addrs.is_empty() {
+            let mut state = self.state.lock().expect("tunnel state poisoned");
+            state.lan_candidates.insert(node_key.clone(), lan_addrs.clone());
+        }
+
         // ---------- 先 LAN：只有判据明确「不在内网」才进 wan ----------
         let (path, reason) = match plan {
             Plan::Lan => {
                 if lan_addrs.is_empty() {
                     return Err(TunnelError::new(CODE_PEER_OFFLINE, "没有可用的 LAN 候选地址"));
                 }
-                self.mode_transition(|modes| modes.set(&node_key, TransferMode::LanProbing, None));
+                if pairing {
+                    self.mode_transition(|modes| modes.set(&node_key, TransferMode::Pairing, None));
+                } else {
+                    self.mode_transition(|modes| modes.set(&node_key, TransferMode::LanProbing, None));
+                }
                 match self.engine.dial_classified(&node_id, &lan_addrs).await {
                     Ok(()) => (Path::Lan, None),
                     Err(failure) => {
@@ -561,6 +611,7 @@ impl TunnelManager {
                         // 报错——绝不为了绕过失败切 relay，也不误报成「内网不可达」。
                         if failure.kind == LanFailure::Auth {
                             self.emit_tunnel_error(&node_key, CODE_NOT_MATCHED, &failure.detail);
+                            self.mode_transition(|modes| modes.mark_offline(&node_key));
                             return Err(TunnelError::new(
                                 CODE_NOT_MATCHED,
                                 format!("认证 / 匹配校验失败：{}", failure.detail),
@@ -569,8 +620,13 @@ impl TunnelManager {
                         match mode::judge_after_lan_failure(failure.kind) {
                             LanFailureVerdict::SwitchWan(switch_reason) if wan => (Path::Wan, Some(switch_reason)),
                             _ => {
-                                // 判据不明确：保持 LAN，显性报错并留手动出口
-                                self.mode_transition(|modes| modes.mark_lan_unreachable(&node_key));
+                                // 判据不明确：保持 LAN，显性报错并留手动出口；配对窗口本身
+                                // 不外推到「内网不可达」（配对失败就回到 offline）
+                                if pairing {
+                                    self.mode_transition(|modes| modes.mark_offline(&node_key));
+                                } else {
+                                    self.mode_transition(|modes| modes.mark_lan_unreachable(&node_key));
+                                }
                                 self.emit_tunnel_error(&node_key, CODE_LAN_UNREACHABLE, &failure.detail);
                                 return Err(TunnelError::new(
                                     CODE_LAN_UNREACHABLE,
@@ -592,7 +648,9 @@ impl TunnelManager {
         let wan_used = matches!(path, Path::Wan);
         if wan_used {
             let reason = reason.unwrap_or(ModeReason::User);
-            self.mode_transition(|modes| modes.mark_wan_connecting(&node_key, reason));
+            if !pairing {
+                self.mode_transition(|modes| modes.mark_wan_connecting(&node_key, reason));
+            }
             self.acquire_wan(plugin_id).await?;
             if let Err(failure) = self.engine.dial_classified(&node_id, &wan_addrs).await {
                 self.release_wan(plugin_id).await;
@@ -600,23 +658,36 @@ impl TunnelManager {
                 // 安全错误混成网络错误（否则用户被引导去排查 relay）。
                 if failure.kind == LanFailure::Auth {
                     self.emit_tunnel_error(&node_key, CODE_NOT_MATCHED, &failure.detail);
+                    self.mode_transition(|modes| modes.mark_offline(&node_key));
                     return Err(TunnelError::new(
                         CODE_NOT_MATCHED,
                         format!("中继链路认证 / 匹配校验失败：{}", failure.detail),
                     ));
                 }
-                self.mode_transition(|modes| modes.mark_wan_unavailable(&node_key, ModeReason::RelayUnavailable));
+                if pairing {
+                    self.mode_transition(|modes| modes.mark_offline(&node_key));
+                } else {
+                    self.mode_transition(|modes| modes.mark_wan_unavailable(&node_key, ModeReason::RelayUnavailable));
+                }
                 self.emit_tunnel_error(&node_key, CODE_RELAY_UNREACHABLE, &failure.detail);
                 return Err(TunnelError::new(
                     CODE_RELAY_UNREACHABLE,
                     format!("中继拨号失败（{}）：{}", failure_word(failure.kind), failure.detail),
                 ));
             }
+            // 配对窗口在 `lan-probing` 阶段打标（见上）；拨号成功后回到**真实传输模式**：
+            // 代理已就绪、链路已建立，此时才是用户能看到的状态（若一直停在 `pairing`，
+            // 配对完成后的设备卡就会永远显示「配对中」）。配对窗口本身的关闭由
+            // 宿主在票据失效 / 配对完成时处理，不靠模式表传达。
             self.mode_transition(|modes| modes.mark_wan_active(&node_key, reason));
             self.emit_transport(&node_key, "wan-relay", true);
         } else {
             self.mode_transition(|modes| modes.mark_lan_active(&node_key));
             self.emit_transport(&node_key, "lan-direct", false);
+        }
+        // wan-active 才有回切探测可言（LAN 已直连时不需探测）
+        if wan_used {
+            self.ensure_probe_loop();
         }
 
         let opener = Arc::new(EngineOpener {
@@ -749,6 +820,9 @@ impl TunnelManager {
     /// **探测方式由调用方决定**（例如对 LAN 候选做一次短超时拨号探活）——本层只
     /// 记账与防抖，不在这里重复拨号：wan-active 期间重新 `dial` 会按引擎语义断开
     /// 现役链路，代价高于收益。
+    ///
+    /// 生产路径应走 [`Self::probe_wan_peers_once`]（或它拉起的周期循环）：那里先做
+    /// 非破坏性探活、达阈值后再真实拨号，成功才改模式。
     pub fn on_lan_probe_result(&self, node_id: &str, reachable: bool) -> Option<PeerModeView> {
         if reachable {
             self.mode_transition(|modes| modes.on_lan_probe_success(node_id))
@@ -757,6 +831,112 @@ impl TunnelManager {
             state.modes.on_lan_probe_failure(node_id);
             None
         }
+    }
+
+    /// 覆盖回切探测周期（测试 / 产品自定义；生产默认 30s）
+    pub fn set_probe_interval(&self, interval: Duration) {
+        self.probe_interval_ms
+            .store(interval.as_millis().max(1) as u64, Ordering::Relaxed);
+    }
+
+    fn probe_interval(&self) -> Duration {
+        Duration::from_millis(self.probe_interval_ms.load(Ordering::Relaxed).max(1))
+    }
+
+    /// 一轮 `wan-active` LAN 探活（周期循环与测试共用）
+    ///
+    /// 顺序严格按设计 §4.9：**先非破坏性探活（TCP 可达）→ 连续两次成功 → 真实拨号
+    /// → 成功才改 `lan-active`**。探测通了但真实拨号失败时保持 `wan-active` 并清零
+    /// 计数（绝不提前宣告「已回内网」，因为数据还在 relay 上走）。
+    ///
+    /// 手动「尝试外网」的对端不参与探测：那是用户本次网络会话内的显式裁定。
+    pub async fn probe_wan_peers_once(&self) {
+        let targets: Vec<(String, Vec<Multiaddr>)> = {
+            let state = self.state.lock().expect("tunnel state poisoned");
+            state
+                .modes
+                .nodes_in(TransferMode::WanActive)
+                .into_iter()
+                .filter(|node| !state.modes.manual_wan(node))
+                .filter_map(|node| {
+                    state
+                        .lan_candidates
+                        .get(&node)
+                        .filter(|addrs| !addrs.is_empty())
+                        .map(|addrs| (node, addrs.clone()))
+                })
+                .collect()
+        };
+        for (node_key, addrs) in targets {
+            let Ok(node_id) = NodeId::parse(&node_key) else {
+                continue;
+            };
+            match self.engine.probe_lan(&addrs, LAN_PROBE_TIMEOUT).await {
+                Ok(()) => {}
+                Err(failure) => {
+                    let mut state = self.state.lock().expect("tunnel state poisoned");
+                    state.modes.record_lan_probe(&node_key, false);
+                    tracing::debug!(
+                        node = %node_key,
+                        detail = %failure.detail,
+                        "wan-active LAN 探活失败（保持外网中继）"
+                    );
+                    continue;
+                }
+            }
+            let reached = {
+                let mut state = self.state.lock().expect("tunnel state poisoned");
+                state.modes.record_lan_probe(&node_key, true)
+            };
+            if !reached {
+                continue;
+            }
+            // 达阈值：真实回切。拨号成功才改模式（探测成功 ≠ 业务链路已换）。
+            match self.engine.dial_classified(&node_id, &addrs).await {
+                Ok(()) => {
+                    self.mode_transition(|modes| {
+                        modes.set(&node_key, TransferMode::LanActive, Some(ModeReason::LanRestored))
+                    });
+                    self.emit_transport(&node_key, "lan-direct", false);
+                    tracing::info!(node = %node_key, "mode.lan.restored");
+                }
+                Err(failure) => {
+                    // 探活通但拨号不通（对端仅监听但不接受 / 非同一节点）：仍看 wan，
+                    // 计数清零后重新累计，不每轮重拨一次。
+                    let mut state = self.state.lock().expect("tunnel state poisoned");
+                    state.modes.record_lan_probe(&node_key, false);
+                    tracing::info!(
+                        node = %node_key,
+                        detail = %failure.detail,
+                        "mode.lan.restore_failed"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 拉起 `wan-active` 回切探测循环（幂等；进程内一条，`stop` 中止）
+    ///
+    /// 任务只持 [`Arc::downgrade`]：管理器被释放后下一轮自然退出，不制造循环引用。
+    fn ensure_probe_loop(self: &Arc<Self>) {
+        let mut slot = self.probe_task.lock().expect("probe task lock poisoned");
+        if slot.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        *slot = Some(tokio::spawn(async move {
+            loop {
+                let interval = match weak.upgrade() {
+                    Some(manager) => manager.probe_interval(),
+                    None => break,
+                };
+                tokio::time::sleep(interval).await;
+                let Some(manager) = weak.upgrade() else {
+                    break;
+                };
+                manager.probe_wan_peers_once().await;
+            }
+        }));
     }
 
     /// 模式迁移 + `peer:mode` 事件（只在确实变化时发；同一事件名走宿主事件 + 插件总线）
@@ -908,7 +1088,8 @@ impl TunnelManager {
             }
             let engine = Arc::clone(&self.engine);
             let server = Arc::clone(&self.server);
-            *task = Some(tokio::spawn(run_inbound_loop(engine, server, cancel)));
+            let state = Arc::clone(&self.state);
+            *task = Some(tokio::spawn(run_inbound_loop(engine, server, cancel, state)));
         }
         Ok(())
     }
@@ -1051,7 +1232,12 @@ impl TunnelManager {
 
 // ==================== 入站流接收 ====================
 
-async fn run_inbound_loop(engine: Arc<dyn TunnelEngine>, server: Arc<TunnelServer>, cancel: CancellationToken) {
+async fn run_inbound_loop(
+    engine: Arc<dyn TunnelEngine>,
+    server: Arc<TunnelServer>,
+    cancel: CancellationToken,
+    state: Arc<Mutex<ManagerState>>,
+) {
     // 单 peer 并发流计数：任务结束时归还（配额上限由 `TunnelPolicy` 判定）
     let active: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
     loop {
@@ -1074,6 +1260,17 @@ async fn run_inbound_loop(engine: Arc<dyn TunnelEngine>, server: Arc<TunnelServe
         // 若将来改 per-app 隔离口径（B），必须在此注入应用配对端口，不要在前端补判。
         let matched = engine.trust_contains(&node_id).await;
         let key = node_id.as_str().to_string();
+        // 配对态投影：未匹配对端只可能凭一次性票据进来（准入在 T05 模块）；状态栏
+        // 要如实显示 `pairing`，不能拿上一个会话的 lan / wan 模式充数。
+        if !matched {
+            let view = {
+                let mut state = state.lock().expect("tunnel state poisoned");
+                state.modes.set(&key, TransferMode::Pairing, None)
+            };
+            if let Some(view) = view {
+                engine.emit("peer-mode", mode_event(&view));
+            }
+        }
         let streams = {
             let mut table = active.lock().expect("tunnel stream counter poisoned");
             let counter = table.entry(key.clone()).or_insert(0);
@@ -1089,6 +1286,8 @@ async fn run_inbound_loop(engine: Arc<dyn TunnelEngine>, server: Arc<TunnelServe
         let server = Arc::clone(&server);
         let active = Arc::clone(&active);
         let cancel = cancel.clone();
+        let state = Arc::clone(&state);
+        let task_engine = Arc::clone(&engine);
         tokio::spawn(async move {
             // `stop` 取消：在飞配对 / 业务流必须关（只 abort 接收循环杀不掉已 spawn 的流）
             tokio::select! {
@@ -1104,6 +1303,19 @@ async fn run_inbound_loop(engine: Arc<dyn TunnelEngine>, server: Arc<TunnelServe
                 *counter = counter.saturating_sub(1);
                 if *counter == 0 {
                     table.remove(&key);
+                }
+            }
+            let last_stream = !table.contains_key(&key);
+            drop(table);
+            // 配对窗口结束：未匹配对端回到 `offline`（配对成功由应用写信任后
+            // 重建隧道，那一次 `connect` 会重新做模式判定）；有并发流时不提前回落
+            if !matched && last_stream {
+                let view = {
+                    let mut state = state.lock().expect("tunnel state poisoned");
+                    state.modes.mark_offline(&key)
+                };
+                if let Some(view) = view {
+                    task_engine.emit("peer-mode", mode_event(&view));
                 }
             }
         });
@@ -1240,6 +1452,30 @@ impl TunnelEngine for PeerCtxEngine {
     /// §4.9：宿主侧网络事实（接口子网 + 蜂窝判定；应用 JS 不可见）
     async fn network_facts(&self) -> NetworkFacts {
         crate::tunnel::netinfo::system_network_facts()
+    }
+
+    /// §4.9：非破坏性 LAN 探活——只做 TCP 握手，**不进 swarm、不动现役链路**
+    ///
+    /// 只探非 relay 候选（`/p2p-circuit` 是外网路径，不是回切依据）。
+    async fn probe_lan(&self, addrs: &[Multiaddr], timeout: Duration) -> std::result::Result<(), DialFailure> {
+        let mut last = DialFailure::new(LanFailure::Other, "没有可探活的 LAN 候选");
+        for addr in addrs.iter().filter(|addr| !is_relay_dial_addr(addr)) {
+            let Some(socket) = wasmnest_p2p_engine::engine::multiaddr_to_socket_addr(addr) else {
+                continue;
+            };
+            match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(socket)).await {
+                Ok(Ok(_stream)) => return Ok(()),
+                Ok(Err(e)) => {
+                    // `io::Error` 文本与拨号路径同源（Linux / Android），复用同一成因映射；
+                    // 探活失败只需「是否清零计数」，成因进 trace
+                    last = DialFailure::new(classify_dial_text(&e.to_string()), format!("{socket}: {}", e.kind()));
+                }
+                Err(_) => {
+                    last = DialFailure::new(LanFailure::Timeout, format!("{socket}: timeout"));
+                }
+            }
+        }
+        Err(last)
     }
 
     /// 事件出口：宿主事件面 + 插件总线（`peer:*` / `tunnel:*` topic 映射见 crate 根）
