@@ -173,6 +173,7 @@ pub async fn start(
         metrics: Arc::clone(&metrics),
         tracker: IpConnTracker::new(quota.max_connections_per_ip),
         counted: HashMap::new(),
+        reservations: AcceptedReservations::default(),
         listen_addrs: Vec::new(),
         addr_tx,
     };
@@ -274,8 +275,49 @@ struct EventLoopState {
     metrics: Arc<Metrics>,
     tracker: IpConnTracker,
     counted: HashMap<ConnectionId, IpAddr>,
+    reservations: AcceptedReservations,
     listen_addrs: Vec<Multiaddr>,
     addr_tx: watch::Sender<Vec<Multiaddr>>,
+}
+
+/// 已接受 reservation 的按 peer 计数。
+///
+/// 为什么不能只看 `relay::Event::ReservationClosed`：`libp2p-relay` 0.22 在
+/// `on_connection_established` 时给**每条**连接插一个 `Reservation::None`，
+/// `on_connection_closed` 不判状态就发 `ReservationClosed`——任何 peer 断连都会触发
+/// 该事件。直接累加会让 `reservations_closed_total` 远大于 `reservations_total`，并把
+/// 普通连接关闭当成预留关闭去减 `reservations_active`（实测：open 模式 1 次预留 / 2 次
+/// closed；allowlist 拒绝路径 0 次预留 / 1 次 closed）。
+///
+/// 事件不带 connection_id，只能按 peer 近似：同一 peer 的普通连接与带预留的连接一起
+/// 关闭时仍可能多减一次，`reservations_active` 用饱和减法兜底，不会为负。
+#[derive(Default)]
+struct AcceptedReservations {
+    per_peer: HashMap<PeerId, u32>,
+}
+
+impl AcceptedReservations {
+    /// 记一条新预留；续期不改变预留条数
+    fn accepted(&mut self, peer: PeerId, renewed: bool) {
+        if renewed {
+            return;
+        }
+        *self.per_peer.entry(peer).or_insert(0) += 1;
+    }
+
+    /// 消费一次关闭/超时事件；只有该 peer 确有已接受的预留时才返回 true
+    fn take(&mut self, peer: PeerId) -> bool {
+        match self.per_peer.get_mut(&peer) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                if *count == 0 {
+                    self.per_peer.remove(&peer);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 async fn run_event_loop(
@@ -370,13 +412,14 @@ fn handle_swarm_event(
     }
 }
 
-fn handle_relay_event(state: &EventLoopState, event: relay::Event) {
+fn handle_relay_event(state: &mut EventLoopState, event: relay::Event) {
     match event {
         relay::Event::ReservationReqAccepted {
             src_peer_id,
             renewed,
         } => {
             state.metrics.reservation_accepted(renewed);
+            state.reservations.accepted(src_peer_id, renewed);
             tracing::info!(
                 peer = %short_peer(&src_peer_id),
                 renewed,
@@ -395,12 +438,23 @@ fn handle_relay_event(state: &EventLoopState, event: relay::Event) {
             );
         }
         relay::Event::ReservationClosed { src_peer_id } => {
-            state.metrics.reservation_closed();
-            tracing::debug!(peer = %short_peer(&src_peer_id), "reservation 已关闭");
+            // libp2p 对任何 peer 断连都会发这个事件（见 AcceptedReservations 注释）：
+            // 只有确实拿到过预留的 peer 才计入关闭数并递减 active
+            if state.reservations.take(src_peer_id) {
+                state.metrics.reservation_closed();
+                tracing::debug!(peer = %short_peer(&src_peer_id), "reservation 已关闭");
+            } else {
+                tracing::trace!(
+                    peer = %short_peer(&src_peer_id),
+                    "连接已关闭（该 peer 没有已接受的 reservation，不计数）"
+                );
+            }
         }
         relay::Event::ReservationTimedOut { src_peer_id } => {
-            state.metrics.reservation_timed_out();
-            tracing::debug!(peer = %short_peer(&src_peer_id), "reservation 超时");
+            if state.reservations.take(src_peer_id) {
+                state.metrics.reservation_timed_out();
+                tracing::debug!(peer = %short_peer(&src_peer_id), "reservation 超时");
+            }
         }
         relay::Event::CircuitReqAccepted {
             src_peer_id,
@@ -626,6 +680,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn 预留计数只认已接受的预留() {
+        let mut tracker = AcceptedReservations::default();
+        let peer = Keypair::generate_ed25519().public().to_peer_id();
+
+        assert!(!tracker.take(peer), "没有已接受的预留时关闭不得计数");
+
+        tracker.accepted(peer, true);
+        assert!(!tracker.take(peer), "续期不是新预留，关闭仍不得计数");
+
+        tracker.accepted(peer, false);
+        assert!(tracker.take(peer), "已接受的预留关闭应计数");
+        assert!(!tracker.take(peer), "同一条预留不得重复计数");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn 普通连接关闭不计入_reservation_closed() {
+        let (runtime, _dir) = start_relay(loopback_config()).await;
+        let relay_addr = runtime.advertise_addrs()[0].clone();
+
+        // 只连上来、不预留：等价于「来兑换 token 的白名单外设备」
+        let mut client = spawn_client(build_test_client(), |swarm| {
+            swarm
+                .dial(DialOpts::from(relay_addr.clone()))
+                .expect("拨号");
+        });
+        wait_for(&mut client, Duration::from_secs(15), |event| {
+            matches!(event, ClientEvent::Established { relayed: false, .. })
+        })
+        .await
+        .expect("应连上 relay");
+
+        drop(client);
+        wait_until(Duration::from_secs(10), || {
+            runtime.metrics.snapshot().connections_active == 0
+        })
+        .await
+        .expect("连接应关闭");
+        // ReservationClosed 由同一次断连产生，给事件泵一个调度窗口
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let snapshot = runtime.metrics.snapshot();
+        assert_eq!(snapshot.reservations_total, 0, "{snapshot:?}");
+        assert_eq!(snapshot.reservations_closed, 0, "{snapshot:?}");
+        assert_eq!(snapshot.reservations_active, 0, "{snapshot:?}");
+        runtime.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn 白名单模式拒绝未登记_peer_的_reservation() {
         let mut config = loopback_config();
@@ -675,6 +777,19 @@ mod tests {
             "白名单外不应拿到 circuit 监听地址：{circuit_listen:?}"
         );
         let snapshot = runtime.metrics.snapshot();
+        assert_eq!(snapshot.reservations_active, 0, "{snapshot:?}");
+
+        // 被拒绝的 peer 断连时 libp2p 照样发 ReservationClosed：不得因为它计入关闭数
+        drop(client);
+        wait_until(Duration::from_secs(10), || {
+            runtime.metrics.snapshot().connections_active == 0
+        })
+        .await
+        .expect("连接应关闭");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let snapshot = runtime.metrics.snapshot();
+        assert_eq!(snapshot.reservations_total, 0, "{snapshot:?}");
+        assert_eq!(snapshot.reservations_closed, 0, "{snapshot:?}");
         assert_eq!(snapshot.reservations_active, 0, "{snapshot:?}");
         runtime.shutdown().await;
     }
@@ -754,6 +869,19 @@ mod tests {
         let snapshot = runtime.metrics.snapshot();
         assert!(snapshot.reservations_active >= 1, "{snapshot:?}");
         assert!(snapshot.connections_total >= 1, "{snapshot:?}");
+
+        // 关闭后只算 A 那一条预留：B 是普通连接，断连不得再计一次 closed
+        drop(b);
+        drop(a);
+        wait_until(Duration::from_secs(10), || {
+            runtime.metrics.snapshot().connections_active == 0
+        })
+        .await
+        .expect("客户端连接应关闭");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let snapshot = runtime.metrics.snapshot();
+        assert_eq!(snapshot.reservations_closed, 1, "{snapshot:?}");
+        assert_eq!(snapshot.reservations_active, 0, "{snapshot:?}");
         runtime.shutdown().await;
     }
 

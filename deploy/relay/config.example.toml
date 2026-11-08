@@ -49,5 +49,10 @@ allowlist = []
 # 健康/指标端点默认只绑回环：`GET /healthz`、`GET /metrics`。
 # 需要公网抓取时改成 0.0.0.0:9090 并显式置 expose_public = true，
 # 同时自行加反代 TLS 或额外 token（否则等于把你家的 PeerId 与用量公开）。
+#
+# Docker：容器内改成 0.0.0.0:9090 **不**等于对公网开放（只是容器内所有网卡就够
+# 被端口映射命中）；宿主抓取时 compose 里仍只发布到 127.0.0.1。
+# 默认的 127.0.0.1:9090 在容器里只能 `docker compose exec relay wget …/metrics` 取，
+# 端口映射（包括 127.0.0.1:9090:9090）打不通——DNAT 指向容器 eth0，不是回环。
 listen = "127.0.0.1:9090"
 expose_public = false

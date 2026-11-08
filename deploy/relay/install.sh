@@ -9,7 +9,8 @@
 #   ./install.sh --advertise relay.example.com --force    # 覆盖既有身份（会换 PeerId！）
 #   ./install.sh --uninstall
 #
-# 依赖：systemd、install、useradd/groupadd（Debian/Ubuntu/CentOS/Alpine+openrc 之外均可）。
+# 依赖：systemd、install、useradd 或 adduser、groupadd 或 addgroup。
+# 只支持 systemd 发行版（Debian/Ubuntu/CentOS/Fedora 等）；Alpine+openrc 不支持。
 set -eu
 
 BIN_DEST=/usr/local/bin/wasmnest-relay
@@ -36,6 +37,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" -eq 0 ] || die "需要 root（安装 systemd 服务）"
+[ -d /etc/systemd/system ] || die "未找到 /etc/systemd/system：本脚本只支持 systemd 发行版；Docker 部署请用 compose（见 README §1）"
 
 if [ -n "$UNINSTALL" ]; then
   systemctl disable --now wasmnest-relay.service 2>/dev/null || true
@@ -57,10 +59,23 @@ log "==> 安装二进制到 $BIN_DEST"
 install -m 0755 "$BINARY" "$BIN_DEST"
 
 log "==> 创建系统用户 $SERVICE_USER"
-if ! id "$SERVICE_USER" >/dev/null 2>&1; then
-  useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER" \
-    || adduser -S -H -s /sbin/nologin "$SERVICE_USER"
+# unit 的 Group= 与配置目录的 chown 都依赖同名组：先建组再建用户，不指望
+# useradd/adduser 的默认建组行为（Alpine 的 adduser 降级路径就不建组）。
+if ! grep -q "^${SERVICE_USER}:" /etc/group; then
+  groupadd --system "$SERVICE_USER" 2>/dev/null || addgroup -S "$SERVICE_USER" \
+    || die "无法创建系统组 $SERVICE_USER"
 fi
+if ! id "$SERVICE_USER" >/dev/null 2>&1; then
+  if command -v useradd >/dev/null 2>&1; then
+    useradd --system --no-create-home --gid "$SERVICE_USER" --shell /usr/sbin/nologin "$SERVICE_USER" \
+      || die "无法创建系统用户 $SERVICE_USER"
+  else
+    adduser -S -H -G "$SERVICE_USER" -s /sbin/nologin "$SERVICE_USER" \
+      || die "无法创建系统用户 $SERVICE_USER"
+  fi
+fi
+id "$SERVICE_USER" >/dev/null 2>&1 || die "服务用户 $SERVICE_USER 不存在"
+grep -q "^${SERVICE_USER}:" /etc/group || die "服务组 $SERVICE_USER 不存在（unit 的 Group= 会启动失败）"
 
 log "==> 准备配置目录 $CONF_DIR"
 install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CONF_DIR"

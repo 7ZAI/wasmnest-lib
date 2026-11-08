@@ -22,7 +22,13 @@ services:
     ports:
       # 只放行 TCP 4001；v1 不启用 UDP（QUIC 属后续评估）
       - "4001:4001/tcp"
-      # 指标端点默认只绑容器内回环；需要本地抓取时再解开下面这行（不要直接对公网开放）
+      # 指标/健康端点 **不发布端口**：relay 在容器内只绑 127.0.0.1:9090，Docker 端口映射
+      # 指向容器 eth0，映射上去也连不通（实测 curl 被 reset）。
+      # 本地取数（推荐）：
+      #   docker compose exec relay wget -qO- http://127.0.0.1:9090/metrics
+      # 要从宿主/监控系统抓取：把 config.toml 的 metrics.listen 改成 "0.0.0.0:9090" 并显式
+      # expose_public = true（这是「容器内所有网卡」的语义，不是对公网开放），再解开下一行；
+      # 宿主侧仍只发布到回环，不要改成 0.0.0.0:9090:9090。
       # - "127.0.0.1:9090:9090/tcp"
     volumes:
       # 身份 / 配置 / token 表 / 已 enrollment 白名单都在这个卷里

@@ -123,6 +123,12 @@ curl -s http://127.0.0.1:9090/healthz   # PeerId / 指纹 / 准入模式 / 通�
 curl -s http://127.0.0.1:9090/metrics   # Prometheus 文本：reservation / circuit / 拒绝原因
 ```
 
+> **Docker 例外**：容器内 relay 绑的是容器回环，Docker 端口映射指向容器 eth0，
+> 所以 compose 默认**不发布 9090**，映射了也连不通（实测 curl 被 reset）。容器内取数用
+> `docker compose exec relay wget -qO- http://127.0.0.1:9090/metrics`；要从宿主抓取，
+> 先按 §1 compose 注释把 `metrics.listen` 改成 `0.0.0.0:9090` + `expose_public = true`
+> （容器语义），再把端口发布到宿主回环。
+
 - 指标**只含计数**：reservation、circuit、入站连接、按原因分桶的拒绝次数。
 - 不记 payload / 文件名 / 路径 / token；日志只打 PeerId 短指纹与事件。
 - 字节数暂不提供：`libp2p-relay` 的 `CircuitClosed` 事件不带字节数，与其造一个
