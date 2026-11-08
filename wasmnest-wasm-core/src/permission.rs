@@ -162,6 +162,22 @@ pub const PERMISSION_NOTIFY: &str = "notify";
 pub const PERMISSION_CLIPBOARD_READ: &str = "clipboard:read";
 /// 系统剪贴板写入（共享域契约 `host-clipboard`，ADR-0006）：写入文本到剪贴板
 pub const PERMISSION_CLIPBOARD_WRITE: &str = "clipboard:write";
+/// 内网穿透·服务端（T06）：`host-tunnel` 的 expose / unexpose / issue-pairing-ticket
+///
+/// **为什么单独成位**（与 `tunnel:connect` 分域）：服务端是「在局域网/中继上新增
+/// 入站暴露面」，客户端是「把远端端口映射到本机回环」——两种权力方向相反。
+/// 合成一位会让「只想连别人」的应用被动获得对外暴露能力（与 `ws:client` /
+/// `ws:server` 同款判据，spec D6）。
+///
+/// 未声明本位的应用**永远 lan-only**：即使对端已匹配，也不能登记暴露规则。
+/// 本位不携带「允许外网」语义——`allowWan` 是应用设置经 `tunnel.configure` 写入
+/// 的通道配置，关闭它只关外网通道，不改变加密（加密永久强制）。
+pub const PERMISSION_TUNNEL_SERVE: &str = "tunnel:serve";
+/// 内网穿透·客户端（T06）：`host-tunnel` 的 connect / close
+///
+/// 客户端只在本机 `127.0.0.1` 起临时端口（不变量 1），但会把远端端口映射成
+/// 本机可访问面，且拨号可消耗中继带宽；故与应用侧配对语义分开授权。
+pub const PERMISSION_TUNNEL_CONNECT: &str = "tunnel:connect";
 
 /// 权限词汇反射表：`(常量标识符, 权限串)`
 ///
@@ -228,6 +244,11 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
     (
         stringify!(PERMISSION_CLIPBOARD_WRITE),
         PERMISSION_CLIPBOARD_WRITE,
+    ),
+    (stringify!(PERMISSION_TUNNEL_SERVE), PERMISSION_TUNNEL_SERVE),
+    (
+        stringify!(PERMISSION_TUNNEL_CONNECT),
+        PERMISSION_TUNNEL_CONNECT,
     ),
 ];
 
@@ -430,6 +451,21 @@ pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
     // 读 / 写分域授权：「只需粘贴」的插件不获得复制面，反之亦然（ADR-0006）。
     (PERMISSION_CLIPBOARD_READ, &["clipboard.readText"]),
     (PERMISSION_CLIPBOARD_WRITE, &["clipboard.writeText"]),
+    // 内网穿透（T06）：服务端 / 客户端分域授权。`status` 与 `configure` 允许
+    // 任一权限——它们是只读投影与通道配置，不单独构成暴露面，故不登记为某一位
+    // 专属的审计名（门禁在 `tunnel/plugin_binding.rs` 的 `require_either`）。
+    (
+        PERMISSION_TUNNEL_SERVE,
+        &[
+            "tunnel.expose",
+            "tunnel.unexpose",
+            "tunnel.issuePairingTicket",
+        ],
+    ),
+    (
+        PERMISSION_TUNNEL_CONNECT,
+        &["tunnel.connect", "tunnel.close"],
+    ),
 ];
 
 /// 权限管理器
@@ -612,6 +648,42 @@ mod retired_permissions_tests {
             .find(|(perm, _)| *perm == PERMISSION_WORKER_RUN)
             .expect("worker:run 应在 API 映射表内");
         assert_eq!(entry.1, &["worker.submit", "worker.cancel"][..]);
+    }
+
+    /// 内网穿透（T06）：服务端 / 客户端两位分域进双端真源；
+    /// `status` / `configure` 是共用面，不把任一位扩成「全通道」。
+    #[test]
+    fn tunnel_vocabulary_registered() {
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_TUNNEL_SERVE));
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_TUNNEL_CONNECT));
+
+        let serve = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_TUNNEL_SERVE)
+            .expect("tunnel:serve 应在 API 映射表内");
+        assert_eq!(
+            serve.1,
+            &[
+                "tunnel.expose",
+                "tunnel.unexpose",
+                "tunnel.issuePairingTicket"
+            ][..]
+        );
+        let connect = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_TUNNEL_CONNECT)
+            .expect("tunnel:connect 应在 API 映射表内");
+        assert_eq!(connect.1, &["tunnel.connect", "tunnel.close"][..]);
+
+        // 分域判据：只声明客户端位不获得 expose / issue 面
+        let pm = PermissionManager::new();
+        pm.grant_permissions(
+            "com.wasmnest.client-only",
+            &[PERMISSION_TUNNEL_CONNECT.to_string()],
+        );
+        assert!(pm.check_api("com.wasmnest.client-only", "tunnel.connect"));
+        assert!(!pm.check_api("com.wasmnest.client-only", "tunnel.expose"));
+        assert!(!pm.check("com.wasmnest.client-only", PERMISSION_TUNNEL_SERVE));
     }
 
     #[test]

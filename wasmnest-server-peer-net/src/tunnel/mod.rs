@@ -16,20 +16,35 @@
 
 pub mod client;
 pub mod frame;
+pub mod manager;
+pub mod mode;
+pub mod netinfo;
 pub mod pipe;
+pub mod plugin_binding;
 pub mod policy;
 pub mod proxy;
 pub mod registry;
 pub mod server;
+pub mod service;
 pub mod ticket;
 
 pub use client::{open_tunnel_stream, ClientConnector, TunnelStreamOpener};
 pub use frame::{TunnelHello, TunnelKind, TunnelReply};
+pub use manager::{
+    ConnectEntry, NodeSnapshot, PeerCtxEngine, PeerFaceListener, PeerFaceStarter, RelaySnapshot, TunnelConfig,
+    TunnelEngine, TunnelManager, TunnelStatus,
+};
+pub use mode::{
+    DialFailure, LanCandidateSource, LanFailure, LanFailureVerdict, LanVerdict, ModeMachine, ModeReason, NetworkFacts,
+    PeerModeView, Subnet, TransferMode, WanAvailability, LAN_RESTORE_PROBES,
+};
+pub use netinfo::{classify_interface, facts_from, system_network_facts, InterfaceFact, InterfaceKind};
 pub use pipe::{pipe_with_limits, PipeLimits, PipeStats};
 pub use policy::{Admission, AdmissionContext, Backend, ExposeConfig, ExposeRule, PolicyConfig, TunnelPolicy};
 pub use proxy::{bind_loopback_proxy, run_proxy, AsyncStream, TunnelConnector, TunnelIo};
 pub use registry::PairingRegistry;
 pub use server::{BackendConnector, TunnelServer, TunnelStreamContext};
+pub use service::{TunnelService, NET_TUNNEL_SERVICE_KEY};
 pub use ticket::{AccessPath, TicketIssuer};
 
 /// relay 控制面默认端口（`wasmnest-relay` 一键包，T13）：作为宿主管理端口
@@ -74,7 +89,10 @@ pub const CODE_INVALID_FRAME: &str = "invalid-frame";
 pub const CODE_PROXY_BIND_FAILED: &str = "proxy-bind-failed";
 /// `allowWan=false` / 未配置 relay 地址，外网通道不可用（不变量 9 / 设计 §7.1）
 pub const CODE_WAN_DISABLED: &str = "wan-disabled";
-
+/// 同网段 LAN 不可达 / 服务未启动，判据不明确（设计 §7.1；带手动「尝试外网」出路）
+pub const CODE_LAN_UNREACHABLE: &str = "lan-unreachable";
+/// relay 连接失败 / 超时（设计 §7.1；不外溢成明文直连）
+pub const CODE_RELAY_UNREACHABLE: &str = "relay-unreachable";
 /// 本端不提供该通道形态（移动端无对等 HTTP/WS 面时 `expose` 显性失败）
 pub const CODE_TUNNEL_UNAVAILABLE: &str = "tunnel-unavailable";
 /// 非句柄属主的探测请求
