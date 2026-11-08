@@ -1,6 +1,7 @@
-# 能力仓 CI（7ZAI/wasmnest-lib#7）：fmt --check + 按 crate 遍历 cargo test。
+# 能力仓 CI（7ZAI/wasmnest-lib#7）：fmt --check + 默认形态依赖门禁 + 按 crate 遍历
+# cargo test。
 #
-# 仓形态约束（AGENTS.md §1 / §4）：无根 workspace——16 个顶层 crate 平铺仓根、
+# 仓形态约束（AGENTS.md §1 / §4）：无根 workspace——19 个顶层 crate 平铺仓根、
 # 各自 Cargo.toml / Cargo.lock，一个 crate 一个 cargo 调用；不存在「仓级 cargo
 # test」。夹具 crate（wasmnest-host-kit/fixtures/*、wasmnest-wasm-core/fixtures/*）
 # 在二层目录，不入 `*/Cargo.toml` 顶层遍历面，也不入 CI（wasm 夹具另需目标端
@@ -8,11 +9,12 @@
 #
 # 编译时长大头（CI 时长预估）：wasmnest-host-kit 默认形态**非可选**依赖
 # wasmtime 48 + wasmtime-wasi(p3)（数 GB 级编译产物，单 crate 冷编译十分钟级）；
-# server-core / server-http / server-websocket 拉 actix 栈；server-base 默认
-# tauri-compat 拉 tauri 2（Linux 需 webkit2gtk 系统库，见下方 apt 步骤）；其余
-# crate 分钟级。5 个能力域 crate（discovery / pty / http / websocket / peer-net）
-# 的 wasmtime 是 optional 依赖且 default = []，默认形态不参与编译。缓解措施：
-# sccache——仓根 .cargo/config.toml 强制 rustc-wrapper，按其注释口径在 CI 用
+# server-core / server-http / server-websocket 拉 actix 栈；其余 crate 分钟级。
+# 5 个能力域 crate（discovery / pty / http / websocket / peer-net）的 wasmtime 是
+# optional 依赖且 default = []，默认形态不参与编译。**P0（2026-11-08）后不再有
+# crate 默认拉 tauri**：server-base 的 `tauri-compat` 默认关、桌面宿主显式开启，
+# 故 CI 不再安装 webkit2gtk 等仅服务 Tauri 的系统包。缓解措施：sccache——仓根
+# .cargo/config.toml 强制 rustc-wrapper，按其注释口径在 CI 用
 # mozilla/sccache-action 安装并压小缓存（2GiB），跨 crate / 跨 run 复用同一份
 # 依赖图缓存。
 #
@@ -46,7 +48,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: cargo fmt --check（按 crate 遍历，覆盖全部 16 个顶层 crate）
+      - name: cargo fmt --check（按 crate 遍历，覆盖全部 19 个顶层 crate）
         run: |
           set -eu
           for d in */Cargo.toml; do
@@ -55,6 +57,25 @@ jobs:
           done
           # fmt 覆盖 wasmnest-wasm-core：cargo fmt 不做依赖解析，独立克隆可跑
           #（与 test job 的例外登记不同，见该 job 注释）。
+
+  default-form-deps:
+    name: default-form-deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # 门禁只解析依赖图（不编译）：cargo tree 需要 registry 索引，全新检出先 fetch。
+      - name: cargo fetch（逐 crate 补 registry 索引）
+        run: |
+          set -eu
+          for d in */Cargo.toml; do
+            cargo fetch --manifest-path "$d"
+          done
+      # 判据真源 = scripts/check-default-form-deps.sh（本地与 CI 同一条命令）。
+      # 失败会打印违规包与 `cargo tree -i` 反向依赖路径。
+      - name: 默认形态依赖门禁（tauri / actix / rusqlite / sysinfo / notify / inotify）
+        run: sh scripts/check-default-form-deps.sh
 
   test:
     name: test
@@ -68,11 +89,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla/sccache-action@v0.0.7
-      # tauri 2（server-base 默认 tauri-compat）Linux 编译前置系统库
-      - name: 安装 tauri Linux 构建依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      # 无 apt 步骤：P0（2026-11-08）后 test 遍历面内没有任何 crate 默认拉 tauri
+      # （server-base 的 tauri-compat 默认关；wasm-core 是登记例外、不进本遍历）。
+      # 若将来某个 crate 重新默认依赖 GUI 框架，默认形态依赖门禁会先红。
       - name: cargo test（按 crate 遍历）
         run: |
           set -eu
