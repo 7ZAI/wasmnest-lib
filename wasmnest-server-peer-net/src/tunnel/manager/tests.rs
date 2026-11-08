@@ -17,10 +17,11 @@ use crate::tunnel::server::{BackendConnector, TunnelServer};
 use super::*;
 use crate::tunnel::mode::Subnet;
 
-const RELAY: &str = "/ip4/127.0.0.1/tcp/4001";
 const LAN: &str = "/ip4/127.0.0.1/tcp/47613";
 /// 合法 relay PeerId（multiaddr 解析要求 `/p2p/<peer-id>` 是真正的 base58 multihash）
 const RELAY_PEER: &str = "12D3KooWPbYEEfpRvnRKk2YLu43F28fLZgU22wic2M5m6Spkv9ZA";
+/// 合法 relay 端点（带 `/p2p/<relay>`，configure 的端点形状预检要求）
+const RELAY: &str = "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWPbYEEfpRvnRKk2YLu43F28fLZgU22wic2M5m6Spkv9ZA";
 /// 合法目标 PeerId（经 relay 的拨号地址末段）
 const TARGET_PEER: &str = "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA";
 
@@ -52,6 +53,10 @@ struct FakeState {
     probe_calls: usize,
     /// 每轮探活拿到的候选（断言只探 LAN、不探 relay）
     probe_addrs: Vec<Vec<String>>,
+    /// 模拟慢速 relay 预留（H3 并发窗口）
+    reserve_delay_ms: u64,
+    /// 模拟 relay 地址切换失败（M1）
+    reserve_fails: bool,
 }
 
 struct FakeEngine {
@@ -117,6 +122,14 @@ impl FakeEngine {
 
     fn reserve_addrs(&self) -> Vec<Vec<String>> {
         self.state.lock().unwrap().reserve_addrs.clone()
+    }
+
+    fn set_reserve_delay(&self, ms: u64) {
+        self.state.lock().unwrap().reserve_delay_ms = ms;
+    }
+
+    fn set_reserve_fails(&self, fails: bool) {
+        self.state.lock().unwrap().reserve_fails = fails;
     }
 
     fn set_facts(&self, facts: NetworkFacts) {
@@ -258,9 +271,16 @@ impl TunnelEngine for FakeEngine {
     }
 
     async fn reserve_relay(&self, addrs: &[Multiaddr]) -> Result<()> {
+        let delay = self.state.lock().unwrap().reserve_delay_ms;
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
         let mut state = self.state.lock().unwrap();
         state.reserve_calls += 1;
         state.reserve_addrs.push(addrs.iter().map(|a| a.to_string()).collect());
+        if state.reserve_fails {
+            return Err(TunnelError::new(CODE_WAN_DISABLED, "fake relay refresh failure"));
+        }
         Ok(())
     }
 
@@ -457,7 +477,7 @@ async fn wan_connect_requires_allow_wan_and_counts_in_flight_dials() {
         )
         .await
         .unwrap();
-    let relay_dial = format!("[\"{RELAY}/p2p/{RELAY_PEER}/p2p-circuit/p2p/{TARGET_PEER}\"]");
+    let relay_dial = format!("[\"{RELAY}/p2p-circuit/p2p/{TARGET_PEER}\"]");
     assert_eq!(
         manager
             .connect("p", OTHER_NODE, 8765, "http", &relay_dial, None)
@@ -488,7 +508,7 @@ async fn failed_wan_dial_rolls_back_reference_count() {
     let (manager, _) = manager(engine.clone());
     manager.configure("p", relay_config()).await.unwrap();
     engine.set_dial_fails();
-    let relay_dial = format!("[\"{RELAY}/p2p/{RELAY_PEER}/p2p-circuit/p2p/{TARGET_PEER}\"]");
+    let relay_dial = format!("[\"{RELAY}/p2p-circuit/p2p/{TARGET_PEER}\"]");
     let err = manager
         .connect("p", OTHER_NODE, 8765, "http", &relay_dial, None)
         .await
@@ -526,6 +546,78 @@ async fn non_owner_cannot_refresh_existing_rule_acl() {
     assert!(rules[0].allowed_peers.is_empty(), "非属主不得改 ACL");
 }
 
+/// M9：代理致命退出后的清理必须摘句柄并归还 WAN 计数（幂等）
+#[tokio::test]
+async fn failed_proxy_cleanup_releases_handle_and_wan_count() {
+    let engine = FakeEngine::new();
+    engine.set_facts(NetworkFacts {
+        known: true,
+        cellular: true,
+        local_subnets: vec![],
+        mdns_known: false,
+    });
+    let (manager, _) = manager(engine.clone());
+    manager.configure("p", relay_config()).await.unwrap();
+    let relay_dial = format!("[\"{RELAY}/p2p-circuit/p2p/{TARGET_PEER}\"]");
+    let entry = manager
+        .connect("p", NODE, 8765, "http", &relay_dial, None)
+        .await
+        .unwrap();
+    assert_eq!(manager.status("p").await.connects, 1);
+    assert!(manager.status("p").await.reservation);
+
+    manager.cleanup_failed_proxy(&entry.handle, NODE).await;
+
+    let status = manager.status("p").await;
+    assert_eq!(status.connects, 0, "失败退出后不得留下孤儿句柄");
+    assert!(!status.reservation, "WAN 计数归零后 reservation 必须释放");
+    assert_eq!(engine.release_calls(), 1);
+
+    // 幂等：再次清理（或应用随后 close）不得重复归还计数
+    manager.cleanup_failed_proxy(&entry.handle, NODE).await;
+    assert_eq!(engine.release_calls(), 1);
+}
+
+/// H2：两个属主并发 expose 同一端口 → 只能一个成功，失败方不得改 ACL
+#[tokio::test]
+async fn concurrent_cross_owner_expose_cannot_rewrite_acl() {
+    let engine = FakeEngine::new();
+    let (manager, _) = manager(engine);
+    let a = manager.expose("a", expose_http(8765));
+    let b = manager.expose(
+        "b",
+        ExposeConfig {
+            port: 8765,
+            kind: TunnelKind::Http,
+            label: "hijack".into(),
+            allowed_peers: vec![OTHER_NODE.into()],
+        },
+    );
+    let (ra, rb) = tokio::join!(a, b);
+    let winner = match (&ra, &rb) {
+        (Ok(_), Err(e)) | (Err(e), Ok(_)) => {
+            assert_eq!(e.code, crate::tunnel::CODE_PORT_NOT_EXPOSED);
+            if ra.is_ok() {
+                "a"
+            } else {
+                "b"
+            }
+        }
+        other => panic!("必须恰好一个成功: {other:?}"),
+    };
+
+    let rules = manager.policy().rules();
+    assert_eq!(rules.len(), 1, "同一端口只能有一条规则");
+    assert_eq!(rules[0].owner, winner, "规则属主 = 成功方");
+    if winner == "a" {
+        assert!(rules[0].allowed_peers.is_empty(), "失败方不得改写赢家 ACL");
+        assert_eq!(rules[0].label, "test");
+    } else {
+        assert_eq!(rules[0].allowed_peers, vec![OTHER_NODE.to_string()]);
+        assert_eq!(rules[0].label, "hijack");
+    }
+}
+
 /// 服务租约 stop：停对等面 / 释放 reservation / 清空规则与句柄
 #[tokio::test]
 async fn stop_releases_reservation_and_clears_state() {
@@ -543,6 +635,46 @@ async fn stop_releases_reservation_and_clears_state() {
     assert_eq!(engine.release_calls(), 1);
     assert!(!manager.has_open_resources("p"));
     assert!(manager.status("p").await.peer_face.is_none());
+}
+
+/// H3：stop 与「慢 recount」并发时，reservation 最终不得残留；配置跨 stop 保留
+#[tokio::test]
+async fn stop_serializes_with_in_flight_recount_and_keeps_config() {
+    let engine = FakeEngine::new();
+    let (manager, _) = manager(engine.clone());
+    manager.configure("p", relay_config()).await.unwrap();
+    manager.expose("p", expose_http(8765)).await.unwrap();
+    assert_eq!(engine.reserve_calls(), 1);
+
+    // 改 relay 地址触发第二次 reserve；拖慢 reserve 制造「stop 与 recount 并发」
+    engine.set_reserve_delay(80);
+    let reconfigure = {
+        let manager = Arc::clone(&manager);
+        tokio::spawn(async move {
+            manager
+                .configure(
+                    "p",
+                    TunnelConfig {
+                        allow_wan: true,
+                        relay_addrs: vec![format!("/ip4/127.0.0.1/tcp/4101/p2p/{RELAY_PEER}")],
+                    },
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    manager.stop().await.unwrap();
+    reconfigure.await.unwrap().unwrap();
+
+    let status = manager.status("p").await;
+    assert!(!status.reservation, "stop 后不得残留 reserved=true（H3）");
+    assert_eq!(engine.reserve_calls(), 2);
+    assert!(engine.release_calls() >= 1, "stop 必须释放最后一次预留");
+    assert!(
+        status.allow_wan && status.relay_addrs_configured == 1,
+        "配置是持久声明，跨 stop 保留"
+    );
+    assert!(!manager.has_open_resources("p"));
 }
 
 /// 令牌票据：需要本端对等面（T06 的 `tunnel-unavailable` 是移动端的显性出路）
@@ -568,7 +700,7 @@ fn lan_addrs() -> String {
 }
 
 fn lan_and_relay_addrs() -> String {
-    format!("[\"/ip4/{LAN_ADDR}/tcp/47613\", \"{RELAY}/p2p/{RELAY_PEER}/p2p-circuit/p2p/{TARGET_PEER}\"]")
+    format!("[\"/ip4/{LAN_ADDR}/tcp/47613\", \"{RELAY}/p2p-circuit/p2p/{TARGET_PEER}\"]")
 }
 
 /// LAN 可通：只拨 LAN，不建立 reservation，模式 lan-active
@@ -1055,13 +1187,40 @@ async fn relay_addr_change_rebuilds_reservation() {
             "p",
             TunnelConfig {
                 allow_wan: true,
-                relay_addrs: vec!["/ip4/127.0.0.1/tcp/4101".into()],
+                relay_addrs: vec![format!("/ip4/127.0.0.1/tcp/4101/p2p/{RELAY_PEER}")],
             },
         )
         .await
         .unwrap();
     assert_eq!(engine.reserve_calls(), 2, "地址变化必须重建 reservation");
     assert!(engine.reserve_addrs()[1][0].contains("4101"));
+    manager.stop().await.unwrap();
+}
+
+/// M1：relay 地址切换失败时不得继续谎报 reserved=true（引擎已释放旧预留）
+#[tokio::test]
+async fn relay_refresh_failure_clears_reserved_flag() {
+    let engine = FakeEngine::new();
+    let (manager, _) = manager(engine.clone());
+    manager.configure("p", relay_config()).await.unwrap();
+    manager.expose("p", expose_http(8765)).await.unwrap();
+    assert!(manager.status("p").await.reservation);
+
+    engine.set_reserve_fails(true);
+    manager
+        .configure(
+            "p",
+            TunnelConfig {
+                allow_wan: true,
+                relay_addrs: vec![format!("/ip4/127.0.0.1/tcp/4101/p2p/{RELAY_PEER}")],
+            },
+        )
+        .await
+        .unwrap();
+
+    let status = manager.status("p").await;
+    assert!(!status.reservation, "刷新失败后旧预留已被引擎释放，status 必须如实");
+    assert_eq!(engine.reserve_calls(), 2);
     manager.stop().await.unwrap();
 }
 
@@ -1120,7 +1279,7 @@ async fn domain_relay_is_resolved_before_reserve() {
 /// R12：relay 处于 Connecting / Lost 时 circuit 地址不可宣告（QR 只能带可拨地址）
 #[test]
 fn relay_lost_is_not_advertised_as_dialable() {
-    let addr: Multiaddr = format!("{RELAY}/p2p/{RELAY_PEER}").parse().unwrap();
+    let addr: Multiaddr = RELAY.parse().unwrap();
     assert!(advertised_relay_addr(RelayState::Reserved, Some(&addr)).is_some());
     assert!(advertised_relay_addr(RelayState::Connecting, Some(&addr)).is_none());
     assert!(advertised_relay_addr(RelayState::Lost, Some(&addr)).is_none());
@@ -1182,7 +1341,7 @@ fn policy_with_http_rule() -> Arc<TunnelPolicy> {
     let policy = Arc::new(TunnelPolicy::new(
         PolicyConfig::new(SocketAddr::from(([127, 0, 0, 1], 39001)), 47613, 4001).unwrap(),
     ));
-    policy.expose(expose_http(8765)).unwrap();
+    policy.expose("p", expose_http(8765)).unwrap();
     policy
 }
 

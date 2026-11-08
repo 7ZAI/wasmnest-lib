@@ -375,6 +375,10 @@ pub struct DialAddrsEndpoint {
 /// 在窗口内未完成按失败显性上报，不无限挂起。
 pub(crate) const DIAL_PER_ADDR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// relay 候选的单次拨号窗口（M5）：先连中继再开 circuit，跨公网 / 移动网络
+/// 3s 常不够，按设计 §4.9 给更长窗口（LAN 仍用 [`DIAL_PER_ADDR_TIMEOUT`]）。
+pub(crate) const RELAY_DIAL_PER_ADDR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// 候选地址字符串 → multiaddr 列表（多地址拨号入口与数据面重拨共用）
 ///
 /// fail-visible：空列表与任何一条非法地址都显性报错并点名。静默丢弃候选会让
@@ -1112,6 +1116,9 @@ async fn start_locked(
         );
     }
 
+    // M4：引擎的传输形态事实（LAN / relay）经宿主事件桥发出 `peer-transport`；
+    // 入站 `peer-connected` 不带 transport，接收侧否则永远显示「形态未知」。
+    let transport_ctx = Arc::clone(&ctx);
     let node = PeerNetNode::new(PeerNetNodeConfig {
         bind_addr,
         identity,
@@ -1119,7 +1126,19 @@ async fn start_locked(
     })
     .map_err(map_peer_net_error)?
     .with_trust_store(Arc::clone(&trust))
-    .with_discovery(Arc::new(DiscoveryCache::new()));
+    .with_discovery(Arc::new(DiscoveryCache::new()))
+    .with_transport_observer(Arc::new(move |node_id, transport, wan| {
+        emit_json(
+            &transport_ctx,
+            "peer-transport",
+            serde_json::json!({
+                "nodeId": node_id,
+                "transport": transport,
+                "wan": wan,
+                "atMs": crate::tunnel::mode::now_ms(),
+            }),
+        );
+    }));
     let cache = node.discovery().expect("discovery cache just attached");
 
     // 首连确认桥接：闸门事件 → 前端应用内确认弹窗（issue 04）

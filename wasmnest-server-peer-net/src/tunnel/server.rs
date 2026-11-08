@@ -265,12 +265,15 @@ mod tests {
         let policy = Arc::new(TunnelPolicy::new(PolicyConfig::new(peer_face, 47613, 4001).unwrap()));
         for (port, kind) in [(8765, TunnelKind::Http), (39002, TunnelKind::Tcp)] {
             policy
-                .expose(ExposeConfig {
-                    port,
-                    kind,
-                    label: "test".into(),
-                    allowed_peers: vec![],
-                })
+                .expose(
+                    "p",
+                    ExposeConfig {
+                        port,
+                        kind,
+                        label: "test".into(),
+                        allowed_peers: vec![],
+                    },
+                )
                 .unwrap();
         }
         let tickets = Arc::new(TicketIssuer::new());

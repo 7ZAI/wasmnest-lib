@@ -45,6 +45,7 @@ use wasmnest_p2p_engine::identity_bridge::{NodeId as P2pNodeId, NodeKey};
 use wasmnest_p2p_engine::links::LinkAdmission;
 use wasmnest_p2p_engine::ports::{
     DialFailed, P2pEventSink, P2pPorts, PeerAdmissionPort, PeerConnected, PeerDenied, PeerDisconnected,
+    TransportChanged,
 };
 use wasmnest_p2p_engine::relay::Transport;
 use wasmnest_p2p_engine::stream_proto;
@@ -216,9 +217,16 @@ impl PeerAdmissionPort for TrustAdmissionPort {
     }
 }
 
+/// 传输形态变化观察者（宿主事件桥注入）：`(node_id, transport, wan)`。
+///
+/// base 层不依赖宿主事件总线；`lib.rs` 的装配点把它桥到 `peer-transport`。
+pub type TransportObserver = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
+
 /// 引擎连接态事件出口：本层不消费（连接态由 `InboundConnectionBridge` 与
-/// 宿主出站会话表维护），只留诊断日志。
-struct LogEventSink;
+/// 宿主出站会话表维护），只留诊断日志；`transport_changed` 经注入观察者转发。
+struct LogEventSink {
+    observer: Option<TransportObserver>,
+}
 
 impl P2pEventSink for LogEventSink {
     fn listening_changed(&self, addrs: Vec<SocketAddr>) {
@@ -245,6 +253,21 @@ impl P2pEventSink for LogEventSink {
             cause = ?ev.cause,
             "p2p inbound peer denied"
         );
+    }
+    /// M4：传输形态事实（LAN 直连 / relay）必须经宿主事件面发出——入站桥的
+    /// `peer-connected` 不带 transport，接收侧否则永远显示「形态未知」。
+    fn transport_changed(&self, ev: TransportChanged) {
+        let transport = ev.transport.as_str();
+        let wan = matches!(ev.transport, Transport::WanRelay);
+        tracing::debug!(
+            node_id = %ev.node_id,
+            transport,
+            addr = %ev.address,
+            "p2p transport changed"
+        );
+        if let Some(observer) = &self.observer {
+            observer(ev.node_id.as_str(), transport, wan);
+        }
     }
     fn dial_failed(&self, ev: DialFailed) {
         tracing::debug!(
@@ -283,8 +306,12 @@ pub(crate) async fn dial_addrs(
     let expected = P2pNodeId::parse(node_id.as_str()).map_err(|e| PeerNetError::Transport {
         detail: format!("invalid node id: {e}"),
     })?;
+    // M5：LAN 与 relay 候选分窗口结算（relay 建链更慢，3s 会误判 unreachable）
     let outcome = p2p
-        .dial_addrs(addrs, expected.clone(), per_addr_timeout)
+        .dial_addrs_with_timeouts(addrs, expected.clone(), |addr| match Transport::from_multiaddr(addr) {
+            Transport::WanRelay => crate::RELAY_DIAL_PER_ADDR_TIMEOUT,
+            Transport::LanDirect => per_addr_timeout,
+        })
         .await
         .map_err(map_p2p_error)?;
     let peer_addr = multiaddr_to_socket_addr(&outcome.addr).unwrap_or_else(|| {
@@ -602,6 +629,7 @@ pub(crate) fn spawn_running_node(
     trust: Arc<TrustStore>,
     events: mpsc::Sender<TrustEvent>,
     handler: Arc<dyn ConnectionHandler>,
+    transport_observer: Option<TransportObserver>,
 ) -> Result<RunningNode> {
     // libp2p 的 listen_on 异步展开端口：先占位取端口再释放（与旧 listener 占位
     // 同一防竞态思路）。旧调用方可能仍持有 listener 副本（try_clone 后只把克隆
@@ -660,7 +688,9 @@ pub(crate) fn spawn_running_node(
             trust: Arc::clone(&trust),
             events,
         }),
-        events: Arc::new(LogEventSink),
+        events: Arc::new(LogEventSink {
+            observer: transport_observer,
+        }),
     };
     let (p2p, mut incoming) =
         P2pEngine::start_with_protocols_admission(key, config, ports, STARTUP_PROTOCOLS).map_err(map_p2p_error)?;

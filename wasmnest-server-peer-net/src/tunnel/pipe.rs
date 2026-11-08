@@ -104,6 +104,18 @@ fn io_error(e: std::io::Error) -> TunnelError {
     TunnelError::new(CODE_TUNNEL_CLOSED, format!("通道 IO 结束：{:?}", e.kind()))
 }
 
+/// 对端全关闭（读端 / 写端都已 drop）在 TCP 上表现为这些错误：属于正常终止，
+/// 不是协议故障。半关闭（`shutdown(SHUT_WR)`）不会命中这里，另一方向仍可写。
+fn peer_closed(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::UnexpectedEof
+    )
+}
+
 fn count_bytes(total: &Arc<AtomicU64>, n: u64, max_bytes: u64) -> Result<()> {
     let before = total.fetch_add(n, Ordering::SeqCst);
     if before.saturating_add(n) > max_bytes {
@@ -112,7 +124,7 @@ fn count_bytes(total: &Arc<AtomicU64>, n: u64, max_bytes: u64) -> Result<()> {
     Ok(())
 }
 
-async fn pump<R, W>(reader: &mut R, writer: &mut W, limits: &PipeLimits, total: Arc<AtomicU64>) -> Result<()>
+async fn pump<R, W>(reader: &mut R, mut writer: W, limits: &PipeLimits, total: Arc<AtomicU64>) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -122,17 +134,35 @@ where
         let n = match limits.idle_timeout {
             Some(d) => match tokio::time::timeout(d, reader.read(&mut buf)).await {
                 Ok(Ok(n)) => n,
+                Ok(Err(e)) if peer_closed(&e) => return Ok(()),
                 Ok(Err(e)) => return Err(io_error(e)),
                 Err(_) => return Err(TunnelError::new(CODE_TUNNEL_IDLE, "短连接 HTTP 流空闲回收")),
             },
-            None => reader.read(&mut buf).await.map_err(io_error)?,
+            None => match reader.read(&mut buf).await {
+                Ok(n) => n,
+                Err(e) if peer_closed(&e) => return Ok(()),
+                Err(e) => return Err(io_error(e)),
+            },
         };
         if n == 0 {
+            // 半关闭语义（M8）：本方向 EOF 只关本方向的写半，另一方向继续；
+            // 直接 select 掉另一方向会截断 tcp 类协议的最后一段响应。
+            writer.shutdown().await.map_err(io_error)?;
             return Ok(());
         }
         count_bytes(&total, n as u64, limits.max_bytes)?;
-        writer.write_all(&buf[..n]).await.map_err(io_error)?;
-        writer.flush().await.map_err(io_error)?;
+        if let Err(e) = writer.write_all(&buf[..n]).await {
+            if peer_closed(&e) {
+                return Ok(());
+            }
+            return Err(io_error(e));
+        }
+        if let Err(e) = writer.flush().await {
+            if peer_closed(&e) {
+                return Ok(());
+            }
+            return Err(io_error(e));
+        }
     }
 }
 
@@ -183,13 +213,25 @@ where
         remote.flush().await.map_err(io_error)?;
     }
 
-    let (mut local_r, mut local_w) = tokio::io::split(local);
-    let (mut remote_r, mut remote_w) = tokio::io::split(remote);
-    let client_to_backend = pump(&mut local_r, &mut remote_w, &effective, Arc::clone(&total));
-    let backend_to_client = pump(&mut remote_r, &mut local_w, &effective, Arc::clone(&total));
-    tokio::select! {
-        result = client_to_backend => result?,
-        result = backend_to_client => result?,
+    let (mut local_r, local_w) = tokio::io::split(local);
+    let (mut remote_r, remote_w) = tokio::io::split(remote);
+    // 每个方向拥有自己的写半（读半借用）；EOF 时由 pump 内部 shutdown，
+    // 两个方向都结束后才返回——保留半关闭语义（M8）。
+    let mut client_to_backend = Box::pin(pump(&mut local_r, remote_w, &effective, Arc::clone(&total)));
+    let mut backend_to_client = Box::pin(pump(&mut remote_r, local_w, &effective, Arc::clone(&total)));
+    let mut c2b_done = false;
+    let mut b2c_done = false;
+    while !(c2b_done && b2c_done) {
+        tokio::select! {
+            result = &mut client_to_backend, if !c2b_done => {
+                c2b_done = true;
+                result?;
+            }
+            result = &mut backend_to_client, if !b2c_done => {
+                b2c_done = true;
+                result?;
+            }
+        }
     }
     Ok(PipeStats {
         total_bytes: total.load(Ordering::SeqCst),
@@ -311,5 +353,33 @@ mod tests {
         client.write_all(b"0123456789").await.unwrap();
         let err = pipe.await.unwrap().unwrap_err();
         assert_eq!(err.code, CODE_TUNNEL_LIMIT);
+    }
+
+    /// M8：客户端 `shutdown(SHUT_WR)` 后后端仍能写完最后一段响应
+    #[tokio::test]
+    async fn half_close_is_propagated_instead_of_truncating_the_other_direction() {
+        let (mut local, mut client) = tokio::io::duplex(2048);
+        let (mut backend, mut server) = tokio::io::duplex(2048);
+
+        let pipe = pipe_with_limits(&mut local, &mut backend, PipeLimits::long_lived());
+        let scenario = async {
+            client.write_all(b"request").await.unwrap();
+            // 客户端半关闭：后端必须读到 EOF，而不是整条流被取消
+            client.shutdown().await.unwrap();
+            let mut got = Vec::new();
+            server.read_to_end(&mut got).await.unwrap();
+            assert_eq!(got, b"request", "请求必须完整送达");
+
+            // 半关闭后仍允许后端回写最后一段
+            server.write_all(b"response").await.unwrap();
+            server.shutdown().await.unwrap();
+            let mut resp = Vec::new();
+            client.read_to_end(&mut resp).await.unwrap();
+            assert_eq!(resp, b"response", "反向数据不得被截断");
+        };
+
+        let (stats, ()) = tokio::join!(pipe, scenario);
+        let stats = stats.expect("pipe must not error on clean half-close");
+        assert!(stats.total_bytes >= (b"request".len() + b"response".len()) as u64);
     }
 }

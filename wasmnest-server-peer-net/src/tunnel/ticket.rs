@@ -67,7 +67,11 @@ impl TicketIssuer {
     }
 
     /// 签发：TTL 必须 1..=120s，目标端口非 0；返回 64 位 hex 票据
+    ///
+    /// 机会式清理过期条目（L5）：反复刷新 QR 会留下未使用的过期票据，长期运行
+    /// 持续累积；签发是低频写路径，在这里顺带回收成本可忽略。
     pub fn issue(&self, port: u16, ttl_secs: u32) -> Result<String> {
+        self.purge_expired();
         if port == 0 {
             return Err(TunnelError::new(CODE_TICKET_EXPIRED, "票据必须绑定有效目标端口"));
         }
@@ -94,6 +98,8 @@ impl TicketIssuer {
     /// 窗口不允许的 kind 等失败不得把一次性票据白白作废。真正的单次消费由
     /// [`Self::consume`] 在准入通过后完成。
     pub fn validate(&self, ticket: &str, port: u16, _path: AccessPath) -> Result<()> {
+        // 机会式清理（L5）：准入校验也是低频路径，先把已过期条目摘掉。
+        self.purge_expired();
         let entries = self.entries.lock().expect("ticket table poisoned");
         let entry = entries
             .get(ticket)
@@ -258,6 +264,17 @@ mod tests {
         assert_eq!(issuer.len(), 1, "其他端口的票据不受影响");
         issuer.clear();
         assert!(issuer.is_empty(), "stop 清空全部票据");
+    }
+
+    /// L5：签发时机会式清理过期票据（未使用的旧票不再累积）
+    #[test]
+    fn issue_purges_expired_tickets_opportunistically() {
+        let (clock, now) = fixed_clock();
+        let issuer = TicketIssuer::with_clock(clock);
+        let _old = issuer.issue(8765, 10).unwrap();
+        now.store(1_000_000 + 11_000, Ordering::SeqCst);
+        let _new = issuer.issue(8765, 10).unwrap();
+        assert_eq!(issuer.len(), 1, "过期票据应在下次签发时被回收");
     }
 
     #[test]

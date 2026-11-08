@@ -188,9 +188,11 @@ struct RunningNodeInner {
     links: LinkRegistry,
     /// libp2p-stream 控制句柄（开流 / 注册协议都需要 &mut，故串行化）
     control: Arc<Mutex<libp2p_stream::Control>>,
-    /// 拨号串行闸：同一时刻只让一个 dial 走完「检查链路 → 发命令 → 等校验」，
-    /// 并发拨同一对端时后到者直接命中已建立的链路。
-    dial_gate: Arc<Mutex<()>>,
+    /// 拨号串行闸（按对端）：同一时刻只让同一对端的一个 dial 走完
+    /// 「检查链路 → 发命令 → 等校验」，并发拨同一对端时后到者直接命中已建链路。
+    ///
+    /// 按对端而非全局：L1 —— relay 候选的长窗口不应阻塞其他设备的拨号。
+    dial_gates: Arc<std::sync::Mutex<HashMap<NodeId, Arc<Mutex<()>>>>>,
     /// relay 控制面状态快照（泵写、句柄读；`status()` 的数据面）
     relay_status: Arc<RwLock<RelayStatus>>,
     /// 泵任务（shutdown 取走；克隆句柄共享同一 Option）
@@ -258,7 +260,15 @@ impl RunningNode {
         expected_node_id: NodeId,
         timeout: Duration,
     ) -> Result<(), P2pError> {
-        let _gate = self.inner.dial_gate.lock().await;
+        let gate = {
+            let mut gates = self
+                .inner
+                .dial_gates
+                .lock()
+                .expect("dial gate registry poisoned");
+            Arc::clone(gates.entry(expected_node_id.clone()).or_default())
+        };
+        let _gate = gate.lock().await;
         let dial_addr = multiaddr_to_socket_addr(&addr);
         let mut must_redial = false;
         {
@@ -345,6 +355,23 @@ impl RunningNode {
         expected_node_id: NodeId,
         per_addr_timeout: Duration,
     ) -> Result<DialOutcome, P2pError> {
+        self.dial_addrs_with_timeouts(addrs, expected_node_id, |_| per_addr_timeout)
+            .await
+    }
+
+    /// [`Self::dial_addrs`] 的逐候选项超时版本。
+    ///
+    /// 设计 §4.9 要求 LAN 与 relay 候选使用不同窗口（relay 先连中继再开
+    /// circuit，跨公网/移动网络 3s 明显偏紧）；超时由调用方按候选决定。
+    pub async fn dial_addrs_with_timeouts<F>(
+        &self,
+        addrs: &[Multiaddr],
+        expected_node_id: NodeId,
+        timeout_for: F,
+    ) -> Result<DialOutcome, P2pError>
+    where
+        F: Fn(&Multiaddr) -> Duration,
+    {
         if addrs.is_empty() {
             return Err(P2pError::Dial("候选地址为空".to_string()));
         }
@@ -357,7 +384,7 @@ impl RunningNode {
         let mut failures = Vec::new();
         for addr in addrs {
             match self
-                .dial_with_timeout(addr.clone(), expected_node_id.clone(), per_addr_timeout)
+                .dial_with_timeout(addr.clone(), expected_node_id.clone(), timeout_for(addr))
                 .await
             {
                 Ok(()) => {
@@ -709,7 +736,7 @@ impl P2pEngine {
                 listen_addrs,
                 links,
                 control: Arc::new(Mutex::new(control)),
-                dial_gate: Arc::new(Mutex::new(())),
+                dial_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 relay_status,
                 pump: Mutex::new(Some(pump)),
             }),

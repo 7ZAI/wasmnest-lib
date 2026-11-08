@@ -37,7 +37,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use wasmnest_p2p_engine::error::{DialCause, P2pError};
-use wasmnest_p2p_engine::relay::RelayState;
+use wasmnest_p2p_engine::relay::{RelayEndpoint, RelayState};
 use wasmnest_p2p_engine::Multiaddr;
 use wasmnest_server_base::face::PeerFaceResolver;
 
@@ -368,6 +368,11 @@ impl TunnelManager {
     /// 服务租约 stop：停对等面 / 取消在飞流 / 清 expose 规则与票据 / 释放 reservation
     pub async fn stop(&self) -> Result<()> {
         let _gate = self.start_gate.lock().await;
+        // 与 `recount` 互斥（H3）：否则「configure 在飞 → 最后租约释放触发 stop
+        // → stop 清状态 → recount 恢复并按旧 desired 建预留」会把服务停成
+        // reserved=true。锁序：start_gate → recount_gate（configure/connect 均不
+        // 反序取 start_gate）。
+        let _recount = self.recount_gate.lock().await;
         if let Some(mut listener) = self.peer_face.lock().await.take() {
             listener.stop();
         }
@@ -401,7 +406,9 @@ impl TunnelManager {
             }
             state.connects.clear();
             state.rules.clear();
-            state.configs.clear();
+            // `configs` 是应用声明的持久配置（allowWan / relay 地址），不是
+            // 本租约内的资源：跨 stop 保留，下次 expose 仍按真实策略计数。
+            // （清掉会让「已启用远程访问」的活跃应用在重连时退化成 wan-disabled。）
             state.inbound_wan.clear();
             state.lan_candidates.clear();
             state.modes = ModeMachine::new();
@@ -426,7 +433,13 @@ impl TunnelManager {
                     "allowWan=true 但未配置 relay 地址（外网通道不可用）",
                 ));
             }
-            config.resolved_relay_addrs().await?;
+            let resolved = config.resolved_relay_addrs().await?;
+            // 端点形状预检（L3）：缺 `/p2p/<relay>` / 带 `/p2p-circuit` / 残留域名
+            // 都是配置错误，在 configure 时点名拒绝，不拖到 reserve 才报笼统错误。
+            for addr in resolved {
+                RelayEndpoint::parse(&addr, None)
+                    .map_err(|e| TunnelError::new(CODE_WAN_DISABLED, format!("relay 端点非法（{addr}）：{e}")))?;
+            }
         }
         {
             let mut state = self.state.lock().expect("tunnel state poisoned");
@@ -454,37 +467,18 @@ impl TunnelManager {
         }
 
         let expose_port = config.port;
-        // 属主仲裁必须先于 `policy.expose`：幂等重登记会刷新 ACL / 标签，若先写
-        // 再拒绝，非属主就能改掉别人的 `allowedPeers`（旧实现因「幂等不更新」掩盖了）。
-        if let Some(existing) = self.policy.rule_id_for(expose_port, config.kind) {
-            let state = self.state.lock().expect("tunnel state poisoned");
-            if state.rules.get(&existing).is_some_and(|entry| entry.owner != plugin_id) {
-                return Err(TunnelError::new(
-                    crate::tunnel::CODE_PORT_NOT_EXPOSED,
-                    "该端口已被其他应用暴露（先 unexpose 再重试）",
-                ));
-            }
-        }
-        let rule_id = self.policy.expose(config)?;
+        // 属主校验 + ACL 刷新由 `policy.expose` 在同一把规则锁内完成：
+        // 先查后写会留下「非属主窗口」（H2），这里不再做第二份预判。
+        let rule_id = self.policy.expose(plugin_id, config)?;
         {
             let mut state = self.state.lock().expect("tunnel state poisoned");
-            match state.rules.get(&rule_id) {
-                Some(existing) if existing.owner != plugin_id => {
-                    return Err(TunnelError::new(
-                        crate::tunnel::CODE_PORT_NOT_EXPOSED,
-                        "该端口已被其他应用暴露（先 unexpose 再重试）",
-                    ));
-                }
-                Some(_) => {}
-                None => {
-                    state.rules.insert(
-                        rule_id.clone(),
-                        RuleEntry {
-                            owner: plugin_id.to_string(),
-                        },
-                    );
-                }
-            }
+            // policy 是规则真源；state 只记属主（宿主租约 / recount 用）
+            state.rules.insert(
+                rule_id.clone(),
+                RuleEntry {
+                    owner: plugin_id.to_string(),
+                },
+            );
         }
         if let Err(e) = self.recount().await {
             // 规则已登记（LAN 可用）；reservation 失败必须可见但不回滚 LAN 入口
@@ -704,13 +698,41 @@ impl TunnelManager {
                 if wan_used {
                     self.release_wan(plugin_id).await;
                 }
+                // L2：模式已在拨号成功后置 active，bind 失败必须回落，不能留下
+                // 「已连接」假象（无句柄可操作，用户只能重连）。
+                let still_connected = {
+                    let state = self.state.lock().expect("tunnel state poisoned");
+                    state.connects.values().any(|c| c.node_id == node_key)
+                };
+                if !still_connected {
+                    self.mode_transition(|modes| modes.mark_offline(&node_key));
+                }
                 self.emit_tunnel_error(&node_key, e.code, &e.detail);
                 return Err(e);
             }
         };
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = format!("tunnel-{}", uuid::Uuid::new_v4());
+        // 先登记句柄再 spawn：代理任务可能在任何后续 await 之前就失败，清理
+        // 路径必须能找到句柄（M9）。
+        {
+            let mut state = self.state.lock().expect("tunnel state poisoned");
+            state.connects.insert(
+                handle.clone(),
+                ConnectHandle {
+                    owner: plugin_id.to_string(),
+                    node_id: node_key.clone(),
+                    address: addr,
+                    shutdown: shutdown_tx,
+                    wan: wan_used,
+                },
+            );
+        }
         let event_engine = Arc::clone(&self.engine);
         let event_node = node_key.clone();
+        let cleanup_manager = Arc::clone(self);
+        let cleanup_handle = handle.clone();
+        let cleanup_node = node_key.clone();
         tokio::spawn(async move {
             if let Err(e) = run_proxy(listener, connector, shutdown_rx).await {
                 // 代理退出必须可见：否则应用只看到本地端口「连上又断」而不知道原因，
@@ -729,23 +751,14 @@ impl TunnelManager {
                     "tunnel-state",
                     serde_json::json!({ "nodeId": event_node, "state": "error" }),
                 );
+                // M9：致命退出后幂等摘句柄 / 释放 WAN 计数，不留孤儿句柄与
+                // 永不归零的引用计数（应用不 close 时租约也会一直挂着）。
+                cleanup_manager
+                    .cleanup_failed_proxy(&cleanup_handle, &cleanup_node)
+                    .await;
             }
         });
 
-        let handle = format!("tunnel-{}", uuid::Uuid::new_v4());
-        {
-            let mut state = self.state.lock().expect("tunnel state poisoned");
-            state.connects.insert(
-                handle.clone(),
-                ConnectHandle {
-                    owner: plugin_id.to_string(),
-                    node_id: node_key.clone(),
-                    address: addr,
-                    shutdown: shutdown_tx,
-                    wan: wan_used,
-                },
-            );
-        }
         self.emit(
             "tunnel-state",
             serde_json::json!({
@@ -980,6 +993,30 @@ impl TunnelManager {
         );
     }
 
+    /// 代理任务致命退出后的幂等清理（M9）：摘句柄 + 归还 WAN 引用计数。
+    ///
+    /// 与 [`Self::close`] 共享同一判据（句柄出表才算命中），因此应用随后再
+    /// `close` 会得到 `tunnel-closed`，不会双重 release。
+    async fn cleanup_failed_proxy(self: &Arc<Self>, handle: &str, node_key: &str) {
+        let entry = {
+            let mut state = self.state.lock().expect("tunnel state poisoned");
+            state.connects.remove(handle)
+        };
+        let Some(entry) = entry else {
+            return;
+        };
+        if entry.wan {
+            self.release_wan(&entry.owner).await;
+        }
+        let still_connected = {
+            let state = self.state.lock().expect("tunnel state poisoned");
+            state.connects.values().any(|c| c.node_id == node_key)
+        };
+        if !still_connected {
+            self.mode_transition(|modes| modes.mark_offline(node_key));
+        }
+    }
+
     /// 关闭句柄（listener + 在飞流一起停；只允许属主）
     pub async fn close(&self, plugin_id: &str, handle: &str) -> Result<bool> {
         let entry = {
@@ -1202,13 +1239,17 @@ impl TunnelManager {
                     tracing::info!(desired, "tunnel relay reservation established");
                 }
                 Err(e) if reserved => {
-                    // 地址切换失败：旧 reservation 仍可用（旧地址集合继续生效）；
-                    // 显性告警（下一次 recount 会重试），不回滚 LAN / 旧 WAN 入口。
+                    // 地址切换失败：引擎 `reserve_relay` 已先释放旧预留再尝试新端点，
+                    // 旧地址实际上已不在了——如实清掉 reserved（M1：status 不得与
+                    // relay.state=lost 自相矛盾）；下一次 recount 会重试。
                     tracing::warn!(
                         code = e.code,
-                        "tunnel relay reservation refresh failed; keeping previous: {}",
+                        "tunnel relay reservation refresh failed; marking reservation lost: {}",
                         e.detail
                     );
+                    let mut state = self.state.lock().expect("tunnel state poisoned");
+                    state.reserved = false;
+                    state.reserved_addrs.clear();
                 }
                 Err(e) => return Err(e),
             }
@@ -1429,7 +1470,13 @@ impl TunnelEngine for PeerCtxEngine {
         let running = self.running().await?;
         let expected = Self::to_engine_node(node_id)?;
         running
-            .dial_addrs(addrs, expected, DIAL_PER_ADDR_TIMEOUT)
+            .dial_addrs_with_timeouts(addrs, expected, |addr| {
+                if is_relay_dial_addr(addr) {
+                    crate::RELAY_DIAL_PER_ADDR_TIMEOUT
+                } else {
+                    DIAL_PER_ADDR_TIMEOUT
+                }
+            })
             .await
             .map(|_| ())
             .map_err(|e| TunnelError::new(CODE_PEER_OFFLINE, format!("隧道拨号失败：{e}")))
@@ -1443,7 +1490,13 @@ impl TunnelEngine for PeerCtxEngine {
             .map_err(|e| DialFailure::new(LanFailure::Other, e.detail))?;
         let expected = Self::to_engine_node(node_id).map_err(|e| DialFailure::new(LanFailure::Auth, e.detail))?;
         running
-            .dial_addrs(addrs, expected, DIAL_PER_ADDR_TIMEOUT)
+            .dial_addrs_with_timeouts(addrs, expected, |addr| {
+                if is_relay_dial_addr(addr) {
+                    crate::RELAY_DIAL_PER_ADDR_TIMEOUT
+                } else {
+                    DIAL_PER_ADDR_TIMEOUT
+                }
+            })
             .await
             .map(|_| ())
             .map_err(|e| classify_p2p_dial(&e))

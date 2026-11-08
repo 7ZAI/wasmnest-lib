@@ -58,7 +58,12 @@ interface host-tunnel {
     /// 票据绑定目标端口 + TTL（≤120s）；签发方不得把明文票据写入日志
     issue-pairing-ticket: func(port: u16, ttl-secs: u32) -> result<string, string>;
 
-    /// 传输状态：direct / relay / relay-reserved / offline + addrs + rtt
+    /// 传输状态（JSON 字符串，camelCase）：node{started,nodeId,addrs} /
+    /// peerFace / allowWan / relayAddrsConfigured / reservation /
+    /// relay{state,relayAddr,detail} / exposeRules / connects /
+    /// modes[{nodeId,mode,reason,...}]。模式投影比旧文档的
+    /// direct/relay/relay-reserved/offline 四值更细（含 lan-probing /
+    /// wan-connecting / lan-unreachable 等）；不含 RTT 与任何票据明文。
     status: func() -> result<string, string>;
 }
 

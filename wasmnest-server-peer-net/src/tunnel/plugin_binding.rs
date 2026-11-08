@@ -27,13 +27,19 @@
 //!
 //! `expose` / `connect` 按插件 acquire `net.tunnel`；`unexpose` / `close` 在该插件
 //! **不再持有任何隧道资源**时 release。`configure` / `status` 只读写内存，不拉起
-//! 服务；`issue-pairing-ticket` 需要本端对等面在场，但票据本身是内存表，不额外
-//! 记账（`expose` 已按插件持有租约；无 expose 的纯配对场景由宿主在 T07 决定）。
+//! 服务。
+//!
+//! `issue-pairing-ticket` 同样 acquire：纯配对场景没有 expose / connect，若不记
+//! 账，另一插件释放最后租约触发的 `stop` 会把刚签发的票据清掉（L6）。票据租约
+//! 按签发次数记账，在 TTL 后回收；回收时若插件仍持有 expose / connect 资源则
+//! 不 release（注册表按 holder 去重，提前 release 会误伤他人持有的同一租约）。
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 
 use wasmnest_server_base::service::ServiceRegistry;
 
@@ -170,6 +176,61 @@ fn wire_err(e: crate::tunnel::TunnelError) -> String {
     e.as_wire_error()
 }
 
+/// 未消费的配对票据租约计数（plugin_id → 在飞票据数）
+static PAIRING_LEASES: LazyLock<Mutex<HashMap<String, usize>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 该插件是否仍有未过期的票据租约（unexpose / close 不得提前释放服务）
+fn pairing_leases_pending(plugin_id: &str) -> bool {
+    PAIRING_LEASES
+        .lock()
+        .expect("pairing lease table poisoned")
+        .get(plugin_id)
+        .is_some_and(|count| *count > 0)
+}
+
+/// 票据 TTL 到期后回收该次 acquire 的租约（L6）。
+///
+/// 不按「票据消费」提前回收：消费回调不在本层，且租约是 holder 级去重，
+/// 多张票据 / 同时持有 expose 时提前 release 会误伤仍生效的资源。TTL 上限
+/// 120s，服务多存活一个窗口是可接受代价。
+fn schedule_pairing_lease_release(
+    ports: &Arc<dyn TunnelPorts>,
+    manager: Arc<TunnelManager>,
+    plugin_id: &str,
+    ttl_secs: u32,
+) {
+    let Some(registry) = ports.service_registry() else {
+        return;
+    };
+    let plugin = plugin_id.to_string();
+    let fut = async move {
+        tokio::time::sleep(Duration::from_secs(u64::from(ttl_secs.max(1)))).await;
+        let should_release = {
+            let mut counts = PAIRING_LEASES.lock().expect("pairing lease table poisoned");
+            match counts.get_mut(&plugin) {
+                Some(count) => {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        counts.remove(&plugin);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                None => false,
+            }
+        };
+        // 仍持有 expose / connect 时租约由那些资源负责；这里不能替它们 release
+        if should_release && !manager.has_open_resources(&plugin) {
+            if let Err(e) = registry.release(NET_TUNNEL_SERVICE_KEY, &plugin).await {
+                tracing::warn!(plugin_id = %plugin, "pairing ticket lease release failed: {e}");
+            }
+        }
+    };
+    // 借宿主运行时派生；无运行时（无头/测试）时票据租约留在进程内，不 panic
+    let _ = block_on(ports, async move { tokio::spawn(fut) });
+}
+
 /// `tunnel.configure`：写入应用自持的 allowWan / relay 地址（只改计数）
 pub fn tunnel_configure(
     ports: &Arc<dyn TunnelPorts>,
@@ -237,7 +298,7 @@ pub fn tunnel_unexpose(ports: &Arc<dyn TunnelPorts>, plugin_id: &str, rule_id: &
     let plugin = plugin_id.to_string();
     let rule = rule_id.to_string();
     let result = block_on(ports, async move { call.unexpose(&plugin, &rule).await }).map_err(wire_err)?;
-    if result && !manager.has_open_resources(plugin_id) {
+    if result && !manager.has_open_resources(plugin_id) && !pairing_leases_pending(plugin_id) {
         release_lease(ports, plugin_id, "host_tunnel_unexpose")?;
     }
     Ok(result)
@@ -283,7 +344,7 @@ pub fn tunnel_close(ports: &Arc<dyn TunnelPorts>, plugin_id: &str, handle: &str)
     let plugin = plugin_id.to_string();
     let handle = handle.to_string();
     let result = block_on(ports, async move { call.close(&plugin, &handle).await }).map_err(wire_err)?;
-    if !manager.has_open_resources(plugin_id) {
+    if !manager.has_open_resources(plugin_id) && !pairing_leases_pending(plugin_id) {
         release_lease(ports, plugin_id, "host_tunnel_close")?;
     }
     Ok(result)
@@ -303,7 +364,29 @@ pub fn tunnel_issue_pairing_ticket(
         "host_tunnel_issue_pairing_ticket",
     )?;
     let manager = manager(ports)?;
-    block_on(ports, async move { manager.issue_pairing_ticket(port, ttl_secs).await }).map_err(wire_err)
+    // L6：纯配对场景也要持有服务租约，否则别的插件释放最后租约触发的 stop
+    // 会清掉刚签发的票据 / 对等面。租约按 TTL 在后台回收（见上方说明）。
+    acquire_lease(ports, plugin_id, "host_tunnel_issue_pairing_ticket")?;
+    let call = Arc::clone(&manager);
+    let result = block_on(ports, async move { call.issue_pairing_ticket(port, ttl_secs).await });
+    match result {
+        Ok(ticket) => {
+            {
+                let mut counts = PAIRING_LEASES.lock().expect("pairing lease table poisoned");
+                *counts.entry(plugin_id.to_string()).or_insert(0) += 1;
+            }
+            schedule_pairing_lease_release(ports, manager, plugin_id, ttl_secs);
+            Ok(ticket)
+        }
+        Err(e) => {
+            // 签发失败且没有其他资源：归还刚取得的租约（有资源时租约已被持有，
+            // release 会误伤那些资源，不能调用）。
+            if !manager.has_open_resources(plugin_id) {
+                let _ = release_lease(ports, plugin_id, "host_tunnel_issue_pairing_ticket");
+            }
+            Err(wire_err(e))
+        }
+    }
 }
 
 /// `tunnel.status`：只读投影（两权限任一；不触达网络写面）

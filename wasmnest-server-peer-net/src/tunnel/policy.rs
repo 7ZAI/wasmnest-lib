@@ -43,6 +43,9 @@ pub struct ExposeConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExposeRule {
     pub id: String,
+    /// 规则属主（插件 id）：幂等重登记时在同一把规则锁内完成属主校验，
+    /// 避免「先查属主、再刷 ACL」的 TOCTOU（H2）。
+    pub owner: String,
     pub port: u16,
     pub kind: TunnelKind,
     pub label: String,
@@ -176,7 +179,10 @@ impl TunnelPolicy {
     }
 
     /// 登记规则；同 `(port, kind)` 重复登记返回既有 id（幂等更新标签 / ACL）
-    pub fn expose(&self, config: ExposeConfig) -> Result<String> {
+    ///
+    /// **属主校验与 ACL 刷新在同一把规则锁内完成**：不同插件并发 expose 同一端口
+    /// 时，后到者会在写入前被拒绝，不会先改掉既有规则的 `allowed_peers`（H2）。
+    pub fn expose(&self, owner: &str, config: ExposeConfig) -> Result<String> {
         if config.port == 0 {
             return Err(TunnelError::new(CODE_PORT_NOT_EXPOSED, "目标端口为 0"));
         }
@@ -201,6 +207,12 @@ impl TunnelPolicy {
             .values_mut()
             .find(|r| r.port == config.port && r.kind == config.kind)
         {
+            if existing.owner != owner {
+                return Err(TunnelError::new(
+                    CODE_PORT_NOT_EXPOSED,
+                    "该端口已被其他应用暴露（先 unexpose 再重试）",
+                ));
+            }
             // 幂等重登记 = 以调用方最新声明为准：旧 ACL / 标签不得在新调用方名下
             // 静默残留（否则「重开端口」实际沿用上一次的 allowedPeers）。
             existing.label = config.label;
@@ -212,6 +224,7 @@ impl TunnelPolicy {
             id.clone(),
             ExposeRule {
                 id: id.clone(),
+                owner: owner.to_string(),
                 port: config.port,
                 kind: config.kind,
                 label: config.label,
@@ -381,12 +394,15 @@ mod tests {
 
     fn expose(policy: &TunnelPolicy, port: u16, kind: TunnelKind, allowed: Vec<String>) {
         policy
-            .expose(ExposeConfig {
-                port,
-                kind,
-                label: "test".into(),
-                allowed_peers: allowed,
-            })
+            .expose(
+                "p",
+                ExposeConfig {
+                    port,
+                    kind,
+                    label: "test".into(),
+                    allowed_peers: allowed,
+                },
+            )
             .unwrap();
     }
 
@@ -434,12 +450,15 @@ mod tests {
         for port in [DEFAULT_SERVER_PORT, f.peer_port, f.peer_face.port(), f.relay_port] {
             let err = f
                 .policy
-                .expose(ExposeConfig {
-                    port,
-                    kind: TunnelKind::Tcp,
-                    label: "test".into(),
-                    allowed_peers: vec![],
-                })
+                .expose(
+                    "p",
+                    ExposeConfig {
+                        port,
+                        kind: TunnelKind::Tcp,
+                        label: "test".into(),
+                        allowed_peers: vec![],
+                    },
+                )
                 .unwrap_err();
             assert_eq!(err.code, CODE_PORT_NOT_EXPOSED, "端口 {port} 必须拒绝");
         }
@@ -501,12 +520,15 @@ mod tests {
         let f = fixture();
         assert_eq!(
             f.policy
-                .expose(ExposeConfig {
-                    port: 39002,
-                    kind: TunnelKind::Tcp,
-                    label: "test".into(),
-                    allowed_peers: vec!["not-a-node-id".into()],
-                })
+                .expose(
+                    "p",
+                    ExposeConfig {
+                        port: 39002,
+                        kind: TunnelKind::Tcp,
+                        label: "test".into(),
+                        allowed_peers: vec!["not-a-node-id".into()],
+                    }
+                )
                 .unwrap_err()
                 .code,
             CODE_NOT_MATCHED
@@ -532,21 +554,27 @@ mod tests {
         let f = fixture();
         let a = f
             .policy
-            .expose(ExposeConfig {
-                port: 39002,
-                kind: TunnelKind::Tcp,
-                label: "one".into(),
-                allowed_peers: vec![],
-            })
+            .expose(
+                "p",
+                ExposeConfig {
+                    port: 39002,
+                    kind: TunnelKind::Tcp,
+                    label: "one".into(),
+                    allowed_peers: vec![],
+                },
+            )
             .unwrap();
         let b = f
             .policy
-            .expose(ExposeConfig {
-                port: 39002,
-                kind: TunnelKind::Tcp,
-                label: "two".into(),
-                allowed_peers: vec![NODE_A.into()],
-            })
+            .expose(
+                "p",
+                ExposeConfig {
+                    port: 39002,
+                    kind: TunnelKind::Tcp,
+                    label: "two".into(),
+                    allowed_peers: vec![NODE_A.into()],
+                },
+            )
             .unwrap();
         assert_eq!(a, b);
         let rules = f.policy.rules();
@@ -573,6 +601,33 @@ mod tests {
                 .code,
             CODE_PORT_NOT_EXPOSED
         );
+    }
+
+    /// H2：跨属主重登记在规则锁内被拒绝，既有 ACL 一个字节都不得被改
+    #[test]
+    fn cross_owner_refresh_is_rejected_without_touching_acl() {
+        let f = fixture();
+        expose(&f.policy, 39002, TunnelKind::Tcp, vec![NODE_A.to_string()]);
+
+        let err = f
+            .policy
+            .expose(
+                "intruder",
+                ExposeConfig {
+                    port: 39002,
+                    kind: TunnelKind::Tcp,
+                    label: "hijack".into(),
+                    allowed_peers: vec![NODE_B.to_string()],
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.code, CODE_PORT_NOT_EXPOSED);
+
+        let rules = f.policy.rules();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].owner, "p");
+        assert_eq!(rules[0].label, "test");
+        assert_eq!(rules[0].allowed_peers, vec![NODE_A.to_string()]);
     }
 
     #[test]
@@ -640,12 +695,15 @@ mod tests {
         let cfg = PolicyConfig::unbound(47613, 4001).unwrap();
         let policy = TunnelPolicy::new(cfg);
         policy
-            .expose(ExposeConfig {
-                port: DEFAULT_SERVER_PORT,
-                kind: TunnelKind::Http,
-                label: "test".into(),
-                allowed_peers: vec![],
-            })
+            .expose(
+                "p",
+                ExposeConfig {
+                    port: DEFAULT_SERVER_PORT,
+                    kind: TunnelKind::Http,
+                    label: "test".into(),
+                    allowed_peers: vec![],
+                },
+            )
             .unwrap();
         assert_eq!(
             policy

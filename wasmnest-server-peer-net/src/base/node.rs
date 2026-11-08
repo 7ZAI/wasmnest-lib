@@ -23,7 +23,9 @@ use tokio::sync::mpsc;
 use crate::base::discovery::DiscoveryCache;
 use crate::base::error::{PeerNetError, Result};
 use crate::base::identity::{NodeId, NodeIdentity};
-use crate::base::transport::{spawn_running_node, Connection, ConnectionHandler, RunningNode, TrustEvent};
+use crate::base::transport::{
+    spawn_running_node, Connection, ConnectionHandler, RunningNode, TransportObserver, TrustEvent,
+};
 use crate::base::trust_store::TrustStore;
 use wasmnest_p2p_engine::engine::RunningNode as P2pRunningNode;
 use wasmnest_p2p_engine::stream_proto;
@@ -77,6 +79,8 @@ pub struct PeerNetNode {
     discovery: Option<Arc<DiscoveryCache>>,
     /// 引擎运行句柄（start 后填充；Clone 共享——同一节点多次 dial 复用连接）
     runtime: Arc<Mutex<Option<P2pRunningNode>>>,
+    /// 传输形态变化观察者（宿主事件桥注入；None = 无头 / 测试）
+    transport_observer: Option<TransportObserver>,
 }
 
 impl std::fmt::Debug for PeerNetNode {
@@ -102,6 +106,7 @@ impl PeerNetNode {
             trust_store: Arc::new(TrustStore::in_memory()),
             discovery: None,
             runtime: Arc::new(Mutex::new(None)),
+            transport_observer: None,
         })
     }
 
@@ -117,6 +122,12 @@ impl PeerNetNode {
     /// 造的中枢浏览订阅）与测试的手工喂入共用该缓存实例（「同一通路」，D1）。
     pub fn with_discovery(mut self, cache: Arc<DiscoveryCache>) -> Self {
         self.discovery = Some(cache);
+        self
+    }
+
+    /// 注入传输形态观察者（宿主事件桥；builder 风格，镜像既有注入缝）
+    pub fn with_transport_observer(mut self, observer: TransportObserver) -> Self {
+        self.transport_observer = Some(observer);
         self
     }
 
@@ -163,6 +174,7 @@ impl PeerNetNode {
             Arc::clone(&self.trust_store),
             events,
             handler,
+            self.transport_observer.clone(),
         )?;
         *self.runtime.lock().expect("peer runtime lock poisoned") = Some(running.p2p().clone());
         Ok(running)
@@ -306,6 +318,47 @@ mod dial_addrs_tests {
             conn.transport(),
             Some(Transport::LanDirect),
             "LAN 候选命中必须记录 lan-direct（T12 的 UI 判据）"
+        );
+    }
+
+    /// M4：引擎 `transport_changed` 经注入观察者上报（宿主桥到 `peer-transport`）
+    #[tokio::test]
+    async fn transport_observer_reports_dial_transport() {
+        let dir_a = tempfile::tempdir().expect("dir a");
+        let dir_b = tempfile::tempdir().expect("dir b");
+        let reports: Arc<std::sync::Mutex<Vec<(String, String, bool)>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&reports);
+        let a = node(dir_a.path()).with_transport_observer(Arc::new(move |node_id, transport, wan| {
+            sink.lock()
+                .unwrap()
+                .push((node_id.to_string(), transport.to_string(), wan));
+        }));
+        let b = node(dir_b.path());
+
+        let (events_a, _rx_a) = mpsc::channel(8);
+        let (events_b, _rx_b) = mpsc::channel(8);
+        let _running_a = a.start(events_a, Arc::new(NoopHandler)).expect("start a");
+        let running_b = b.start(events_b, Arc::new(NoopHandler)).expect("start b");
+        b.trust().add(a.node_id()).expect("trust a");
+
+        let conn = a
+            .dial_with(
+                &StaticPeerRecord {
+                    node_id: b.node_id().clone(),
+                    addr: running_b.local_addr(),
+                },
+                stream_proto::SESSION,
+            )
+            .await
+            .expect("dial must connect");
+        assert_eq!(conn.transport(), Some(Transport::LanDirect));
+
+        let reports = reports.lock().unwrap();
+        assert!(
+            reports
+                .iter()
+                .any(|(node, transport, wan)| { node == b.node_id().as_str() && transport == "lan-direct" && !*wan }),
+            "观察者必须收到 LAN 直连形态: {reports:?}"
         );
     }
 }
