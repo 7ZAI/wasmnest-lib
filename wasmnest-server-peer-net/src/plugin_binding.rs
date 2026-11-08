@@ -247,6 +247,25 @@ pub fn peer_revoke_trusted(ports: &Arc<dyn PeerPorts>, plugin_id: &str, node_id:
     sync_result(block_on(ports, crate::revoke_trusted_peer(ctx, node_id)))
 }
 
+/// 登记可信对端（T07/T08：配对成功落信任的唯一写入入口）。
+///
+/// 参数形状与 `revoke-trusted` 对称；`display_name` 为 WIT `option<string>`。
+/// 权限门仍是 `peer`（信任面与拨号/撤销同档），不新增权限词表。
+pub fn peer_trust_node(
+    ports: &Arc<dyn PeerPorts>,
+    plugin_id: &str,
+    node_id: &str,
+    display_name: Option<&str>,
+) -> Result<bool, String> {
+    if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_trust_node") {
+        return Err(denied());
+    }
+    let ctx = ports.peer_ctx()?;
+    let node_id = node_id.to_string();
+    let display_name = display_name.map(str::to_string);
+    sync_result(block_on(ports, crate::trust_peer_node(ctx, node_id, display_name)))
+}
+
 pub fn peer_send_files(
     ports: &Arc<dyn PeerPorts>,
     plugin_id: &str,
@@ -801,6 +820,10 @@ impl wasmnest::peer::host_peer::Host for WasmPluginState {
 
     fn revoke_trusted(&mut self, node_id: String) -> Result<bool, String> {
         peer_revoke_trusted(&ports_for(self), &self.plugin_id, &node_id)
+    }
+
+    fn trust_node(&mut self, node_id: String, display_name: Option<String>) -> Result<bool, String> {
+        peer_trust_node(&ports_for(self), &self.plugin_id, &node_id, display_name.as_deref())
     }
 
     fn send_files(&mut self, session: String, paths_json: String) -> Result<String, String> {

@@ -785,6 +785,24 @@ pub async fn list_trusted_peers(ctx: Arc<PeerCtx>) -> Result<Vec<TrustedPeerDto>
         .collect())
 }
 
+/// 登记可信对端（`host-peer trust-node` 原语的引擎入口，T07/T08）
+///
+/// 与 [`revoke_trusted_peer`] 对称，是**唯一**的信任写入入口：此前只有首连确认
+/// （`respond-consent`）会落库，而隧道配对走一次性票据窗口、没有 pending 确认请求，
+/// 故配对成功时应用必须显式登记信任（隧道准入 `matched` = 本表命中）。
+///
+/// `node_id` 的**可信来源是宿主已验证的请求上下文**（peer face 注入的 `peerNodeId`），
+/// 本层只校验形状——把客户端自报值传进来是调用方的安全缺陷，契约层不替它兜底。
+/// `display_name` 空串按缺省处理（与首连确认的 `add_with_metadata` 同语义）。
+/// 返回是否为新加入（幂等：已信任返回 false）。
+pub async fn trust_peer_node(ctx: Arc<PeerCtx>, node_id: String, display_name: Option<String>) -> Result<bool> {
+    let parsed = parse_node_id(&node_id)?;
+    let trust = trust_handle(&ctx).await?;
+    trust
+        .add_with_metadata(&parsed, display_name.as_deref())
+        .map_err(map_peer_net_error)
+}
+
 /// 撤销可信对端（返回该 ID 原本是否存在；撤销后对端重连重新走首连确认）
 pub async fn revoke_trusted_peer(ctx: Arc<PeerCtx>, node_id: String) -> Result<bool> {
     let parsed = NodeId::parse(&node_id).map_err(|e| AppError::Internal(format!("invalid peer node id: {e}")))?;

@@ -64,6 +64,17 @@ interface host-peer {
     list-trusted: func() -> result<string, string>;
     /// 撤销对指定节点的信任（返回是否删除了条目）
     revoke-trusted: func(node-id: string) -> result<bool, string>;
+    /// 登记可信对端（与 `revoke-trusted` 对称的**唯一信任写入原语**）。
+    ///
+    /// 隧道准入的「已匹配」判据 = 传输层信任表命中（`PeerLink` / `TrustStore`），
+    /// 而配对流程走一次性票据窗口、不经过首连确认弹窗，因此配对成功后必须由
+    /// 应用显式落一条信任——否则第二次连隧道仍被判未匹配。
+    ///
+    /// `node-id` 必须是宿主已验证的对端身份（peer face 注入的 `peerNodeId`），
+    /// 调用方不得把客户端自报值写进信任表；`display-name` 可空（已存在且缺名时
+    /// 补注，不覆盖已有名，与首连确认同语义）。返回是否为新加入（幂等）。
+    /// 落盘失败显性上抛（内存说可信、磁盘没有会让重启后重连重新走首连确认）。
+    trust-node: func(node-id: string, display-name: option<string>) -> result<bool, string>;
     /// 向单个对端发送一批文件（目录递归展开、同名去重由宿主完成；
     /// 扇出 = 对多个对端各调一次，各批相互独立）→ 传输句柄（batch-id 字符串）
     ///

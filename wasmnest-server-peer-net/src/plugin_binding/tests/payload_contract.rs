@@ -208,3 +208,50 @@ fn dial_peer_addrs_accepts_ordered_candidates_past_validation() {
         super::peer_dial_addrs(&ports, "com.wasmnest.owner-a", &payload.to_string()).expect_err("无头上下文取不到引擎");
     assert_eq!(err, ports::HEADLESS_UNAVAILABLE, "合法候选应过校验: {err}");
 }
+
+// ==================== T07/T08 信任写入（trust-node） ====================
+
+/// 与 `revoke-trusted` 同档的权限门：无 `peer` 授权不触信任表
+#[test]
+fn trust_node_denied_without_permission() {
+    let ports = FakePorts::with(&[]);
+    assert_eq!(
+        super::peer_trust_node(&ports, "com.wasmnest.no-peer", "aa", None).unwrap_err(),
+        denied()
+    );
+}
+
+/// 非法 node id 在取信任表之前显性点名（不把脏值写进信任表 / 不静默跳过）
+#[test]
+fn trust_node_rejects_invalid_node_id_before_engine() {
+    let ctx = crate::test_ctx::headless_ctx();
+    let ports = FakePorts::with_ctx(&[("com.wasmnest.owner-a", PERMISSION_PEER)], ctx);
+    let err = super::peer_trust_node(&ports, "com.wasmnest.owner-a", "NOT-64-HEX", None)
+        .expect_err("非法 node id 必须显性报错");
+    assert!(err.contains("invalid node id"), "got: {err}");
+}
+
+/// 正例 + 幂等：首次返回 true，第二次返回 false；展示名只在缺名时补注
+/// （既有名不覆盖，与首连确认 `add_with_metadata` 同语义）
+#[test]
+fn trust_node_roundtrip_is_idempotent_and_keeps_first_display_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = crate::test_ctx::headless_ctx_with_data_dir(dir.path().to_path_buf());
+    let ports = FakePorts::with_ctx(&[("com.wasmnest.owner-a", PERMISSION_PEER)], ctx);
+    let node_id = "a".repeat(64);
+
+    assert!(
+        super::peer_trust_node(&ports, "com.wasmnest.owner-a", &node_id, Some("Phone")).expect("首次写入信任"),
+        "首次必须是新加入"
+    );
+    assert!(
+        !super::peer_trust_node(&ports, "com.wasmnest.owner-a", &node_id, Some("另一个名字")).expect("重复写入幂等"),
+        "已信任时必须返回 false（幂等）"
+    );
+
+    let list = super::peer_list_trusted(&ports, "com.wasmnest.owner-a").expect("列表可读");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&list).expect("valid json array");
+    assert_eq!(rows.len(), 1, "信任表只应有一条: {list}");
+    assert_eq!(rows[0]["nodeId"], node_id);
+    assert_eq!(rows[0]["displayName"], "Phone", "已有名不得被后续写入覆盖");
+}
