@@ -47,7 +47,7 @@
 
 ## 1. 仓速览
 
-**工程形态**：**无根 workspace**——17 个独立 crate（各自 `Cargo.toml` + 自带 `Cargo.lock`，随仓库跟踪） + 4 个夹具 crate。**命令一律在 crate 目录执行**，一个 crate 一个 cargo 调用；不存在「仓级 cargo test」。
+**工程形态**：**无根 workspace**——20 个独立 crate（各自 `Cargo.toml` + 自带 `Cargo.lock`，随仓库跟踪） + 4 个夹具 crate。**命令一律在 crate 目录执行**，一个 crate 一个 cargo 调用；不存在「仓级 cargo test」。
 
 ```text
 wasmnest-lib/
@@ -96,6 +96,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 | `wasmnest-crypto-engine` | 中性加密算法原语（aes_gcm/chacha/hybrid/kdf/rsa/x25519）+ 名称寻址注册表 | 无 feature | —（WIT 面在宿主 `plugin/crypto.rs`） | 桌面宿主、server-core |
 | `wasmnest-notify-engine` | 通知域**契约房**：只持 WIT + 端口词汇（当前无端口），零实现 | 无 feature | `wit/notify.wit` | 双端 `compose.json` 组合——**无 Rust 消费者** |
 | `link-crypto`（`wasmnest-link-crypto`） | 链路报文加密协议核心：HTTP 信封 / WS 握手 IKM / 二进制帧 | 无 feature | — | wasm-core（`link_crypto`）、双端宿主 |
+| `wasmnest-relay` | **内网穿透中继守护进程**：libp2p Circuit Relay v2 服务端 + 配额 / 指标 / enrollment token + `init`/`run`/`doctor`/`print-addrs` 一键运维；独立 Linux 二进制 + Docker + Compose （`deploy/relay/`），零内部 crate 依赖 | 无 feature（win/lib，非宿主消费） | — | 仅公网 relay 部署（**不进宿主依赖清单**） |
 | `wasmnest-headless-host-probe` | 无头宿主探针：以非桌面形态引用全部能力域，钉「默认形态任何宿主可引用」 | 无 feature（永不开 `common-host`）、零 dev-deps | — | 仅门禁——**不得进任何宿主依赖清单** |
 
 **夹具 crate**（不入一览表、不发布）：`wasmnest-host-kit/fixtures/forced-link-probe`（强制链接实证）、`wasmnest-wasm-core/fixtures/{wasi-test,wasip3-test,p3-async-host-import-test}`（自持夹具，绑定本 crate `wit/core.wit`，零 SDK 依赖）。

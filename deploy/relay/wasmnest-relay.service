@@ -1,0 +1,31 @@
+# ==================== wasmnest-relay systemd unit ====================
+# 安装位置：/etc/systemd/system/wasmnest-relay.service
+# 前置：install.sh 已创建 wasmnest-relay 用户并把身份/配置装到 /etc/wasmnest-relay
+[Unit]
+Description=WasmNest relay (libp2p circuit relay v2)
+Documentation=file:///usr/local/bin/wasmnest-relay --help
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=simple
+User=wasmnest-relay
+Group=wasmnest-relay
+Environment=WASMNEST_RELAY_LOG=info
+ExecStart=/usr/local/bin/wasmnest-relay run --config /etc/wasmnest-relay/config.toml
+Restart=on-failure
+RestartSec=5s
+# 只用 TCP 4001 转发 Noise 密文：不需要任何额外 capability
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# 身份与配置目录是服务唯一需要写的地方（token 表 / enrollment 白名单会追加写入）
+ReadWritePaths=/etc/wasmnest-relay
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+# ==================== 与网络栈共享 target 桶 ====================
+# 本 crate 与 p2p-engine / server-peer-net 同属网络栈桶：libp2p 依赖图在本机已被
+# 那两处编译过，落同一桶最大化 sccache / 编译产物复用（桶治理先例见 5 个 server
+# crate + crypto-engine 的同名文件）。独立克隆下落点 = 本仓根 target/server-libs：
+#   cd wasmnest-relay && cargo metadata --no-deps --format-version 1
+# 其 `target_directory` 应为 `<wasmnest-lib>/target/server-libs`。
+[build]
+target-dir = "../target/server-libs"
