@@ -10,15 +10,18 @@
 //! - `Response` 的 `ok` / `error` 恰好其一（解码时校验，违例整行拒绝）；
 //! - 人审经帧往返：宿主发 `ConfirmationRequest`，前端答 `ConfirmationResponse`
 //!   （「触发通道承载确认」——GUI 触发的操作仍走 GUI 弹窗，不经本通道）；
-//! - 错误信封复用 server-base 的 `AppError` 语义：`WireError` 只携带语义码与
-//!   消毒参数（UserFacing 透传 code/params；其余落机制码兜底），技术详情永不过线。
+//! - 错误信封只携带**语义码 + 消毒参数**，技术详情永不过线：`WireError` 是纯 wire
+//!   类型（无任何宿主错误类型依赖）。宿主侧把域错误映射成语义码后经
+//!   [`WireError::from_code`] / [`WireError::with_params`] 构造；没有语义码的失败落
+//!   [`WireError::fallback`]（= 契约仓的 `DEFAULT_ERROR_CODE`）。**映射住宿主**——
+//!   本 crate 是 argv / 帧解析骨架，不替任何一端的错误信封做决定。
 //!
 //! 信任边界：本机通道 = **系统用户**（socket 文件同用户权限，装配侧落地）；首期
 //! 无 token、无加密——远程链路的加密协议不进本机通道。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use wasmnest_server_base::error::{AppError, DEFAULT_ERROR_CODE};
+use wasmnest_contract::DEFAULT_ERROR_CODE;
 
 /// 请求操作
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,21 +53,28 @@ pub struct WireError {
 }
 
 impl WireError {
-    /// 从宿主侧错误信封提取（UserFacing 的 code/params 透传，其余落机制码兜底）
-    ///
-    /// 不经 `AppError` 的 `Serialize` 边界取值——那个边界有副作用（生成追踪号并
-    /// 落日志），wire 提取只做字段镜像。
-    pub fn from_app_error(err: &AppError) -> Self {
-        match err {
-            AppError::UserFacing { code, params, .. } => WireError {
-                code: code.clone(),
-                params: Some(params.clone()),
-            },
-            _ => WireError {
-                code: DEFAULT_ERROR_CODE.to_string(),
-                params: None,
-            },
+    /// 以语义码构造（宿主侧把域错误映射成 code 后的唯一入口）
+    pub fn from_code(code: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            params: None,
         }
+    }
+
+    /// 以语义码 + 已消毒具名参数构造（`Null` 视作无参，与信封口径一致）
+    pub fn with_params(code: impl Into<String>, params: Value) -> Self {
+        Self {
+            code: code.into(),
+            params: if params.is_null() { None } else { Some(params) },
+        }
+    }
+
+    /// 兜底错误（没有语义码的失败）：code = 契约仓 [`DEFAULT_ERROR_CODE`]
+    ///
+    /// 兜底码是跨端 wire 契约的一部分（前端 i18n key 后缀），故真源在零依赖契约仓，
+    /// 本 crate 只引用不复制。
+    pub fn fallback() -> Self {
+        Self::from_code(DEFAULT_ERROR_CODE)
     }
 }
 
@@ -211,23 +221,38 @@ mod tests {
     }
 
     #[test]
-    fn wire_error_extracts_app_error_faithfully() {
-        // UserFacing 的 code/params 透传（不经带副作用的 Serialize 边界）
-        let user_facing = AppError::user_facing(
+    fn wire_error_constructors_keep_shape_and_fallback_code() {
+        // 语义码 + 消毒参数：wire 形状 `{ code, params? }`，无技术详情字段
+        let wire = WireError::with_params(
             "host.plugin.not-activated",
             serde_json::json!({"pluginId": "com.example.demo"}),
-            "详情只进日志",
         );
-        let wire = WireError::from_app_error(&user_facing);
         assert_eq!(wire.code, "host.plugin.not-activated");
         assert_eq!(
             wire.params.as_ref().and_then(|p| p.get("pluginId")),
             Some(&serde_json::json!("com.example.demo"))
         );
-        // 非用户态错误落机制码兜底
-        let other = AppError::Plugin("内部错误".to_string());
-        let wire = WireError::from_app_error(&other);
-        assert_eq!(wire.code, "host.internal");
-        assert!(wire.params.is_none());
+        let json = serde_json::to_value(&wire).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "code": "host.plugin.not-activated",
+                "params": { "pluginId": "com.example.demo" }
+            })
+        );
+
+        // Null 参数 = 无参（字段省略，与信封口径一致）
+        let bare = WireError::with_params("host.invoke.timeout", serde_json::Value::Null);
+        assert!(bare.params.is_none());
+        assert_eq!(
+            serde_json::to_value(&bare).unwrap(),
+            serde_json::json!({ "code": "host.invoke.timeout" })
+        );
+
+        // 兜底码是契约常量，不得在本 crate 复制字面量
+        let fallback = WireError::fallback();
+        assert_eq!(fallback.code, wasmnest_contract::DEFAULT_ERROR_CODE);
+        assert_eq!(fallback.code, "host.internal");
+        assert!(fallback.params.is_none());
     }
 }
