@@ -13,6 +13,20 @@
 //! `PathsPort` 记在 server-core 而 peer-net 又不依赖 core，是 4-crate 形状内
 //! 的自相矛盾——实施裁决：共享端口 traits 落本 crate，peer-net 依赖本 crate
 //! 取用。
+//!
+//! **依赖面（2026-11-08 P0 默认形态依赖边界）**：本 crate 的**默认依赖树只依赖
+//! 零依赖契约仓**——`AppError::Database(String)` 不再携带 `rusqlite::Error`、
+//! `notify` / `link-crypto` 的 `From` impl 已删、`tauri` / `mdns-sd` + `flume` /
+//! `sysinfo` + `local-ip-address` 全部 optional 且 feature **默认关**：
+//!
+//! | feature | 打开后 | 消费方 |
+//! | --- | --- | --- |
+//! | `tauri-compat` | `From<tauri::Error> for AppError` | 桌面宿主（显式开） |
+//! | `mdns` | `MdnsPort` / `MdnsTypeSubscription` / `ServerPorts.mdns` | `wasmnest-server-peer-net`、桌面宿主 |
+//! | `system-info` | `SystemInfo::collect()` / `local_ipv4_addresses()` | 桌面宿主（无头宿主可自行实现 `SystemInfoPort`） |
+//!
+//! 「叶子地基」不是形容词：`cargo tree -e normal` 只应看到 serde / tokio / tracing
+//! 这类机制级依赖 + 契约仓；`scripts/check-default-form-deps.sh` 钉住这条判据。
 
 pub mod config;
 pub mod constants;

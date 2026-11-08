@@ -70,9 +70,9 @@ pub fn setup_wasm_runtime_with_setup(setup: EngineSetup) -> (WasmRuntime, Arc<Wa
 
     // 测试夹具的默认授予清单：**只给域函数入口有权限门的那些位**，多给会让
     // 「未声明即拒」的用例失去意义。新增权限门时**必须同步检查本表**——
-    // 2026-11-02 安全审查 #46 给 `notify` 补门后漏改本表，直接打红了
-    // `wasmnest-desktop/src-tauri/tests/sdk_e2e.rs`（夹具的 `test_notify`
-    // 期望落到「无头上下文报错」，实际先被入口门拒成 `permission denied: notify`）。
+    // 2026-11-02 安全审查 #46 给 `notify` 补门后漏改本表，直接打红了桌面宿主的
+    // `sdk_e2e` 集成测试（夹具的 `test_notify` 期望落到「无头上下文报错」，实际
+    // 先被入口门拒成 `permission denied: notify`）。
     let all_permissions: &[&str] = &[
         "storage",
         "broadcast",

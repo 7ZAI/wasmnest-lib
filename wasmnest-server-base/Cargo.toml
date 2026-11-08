@@ -2,7 +2,7 @@
 name = "wasmnest-server-base"
 version = "0.0.1"
 license = "MIT"
-description = "WasmNest 桌面 server 基础层：错误/常量/错误边界/系统信息/网络配置形状/连接身份/端口 traits（server-lib-split 票 02）"
+description = "WasmNest 桌面 server 基础层：错误信封/常量/错误边界/系统信息 DTO/网络配置形状/连接身份/端口 traits。默认依赖树只依赖零依赖契约仓（无 tauri / rusqlite / notify / link-crypto / mdns-sd / sysinfo）；`tauri-compat` / `mdns` / `system-info` 为可选 feature 且默认关，由消费方显式开启（server-lib-split 票 02 / P0 默认形态依赖边界）"
 authors = ["binblink"]
 edition = "2021"
 
@@ -10,20 +10,30 @@ edition = "2021"
 publish = false
 
 [features]
-# `tauri-compat`（默认开）：只为 `From<tauri::Error> for AppError` 一个 impl 而存在。
+# `tauri-compat`（**2026-11-08 起默认关**）：只为 `From<tauri::Error> for AppError`
+# 一个 impl 而存在。
 #
 # 为什么不无条件依赖 tauri（ADR 0035 D6 的通用性要求）：本 crate 是 server 各面的
 # **叶子地基**，`crypto-engine` / `-core` / 两个传输面全部经它传递性取依赖。一个
 # GUI 框架出现在地基里，意味着任何非 Tauri 宿主（无头服务 / CLI / 嵌入式）都拉不动
-# 本 crate —— 而它们要的只是错误类型、常量与端口 traits。故 tauri 转 optional：
-# 非 Tauri 消费方 `default-features = false`，地基层就真的与框架无关。
+# 本 crate —— 而它们要的只是错误类型、常量与端口 traits。
 #
 # **代价（已知且接受）**：`impl From<tauri::Error> for AppError` 受孤儿规则约束必须住
 # 在定义 `AppError` 的本 crate 内，下游**无法**自己补写。故关掉本 feature 后，调用方
 # 须在边界处显式 `map_err(|e| AppError::Internal(e.to_string()))`，不能靠 `?`。
-# 桌面端全部消费方走默认 feature，行为零变化。
-default = ["tauri-compat"]
+# 桌面宿主**显式**开启本 feature（不靠传递 feature 合并）；移动宿主不开，
+# 内核侧的 Tauri 依赖由 P1 票据清偿。
+default = []
 tauri-compat = ["dep:tauri"]
+# mDNS 发现守护接入端口（`MdnsPort` / `MdnsTypeSubscription` / `ServerPorts.mdns`）。
+# 2026-11-08：`mdns-sd` / `flume` 对不消费 mDNS 的 crate（`crypto-engine` /
+# `cli-engine` / `pty-engine`）是纯负担——能力域默认形态不应被另一个域的
+# 具体类型钉住。消费方：`wasmnest-server-peer-net`（引擎必需）与桌面宿主。
+mdns = ["dep:mdns-sd", "dep:flume"]
+# 系统信息采集实现（`SystemInfo::collect()` / `local_ipv4_addresses()`）。
+# `SystemInfo` DTO 与 `SystemInfoPort` 常编译——只消费形状的宿主不必开本 feature，
+# 可自行实现端口。消费方：桌面宿主（bootstrap / ports_impl）。
+system-info = ["dep:sysinfo", "dep:local-ip-address"]
 
 [dependencies]
 # 错误类型（AppError：Serialize 信封 + thiserror）
@@ -33,17 +43,14 @@ serde_json = "1"
 rand = "0.8"
 # new_request_id / Serialize 信封的日志副作用
 tracing = { version = "0.1", features = ["attributes"] }
-# AppError::Database(#[from] rusqlite::Error)
-rusqlite = { version = "0.32", features = ["bundled"] }
+# AppError::Database(String)（2026-11-08 起不再携带 rusqlite::Error）——地基层不编译
+# bundled SQLite：一个不承载信封可见信息的变体不值得整条 SQLite 构建链。
 # From<tauri::Error>：见 [features].tauri-compat（唯一消费点是 error.rs 的一个 From impl）
 tauri = { version = "2", features = [], optional = true }
-# From<notify::Error>（文件监听错误映射）
-notify = "6"
-# From<wasmnest_link_crypto::LinkCryptoError>（链路加密共享 crate）
-wasmnest-link-crypto = { path = "../link-crypto", version = "0.0.1" }
-# host-database 执行护栏常量真源（票 18 批次 3：PLUGIN_DB_* 四常量上移共享核，
-# 本 crate 经 re-export 保既有 `wasmnest_server_base::constants::*` 路径）
-wasmnest-host-api-core = { path = "../wasmnest-host-api-core", version = "0.0.1" }
+# 零依赖共享词汇（跨层护栏常量 PLUGIN_DB_* / DEFAULT_ERROR_CODE 真源）。
+# 2026-11-08（P0）：真源自 host-api-core / 本 crate 错误模块上移契约仓——本 crate
+# 不再为 4 个常量依赖机制实现层，向「叶子地基」对齐。
+wasmnest-contract = { path = "../wasmnest-contract", version = "0.0.1" }
 # error_boundary（futures FutureExt::catch_unwind）
 futures-util = "0.3"
 # 服务租约：槽位互斥（service::ServiceRegistry 持锁跨 await）。
@@ -53,13 +60,13 @@ futures-util = "0.3"
 tokio = { version = "1", features = ["sync", "rt"] }
 # ports：异步 trait
 async-trait = "0.1"
-# ports：MdnsPort（peer-net 发现守护接入，ServiceDaemon 类型）
-mdns-sd = "0.20"
+# ports：MdnsPort（peer-net 发现守护接入，ServiceDaemon 类型）——`mdns` feature
+mdns-sd = { version = "0.20", optional = true }
 # ports：MdnsTypeSubscription 类型中枢订阅通道（版本与 peer-net / mdns-sd 传递依赖同源，spec §0.4）
-flume = "0.12"
-# info：SystemInfo 采集
-sysinfo = "0.33"
-local-ip-address = "0.6"
+flume = { version = "0.12", optional = true }
+# info：SystemInfo 采集——`system-info` feature
+sysinfo = { version = "0.33", optional = true }
+local-ip-address = { version = "0.6", optional = true }
 # 测试
 anyhow = "1"
 

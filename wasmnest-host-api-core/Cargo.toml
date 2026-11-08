@@ -12,7 +12,7 @@
 [package]
 name = "wasmnest-host-api-core"
 version = "0.0.1"
-description = "WasmNest host_api 共享实现核：无 WIT 依赖域的机制实现层（双端 wasm-core 各持 adapter）"
+description = "WasmNest host_api 共享实现核：无 WIT 依赖域的机制实现层（双端 wasm-core 各持 adapter）。PLUGIN_DB_* 护栏常量真源 2026-11-08 上移 wasmnest-contract（本 crate 只 re-export）"
 authors = ["binblink"]
 license = "MIT"
 repository = "https://github.com/7ZAI/BedCode"
@@ -22,6 +22,8 @@ edition = "2021"
 publish = false
 
 [dependencies]
+# 零依赖共享词汇（PLUGIN_DB_* 护栏常量真源，2026-11-08 自本 crate 上移）
+wasmnest-contract = { path = "../wasmnest-contract", version = "0.0.1" }
 # 键值 / JSON 载荷的规范形（wire 真值；WIT 字符串形由各端 adapter 转换）
 serde_json = "1"
 # 机制级日志；拒绝 warn 等结构化落点由各端 adapter 自持（AGENTS §8）

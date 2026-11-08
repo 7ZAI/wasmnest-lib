@@ -12,15 +12,25 @@ use thiserror::Error;
 /// 未显式映射的错误统一兜底到此语义码（ADR 0030 §3：默认兜底 + 显式覆盖）。
 ///
 /// code 即前端 i18n key 的后半段（`errors.host.internal`），零映射层；改码 = 破坏性变更。
-pub const DEFAULT_ERROR_CODE: &str = "host.internal";
+///
+/// 真源 2026-11-08 上移 `wasmnest-contract`（零依赖共享词汇）——CLI wire 等中性消费方
+/// 只需要这个码，不必拖入整个桌面 server 错误信封。本处 re-export 保既有路径
+/// （`wasmnest_server_base::error::DEFAULT_ERROR_CODE` 与 wasm-core 的 glob 链）。
+pub use wasmnest_contract::DEFAULT_ERROR_CODE;
 
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("Session error: {0}")]
     Session(String),
 
+    /// 数据库错误（技术详情已是字符串）
+    ///
+    /// 2026-11-08（P0 默认形态依赖边界）：原本是 `Database(#[from] rusqlite::Error)`，
+    /// 一个变体就把 bundled SQLite 钉进了「叶子地基」的默认依赖树。SQLite 的
+    /// `Error` 不承载任何信封可见信息（落 `host.internal` 兜底码），故改为字符串：
+    /// 构造点在边界 `map_err` / `e.to_string()`，文案与 envelope 语义逐字不变。
     #[error("Database error: {0}")]
-    Database(#[from] rusqlite::Error),
+    Database(String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -191,12 +201,6 @@ impl From<tauri::Error> for AppError {
     }
 }
 
-impl From<notify::Error> for AppError {
-    fn from(e: notify::Error) -> Self {
-        AppError::Internal(format!("File watcher error: {}", e))
-    }
-}
-
 /// 允许在 crate::Result 函数中使用 anyhow::Context
 ///
 /// 使用方式：在 Result<crate::AppError> 上调用 .context() / .with_context()
@@ -207,13 +211,10 @@ impl From<anyhow::Error> for AppError {
     }
 }
 
-/// 链路加密共享 crate 错误 → AppError（issue 09：保留错误文案，
-/// 过滤器 Reject 理由与既有测试断言的字节面不变）
-impl From<wasmnest_link_crypto::LinkCryptoError> for AppError {
-    fn from(e: wasmnest_link_crypto::LinkCryptoError) -> Self {
-        AppError::Internal(e.to_string())
-    }
-}
+// 链路加密错误（`wasmnest_link_crypto::LinkCryptoError`）**不再**有 `From` impl：
+// 2026-11-08（P0）删掉 base → link-crypto 依赖边。消费方（`server-core::link_crypto`）
+// 在边界显式映射为 `AppError::Internal(e.to_string())`，对外文案逐字不变——协议核心
+// 不属地基层依赖面（AGENTS §3.4）。
 
 #[cfg(test)]
 mod tests {
@@ -238,7 +239,7 @@ mod tests {
     fn non_user_facing_variants_default_to_host_internal() {
         for err in [
             AppError::Internal("database connection refused".into()),
-            AppError::Database(rusqlite::Error::InvalidQuery),
+            AppError::Database("Invalid query".into()),
             AppError::NotFound("file.txt".into()),
             AppError::InvalidInput("bad param".into()),
             AppError::Auth("expired".into()),

@@ -20,8 +20,11 @@ common-host = ["dep:wasmnest-host-kit", "dep:wasmtime", "dep:wit-bindgen", "dep:
 [dependencies]
 # 跨平台 PTY：进程生命周期 / 尺寸 / 读写（引擎面核心）
 portable-pty = "0.8"
-# 异步运行时：读线程消费任务 / 广播 / 定时
-tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+# 异步运行时：读线程消费任务 / 广播 / 定时 / ambient 运行时间（runtime.rs 的
+# `Builder::new_multi_thread` 需要 `rt-multi-thread`）。
+# 2026-11-08：该 feature 此前靠消费图特性并集（server-base 默认 tauri-compat → tauri）
+# 借来，base 默认关 tauri 后暴露为真缺失——本 crate 自持声明，不靠传递合并。
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
 # 引擎产物 sink 的 async 约束（PtyOutputSink 的 async_trait 化由消费侧决定，引擎本体只需基础面）
 async-trait = "0.1"
 # 输出时间戳（读线程逐块记录）

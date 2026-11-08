@@ -171,32 +171,33 @@ pub const PLUGIN_HTTP_MAX_ENDPOINTS_PER_PLUGIN: usize = 64;
 /// 设置等全部内核 DB 读写。SQLite progress handler 在宿主侧硬中断超时语句，
 /// 超时调用返回「查询超时」类错误。保守起步，语义对齐 HTTP 非流式总超时 `PLUGIN_HTTP_TIMEOUT_SECS`。
 /// 护栏不可由插件参数调整（安全边界，AGENTS.md §8）。
-/// 插件 SQL 语句执行超时（秒）：真源在 `wasmnest-host-api-core::database`（票 18
-/// 批次 3 上移共享核），本处 re-export 保既有 `wasmnest_server_base::constants::*` 路径。
+/// 插件 SQL 语句执行超时（秒）：真源在 `wasmnest-contract`（2026-11-08 自
+/// `wasmnest-host-api-core::database` 上移零依赖契约仓），本处 re-export 保既有
+/// `wasmnest_server_base::constants::*` 路径。
 ///
 /// **2026-10-09 双端机制决策**：主库由 wasm-core 管理、不给插件直接调用
 /// （`host-database` 退役），本护栏覆盖**插件私有库**（`host-plugin-database`）的
 /// 单条语句执行——每插件独立连接，超时护栏防单条语句失控拖垮插件自身。
 /// SQLite progress handler 硬中断超时语句；护栏不可由插件参数调整（安全边界）。
-pub use wasmnest_host_api_core::database::PLUGIN_DB_STATEMENT_TIMEOUT_SECS;
+pub use wasmnest_contract::PLUGIN_DB_STATEMENT_TIMEOUT_SECS;
 
 /// 插件 SQL 查询结果集行数上限（真源同上）：
 ///
 /// 取行循环内计数，超限立即截断并返回带明确说明的错误（引导插件加 LIMIT 或分批）。
 /// 查询面（query）结果行会经 canonical ABI 拷入插件线性内存，无上限结果集可能耗尽
 /// 单次调用 fuel 预算触发 trap 污染 Store。
-pub use wasmnest_host_api_core::database::PLUGIN_DB_QUERY_MAX_ROWS;
+pub use wasmnest_contract::PLUGIN_DB_QUERY_MAX_ROWS;
 
 /// 插件 SQL 查询结果集序列化字节上限（真源同上；对齐 HTTP 响应体上限 32MB 的既有模式）：
 ///
 /// 取行循环内对每行序列化长度累计计数，超限立即截断报错。
-pub use wasmnest_host_api_core::database::PLUGIN_DB_QUERY_MAX_BYTES;
+pub use wasmnest_contract::PLUGIN_DB_QUERY_MAX_BYTES;
 
 /// 插件 execute-batch 单次调用语句数上限（真源同上）：
 ///
 /// 事务持有全局连接锁期间其他插件/内核调用会等待，语句数上限 + 05 超时护栏
 /// 双兜底避免长事务阻塞内核 DB（票据 06）。
-pub use wasmnest_host_api_core::database::PLUGIN_DB_EXECUTE_BATCH_MAX_STATEMENTS;
+pub use wasmnest_contract::PLUGIN_DB_EXECUTE_BATCH_MAX_STATEMENTS;
 
 // ==================== host-websocket（ABI v14，spec `.scratch/2026-09-18-ws-base-service/`） ====================
 

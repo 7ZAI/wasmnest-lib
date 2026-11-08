@@ -43,6 +43,12 @@
 //! 要求宿主清单直接声明本 crate——而契约只允许经 `wasmnest-wasm-core` 的 re-export
 //! 消费（宿主直连 = 版本面出现第二个消费入口）。本 crate 的结构管辖落在平台仓的
 //! crate 结构锁与能力 crate 语义锁，不在拼接产物登记表。
+//!
+//! **定位（2026-11-08 扩容）**：本 crate 不只是「包名 / 版本常量」，而是**零依赖
+//! 共享词汇**——契约包名 / 版本（`PACKAGE_*`，唯一手写真源，地位不变）+ 跨层护栏
+//! 常量（`PLUGIN_DB_*` / `DEFAULT_ERROR_CODE`）。判据：不含机制实现、不含平台判断、
+//! 不引入任何依赖；需要「一个数值 / 一个码」的叶子层与中性 crate 可直接依赖本 crate，
+//! 不必反向依赖实现层。`[dependencies]` 必须恒为空（有常驻断言）。
 
 /// 契约包名（`namespace:name`，不含版本）
 pub const PACKAGE_NAME: &str = "wasmnest:plugin";
@@ -60,6 +66,37 @@ pub const PACKAGE: &str = "wasmnest:plugin@0.1.0";
 /// `wasmnest-wasm-core::contract::export_item(WORKER_INTERFACE, func)` /
 /// `interface_path(WORKER_INTERFACE)` 拼导出键——版本由派生机制注入，本常量只持接口名。
 pub const WORKER_INTERFACE: &str = "worker";
+
+// ==================== 跨层共享词汇（零依赖护栏常量） ====================
+//
+// 这些常量原本住在能力域实现 crate（`host-api-core::database` / `server-base::error`），
+// 迫使「只想要一个护栏数值」的叶子地基与中性 crate 反向依赖实现层。它们既不含机制
+// 实现也不含平台判断，只是**跨层共享词汇**，故真源归位本 crate（零依赖，任何层可
+// 直接依赖）；旧路径以 `pub use` 保留，下游零改动。
+
+/// 插件 SQL 语句执行超时（秒）
+///
+/// 覆盖**插件私有库**（`host-plugin-database`）的单条语句执行：每插件独立连接，
+/// SQLite progress handler 硬中断超时语句。护栏不可由插件参数调整（安全边界）。
+pub const PLUGIN_DB_STATEMENT_TIMEOUT_SECS: u64 = 120;
+
+/// 插件 SQL 查询结果集行数上限
+///
+/// 取行循环内计数，超限立即截断报错（引导插件加 LIMIT 或分批）；无上限结果集
+/// 可能耗尽单次调用 fuel 预算触发 trap 污染 Store。
+pub const PLUGIN_DB_QUERY_MAX_ROWS: usize = 10_000;
+
+/// 插件 SQL 查询结果集序列化字节上限（对齐 HTTP 响应体上限 32MB 的既有模式）
+pub const PLUGIN_DB_QUERY_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+/// 插件 execute-batch 单次调用语句数上限
+pub const PLUGIN_DB_EXECUTE_BATCH_MAX_STATEMENTS: usize = 64;
+
+/// 未显式映射的错误统一兜底到的语义码（ADR 0030 §3：默认兜底 + 显式覆盖）
+///
+/// code 即前端 i18n key 的后半段（`errors.host.internal`），零映射层；改码 = 破坏性变更。
+/// 消费方：`server-base` 错误信封（re-export）与 CLI wire 的兜底码。
+pub const DEFAULT_ERROR_CODE: &str = "host.internal";
 
 #[cfg(test)]
 mod tests {
@@ -81,6 +118,43 @@ mod tests {
             PACKAGE_NAME.contains(':'),
             "包名应为 `wasmnest:<ns>` 形态：{PACKAGE_NAME}"
         );
+    }
+
+    /// 零依赖锁：本 crate 的定位是「任何层可直接依赖的零依赖共享词汇」。一旦
+    /// `[dependencies]` 出现任何条目，叶子层（`server-base` / `host-api-core`）的
+    /// 反向依赖就会从「一个数值」变成一整棵依赖树——扩容即静默失效。
+    ///
+    /// 判据扫 `Cargo.toml` 的依赖段（`[dependencies.*]` 也算），不是源码 needle。
+    #[test]
+    fn manifest_has_no_dependencies() {
+        let manifest = include_str!("../Cargo.toml");
+        let offenders: Vec<&str> = manifest
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                line.starts_with("[dependencies")
+                    || line.starts_with("[build-dependencies")
+                    || line.starts_with("[dev-dependencies")
+            })
+            .collect();
+        // 允许存在空的 `[dependencies]` 段（保持「零依赖」可见），但不允许任何
+        // `[dependencies.*]` 子表 / build-dependencies / dev-dependencies。
+        assert!(
+            offenders.len() <= 1 && offenders.iter().all(|s| *s == "[dependencies]"),
+            "契约仓必须保持零依赖（定位：零依赖共享词汇）：{offenders:?}"
+        );
+        let mut in_deps = false;
+        for line in manifest.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_deps = trimmed == "[dependencies]";
+                continue;
+            }
+            assert!(
+                !in_deps || trimmed.is_empty() || trimmed.starts_with('#'),
+                "契约仓 `[dependencies]` 段出现依赖条目：{trimmed}"
+            );
+        }
     }
 
     /// 文本形状锁：平台仓两处 node 解析器按 `pub const <NAME>: &str = "<值>";`

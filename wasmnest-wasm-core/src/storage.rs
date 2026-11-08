@@ -12,6 +12,7 @@
 //! 自身不依赖任何 wasm_core 兄弟模块。
 
 use crate::db::Database;
+use crate::error::DbResultExt;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -77,8 +78,9 @@ impl PluginStorage {
     ) -> crate::Result<Option<serde_json::Value>> {
         let db = self.db.lock().expect("plugin storage db lock poisoned");
         let conn = db.conn();
-        let mut stmt =
-            conn.prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")?;
+        let mut stmt = conn
+            .prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")
+            .db()?;
 
         let result = stmt.query_row(rusqlite::params![plugin_id, key], |row| {
             row.get::<_, String>(0)
@@ -90,7 +92,7 @@ impl PluginStorage {
                 Ok(Some(value))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(crate::AppError::Database(e)),
+            Err(e) => Err(crate::AppError::Database(e.to_string())),
         }
     }
 
@@ -105,12 +107,14 @@ impl PluginStorage {
         let json_str = serde_json::to_string(&value)?;
         let now = Utc::now().to_rfc3339();
 
-        db.conn().execute(
-            "INSERT INTO plugin_storage (plugin_id, key, value, updated_at) \
+        db.conn()
+            .execute(
+                "INSERT INTO plugin_storage (plugin_id, key, value, updated_at) \
              VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(plugin_id, key) DO UPDATE SET value = ?3, updated_at = ?4",
-            rusqlite::params![plugin_id, key, json_str, now],
-        )?;
+                rusqlite::params![plugin_id, key, json_str, now],
+            )
+            .db()?;
 
         Ok(())
     }
@@ -118,10 +122,12 @@ impl PluginStorage {
     /// 删除插件存储值
     pub async fn delete(&self, plugin_id: &str, key: &str) -> crate::Result<()> {
         let db = self.db.lock().expect("plugin storage db lock poisoned");
-        db.conn().execute(
-            "DELETE FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
-            rusqlite::params![plugin_id, key],
-        )?;
+        db.conn()
+            .execute(
+                "DELETE FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
+                rusqlite::params![plugin_id, key],
+            )
+            .db()?;
         Ok(())
     }
 
@@ -141,14 +147,15 @@ impl PluginStorage {
         let db = self.db.lock().expect("plugin storage db lock poisoned");
         let conn = db.conn();
         let previous = {
-            let mut stmt =
-                conn.prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")?;
+            let mut stmt = conn
+                .prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")
+                .db()?;
             match stmt.query_row(rusqlite::params![plugin_id, key], |row| {
                 row.get::<_, String>(0)
             }) {
                 Ok(json_str) => Some(serde_json::from_str::<serde_json::Value>(&json_str)?),
                 Err(rusqlite::Error::QueryReturnedNoRows) => None,
-                Err(e) => return Err(crate::AppError::Database(e)),
+                Err(e) => return Err(crate::AppError::Database(e.to_string())),
             }
         };
         let next = f(previous)?;
@@ -159,7 +166,8 @@ impl PluginStorage {
              VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(plugin_id, key) DO UPDATE SET value = ?3, updated_at = ?4",
             rusqlite::params![plugin_id, key, json_str, now],
-        )?;
+        )
+        .db()?;
         Ok(())
     }
 
@@ -171,18 +179,23 @@ impl PluginStorage {
         let db = self.db.lock().expect("plugin storage db lock poisoned");
         let mut stmt = db
             .conn()
-            .prepare("SELECT EXISTS(SELECT 1 FROM plugin_storage WHERE plugin_id = ?1)")?;
-        let exists: i64 = stmt.query_row(rusqlite::params![plugin_id], |row| row.get(0))?;
+            .prepare("SELECT EXISTS(SELECT 1 FROM plugin_storage WHERE plugin_id = ?1)")
+            .db()?;
+        let exists: i64 = stmt
+            .query_row(rusqlite::params![plugin_id], |row| row.get(0))
+            .db()?;
         Ok(exists != 0)
     }
 
     /// 清空插件所有存储（插件卸载时使用）
     pub async fn clear_all(&self, plugin_id: &str) -> crate::Result<()> {
         let db = self.db.lock().expect("plugin storage db lock poisoned");
-        db.conn().execute(
-            "DELETE FROM plugin_storage WHERE plugin_id = ?1",
-            rusqlite::params![plugin_id],
-        )?;
+        db.conn()
+            .execute(
+                "DELETE FROM plugin_storage WHERE plugin_id = ?1",
+                rusqlite::params![plugin_id],
+            )
+            .db()?;
         Ok(())
     }
 
@@ -284,11 +297,13 @@ impl PluginStorage {
             let now = chrono::Utc::now().to_rfc3339();
             for (key, value) in &map {
                 let json_str = serde_json::to_string(value)?;
-                db.conn().execute(
-                    "INSERT OR IGNORE INTO plugin_storage (plugin_id, key, value, updated_at) \
+                db.conn()
+                    .execute(
+                        "INSERT OR IGNORE INTO plugin_storage (plugin_id, key, value, updated_at) \
                      VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![plugin_id, key, json_str, now],
-                )?;
+                        rusqlite::params![plugin_id, key, json_str, now],
+                    )
+                    .db()?;
             }
             // 全部成功导入后才删除旧文件（旧读路径彻底移除，fail-visible ①）
             if let Err(e) = std::fs::remove_file(&path) {

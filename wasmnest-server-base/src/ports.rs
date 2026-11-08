@@ -225,6 +225,11 @@ pub trait ConfigPort: Send + Sync {
 ///   丢弃守卫会造成退订泄漏。
 ///
 /// 本类型不提供「只取 receiver / 只取守卫」的构造或访问器，杜绝脱钩形态。
+///
+/// **feature 边界（2026-11-08，P0 默认形态依赖边界）**：本类型的具体类型来自
+/// `mdns-sd` / `flume`，随 `mdns` feature 门控——不消费 mDNS 的 crate
+/// （`crypto-engine` / `cli-engine` / `pty-engine` 等）默认树里不再出现这两个依赖。
+#[cfg(feature = "mdns")]
 pub struct MdnsTypeSubscription {
     /// 类型中枢 fan-out 的事件通道接收端（通道容量由中枢建档时设定，
     /// spec §2.3-D2 = 64）
@@ -233,6 +238,7 @@ pub struct MdnsTypeSubscription {
     guard: Box<dyn std::any::Any + Send + Sync>,
 }
 
+#[cfg(feature = "mdns")]
 impl MdnsTypeSubscription {
     /// 由中枢订阅出口铸造（宿主 glue 从 `wasmnest-discovery-engine` 的值转换）。
     /// receiver 与守卫在此同时被接管：句柄存活期间守卫不释放。
@@ -263,6 +269,10 @@ impl MdnsTypeSubscription {
 /// [`subscribe_type`](Self::subscribe_type) 挂 fan-out、经
 /// [`request_type_requery`](Self::request_type_requery) 请求统一重查，
 /// **不得自行 `daemon.browse`**。
+///
+/// **feature 边界（2026-11-08）**：trait 方法签名持有 `mdns_sd::ServiceDaemon` /
+/// `flume::Receiver`，随 `mdns` feature 门控（与 [`MdnsTypeSubscription`] 同批）。
+#[cfg(feature = "mdns")]
 pub trait MdnsPort: Send + Sync {
     /// 取全局共享守护句柄（clone 廉价）
     fn shared_daemon(&self) -> mdns_sd::ServiceDaemon;
@@ -295,6 +305,8 @@ pub struct ServerPorts {
     pub lifecycle: Arc<dyn ServerLifecyclePort>,
     pub runtime: Arc<dyn RuntimePort>,
     pub config: Arc<dyn ConfigPort>,
+    /// mDNS 发现守护接入（`mdns` feature；不消费 mDNS 的宿主不构造此字段）
+    #[cfg(feature = "mdns")]
     pub mdns: Arc<dyn MdnsPort>,
 }
 
@@ -335,19 +347,25 @@ mod tests {
     }
 
     // ==================== MdnsTypeSubscription 守卫生命周期契约 ====================
+    //
+    // 随 `mdns` feature 门控：默认形态不编译 mdns-sd / flume，这组契约测试只在
+    // 开启 feature 的形态（peer-net / 桌面宿主）下运行。
 
     /// 退订守卫的测试替身：Drop 计数即「退订被触发」的可观察证据
     /// （真实守卫是中枢的退订句柄，Drop 语义同此：该订阅被移除、通道关闭）
+    #[cfg(feature = "mdns")]
     struct DropCountingGuard {
         drops: std::sync::Arc<AtomicUsize>,
     }
 
+    #[cfg(feature = "mdns")]
     impl Drop for DropCountingGuard {
         fn drop(&mut self) {
             self.drops.fetch_add(1, Ordering::SeqCst);
         }
     }
 
+    #[cfg(feature = "mdns")]
     fn test_event(tag: &str) -> mdns_sd::ServiceEvent {
         mdns_sd::ServiceEvent::SearchStarted(tag.to_string())
     }
@@ -355,6 +373,7 @@ mod tests {
     /// 契约（spec §2.3 硬性要求）：句柄独占 receiver + 守卫——drop 句柄必须
     /// 恰好触发一次退订守卫，且 receiver 随句柄一起关闭；守卫不得在 `new`
     /// 中提前释放，receiver 也不得脱离守卫独立存活（否则退订泄漏）。
+    #[cfg(feature = "mdns")]
     #[test]
     fn dropping_subscription_runs_guard_exactly_once_and_closes_channel() {
         let drops = std::sync::Arc::new(AtomicUsize::new(0));
@@ -383,6 +402,7 @@ mod tests {
     /// 契约：`into_parts` 原样移交 receiver 与守卫（宿主 glue 转换面，票 04 消费）——
     /// 移交本身不得释放 / 替换守卫；移交后的 receiver 仍与配对发送端连通；
     /// 守卫由其新持有者释放且恰好一次。
+    #[cfg(feature = "mdns")]
     #[test]
     fn into_parts_moves_receiver_and_guard_without_premature_drop() {
         let drops = std::sync::Arc::new(AtomicUsize::new(0));
@@ -414,6 +434,7 @@ mod tests {
 
     /// 契约：句柄可跨线程移交与释放（宿主装配线程铸造、消费任务线程托管）——
     /// Send + Sync 编译期断言 + 跨线程 drop 时退订钩子恰好触发一次。
+    #[cfg(feature = "mdns")]
     #[test]
     fn subscription_handoff_across_threads_drops_guard_exactly_once() {
         fn assert_send_sync<T: Send + Sync>() {}

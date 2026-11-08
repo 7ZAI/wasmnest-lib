@@ -24,25 +24,16 @@ use std::time::{Duration, Instant};
 
 pub use crate::gate::PermissionGate;
 
-// ==================== 执行护栏常量（真源；双端 server-base / 本地 const 改经此取） ====================
+// ==================== 执行护栏常量（真源已上移契约仓，本处保旧路径） ====================
+//
+// 2026-11-08（P0 默认形态依赖边界）：真源迁 `wasmnest-contract`——这四个常量不含机制
+// 实现、不含平台判断，却把「叶子地基 `server-base`」反向拖进本实现层。本模块只做
+// re-export，保 `wasmnest_host_api_core::database::*` 既有导入路径。
 
-/// 插件 SQL 语句执行超时（秒）
-///
-/// 插件私有库慢查询阻塞的是该插件自己的连接（每插件独立库），护栏防的是单条
-/// 语句失控拖垮插件本身；上限不可由插件调整（安全边界，AGENTS §5.1.3 ②）。
-pub const PLUGIN_DB_STATEMENT_TIMEOUT_SECS: u64 = 120;
-
-/// 插件 SQL 查询结果集行数上限
-///
-/// 取行循环内计数，超限立即截断报错（引导插件加 LIMIT 或分批）；无上限结果集可能
-/// 耗尽单次调用 fuel 预算触发 trap 污染 Store。
-pub const PLUGIN_DB_QUERY_MAX_ROWS: usize = 10_000;
-
-/// 插件 SQL 查询结果集序列化字节上限（对齐 HTTP 响应体上限 32MB 的既有模式）
-pub const PLUGIN_DB_QUERY_MAX_BYTES: usize = 32 * 1024 * 1024;
-
-/// 插件 execute-batch 单次调用语句数上限
-pub const PLUGIN_DB_EXECUTE_BATCH_MAX_STATEMENTS: usize = 64;
+pub use wasmnest_contract::{
+    PLUGIN_DB_EXECUTE_BATCH_MAX_STATEMENTS, PLUGIN_DB_QUERY_MAX_BYTES, PLUGIN_DB_QUERY_MAX_ROWS,
+    PLUGIN_DB_STATEMENT_TIMEOUT_SECS,
+};
 
 // ==================== 参数绑定 ====================
 

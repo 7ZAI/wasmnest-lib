@@ -2,6 +2,7 @@
 //!
 //! 数据库连接管理
 
+use crate::error::DbResultExt;
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -61,7 +62,7 @@ fn explicit_indexes(conn: &Connection, table: &str) -> crate::Result<Vec<String>
 impl Database {
     /// Create a new database connection
     pub fn new(path: &Path) -> crate::Result<Self> {
-        let conn = Connection::open(path)?;
+        let conn = Connection::open(path).db()?;
         Ok(Self { conn })
     }
 

@@ -32,6 +32,7 @@
 //! 求值不在这里，在 `super::strategy`（fs / network 共用同一处顺序裁决）。
 
 use crate::db::Database;
+use crate::error::DbResultExt;
 use crate::monitor::MetricsRegistry;
 use crate::security::fs_auth::FirstPartyDirEntry;
 use std::sync::{Arc, RwLock};
@@ -316,7 +317,7 @@ impl AuthPolicyStore {
         match raw {
             Ok(value) => Ok(AuthStrategy::parse(&value)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(AuthStrategy::Default),
-            Err(e) => Err(crate::AppError::Database(e)),
+            Err(e) => Err(crate::AppError::Database(e.to_string())),
         }
     }
 
@@ -332,22 +333,27 @@ impl AuthPolicyStore {
         resource: AuthResource,
     ) -> crate::Result<Vec<AuthRecordMatch>> {
         let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = db.conn().prepare(
-            "SELECT id, target, effect, ops, prefix_match FROM plugin_auth_records \
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT id, target, effect, ops, prefix_match FROM plugin_auth_records \
              WHERE plugin_id = ?1 AND resource = ?2 ORDER BY effect, target",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![plugin_id, resource.as_str()], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })?;
+            )
+            .db()?;
+        let rows = stmt
+            .query_map(rusqlite::params![plugin_id, resource.as_str()], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .db()?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, target, effect, ops, prefix_match) = row?;
+            let (id, target, effect, ops, prefix_match) = row.db()?;
             out.push(AuthRecordMatch {
                 target,
                 effect,
@@ -373,12 +379,14 @@ impl AuthPolicyStore {
     ) -> crate::Result<()> {
         let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
         let now = chrono::Utc::now().timestamp_millis();
-        db.conn().execute(
-            "INSERT INTO plugin_auth_policies (plugin_id, resource, strategy, updated_at) \
+        db.conn()
+            .execute(
+                "INSERT INTO plugin_auth_policies (plugin_id, resource, strategy, updated_at) \
              VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(plugin_id, resource) DO UPDATE SET strategy = ?3, updated_at = ?4",
-            rusqlite::params![plugin_id, resource.as_str(), strategy.as_str(), now],
-        )?;
+                rusqlite::params![plugin_id, resource.as_str(), strategy.as_str(), now],
+            )
+            .db()?;
         Ok(())
     }
 
@@ -435,7 +443,8 @@ impl AuthPolicyStore {
                     "UPDATE plugin_auth_records SET ops = ?1, source = ?2, created_at = ?3 \
                      WHERE id = ?4",
                     rusqlite::params![serde_json::to_string(&merged)?, next_source, now, id],
-                )?;
+                )
+                .db()?;
                 Ok(GrantOutcome::Stored)
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -443,7 +452,7 @@ impl AuthPolicyStore {
                     "SELECT COUNT(*) FROM plugin_auth_records WHERE plugin_id = ?1 AND resource = ?2",
                     rusqlite::params![plugin_id, resource.as_str()],
                     |row| row.get(0),
-                )?;
+                ).db()?;
                 if stored as usize >= AUTH_RECORDS_CAP {
                     if let Some(monitor) = self
                         .monitor
@@ -476,10 +485,11 @@ impl AuthPolicyStore {
                         source.as_str(),
                         now
                     ],
-                )?;
+                )
+                .db()?;
                 Ok(GrantOutcome::Stored)
             }
-            Err(e) => Err(crate::AppError::Database(e)),
+            Err(e) => Err(crate::AppError::Database(e.to_string())),
         }
     }
 
@@ -496,18 +506,20 @@ impl AuthPolicyStore {
         let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
         let conn = db.conn();
         let now = chrono::Utc::now().timestamp_millis();
-        let updated = conn.execute(
-            "UPDATE plugin_auth_records SET source = ?1, created_at = ?2 \
+        let updated = conn
+            .execute(
+                "UPDATE plugin_auth_records SET source = ?1, created_at = ?2 \
              WHERE plugin_id = ?3 AND resource = ?4 AND target = ?5 AND effect = ?6",
-            rusqlite::params![
-                source.as_str(),
-                now,
-                plugin_id,
-                resource.as_str(),
-                target,
-                AUTH_EFFECT_DENY
-            ],
-        )?;
+                rusqlite::params![
+                    source.as_str(),
+                    now,
+                    plugin_id,
+                    resource.as_str(),
+                    target,
+                    AUTH_EFFECT_DENY
+                ],
+            )
+            .db()?;
         if updated == 0 {
             conn.execute(
                 "INSERT INTO plugin_auth_records \
@@ -521,7 +533,8 @@ impl AuthPolicyStore {
                     source.as_str(),
                     now
                 ],
-            )?;
+            )
+            .db()?;
         }
         Ok(())
     }
@@ -543,11 +556,13 @@ impl AuthPolicyStore {
         let target = resolve_revoke_target(resource, target)?;
         let removed = {
             let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
-            db.conn().execute(
-                "DELETE FROM plugin_auth_records \
+            db.conn()
+                .execute(
+                    "DELETE FROM plugin_auth_records \
                  WHERE plugin_id = ?1 AND resource = ?2 AND target = ?3 AND effect = ?4",
-                rusqlite::params![plugin_id, resource.as_str(), target, AUTH_EFFECT_ALLOW],
-            )?
+                    rusqlite::params![plugin_id, resource.as_str(), target, AUTH_EFFECT_ALLOW],
+                )
+                .db()?
         };
         self.deny(plugin_id, resource, &target, AuthRecordSource::UserDeny)
             .await?;
@@ -564,11 +579,14 @@ impl AuthPolicyStore {
         target: &str,
     ) -> crate::Result<usize> {
         let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
-        let removed = db.conn().execute(
-            "DELETE FROM plugin_auth_records \
+        let removed = db
+            .conn()
+            .execute(
+                "DELETE FROM plugin_auth_records \
              WHERE plugin_id = ?1 AND resource = ?2 AND target = ?3 AND effect = ?4",
-            rusqlite::params![plugin_id, resource.as_str(), target, AUTH_EFFECT_DENY],
-        )?;
+                rusqlite::params![plugin_id, resource.as_str(), target, AUTH_EFFECT_DENY],
+            )
+            .db()?;
         Ok(removed)
     }
 
@@ -584,14 +602,18 @@ impl AuthPolicyStore {
     pub async fn purge_plugin(&self, plugin_id: &str) -> crate::Result<(usize, usize)> {
         let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
         let conn = db.conn();
-        let records = conn.execute(
-            "DELETE FROM plugin_auth_records WHERE plugin_id = ?1",
-            rusqlite::params![plugin_id],
-        )?;
-        let policies = conn.execute(
-            "DELETE FROM plugin_auth_policies WHERE plugin_id = ?1",
-            rusqlite::params![plugin_id],
-        )?;
+        let records = conn
+            .execute(
+                "DELETE FROM plugin_auth_records WHERE plugin_id = ?1",
+                rusqlite::params![plugin_id],
+            )
+            .db()?;
+        let policies = conn
+            .execute(
+                "DELETE FROM plugin_auth_policies WHERE plugin_id = ?1",
+                rusqlite::params![plugin_id],
+            )
+            .db()?;
         tracing::info!(
             plugin_id = %plugin_id,
             records = records,
@@ -653,7 +675,7 @@ fn load_strategies(
         let strategy = match raw {
             Ok(value) => AuthStrategy::parse(&value),
             Err(rusqlite::Error::QueryReturnedNoRows) => AuthStrategy::Default,
-            Err(e) => return Err(crate::AppError::Database(e)),
+            Err(e) => return Err(crate::AppError::Database(e.to_string())),
         };
         out.push(ResourceStrategy {
             resource: resource.as_str().to_string(),
@@ -672,24 +694,27 @@ fn load_records(conn: &rusqlite::Connection, plugin_id: &str) -> crate::Result<V
         "SELECT id, plugin_id, resource, target, effect, ops, prefix_match, source, created_at \
          FROM plugin_auth_records WHERE plugin_id = ?1 \
          ORDER BY resource, created_at, id",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![plugin_id], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, String>(5)?,
-            row.get::<_, i64>(6)?,
-            row.get::<_, String>(7)?,
-            row.get::<_, i64>(8)?,
-        ))
-    })?;
+    ).db()?;
+    let rows = stmt
+        .query_map(rusqlite::params![plugin_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })
+        .db()?;
 
     let mut out = Vec::new();
     for row in rows {
-        let (id, plugin_id, resource, target, effect, ops, prefix_match, source, created_at) = row?;
+        let (id, plugin_id, resource, target, effect, ops, prefix_match, source, created_at) =
+            row.db()?;
         let ops = parse_ops(&ops, &plugin_id, id)?;
         out.push(AuthRecord {
             id,

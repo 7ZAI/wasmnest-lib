@@ -33,8 +33,10 @@ async-trait = "0.1"
 uuid = { version = "1", features = ["v4"] }
 # BusMessageHandler::on_message 的 anyhow::Result（生产代码里的 trait 签名）
 anyhow = "1"
-# 基础层（AppError/Result、常量、错误边界 spawn、端口 traits 与全局注册表）
-wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1" }
+# 基础层（AppError/Result、常量、错误边界 spawn、端口 traits 与全局注册表）。
+# `mdns` feature：本引擎必需 `MdnsPort` / `MdnsTypeSubscription`（发现守护接入与
+# 类型中枢订阅）——base 自 2026-11-08 起默认不编译 mdns-sd / flume，消费方显式开启。
+wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1", features = ["mdns"] }
 # libp2p 机制引擎（P1 传输栈换轨）：swarm 生命周期 / 准入闸门 / 具名流协议。
 # 本 crate 只做「连接 → 流」的线协议适配；引擎零内部依赖（crate 内 boundary_lock）。
 wasmnest-p2p-engine = { path = "../wasmnest-p2p-engine", version = "0.0.1" }

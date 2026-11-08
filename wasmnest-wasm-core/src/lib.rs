@@ -135,6 +135,31 @@ pub mod test_support;
 /// 的 `crate::error::` 路径经此零改动解析；桌面侧经文件尾 `pub use` 的路径不变。
 pub mod error {
     pub use wasmnest_server_base::error::*;
+
+    /// rusqlite 错误 → `AppError::Database` 的边界映射（2026-11-08，P0 默认形态依赖边界）
+    ///
+    /// `AppError::Database` 不再携带 `rusqlite::Error`（那一个变体把 bundled SQLite
+    /// 钉进了地基层的默认依赖树）。DB 调用点仍照旧用 `?`——只是经 [`DbResultExt`]
+    /// 显式标注「这里是 DB 边界」，文案与 envelope 语义（落 `host.internal`）不变。
+    pub(crate) fn db_error(err: rusqlite::Error) -> AppError {
+        AppError::Database(err.to_string())
+    }
+
+    /// `Result<T, rusqlite::Error>` → `crate::Result<T>` 的边界适配
+    ///
+    /// 用法：`stmt.query_map(...).db()?` / `row.db()?` / `conn.execute(...).db()?`。
+    /// 孤儿规则禁止下游为 `AppError` 补写 `From<rusqlite::Error>`，故用扩展 trait
+    /// 在边界处显式转换，而不是把 SQLite 依赖反向塞回地基层。
+    pub(crate) trait DbResultExt<T> {
+        /// 把 rusqlite 错误映射为 `AppError::Database`
+        fn db(self) -> Result<T>;
+    }
+
+    impl<T> DbResultExt<T> for std::result::Result<T, rusqlite::Error> {
+        fn db(self) -> Result<T> {
+            self.map_err(db_error)
+        }
+    }
 }
 
 // ==================== Facade 再导出 ====================
