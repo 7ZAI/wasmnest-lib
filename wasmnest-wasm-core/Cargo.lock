@@ -7542,7 +7542,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "wasmnest-server-base",
+ "thiserror 1.0.69",
  "x25519-dalek 2.0.1",
 ]
 
@@ -7553,6 +7553,7 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "tracing",
+ "wasmnest-contract",
 ]
 
 [[package]]
@@ -7616,20 +7617,14 @@ dependencies = [
  "async-trait",
  "flume",
  "futures-util",
- "local-ip-address",
  "mdns-sd",
- "notify",
  "rand 0.8.8",
- "rusqlite",
  "serde",
  "serde_json",
- "sysinfo",
- "tauri",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
- "wasmnest-host-api-core",
- "wasmnest-link-crypto",
+ "wasmnest-contract",
 ]
 
 [[package]]
@@ -7649,7 +7644,6 @@ dependencies = [
  "sysinfo",
  "tokio",
  "tracing",
- "uuid",
  "wasmnest-crypto-engine",
  "wasmnest-link-crypto",
  "wasmnest-server-base",
