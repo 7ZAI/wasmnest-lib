@@ -18,12 +18,13 @@ use actix_web::body::{BoxBody, MessageBody};
 use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::http::KeepAlive;
 use actix_web::middleware::Next;
-use actix_web::{web, App, Error, HttpServer};
+use actix_web::{web, App, Error, HttpMessage, HttpServer};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use wasmnest_server_base::config::NetworkConfig;
-use wasmnest_server_base::constants::{BIND_ADDRESS, CORS_MAX_AGE_SECS};
+use wasmnest_server_base::constants::{BIND_ADDRESS, CORS_MAX_AGE_SECS, LOCALHOST_IP};
+use wasmnest_server_base::face::{PeerFaceResolver, RequestFace};
 
 /// 传输面组合契约（libp2p SwarmBuilder 式）：一个 face = 一个传输面的
 /// 路由装配 + 可选 app 级中间件（boxed service 链式注入）。
@@ -96,7 +97,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig, faces: &[Arc<dyn Transport
     }
 }
 
-/// 启动 Actix Web 服务器（HTTP + WebSocket 统一端口，faces 注入装配）
+/// 启动普通面 Actix Web 服务器（HTTP + WebSocket 统一端口，faces 注入装配）
 ///
 /// 返回 `ServerHandle` 用于优雅停机
 /// 调用方通过 oneshot channel 获取 handle，然后继续 await server 保持运行
@@ -108,7 +109,103 @@ pub async fn serve(
     actix_web::dev::ServerHandle,
     impl std::future::Future<Output = std::io::Result<()>>,
 )> {
-    tracing::info!("Starting Actix Web server (HTTP + WS) on port {}", port);
+    let (_, handle, server) = serve_on(
+        BindTarget::Addr(format!("{}:{}", BIND_ADDRESS, port)),
+        config,
+        faces,
+        RequestFace::local(),
+        None,
+    )
+    .await?;
+    Ok((handle, server))
+}
+
+/// 启动对等 HTTP/WS 面（内网穿透 T03）：**只绑 127.0.0.1**，路由表与中间件
+/// 与普通面完全共用，仅注入 [`RequestFace`] 面标记。
+///
+/// `resolver` 是宿主按连接四元组给出「已验证 nodeId / 配对态」的接线点
+/// （T05 配对连接注册表）；为 `None` 时退化为无 nodeId 的 peer 面，
+/// **不会**因为读不到上下文就把请求升级为本机身份。
+/// 生命周期由宿主 `tunnel:serve` 规则驱动（T06），本函数只管装配。
+pub async fn serve_peer_face(
+    port: u16,
+    config: &NetworkConfig,
+    faces: Vec<Arc<dyn TransportFace>>,
+    resolver: Option<PeerFaceResolver>,
+) -> std::io::Result<(
+    actix_web::dev::ServerHandle,
+    impl std::future::Future<Output = std::io::Result<()>>,
+)> {
+    let (_, handle, server) = serve_on(
+        BindTarget::Addr(format!("{}:{}", LOCALHOST_IP, port)),
+        config,
+        faces,
+        RequestFace::peer_face(None, false),
+        resolver,
+    )
+    .await?;
+    Ok((handle, server))
+}
+
+/// 启动对等面并**返回实际监听地址**（T06：宿主先 bind `127.0.0.1:0`，端口由系统
+/// 分配后再交给隧道策略做管理端口黑名单与 `kind=http` 后端目标）。
+///
+/// listener 必须由调用方绑定并置为非阻塞（`std::net::TcpListener`；actix
+/// `HttpServer::listen` 的契约）。
+pub async fn serve_peer_face_on(
+    listener: std::net::TcpListener,
+    config: &NetworkConfig,
+    faces: Vec<Arc<dyn TransportFace>>,
+    resolver: Option<PeerFaceResolver>,
+) -> std::io::Result<(
+    std::net::SocketAddr,
+    actix_web::dev::ServerHandle,
+    impl std::future::Future<Output = std::io::Result<()>>,
+)> {
+    let (addrs, handle, server) = serve_on(
+        BindTarget::Listener(listener),
+        config,
+        faces,
+        RequestFace::peer_face(None, false),
+        resolver,
+    )
+    .await?;
+    let addr = addrs
+        .first()
+        .copied()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "peer face bound without address"))?;
+    Ok((addr, handle, server))
+}
+
+/// 绑定目标：普通面按地址 bind；对等面由宿主先占 `127.0.0.1:0` 再移交 listener
+enum BindTarget {
+    Addr(String),
+    Listener(std::net::TcpListener),
+}
+
+async fn serve_on(
+    bind: BindTarget,
+    config: &NetworkConfig,
+    faces: Vec<Arc<dyn TransportFace>>,
+    face: RequestFace,
+    resolver: Option<PeerFaceResolver>,
+) -> std::io::Result<(
+    Vec<std::net::SocketAddr>,
+    actix_web::dev::ServerHandle,
+    impl std::future::Future<Output = std::io::Result<()>>,
+)> {
+    let bind_label = match &bind {
+        BindTarget::Addr(addr) => addr.clone(),
+        BindTarget::Listener(listener) => listener
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "<listener>".to_string()),
+    };
+    tracing::info!(
+        "Starting Actix Web server (HTTP + WS) on {} (peer face: {})",
+        bind_label,
+        face.is_peer()
+    );
 
     let keep_alive = if config.keep_alive_secs == 0 {
         KeepAlive::Disabled
@@ -117,14 +214,18 @@ pub async fn serve(
     };
 
     let faces_for_metrics: Arc<Vec<Arc<dyn TransportFace>>> = faces.into();
+    let face_for_inject = face.clone();
+    let resolver_for_inject = resolver.clone();
 
-    let mut server_builder = HttpServer::new(move || {
+    let server_builder = HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
             .allow_any_method()
             .allow_any_header()
             .max_age(CORS_MAX_AGE_SECS);
 
+        let face = face_for_inject.clone();
+        let resolver = resolver_for_inject.clone();
         let faces = Arc::clone(&faces_for_metrics);
         App::new()
             .wrap(cors)
@@ -132,6 +233,16 @@ pub async fn serve(
             // 指标层（外层）：计数后透传
             .wrap_fn(|req, srv| {
                 crate::metrics::MetricsCollector::global().inc_http_request();
+                srv.call(req)
+            })
+            // 面标记注入（外层）：listener 决定信任面，客户端头不可伪造。
+            // 注入在 face 中间件链之前，TrafficFilter / 网关 / WS 握手都能读到。
+            .wrap_fn(move |req, srv| {
+                let resolved = match (&resolver, req.peer_addr()) {
+                    (Some(resolve), Some(addr)) => resolve(&addr),
+                    _ => face.clone(),
+                };
+                req.extensions_mut().insert(resolved);
                 srv.call(req)
             })
             // face 层（最内层）：boxed service 链式组合各面中间件
@@ -145,24 +256,30 @@ pub async fn serve(
                     face.configure(cfg);
                 }
             })
-    })
-    .bind(format!("{}:{}", BIND_ADDRESS, port))?
-    .keep_alive(keep_alive)
-    .client_request_timeout(Duration::from_secs(config.client_request_timeout_secs))
-    .client_disconnect_timeout(Duration::from_secs(config.client_disconnect_timeout_secs))
-    .max_connections(config.max_connections)
-    .backlog(config.backlog)
-    .tcp_nodelay(config.tcp_nodelay)
-    .shutdown_timeout(config.shutdown_timeout_secs);
+    });
+    let server_builder = match bind {
+        BindTarget::Addr(addr) => server_builder.bind(addr)?,
+        BindTarget::Listener(listener) => server_builder.listen(listener)?,
+    };
+    let mut server_builder = server_builder
+        .keep_alive(keep_alive)
+        .client_request_timeout(Duration::from_secs(config.client_request_timeout_secs))
+        .client_disconnect_timeout(Duration::from_secs(config.client_disconnect_timeout_secs))
+        .max_connections(config.max_connections)
+        .backlog(config.backlog)
+        .tcp_nodelay(config.tcp_nodelay)
+        .shutdown_timeout(config.shutdown_timeout_secs);
 
     if config.workers > 0 {
         server_builder = server_builder.workers(config.workers);
     }
 
+    // 绑定端口由系统分配时（listener 形态），实际地址只能从 HttpServer 取
+    let addrs = server_builder.addrs();
     let server = server_builder.run();
 
     // 在 await 之前获取 handle，用于后续优雅停机
     let handle = server.handle();
 
-    Ok((handle, server))
+    Ok((addrs, handle, server))
 }

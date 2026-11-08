@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::registry::{WsRegistration, WsSessionRegistry};
 use wasmnest_server_base::constants::{HEARTBEAT_INTERVAL_SECS, REMOTE_CLIENT_TIMEOUT_SECS, WS_AUTH_TIMEOUT_SECS};
+use wasmnest_server_base::face::RequestFace;
 use wasmnest_server_core::filter::{Direction, FilterContext, TrafficChannel, TrafficFilterChain};
 use wasmnest_server_core::link_crypto;
 
@@ -178,15 +179,18 @@ pub struct ConnSpec {
     pub owner: Option<String>,
     /// 端点标识（端点域寻址：列表 / 单发 / 广播 / 批量断开）
     pub endpoint_id: Option<String>,
+    /// 传输面标记（listener 注入）：帧级过滤链按面判定豁免，不看环回地址
+    pub face: RequestFace,
 }
 
 impl ConnSpec {
-    /// 最小构造：仅地址，属主 / 端点标识留空
+    /// 最小构造：仅地址，属主 / 端点标识留空，面标记为普通面
     pub fn new(addr: SocketAddr) -> Self {
         Self {
             addr,
             owner: None,
             endpoint_id: None,
+            face: RequestFace::local(),
         }
     }
 }
@@ -209,6 +213,8 @@ pub struct WsConnBase {
     /// 在 `stopping()` 之前写入，供通道在 `on_close` 中读取以上报断开事件
     /// （插件端点 `ws:client-disconnect` 的 code / reason / wasClean 来源）
     close_outcome: Option<CloseOutcome>,
+    /// 传输面标记（握手期由 listener 注入；帧级过滤链按面判豁免）
+    face: RequestFace,
     /// 通道处理器（构造时注入，连接存续期恒定存在）
     handler: Option<Box<dyn ChannelHandler>>,
     register_on_start: bool,
@@ -224,6 +230,7 @@ impl WsConnBase {
             hb: Instant::now(),
             owner: spec.owner,
             endpoint_id: spec.endpoint_id,
+            face: spec.face,
             close_outcome: None,
             handler: Some(handler),
             register_on_start: true,
@@ -355,6 +362,7 @@ impl WsConnBase {
         }
         let peer = self.session.addr.to_string();
         let mut fctx = FilterContext {
+            face: self.face.clone(),
             channel: self.traffic_channel(),
             direction: Direction::Inbound,
             peer: &peer,
@@ -398,6 +406,7 @@ impl WsConnBase {
         }
         let peer = self.session.addr.to_string();
         let mut fctx = FilterContext {
+            face: self.face.clone(),
             channel: self.traffic_channel(),
             direction: Direction::Outbound,
             peer: &peer,
@@ -436,6 +445,7 @@ impl WsConnBase {
         }
         let peer = self.session.addr.to_string();
         let mut fctx = FilterContext {
+            face: self.face.clone(),
             channel: self.traffic_channel(),
             direction: Direction::Outbound,
             peer: &peer,

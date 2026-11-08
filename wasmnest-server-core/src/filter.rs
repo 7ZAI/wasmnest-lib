@@ -57,6 +57,8 @@
 
 use std::sync::{Arc, RwLock};
 
+use wasmnest_server_base::face::RequestFace;
+
 // ==================== 类型定义 ====================
 
 /// 流量通道类型（过滤器可据此选择性处理）
@@ -134,6 +136,9 @@ pub struct FilterContext<'a> {
     /// （如响应加密标记 `X-WasmNest-Crypto: v1`），由 http_filter 重建
     /// 响应时注入；WS 通道不消费此字段。
     pub outbound_headers: Vec<(String, String)>,
+    /// 传输面标记（listener 注入，内网穿透 T04）：peer 面的 loopback 只是
+    /// 隧道入口，不得按 `peer` 的环回地址享受本地豁免（不变量 15）。
+    pub face: RequestFace,
 }
 
 /// 过滤器裁决
@@ -403,6 +408,7 @@ mod tests {
     /// 构造入站 HTTP 过滤上下文（peer 用空串占位即可满足生命周期）
     fn http_ctx(route: &'static str, data: &[u8]) -> FilterContext<'static> {
         FilterContext {
+            face: RequestFace::default(),
             channel: TrafficChannel::Http,
             direction: Direction::Inbound,
             peer: "",
@@ -437,6 +443,7 @@ mod tests {
         chain.register(observer.clone());
 
         let mut in_ctx = FilterContext {
+            face: RequestFace::default(),
             channel: TrafficChannel::WsPlugin,
             direction: Direction::Inbound,
             peer: "192.168.1.42:5001",
@@ -452,6 +459,7 @@ mod tests {
         assert_eq!(observer.inbound_calls(), 1, "插件端点入站帧必须过链");
 
         let mut out_ctx = FilterContext {
+            face: RequestFace::default(),
             channel: TrafficChannel::WsPlugin,
             direction: Direction::Outbound,
             peer: "192.168.1.42:5001",
@@ -493,6 +501,7 @@ mod tests {
 
         // 出站：+1 还原
         let mut out_ctx = FilterContext {
+            face: RequestFace::default(),
             channel: TrafficChannel::WsTerminal,
             direction: Direction::Outbound,
             peer: "127.0.0.1:5000",

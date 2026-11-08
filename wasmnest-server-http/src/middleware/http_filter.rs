@@ -20,11 +20,12 @@ use actix_web::{
     http::header::CONTENT_LENGTH,
     web,
     web::Bytes,
-    FromRequest, HttpResponse, Result,
+    FromRequest, HttpMessage, HttpResponse, Result,
 };
 use tracing::{Instrument, Level};
 
 use crate::dtos::common_dto::{ApiResponse, CODE_INVALID_REQUEST};
+use wasmnest_server_base::face::RequestFace;
 use wasmnest_server_core::filter::{Direction, FilterContext, TrafficChannel, TrafficFilterChain};
 use wasmnest_server_core::link_crypto::{EncryptionPolicy, LinkEncryptionFilter};
 
@@ -133,6 +134,8 @@ or turn off encryption on the client."
         // 取策略裁决（本地豁免 / 白名单逻辑复用过滤器同一实现），不驱动责任链。
         if req.method() == actix_web::http::Method::HEAD {
             let (owner, endpoint) = resolve_route_identity(req.path(), "HEAD");
+            // 内网穿透 T04：面标记由 listener 注入，HEAD 快速路径同样要按面裁决
+            let face = req.extensions().get::<RequestFace>().cloned().unwrap_or_default();
             let probe = FilterContext {
                 channel: TrafficChannel::Http,
                 direction: Direction::Inbound,
@@ -143,6 +146,7 @@ or turn off encryption on the client."
                 negotiation: &negotiation,
                 data: Vec::new(),
                 outbound_headers: Vec::new(),
+                face: face.clone(),
             };
             if LinkEncryptionFilter::policy_of(&probe) == Some(EncryptionPolicy::Required)
                 && negotiation.trim().is_empty()
@@ -236,6 +240,9 @@ where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>,
     B: MessageBody + 'static,
 {
+    // 内网穿透 T04：面标记随 FilterContext 进入链加密判据；缺省 = 普通面，
+    // 既有环回豁免行为不回归。
+    let face = req.extensions().get::<RequestFace>().cloned().unwrap_or_default();
     let started = std::time::Instant::now();
 
     // 主体流程包进 async 块：错误经 `?` 上抛到单一出口（不再散落 return），
@@ -257,6 +264,7 @@ where
             negotiation: &negotiation,
             data: body.to_vec(),
             outbound_headers: Vec::new(),
+            face: face.clone(),
         };
         if let Err(rej) = chain.run_inbound(&mut ctx) {
             tracing::warn!(peer = %peer, route = %path, %rej, "HTTP inbound request rejected by traffic filter");
@@ -287,6 +295,7 @@ where
             negotiation: &negotiation,
             data: res_bytes,
             outbound_headers: Vec::new(),
+            face: face.clone(),
         };
         if let Err(rej) = chain.run_outbound(&mut out_ctx) {
             tracing::warn!(peer = %peer, route = %path, %rej, "HTTP outbound response rejected by traffic filter");

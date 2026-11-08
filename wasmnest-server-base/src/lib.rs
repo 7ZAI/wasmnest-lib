@@ -18,6 +18,8 @@ pub mod config;
 pub mod constants;
 pub mod error;
 pub mod error_boundary;
+/// 传输面标记（listener 注入的信任判据，供 caller 分类与链加密豁免共用）
+pub mod face;
 pub mod identity;
 pub mod info;
 pub mod ports;
