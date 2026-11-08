@@ -13,13 +13,17 @@ English | [简体中文](README.md)
 
 ## 1. Project Shape
 
-- **No root workspace**: 17 independent crates (each with its own `Cargo.toml` and tracked `Cargo.lock`) plus 4 fixture crates. All commands run inside a crate directory; there is no repository-level `cargo test`.
-- **Version line**: every crate restarts at `0.0.1`; the contract version `wasmnest:plugin@0.0.2` has a single handwritten source of truth in `wasmnest-contract`.
+- **No root workspace**: 19 independent crates (each with its own `Cargo.toml` and tracked `Cargo.lock`) plus 4 fixture crates. All commands run inside a crate directory; there is no repository-level `cargo test`.
+- **Version line**: every crate restarts at `0.0.1`; the contract version `wasmnest:plugin@0.1.0` has a single handwritten source of truth in `wasmnest-contract` (which is also the **zero-dependency shared vocabulary** crate: package name / version + cross-layer guard constants).
 - **Consumption**: the platform's two hosts and the test repo depend on this working tree directly through sibling paths (no copies, no registry publication). The only exception is `wasmnest-wasm-core`'s `desktop-assembly` dependency on the published desktop SDK `wasmnest-plugin-api`, which consumers redirect back to the SDK working tree with `[patch.crates-io]`.
 
 ## 2. Dependency Layering
 
-Capability crates default to **pure engine mechanisms + port abstractions** (zero WIT / zero SDK / zero host dependencies), so any host can depend on them. Only the `common-host` feature adds the WIT binding layer. Dependencies point downward; horizontal edges are pinned by each crate's `dependency_direction_lock.rs` / `boundary_lock.rs`:
+Capability crates default to **pure engine mechanisms + port abstractions** (zero WIT / zero SDK / zero wasmtime / **zero host frameworks (Tauri, actix) / zero bundled SQLite / zero system-info collection and file watching**), so any host can depend on them. Only the `common-host` feature adds the WIT binding layer. The criterion is executable: `sh scripts/check-default-form-deps.sh` (the same command CI runs).
+
+> **Boundary note**: `wasmnest-server-http` / `-websocket` / `-core` and `wasmnest-wasm-core` are **not** covered by that promise — the first three still pull actix by default (`server-core` also rusqlite), and `wasm-core` still pulls Tauri / actix; decoupling them is follow-up work (P1/P2). This README no longer describes them as "consumable by any host".
+
+Dependencies point downward; horizontal edges are pinned by each crate's `dependency_direction_lock.rs` / `boundary_lock.rs`:
 
 ```text
 apps (wasm-apps / third party)
@@ -38,22 +42,24 @@ desktop / mobile host src-tauri/src/ (composition root · thin shell) — platfo
 
 | Directory (package) | Positioning (one line) | Shape / features | WIT source | Main consumers |
 | --- | --- | --- | --- | --- |
-| `wasmnest-contract` | **Contract constants**: the single handwritten source of `PACKAGE` / `PACKAGE_NAME` / `PACKAGE_VERSION`; zero dependencies, no WIT | no features | — | wasm-core (derives after `use`), platform scripts and locks (read the source with regexes) |
+| `wasmnest-contract` | **Zero-dependency shared vocabulary**: single handwritten source of `PACKAGE` / `PACKAGE_NAME` / `PACKAGE_VERSION` + cross-layer guard constants (`PLUGIN_DB_*` / `DEFAULT_ERROR_CODE`); zero dependencies, no WIT | no features | — | wasm-core (derives after `use`), server-base / host-api-core / cli-engine (constant re-exports), platform scripts and locks (read the source with regexes) |
 | `wasmnest-wasm-core` | Complete plugin mechanism: wasmtime component host runtime shell + host_api adapters + security gates + main library / engine face | `default = ["desktop-assembly"]`; `test-support` | `wit/core.wit` + `wit/worker.wit` (self-contained worker world shard, shared by both ends) | platform hosts (desktop on by default / mobile with `default-features = false`), test repo |
 | `wasmnest-host-kit` | Assembly-time mechanism core: `WasmPluginState` / `HostModule` contracts / automatic registry / limits / metrics | no features | — | both hosts, every `common-host` domain, wasm-core |
-| `wasmnest-host-api-core` | host_api **implementation layer** for WIT-free domains: gate / storage / bus / database / log / events / fs | no features | — | wasm-core adapters, server-base (re-export guard constants) |
-| `wasmnest-server-base` | server **leaf foundation**: error envelope / constants / system info / network config shapes / connection identity / port traits / wire | `tauri-compat` (on by default) | — | almost the whole repo + both hosts + test repo |
-| `wasmnest-server-core` | Transport-agnostic server core: supervisor / filter chain / link_crypto / metrics / `TransportFace` + serve | no features | — | platform assembly, http/ws depend downward, test repo |
+| `wasmnest-host-api-core` | host_api **implementation layer** for WIT-free domains: gate / storage / bus / database / log / events / fs | no features | — | wasm-core adapters |
+| `wasmnest-server-base` | server **leaf foundation**: error envelope / constants / system-info DTO / network config shapes / connection identity / port traits / wire. Default dependency tree depends only on the zero-dependency contract crate | `default = []`; `tauri-compat` / `mdns` / `system-info` optional and off by default | — | almost the whole repo + both hosts + test repo |
+| `wasmnest-server-core` | **Cross-transport** server core: supervisor / filter chain / link_crypto / metrics / `TransportFace` + actix composition runtime (`serve`); still pulls actix / rusqlite (P1 follow-up) | no features | — | platform assembly, http/ws depend downward, test repo |
 | `wasmnest-server-http` | HTTP transport + `host-http` binding layer (endpoint registry / gateway / middleware / DTO anchors) | `default = []`; `common-host` | `wit/http.wit` | desktop host (common-host), wasm-core (engine face), mobile host (engine face), test repo |
 | `wasmnest-server-websocket` | WebSocket transport + `host-websocket` client-domain wiring / server-side engine functions | same as above | `wit/ws.wit` (shared with ws-client-engine) | same as http |
 | `wasmnest-server-peer-net` | Peer-to-peer **engine domain** (incl. base mechanisms in `base/`: identity/TLS/trust/mDNS registration/transfer-session primitives — absorbed from the former `wasmnest-peer-net`) + `host-peer` binding layer (not a transport; does not join the actix composition) | same as above | `wit/peer.wit` | desktop (common-host), mobile (engine face), wasm-core (`PeerCtx`), test repo |
 | `wasmnest-discovery-engine` | mDNS capability domain: shared daemon + type hub + browse/advertise handle tables + host advertiser face | same as above | `wit/mdns.wit` | desktop (common-host), mobile (engine face), test repo |
 | `wasmnest-pty-engine` | PTY capability domain + cross-platform pseudo-terminal engine (process lifecycle / reader thread / ring buffer) | same as above | `wit/pty.wit` | desktop host (common-host) |
 | `wasmnest-ws-client-engine` | WS **outbound client** domain: handle table / two tasks / heartbeat / backoff reconnect / reclaim on disable | no features | `wit/ws.wit` (shared contract source) | mobile host, test repo |
-| `wasmnest-crypto-engine` | Neutral cryptographic primitives (aes_gcm/chacha/hybrid/kdf/rsa/x25519) + name-addressed registry | no features | — (WIT face lives in host `plugin/crypto.rs`) | desktop host, server-core |
-| `wasmnest-notify-engine` | Notification **contract room**: holds only WIT + port vocabulary (currently no ports), zero implementation | no features | `wit/notify.wit` | both hosts' `compose.json` — **no Rust consumer** |
+| `wasmnest-cli-engine` | CLI mechanism skeleton: built-in command catalog (vocabulary source) / argv parsing / help and completion / local IPC wire frames; zero internal crate dependencies | no features | — (no guest face for CLI) | platform CLI / headless bin (not implemented yet), headless probe (link-only) |
+| `wasmnest-clipboard-engine` | Clipboard **contract room**: holds only WIT, zero Rust implementation | no features | `wit/clipboard.wit` | both hosts' `compose.json` — **no Rust consumer** |
+| `wasmnest-crypto-engine` | Neutral cryptographic primitives (aes_gcm/chacha/hybrid/kdf/rsa/x25519) + name-addressed registry + its own `CryptoError`; zero internal crate dependencies | no features | — (WIT face lives in host `plugin/crypto.rs`) | desktop host, server-core |
+| `wasmnest-notify-engine` | Notification **contract room**: holds only WIT + port vocabulary (currently no ports), zero Rust implementation | no features | `wit/notify.wit` | both hosts' `compose.json` — **no Rust consumer** |
 | `link-crypto` (`wasmnest-link-crypto`) | Link-message encryption protocol core: HTTP envelope / WS handshake IKM / binary frames | no features | — | wasm-core (`link_crypto`), both hosts |
-| `wasmnest-headless-host-probe` | Headless-host probe: references every capability domain in non-desktop form, proving "default shape is consumable by any host" | no features (never enables `common-host`), zero dev-deps | — | gate only — **must not enter any host dependency list** |
+| `wasmnest-headless-host-probe` | Headless-host probe: references every capability domain in non-desktop form, proving "default shape needs no plugin-host mechanism" | no features (never enables `common-host`), zero dev-deps | — | gate only — **must not enter any host dependency list** |
 
 > The only directory name that differs from its package name is `link-crypto` (package `wasmnest-link-crypto`).
 
@@ -61,14 +67,14 @@ desktop / mobile host src-tauri/src/ (composition root · thin shell) — platfo
 
 ### 4.1 Contracts and the Plugin-Mechanism Trio
 
-- **`wasmnest-contract`**: the single handwritten source of contract constants. `PACKAGE_NAME` / `PACKAGE_VERSION` / `PACKAGE` must keep the exact shape `pub const <NAME>: &str = "<value>";` (including `: &str`, no macro, no `env!` / `concat!`) — two Node parsers in the platform repo read this shape, making it a cross-language textual contract.
+- **`wasmnest-contract`**: **zero-dependency shared vocabulary** — single handwritten source of the contract package name / version plus cross-layer guard constants (`PLUGIN_DB_*` / `DEFAULT_ERROR_CODE`); `[dependencies]` must stay empty (enforced by a standing test). Hosts consume the package name / version only through wasm-core's re-export; in-repo zero-dependency vocabulary crates may depend on it directly. `PACKAGE_NAME` / `PACKAGE_VERSION` / `PACKAGE` must keep the exact shape `pub const <NAME>: &str = "<value>";` (including `: &str`, no macro, no `env!` / `concat!`) — two Node parsers in the platform repo read this shape, making it a cross-language textual contract.
 - **`wasmnest-host-kit` (assembly time)**: mechanisms only — instance state (including WASI slots, always compiled), `HostModule` contracts, automatic registry (collect → order → allowlist → linker assembly), lifecycle hooks, port assembly self-report, routing vocabulary, limits / metrics. No product nouns are allowed in this crate.
 - **`wasmnest-host-api-core` (runtime implementation layer)**: mechanism semantics for host_api domains that do not depend on WIT bindgen traits or end-specific types. Each domain has two layers: implementation (this crate) plus per-end adapters (in wasm-core or the host). `config` / `http` have been judged **not to extract**; do not unify them casually.
 - **`wasmnest-wasm-core` (runtime whole core, single shape)**: the plugin-system microkernel — `manager/` (loading / lifecycle / instance calls / tasks / hot reload), `manager/runtime/` (unified runtime shell + the **only legal core binding** `core_binding.rs`), `host_api/` (adapters), `security/`, `db/`, `system/`. There is no common/bare split: end differences are injected through `HostModule` self-report, `GuestEventDispatcher`, `AbiPolicy` / `HostFactsPort`. `desktop-assembly` (on by default) is the desktop-only assembly surface; the mobile host disables it with `default-features = false`. `test-support` is the test surface.
 
 ### 4.2 Capability-domain Engines (five crates with `common-host`)
 
-Default shape = **pure engine mechanisms + port abstractions**, with zero WIT / SDK / wasmtime. `common-host` adds `bindgen!` / `HostModule` self-report / `inventory::submit!` / `impl Host`. Enabling the feature changes no ABI, WIT, permission bits, event shapes or registration. Platform differences are injected through port traits (permission gate / event delivery / background tasks / paths / system info, etc.); **missing ports fail visibly**.
+Default shape = **pure engine mechanisms + port abstractions**, with zero WIT / SDK / wasmtime / host frameworks. `common-host` adds `bindgen!` / `HostModule` self-report / `inventory::submit!` / `impl Host`. Enabling the feature changes no ABI, WIT, permission bits, event shapes or registration. Platform differences are injected through port traits (permission gate / event delivery / background tasks / paths / system info, etc.); **missing ports fail visibly**.
 
 - **`wasmnest-server-http`**: HTTP transport + `host-http` binding layer (2 inbound + 1 outbound primitive).
 - **`wasmnest-server-websocket`**: WebSocket transport (connection skeleton / plugin endpoint channels / registry / graceful shutdown) + `host-websocket` binding layer.
@@ -78,8 +84,8 @@ Default shape = **pure engine mechanisms + port abstractions**, with zero WIT / 
 
 ### 4.3 Server Layering (`base` / `core` / transports)
 
-- **`wasmnest-server-base`** is the leaf foundation: `tauri-compat` is on by default solely for one `From<tauri::Error> for AppError` impl; non-Tauri consumers use `default-features = false` and pay for explicit `map_err` at boundaries. Changing its dependency surface affects the whole repo (including the headless host).
-- **`wasmnest-server-core`** is transport-agnostic: supervisor / filter chain / link_crypto / metrics / `TransportFace` + serve, with dependency inversion. http / ws depend only downward on it, have zero horizontal imports between them, and must not know about hosts.
+- **`wasmnest-server-base`** is the leaf foundation: its default dependency tree depends only on the zero-dependency contract crate (no tauri / rusqlite / notify / link-crypto / mdns-sd / sysinfo). The three features `tauri-compat` / `mdns` / `system-info` are **off by default** and must be enabled explicitly by consumers (the desktop host enables all three; `server-peer-net` enables `mdns`); when off, boundaries use explicit `map_err` (orphan rule). Changing its dependency surface affects the whole repo (including the headless host).
+- **`wasmnest-server-core`** is cross-transport (**not** transport-agnostic): supervisor / filter chain / link_crypto / metrics / `TransportFace` + actix composition runtime `serve`, with dependency inversion. http / ws depend only downward on it, have zero horizontal imports between them, and must not know about hosts. Its default dependency tree still contains actix / rusqlite (P1 follow-up).
 - The transport crates (http / websocket) are the only layer allowed to use actix.
 
 ### 4.4 Foundations, Independent Domains and the Contract Room
@@ -87,12 +93,13 @@ Default shape = **pure engine mechanisms + port abstractions**, with zero WIT / 
 - **Peer-to-peer base mechanisms** (absorbed from the former `wasmnest-peer-net` crate into `wasmnest-server-peer-net`'s `base/` in the 2026-10-22 dissolve): reinstalling means a new identity (deliberately separate from device identity); certificate public key = node public key, fingerprint = identity (`node_id = hex(SHA-256(raw ed25519 key))`); untrusted inbound connections stop at an application-layer confirmation gate; `_wasmnest-peer._tcp.local.` is completely independent of the legacy terminal link service `_wasmnest._tcp`.
 - **`link-crypto`**: link-message encryption protocol core, pure byte protocol only. Constants and algorithms are a compatibility surface and must match the mobile TypeScript implementation byte for byte — changing a constant is a cross-end breaking change.
 - **`wasmnest-ws-client-engine`**: WS outbound client domain (`host-websocket` client subset, 5 primitives + reclaim on disable). Platform differences (permission gate / delivery / background tasks / jwt issuance / backoff) are injected through `WsClientPorts`; the production dependency list contains zero internal crates.
-- **`wasmnest-crypto-engine`**: exposes only neutral algorithm primitives with no business semantics; no authentication orchestration, negotiation or key policy; key material is always supplied by the caller, and host identity keys are never touched.
-- **`wasmnest-notify-engine`**: contract room holding only `wit/notify.wit`, zero implementation. Unsupported platform capabilities (such as no vibration on desktop) are documented as silently ignored; implementations must not turn that into an error.
+- **`wasmnest-crypto-engine`**: exposes only neutral algorithm primitives with no business semantics; no authentication orchestration, negotiation or key policy; key material is always supplied by the caller, and host identity keys are never touched. It carries its own `CryptoError` (`Display` returns the legacy message verbatim) with zero internal crate dependencies — mapping back to envelope errors is the consumer's explicit boundary responsibility.
+- **`wasmnest-notify-engine`** / **`wasmnest-clipboard-engine`**: **contract rooms** holding only WIT, zero Rust implementation. Unsupported platform capabilities (such as no vibration on desktop) are documented as silently ignored; implementations must not turn that into an error.
+- **`wasmnest-cli-engine`**: CLI mechanism skeleton (command catalog / argv parsing / help and completion / local IPC wire frames) with zero internal crate dependencies; `WireError` is a pure wire type, and host-error → semantic-code mapping lives in the host.
 
 ### 4.5 Gate Probe
 
-- **`wasmnest-headless-host-probe`**: headless-host probe, pinning "capability domains in default shape are consumable by any host with zero WIT / zero desktop SDK dependencies". It never enables `common-host`, has zero dev-deps, and fails the gate if `cargo tree` shows `wasmtime` / `wit-bindgen` / `inventory` / `wasmnest-host-kit` / `wasmnest-plugin-api`. It must not enter any host dependency list and is not registered in `SPLIT_CRATES`.
+- **`wasmnest-headless-host-probe`**: headless-host probe, pinning "capability domains in default shape need no plugin-host mechanism" (zero WIT / zero desktop SDK / zero wasmtime mechanism dependencies). Host frameworks / SQLite / system info / file watching are pinned separately by `scripts/check-default-form-deps.sh` (the probe deliberately links the server stack, so it cannot serve as that criterion). It never enables `common-host`, has zero dev-deps, and fails the gate if `cargo tree` shows `wasmtime` / `wit-bindgen` / `inventory` / `wasmnest-host-kit` / `wasmnest-plugin-api`. It must not enter any host dependency list and is not registered in `SPLIT_CRATES`.
 
 ## 5. Fixture Crates (not in the list above, not published)
 

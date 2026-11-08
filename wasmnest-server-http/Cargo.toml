@@ -2,7 +2,7 @@
 name = "wasmnest-server-http"
 version = "0.0.1"
 license = "MIT"
-description = "WasmNest 桌面 HTTP 传输面：动态端点注册表/协议网关/插件代理控制器/认证与流量过滤中间件/DTO 形状锚点 + host-http 能力域的插件绑定层（入站 2 + 出站 1 原语，wasm-core-lib-split 票 06）。默认形态 = 纯引擎机制 + 端口抽象（零 WIT 依赖），任何宿主可直接引用；`common-host` feature 装配 WIT 绑定层（bindgen!/HostModule/inventory/impl Host）——能力域脱绑 P1"
+description = "WasmNest 桌面 HTTP 传输面：动态端点注册表/协议网关/插件代理控制器/认证与流量过滤中间件/DTO 形状锚点 + host-http 能力域的插件绑定层（入站 2 + 出站 1 原语，wasm-core-lib-split 票 06）。默认形态 = 引擎机制 + 端口抽象（零 WIT 依赖），但**属传输面：默认依赖树含 actix**——不承诺「任何宿主可直接引用」（AGENTS §3.1 边界声明）；`common-host` feature 装配 WIT 绑定层（bindgen!/HostModule/inventory/impl Host）——能力域脱绑 P1"
 authors = ["binblink"]
 edition = "2021"
 

@@ -2,7 +2,7 @@
 name = "wasmnest-server-websocket"
 version = "0.0.1"
 license = "MIT"
-description = "WasmNest 桌面 WebSocket 传输面：连接骨架/插件端点通道/连接与端点注册表/生命周期与优雅停机 + host-websocket 能力域的插件绑定层（server-lib-split 票 05 / wasm-core-lib-split 票 04）。默认形态 = 纯引擎机制 + 端口抽象（零 WIT 依赖），任何宿主可直接引用；`common-host` feature 装配 WIT 绑定层（bindgen!/HostModule/inventory/impl Host）——能力域脱绑 P3"
+description = "WasmNest 桌面 WebSocket 传输面：连接骨架/插件端点通道/连接与端点注册表/生命周期与优雅停机 + host-websocket 能力域的插件绑定层（server-lib-split 票 05 / wasm-core-lib-split 票 04）。默认形态 = 引擎机制 + 端口抽象（零 WIT 依赖），但**属传输面：默认依赖树含 actix**——不承诺「任何宿主可直接引用」（AGENTS §3.1 边界声明）；`common-host` feature 装配 WIT 绑定层（bindgen!/HostModule/inventory/impl Host）——能力域脱绑 P3"
 authors = ["binblink"]
 edition = "2021"
 

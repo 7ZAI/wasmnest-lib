@@ -14,8 +14,11 @@
 //! 各点按其自身语义 fail-visible，不静默降级成「无数据」。
 //!
 //! 认证档位词汇 `EndpointAuth` 与权限位 `network:http` 为本 crate **自持副本**
-//! （[`wire`] 模块；能力域脱绑 P1：能力域默认形态零 WIT / 零桌面 SDK 依赖，
-//! 任何宿主可直接引用）。副本与桌面 SDK 原版逐字一致由测试仓漂移锁
+//! （[`wire`] 模块；能力域脱绑 P1：默认形态零 WIT / 零桌面 SDK 依赖）。
+//! **边界声明（2026-11-08 P0）**：本 crate 是**传输面**，默认依赖树含 actix——
+//! 「任何宿主可直接引用」的承诺不适用于它（只有 `common-host` 之外的能力域引擎
+//! 才在承诺内，见 AGENTS §3.1）；无 actix 的 engine 面拆分待 P1 票据。
+//! 副本与桌面 SDK 原版逐字一致由测试仓漂移锁
 //! `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs` 钉死（漂移即红）。
 //!
 //! DTO 口径（AGENTS §5.1.1 B4 合法残留）：`dtos` 进生产构建的只有 `common_dto`

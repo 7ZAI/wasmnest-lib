@@ -2,7 +2,7 @@
 name = "wasmnest-server-core"
 version = "0.0.1"
 license = "MIT"
-description = "WasmNest 桌面 server 内核层：生命周期/流量过滤链/链路加密/指标/组合装配（TransportFace+serve）——server-lib-split 票 03"
+description = "WasmNest 桌面 server 内核层：跨传输的生命周期/流量过滤链/链路加密/指标/组合装配（TransportFace+serve）。**不是传输无关**：默认依赖树含 actix 与 rusqlite（P1 票据再拆 serve 与 link_crypto 的宿主职责）——server-lib-split 票 03"
 authors = ["binblink"]
 edition = "2021"
 
