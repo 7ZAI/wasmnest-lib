@@ -47,7 +47,7 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::admission::{AdmissionGate, AdmissionSettled, GateRequest};
-use crate::error::P2pError;
+use crate::error::{DialAttempt, DialCause, P2pError};
 use crate::identity_bridge::{node_id_from_peer_id, verify_peer_identity, NodeId, NodeKey};
 use crate::links::{IncomingStreams, LinkAdmission, LinkRegistry, LinkRegistryInner, PeerLink};
 #[cfg(feature = "relay")]
@@ -368,13 +368,26 @@ impl RunningNode {
                 }
                 Err(err) => {
                     tracing::debug!(%addr, error = %err, "候选地址拨号失败，尝试下一个");
-                    failures.push(format!("{addr} => {err}"));
+                    // 结构化逐候选成因：调用方按自己的判据表（§4.9）映射，
+                    // 不对拼接文本做子串匹配。
+                    failures.push(DialAttempt {
+                        addr: addr.to_string(),
+                        cause: dial_cause(&err),
+                        detail: err.to_string(),
+                    });
+                    continue;
                 }
             }
         }
+        let detail = failures
+            .iter()
+            .map(|f| format!("{} => {}", f.addr, f.detail))
+            .collect::<Vec<_>>()
+            .join("；");
         Err(P2pError::DialAllFailed {
             attempts: addrs.len(),
-            detail: failures.join("；"),
+            detail,
+            failures: failures.clone(),
         })
     }
 
@@ -597,6 +610,23 @@ impl P2pEngine {
         ports: P2pPorts,
         protocols: &[&'static str],
     ) -> Result<(RunningNode, HashMap<&'static str, IncomingStreams>), P2pError> {
+        let admission: Vec<(&'static str, bool)> = protocols
+            .iter()
+            .map(|protocol| (*protocol, *protocol != crate::stream_proto::TRUST_STATUS))
+            .collect();
+        Self::start_with_protocols_admission(key, config, ports, &admission)
+    }
+
+    /// 同 [`Self::start_with_protocols`]，但逐协议指定准入门（`bool` = require_admitted）。
+    ///
+    /// 需要非默认准入的协议（如隧道 `/wasmnest/tunnel/1` 必须
+    /// `require_admitted = false`——未匹配 peer 要凭配对票据进配对窗口）用本入口。
+    pub fn start_with_protocols_admission(
+        key: NodeKey,
+        config: P2pNodeConfig,
+        ports: P2pPorts,
+        protocols: &[(&'static str, bool)],
+    ) -> Result<(RunningNode, HashMap<&'static str, IncomingStreams>), P2pError> {
         let node_id = key.node_id().clone();
         let peer_id = key.peer_id();
 
@@ -604,17 +634,13 @@ impl P2pEngine {
         let mut control = stream_behaviour.new_control();
         let links: LinkRegistry = Arc::new(RwLock::new(LinkRegistryInner::default()));
         let mut incoming = HashMap::new();
-        for protocol in protocols {
+        for (protocol, require_admitted) in protocols {
             let streams = control
                 .accept(StreamProtocol::new(protocol))
                 .map_err(|_| P2pError::ProtocolRegistered(protocol.to_string()))?;
             incoming.insert(
                 *protocol,
-                IncomingStreams::new(
-                    streams,
-                    Arc::clone(&links),
-                    *protocol != crate::stream_proto::TRUST_STATUS,
-                ),
+                IncomingStreams::new(streams, Arc::clone(&links), *require_admitted),
             );
         }
 
@@ -1700,6 +1726,48 @@ fn fail_pending_dial(
 
 // ==================== 地址工具 ====================
 
+/// 单候选拨号错误 → 结构化成因（只在本候选范围内做文本分类；聚合文本不参与）
+fn dial_cause(error: &P2pError) -> DialCause {
+    match error {
+        P2pError::DialTimeout => DialCause::Timeout,
+        P2pError::NotAdmitted(_) => DialCause::NotAdmitted,
+        P2pError::NodeIdMismatch { .. } | P2pError::UnsupportedPeerIdentity(_) => {
+            DialCause::IdentityMismatch
+        }
+        P2pError::Relay(_) | P2pError::RelayPeerMismatch { .. } | P2pError::RelayDisabled => {
+            DialCause::Relay
+        }
+        P2pError::Dial(text) => classify_dial_text(text),
+        P2pError::DialAllFailed { failures, .. } if !failures.is_empty() => {
+            // 嵌套聚合（理论上不出现）：按每条成因归并，任一明确即取明确值
+            failures
+                .iter()
+                .map(|f| f.cause)
+                .find(|c| *c != DialCause::Other)
+                .unwrap_or(DialCause::Other)
+        }
+        _ => DialCause::Other,
+    }
+}
+
+/// `io::Error` 的 Display 文本 → 成因（Linux / Android 同源；只用于已经
+/// 限定到单候选的错误对象，比拆聚合串可靠）
+fn classify_dial_text(text: &str) -> DialCause {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("no route to host")
+        || lower.contains("network is unreachable")
+        || lower.contains("host is unreachable")
+    {
+        DialCause::Unreachable
+    } else if lower.contains("connection refused") {
+        DialCause::Refused
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        DialCause::Timeout
+    } else {
+        DialCause::Other
+    }
+}
+
 /// 监听 multiaddr 组装（`/ip4|ip6/<addr>/tcp/<port>`）
 fn listen_multiaddr(ip: IpAddr, port: u16) -> Multiaddr {
     let ma = Multiaddr::empty();
@@ -2361,9 +2429,21 @@ mod tests {
             .await
             .expect_err("全部候选不可达应显性失败");
         match err {
-            P2pError::DialAllFailed { attempts, detail } => {
+            P2pError::DialAllFailed {
+                attempts,
+                detail,
+                failures,
+            } => {
                 assert_eq!(attempts, 2);
                 assert!(detail.contains("=>"), "应逐条给成因：{detail}");
+                assert_eq!(failures.len(), 2, "逐候选结构化成因必须成对返回");
+                for failure in &failures {
+                    assert!(
+                        matches!(failure.cause, DialCause::Refused | DialCause::Timeout),
+                        "本机死端口应归类为 refused/timeout：{failure:?}"
+                    );
+                    assert!(!failure.addr.is_empty() && !failure.detail.is_empty());
+                }
             }
             other => panic!("应为 DialAllFailed：{other:?}"),
         }

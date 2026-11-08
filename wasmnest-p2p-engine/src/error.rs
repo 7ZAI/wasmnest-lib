@@ -1,5 +1,37 @@
 //! 引擎错误：fail-visible——每个变体点名成因，不静默降级。
 
+/// 单候选拨号失败成因（结构化）：调用方按自己的判据表映射，**不得**对聚合
+/// 文本做子串匹配——「一条 unreachable + 一条 timeout」与「全部 unreachable」
+/// 的结论不同（§4.9）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialCause {
+    /// 超时（判据不明确）
+    Timeout,
+    /// `EHOSTUNREACH` / `ENETUNREACH`：明确不在内网
+    Unreachable,
+    /// `ECONNREFUSED`：服务未启动 / 端口未监听
+    Refused,
+    /// 对端未达准入（首连确认 pending / denied）
+    NotAdmitted,
+    /// 对端 node_id 与期望不符（含身份密钥类型不支持）
+    IdentityMismatch,
+    /// relay 控制面 / circuit 路径失败
+    Relay,
+    /// 其他未分类失败（保守按「判据不明确」）
+    Other,
+}
+
+/// 单候选拨号失败的逐条成因（`DialAllFailed` 的结构化伴侣）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialAttempt {
+    /// 尝试过的候选地址（multiaddr 文本）
+    pub addr: String,
+    /// 结构化成因
+    pub cause: DialCause,
+    /// 可展示明细（不含票据 / token）
+    pub detail: String,
+}
+
 /// 引擎操作错误
 #[derive(Debug, thiserror::Error)]
 pub enum P2pError {
@@ -74,7 +106,9 @@ pub enum P2pError {
     DialAllFailed {
         /// 尝试过的候选数
         attempts: usize,
-        /// 逐候选失败成因（`addr => cause`，分号分隔）
+        /// 逐候选失败成因（`addr => cause`，分号分隔；仅作展示）
         detail: String,
+        /// 逐候选结构化成因（**判据只能用这个**，不要解析 `detail`）
+        failures: Vec<DialAttempt>,
     },
 }

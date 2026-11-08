@@ -251,19 +251,52 @@ pub enum LanFailure {
     Other,
 }
 
-/// 拨号失败详情（成因分类 + 可展示原因）
+/// 拨号失败详情（成因分类 + 可展示原因 + 逐候选成因）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DialFailure {
+    /// 整体类别（由 [`Self::from_causes`] 按判据表归并；事件 / 错误码只看这个）
     pub kind: LanFailure,
     pub detail: String,
+    /// 逐候选成因（「全部 `Unreachable`」只能在这个列表上判，**不得**解析 detail）
+    pub causes: Vec<LanFailure>,
 }
 
 impl DialFailure {
+    /// 单一成因（非多地址拨号的路径 / 测试替身）
     pub fn new(kind: LanFailure, detail: impl Into<String>) -> Self {
         Self {
             kind,
             detail: detail.into(),
+            causes: vec![kind],
         }
+    }
+
+    /// 按逐候选成因归并整体类别：
+    ///
+    /// - **全部** `Unreachable` → `Unreachable`（§4.9 唯一允许自动切 wan 的明确判据）；
+    /// - 任一 `Auth` → `Auth`（安全错误优先，绝不为了绕过失败切 relay）；
+    /// - 单候选 → 原样；
+    /// - 其余混合（timeout/refused/unreachable 等）→ `Other`（保守保持 LAN）。
+    pub fn from_causes(causes: Vec<LanFailure>, detail: impl Into<String>) -> Self {
+        let kind = if !causes.is_empty() && causes.iter().all(|c| *c == LanFailure::Unreachable) {
+            LanFailure::Unreachable
+        } else if causes.contains(&LanFailure::Auth) {
+            LanFailure::Auth
+        } else if causes.len() == 1 {
+            causes[0]
+        } else {
+            LanFailure::Other
+        };
+        Self {
+            kind,
+            detail: detail.into(),
+            causes,
+        }
+    }
+
+    /// 全部候选都是 `EHOSTUNREACH` / `ENETUNREACH`（明确不在内网）
+    pub fn all_unreachable(&self) -> bool {
+        !self.causes.is_empty() && self.causes.iter().all(|c| *c == LanFailure::Unreachable)
     }
 }
 
@@ -667,6 +700,43 @@ mod tests {
             judge_after_lan_failure(LanFailure::Other),
             LanFailureVerdict::StayLanUnreachable
         );
+    }
+
+    /// R04：多候选失败必须按逐候选成因归并——混合 timeout/refused/unreachable
+    /// 不得因为「其中一条是 EHOSTUNREACH」而切 WAN；任一 Auth 优先安全错误。
+    #[test]
+    fn multi_candidate_failure_is_classified_by_all_causes() {
+        let all_unreachable = DialFailure::from_causes(
+            vec![LanFailure::Unreachable, LanFailure::Unreachable],
+            "two unreachable",
+        );
+        assert_eq!(all_unreachable.kind, LanFailure::Unreachable);
+        assert!(all_unreachable.all_unreachable());
+        assert!(matches!(
+            judge_after_lan_failure(all_unreachable.kind),
+            LanFailureVerdict::SwitchWan(ModeReason::HostUnreachable)
+        ));
+
+        let mixed = DialFailure::from_causes(
+            vec![LanFailure::Unreachable, LanFailure::Timeout],
+            "unreachable + timeout",
+        );
+        assert_eq!(mixed.kind, LanFailure::Other, "混合候选保守保持 LAN");
+        assert_eq!(
+            judge_after_lan_failure(mixed.kind),
+            LanFailureVerdict::StayLanUnreachable
+        );
+
+        let auth = DialFailure::from_causes(vec![LanFailure::Unreachable, LanFailure::Auth], "unreachable + auth");
+        assert_eq!(auth.kind, LanFailure::Auth, "任一认证失败优先安全错误");
+        assert_eq!(
+            judge_after_lan_failure(auth.kind),
+            LanFailureVerdict::StayLanUnreachable
+        );
+
+        let single = DialFailure::new(LanFailure::Refused, "refused");
+        assert_eq!(single.kind, LanFailure::Refused);
+        assert!(!single.all_unreachable());
     }
 
     #[test]

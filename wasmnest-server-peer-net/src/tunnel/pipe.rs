@@ -19,6 +19,10 @@ use crate::tunnel::{Result, TunnelError, CODE_TUNNEL_CLOSED, CODE_TUNNEL_IDLE, C
 pub const DEFAULT_MAX_STREAM_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_HTTP_IDLE_TIMEOUT_SECS: u64 = 60;
 const BUFFER_BYTES: usize = 8192;
+/// 首块 header 累积上限（防内存放大；正常 WS 请求只有几百字节）
+const MAX_PREFACE_BYTES: usize = 64 * 1024;
+/// 首块后等待 header 收完的短窗口（分片 / 大 header；超时按非 WS 继续）
+const PREFACE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipeLimits {
@@ -65,6 +69,37 @@ pub fn is_websocket_upgrade(head: &[u8]) -> bool {
             .any(|w| w == b"upgrade:websocket")
 }
 
+/// 首块是否看起来像 HTTP 请求行（只对这类流继续等 header 结束）
+fn looks_like_http_request(buf: &[u8]) -> bool {
+    const METHODS: [&[u8]; 9] = [
+        b"GET", b"POST", b"PUT", b"DELETE", b"HEAD", b"OPTIONS", b"PATCH", b"CONNECT", b"TRACE",
+    ];
+    METHODS
+        .iter()
+        .any(|method| buf.starts_with(method) && buf.get(method.len()) == Some(&b' '))
+}
+
+/// HTTP 头结束标记（`\r\n\r\n`）
+fn contains_header_end(buf: &[u8]) -> bool {
+    buf.windows(4).any(|window| window == b"\r\n\r\n")
+}
+
+async fn read_first<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buf: &mut [u8],
+    idle: Option<Duration>,
+    idle_message: &str,
+) -> Result<usize> {
+    match idle {
+        Some(d) => match tokio::time::timeout(d, reader.read(buf)).await {
+            Ok(Ok(n)) => Ok(n),
+            Ok(Err(e)) => Err(io_error(e)),
+            Err(_) => Err(TunnelError::new(CODE_TUNNEL_IDLE, idle_message)),
+        },
+        None => reader.read(buf).await.map_err(io_error),
+    }
+}
+
 fn io_error(e: std::io::Error) -> TunnelError {
     TunnelError::new(CODE_TUNNEL_CLOSED, format!("通道 IO 结束：{:?}", e.kind()))
 }
@@ -102,21 +137,40 @@ where
 }
 
 /// 首块字节判定 WS 升级 → 取消空闲超时；随后双向 pipe，任一方向结束即回收整条流
+///
+/// 首块可能只是 header 的一部分（TCP 分片 / 大 header）：对看起来像 HTTP 请求的
+/// 流继续累积到 `\r\n\r\n`（上限 [`MAX_PREFACE_BYTES`]）再判定，避免把一块就跨
+/// 分片的 WS 升级当成短连接，60s 后误杀终端长连接。
 pub async fn pipe_with_limits<L, R>(local: &mut L, remote: &mut R, limits: PipeLimits) -> Result<PipeStats>
 where
     L: AsyncRead + AsyncWrite + Unpin,
     R: AsyncRead + AsyncWrite + Unpin,
 {
     let total = Arc::new(AtomicU64::new(0));
-    let mut first = [0u8; BUFFER_BYTES];
-    let n = match limits.idle_timeout {
-        Some(d) => match tokio::time::timeout(d, local.read(&mut first)).await {
-            Ok(Ok(n)) => n,
-            Ok(Err(e)) => return Err(io_error(e)),
-            Err(_) => return Err(TunnelError::new(CODE_TUNNEL_IDLE, "短连接 HTTP 流空闲回收")),
-        },
-        None => local.read(&mut first).await.map_err(io_error)?,
-    };
+    let mut first = vec![0u8; BUFFER_BYTES];
+    let mut n = read_first(local, &mut first, limits.idle_timeout, "短连接 HTTP 流空闲回收").await?;
+
+    if n > 0 && looks_like_http_request(&first[..n]) && !contains_header_end(&first[..n]) {
+        // 只取已读前缀（`first` 的 Vec 尾部是未填充的 0，不能整块计数）
+        let mut preface = first[..n].to_vec();
+        while preface.len() < MAX_PREFACE_BYTES {
+            let mut chunk = [0u8; BUFFER_BYTES];
+            match read_first(local, &mut chunk, Some(PREFACE_READ_TIMEOUT), "首块 header 读取超时").await {
+                Ok(0) => break,
+                Ok(k) => {
+                    preface.extend_from_slice(&chunk[..k]);
+                    if contains_header_end(&preface) {
+                        break;
+                    }
+                }
+                // 判据不明确：按非 WS 继续（已读字节不漏），交给后续 pipe
+                Err(e) if e.code == CODE_TUNNEL_IDLE => break,
+                Err(e) => return Err(e),
+            }
+        }
+        n = preface.len();
+        first = preface;
+    }
 
     let mut effective = limits.clone();
     let websocket_upgrade = n > 0 && is_websocket_upgrade(&first[..n]);
@@ -195,6 +249,37 @@ mod tests {
 
         let stats = pipe.await.unwrap().unwrap();
         assert!(stats.websocket_upgrade);
+        assert!(stats.total_bytes >= (WS_HANDSHAKE.len() + b"still-alive".len()) as u64);
+    }
+
+    /// 分片到达的 Upgrade 头（首块只有半截 header）也要识别成 WS：否则短连接
+    /// 空闲回收会在 60s 后误杀终端长连接（R15）。
+    #[tokio::test]
+    async fn fragmented_websocket_upgrade_still_disables_idle_reaping() {
+        let (mut local, mut client) = tokio::io::duplex(2048);
+        let (mut backend, mut echo) = tokio::io::duplex(2048);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            while let Ok(n) = echo.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                echo.write_all(&buf[..n]).await.unwrap();
+            }
+        });
+
+        let pipe = tokio::spawn(async move { pipe_with_limits(&mut local, &mut backend, fast_limits(4096)).await });
+        let (head, tail) = WS_HANDSHAKE.split_at(40);
+        assert!(!contains_header_end(head), "首块必须不含 header 结束标记");
+        client.write_all(head).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        client.write_all(tail).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        client.write_all(b"still-alive").await.unwrap();
+        drop(client);
+
+        let stats = pipe.await.unwrap().unwrap();
+        assert!(stats.websocket_upgrade, "分片到达的 Upgrade 头也要识别");
         assert!(stats.total_bytes >= (WS_HANDSHAKE.len() + b"still-alive".len()) as u64);
     }
 

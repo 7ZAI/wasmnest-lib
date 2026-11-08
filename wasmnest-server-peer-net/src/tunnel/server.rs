@@ -1,9 +1,13 @@
 //! 隧道服务端：单条 `/wasmnest/tunnel/1` 流的完整裁决与生命周期。
 //!
-//! 顺序固定：读首帧 → 消费票据 → `TunnelPolicy` 准入 → 连后端 → **在把第一个
+//! 顺序固定：读首帧 → **只读校验续票** → `TunnelPolicy` 准入（规则 / 端口 /
+//! kind / 已匹配 / allowedPeers / 配额）→ 消费票据 → 连后端 → **在把第一个
 //! 客户端字节写进后端之前**登记配对连接面标记 → 回 `{ok:true, caller:"peer"}` →
 //! 裸字节 pipe → 清理注册表条目。任何一步失败都回点名错误码并关闭流，绝不静默
 //! 连 8765 或把 peer 面当本机。
+//!
+//! 票据顺序：先 `validate`（不摘除条目）再准入，准入通过后才 `consume`——端口 /
+//! kind 填错的尝试不得把一次性票据白白作废（用户还能用同一张票重试）。
 //!
 //! 宿主接线（T06）：`IncomingStreams::next()` 得到 `InboundStream` 后，把
 //! `inbound.stream.compat()` 交给 [`TunnelServer::handle_stream`]，并用
@@ -79,10 +83,11 @@ impl TunnelServer {
             }
         };
 
-        // 票据一次性消费：任何携带票据的尝试都会摘除条目，防重放 / 防枚举。
+        // 票据只读校验：准入失败（端口 / kind 不在规则内、超出配额等）不得烧票；
+        // 真正的单次消费在准入通过后（下方）。
         let mut ticket_error = None;
         let ticket_valid = match &hello.ticket {
-            Some(ticket) => match self.tickets.consume(ticket, hello.port, ctx.access_path) {
+            Some(ticket) => match self.tickets.validate(ticket, hello.port, ctx.access_path) {
                 Ok(()) => true,
                 Err(e) => {
                     ticket_error = Some(e);
@@ -116,6 +121,18 @@ impl TunnelServer {
             }
         };
 
+        // 准入通过：此时才消费票据。已匹配连接不依赖票据，但携带的票据同样
+        // 按一次性处理（防重放）；配对窗口必须消费成功，否则按票据错误拒绝。
+        if let Some(ticket) = hello.ticket.as_deref() {
+            let consumed = self.tickets.consume(ticket, hello.port, ctx.access_path);
+            if let Err(e) = consumed {
+                if !ctx.matched {
+                    reject(io, &e).await;
+                    return Err(e);
+                }
+            }
+        }
+
         let (mut backend_io, conn_key) = match self.backend.connect(&admission.backend).await {
             Ok(connected) => connected,
             Err(e) => {
@@ -137,16 +154,34 @@ impl TunnelServer {
             reject(io, &e).await;
             return Err(e);
         }
+        // 流被取消 / 任务被中止时也要清掉面标记：Drop 守卫保证任何退出路径都
+        // 消费条目（否则四元组复用时旧身份会泄漏到新连接）。
+        let _registry_guard = RegistryEntryGuard::new(Arc::clone(&self.registry), conn_key);
 
         if let Err(e) = write_reply(io, &TunnelReply::accepted(admission.peer_node_id.clone())).await {
-            self.registry.consume(&conn_key);
             return Err(e);
         }
 
-        let result = pipe_with_limits(io, &mut backend_io, PipeLimits::for_kind(hello.kind)).await;
-        // 配对窗口连接不得复用于业务：流结束一律清除条目。
-        self.registry.consume(&conn_key);
-        result
+        pipe_with_limits(io, &mut backend_io, PipeLimits::for_kind(hello.kind)).await
+    }
+}
+
+/// 注册表条目的生命期守卫：正常结束、pipe 报错、任务中止（drop future）三条
+/// 路径都会消费条目，不依赖 `pipe_with_limits` 之后的显式清理。
+struct RegistryEntryGuard {
+    registry: Arc<PairingRegistry>,
+    key: SocketAddr,
+}
+
+impl RegistryEntryGuard {
+    fn new(registry: Arc<PairingRegistry>, key: SocketAddr) -> Self {
+        Self { registry, key }
+    }
+}
+
+impl Drop for RegistryEntryGuard {
+    fn drop(&mut self) {
+        self.registry.consume(&self.key);
     }
 }
 
@@ -336,6 +371,54 @@ mod tests {
         assert!(!reply2.ok);
         assert_eq!(reply2.error.as_deref(), Some(CODE_TICKET_EXPIRED));
         assert!(task2.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn wrong_port_does_not_burn_the_ticket() {
+        let f = fixture(false);
+        let ticket = f.tickets.issue(8765, 120).unwrap();
+        let (mut client, mut server_io) = tokio::io::duplex(4096);
+        let server = Arc::clone(&f.server);
+        let task = tokio::spawn(async move { server.handle_stream(&mut server_io, &unmatched_ctx()).await });
+
+        // 端口对但 kind 不在规则内（8765 只 expose 了 http）：准入失败，票据必须还在
+        let reply = send_hello_then_read_reply(
+            &mut client,
+            &TunnelHello::new(8765, TunnelKind::Tcp, Some(ticket.clone())),
+        )
+        .await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.as_deref(), Some(crate::tunnel::CODE_PORT_NOT_EXPOSED));
+        assert_eq!(f.tickets.len(), 1, "端口 / kind 失败不得消耗一次性票据");
+        assert!(task.await.unwrap().is_err());
+
+        // 同一张票仍可在正确端口开配对窗口
+        let (mut client2, mut server_io2) = tokio::io::duplex(4096);
+        let server2 = Arc::clone(&f.server);
+        let task2 = tokio::spawn(async move { server2.handle_stream(&mut server_io2, &unmatched_ctx()).await });
+        let reply2 =
+            send_hello_then_read_reply(&mut client2, &TunnelHello::new(8765, TunnelKind::Http, Some(ticket))).await;
+        assert!(reply2.ok);
+        assert!(f.tickets.is_empty());
+        drop(client2);
+        assert!(task2.await.unwrap().is_ok());
+    }
+
+    /// 配对窗口只开配对端点：kind=tcp 的规则即使存在也不能凭票据直连（准入失败不烧票）
+    #[tokio::test]
+    async fn pairing_window_rejects_tcp_kind() {
+        let f = fixture(false);
+        let ticket = f.tickets.issue(39002, 120).unwrap();
+        let (mut client, mut server_io) = tokio::io::duplex(4096);
+        let server = Arc::clone(&f.server);
+        let task = tokio::spawn(async move { server.handle_stream(&mut server_io, &unmatched_ctx()).await });
+        let reply =
+            send_hello_then_read_reply(&mut client, &TunnelHello::new(39002, TunnelKind::Tcp, Some(ticket))).await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.as_deref(), Some(crate::tunnel::CODE_NOT_MATCHED));
+        assert_eq!(f.backend.calls.load(Ordering::SeqCst), 0, "配对窗口不得连业务回环端口");
+        assert_eq!(f.tickets.len(), 1);
+        assert!(task.await.unwrap().is_err());
     }
 
     /// 已匹配流：响应带已验证 nodeId，注册表为已匹配面；tcp 只连回环

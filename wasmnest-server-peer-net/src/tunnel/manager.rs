@@ -10,7 +10,8 @@
 //! 2. 客户端在飞 WAN 通道（`connect` 的地址里含 `/p2p-circuit`，`close` 时归还）。
 //!
 //! `allowWan=false` 时即使有 expose 规则也不建立 / 保留 reservation（LAN 入口不受
-//! 影响）；`connect` 携带 relay 地址而 `allowWan=false` 直接 `wan-disabled` 失败。
+//! 影响）；`connect` 携带 relay 地址时只把它们从候选里滤掉（LAN 候选仍可拨），
+//! 只有在「没有 LAN 候选可用」时才 `wan-disabled` 失败——关闭外网不等于关闭内网。
 //!
 //! ## 生命周期
 //!
@@ -32,7 +33,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
-use tokio::task::AbortHandle;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+use wasmnest_p2p_engine::error::{DialCause, P2pError};
+use wasmnest_p2p_engine::relay::RelayState;
 use wasmnest_p2p_engine::Multiaddr;
 use wasmnest_server_base::face::PeerFaceResolver;
 
@@ -49,8 +53,8 @@ use crate::tunnel::registry::PairingRegistry;
 use crate::tunnel::server::{BackendConnector, TunnelServer, TunnelStreamContext};
 use crate::tunnel::ticket::{AccessPath, TicketIssuer};
 use crate::tunnel::{
-    Result, TunnelError, CODE_LAN_UNREACHABLE, CODE_NOT_OWNER, CODE_PEER_OFFLINE, CODE_PROXY_BIND_FAILED,
-    CODE_RELAY_UNREACHABLE, CODE_TUNNEL_CLOSED, CODE_WAN_DISABLED,
+    Result, TunnelError, CODE_LAN_UNREACHABLE, CODE_NOT_MATCHED, CODE_NOT_OWNER, CODE_PEER_OFFLINE,
+    CODE_PROXY_BIND_FAILED, CODE_RELAY_UNREACHABLE, CODE_TUNNEL_CLOSED, CODE_WAN_DISABLED,
 };
 
 /// 单次拨号候选的短超时（LAN 2~3s 口径，设计 §4.9）；relay 候选由引擎按同一窗口结算。
@@ -189,6 +193,25 @@ impl TunnelConfig {
         }
         Ok(out)
     }
+
+    /// 解析 + **域名解析**：`/dns4|dns6|dns` 组件经宿主层 `lookup_host` 展开成
+    /// `/ip4|ip6` 候选（引擎不启用 dns feature，T02 明确要求宿主层解析）。
+    ///
+    /// 解析失败点名原始地址（fail-visible）：不把配置错误拖到 reserve 时才暴露。
+    pub async fn resolved_relay_addrs(&self) -> Result<Vec<Multiaddr>> {
+        let mut out = Vec::new();
+        for raw in &self.relay_addrs {
+            let resolved = wasmnest_p2p_engine::relay::resolve_relay_addr(raw)
+                .await
+                .map_err(|e| TunnelError::new(CODE_WAN_DISABLED, format!("relay 地址解析失败（{raw}）：{e}")))?;
+            for addr in resolved {
+                if !out.contains(&addr) {
+                    out.push(addr);
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// `connect` 成功返回给应用的句柄信息
@@ -239,6 +262,8 @@ struct ManagerState {
     /// 客户端在飞 WAN 通道计数（按插件）
     inbound_wan: HashMap<String, usize>,
     reserved: bool,
+    /// 当前 reservation 实际使用的 relay 地址（`configure` 改地址时必须重建）
+    reserved_addrs: Vec<Multiaddr>,
     /// 每对端模式表（§4.9；模式是每对端的，不是全局开关）
     modes: ModeMachine,
 }
@@ -253,7 +278,9 @@ pub struct TunnelManager {
     registry: Arc<PairingRegistry>,
     server: Arc<TunnelServer>,
     peer_face: tokio::sync::Mutex<Option<PeerFaceListener>>,
-    inbound_task: Mutex<Option<AbortHandle>>,
+    inbound_task: Mutex<Option<JoinHandle<()>>>,
+    /// 入站循环与在飞流共用的取消令牌：`stop` 时一并取消（在飞配对 / 业务流必须关）
+    inbound_cancel: Mutex<Option<CancellationToken>>,
     state: Mutex<ManagerState>,
     start_gate: tokio::sync::Mutex<()>,
     recount_gate: tokio::sync::Mutex<()>,
@@ -288,6 +315,7 @@ impl TunnelManager {
             server,
             peer_face: tokio::sync::Mutex::new(None),
             inbound_task: Mutex::new(None),
+            inbound_cancel: Mutex::new(None),
             state: Mutex::new(ManagerState::default()),
             start_gate: tokio::sync::Mutex::new(()),
             recount_gate: tokio::sync::Mutex::new(()),
@@ -307,20 +335,33 @@ impl TunnelManager {
         self.ensure_running().await
     }
 
-    /// 服务租约 stop：停对等面 / 中止接收器 / 释放 reservation / 清空状态
+    /// 服务租约 stop：停对等面 / 取消在飞流 / 清 expose 规则与票据 / 释放 reservation
     pub async fn stop(&self) -> Result<()> {
         let _gate = self.start_gate.lock().await;
         if let Some(mut listener) = self.peer_face.lock().await.take() {
             listener.stop();
         }
         self.policy.clear_peer_face();
+        // 在飞流与接收循环一起取消：只 abort 接收循环不会终止已 spawn 的
+        // `TunnelServer::handle_stream` 任务（配对窗口 / 业务 pipe 会继续存活）。
+        if let Some(cancel) = self.inbound_cancel.lock().expect("inbound cancel lock poisoned").take() {
+            cancel.cancel();
+        }
         if let Some(task) = self.inbound_task.lock().expect("inbound task lock poisoned").take() {
             task.abort();
         }
+        // 规则不只在计数表里清：`TunnelPolicy` 是准入真源，stop 后旧端口不得仍可准入
+        // （stop → start 后 `port-not-exposed`）。
+        for rule in self.policy.rules() {
+            self.policy.unexpose(&rule.id);
+        }
+        // 票据不跨租约：TTL 内的旧票据不得在 stop → start 后仍然有效。
+        self.tickets.clear();
         let held = {
             let mut state = self.state.lock().expect("tunnel state poisoned");
             let held = state.reserved;
             state.reserved = false;
+            state.reserved_addrs.clear();
             for handle in state.connects.values() {
                 let _ = handle.shutdown.send(true);
             }
@@ -340,12 +381,17 @@ impl TunnelManager {
 
     /// 写入（全量替换）某插件的通道配置；只改计数，不直接管理 reservation
     pub async fn configure(&self, plugin_id: &str, config: TunnelConfig) -> Result<()> {
+        // 语法先判（空项 / 非法 multiaddr），再对域名做宿主层解析：域名 relay 不得
+        // 拖到 reserve 时才失败（T02 的 `resolve_relay_addr` 在宿主侧消费）。
         let addrs = config.parse_relay_addrs()?;
-        if config.allow_wan && addrs.is_empty() {
-            return Err(TunnelError::new(
-                CODE_WAN_DISABLED,
-                "allowWan=true 但未配置 relay 地址（外网通道不可用）",
-            ));
+        if config.allow_wan {
+            if addrs.is_empty() {
+                return Err(TunnelError::new(
+                    CODE_WAN_DISABLED,
+                    "allowWan=true 但未配置 relay 地址（外网通道不可用）",
+                ));
+            }
+            config.resolved_relay_addrs().await?;
         }
         {
             let mut state = self.state.lock().expect("tunnel state poisoned");
@@ -354,7 +400,7 @@ impl TunnelManager {
         self.recount().await
     }
 
-    /// 登记暴露规则（幂等：同 port + kind 返回既有 id；同端口跨应用拒绝）
+    /// 登记暴露规则（幂等：同 port + kind 返回既有 id 并刷新 ACL；同端口跨应用拒绝）
     pub async fn expose(&self, plugin_id: &str, config: ExposeConfig) -> Result<String> {
         let allow_wan = self.config_of(plugin_id).allow_wan;
         if allow_wan {
@@ -363,13 +409,27 @@ impl TunnelManager {
             if addrs.is_empty() {
                 return Err(TunnelError::new(CODE_WAN_DISABLED, "allowWan=true 但未配置 relay 地址"));
             }
+        }
+        // 只有 `kind=http` 的后端恒为对等面；`kind=tcp` 只需节点 + 入站接收器。
+        // 无对等面能力的宿主（无头 / 部分移动环境）也应能暴露回环 tcp 端口。
+        if config.kind == TunnelKind::Http {
             self.ensure_peer_face().await?;
         } else {
-            // 即使 lan-only 也要求对等面在场：kind=http 的后端恒为对等面
-            self.ensure_peer_face().await?;
+            self.ensure_running().await?;
         }
 
         let expose_port = config.port;
+        // 属主仲裁必须先于 `policy.expose`：幂等重登记会刷新 ACL / 标签，若先写
+        // 再拒绝，非属主就能改掉别人的 `allowedPeers`（旧实现因「幂等不更新」掩盖了）。
+        if let Some(existing) = self.policy.rule_id_for(expose_port, config.kind) {
+            let state = self.state.lock().expect("tunnel state poisoned");
+            if state.rules.get(&existing).is_some_and(|entry| entry.owner != plugin_id) {
+                return Err(TunnelError::new(
+                    crate::tunnel::CODE_PORT_NOT_EXPOSED,
+                    "该端口已被其他应用暴露（先 unexpose 再重试）",
+                ));
+            }
+        }
         let rule_id = self.policy.expose(config)?;
         {
             let mut state = self.state.lock().expect("tunnel state poisoned");
@@ -404,7 +464,7 @@ impl TunnelManager {
 
     /// 撤销暴露规则（只允许属主；未知 / 非属主返回 false）
     pub async fn unexpose(&self, plugin_id: &str, rule_id: &str) -> Result<bool> {
-        let removed = {
+        let (removed, port) = {
             let mut state = self.state.lock().expect("tunnel state poisoned");
             match state.rules.get(rule_id) {
                 Some(entry) if entry.owner != plugin_id => {
@@ -412,13 +472,17 @@ impl TunnelManager {
                 }
                 Some(_) => {
                     state.rules.remove(rule_id);
-                    true
+                    (true, self.policy.rule_port(rule_id))
                 }
-                None => false,
+                None => (false, None),
             }
         };
         if removed {
             self.policy.unexpose(rule_id);
+            // 端口撤销即票据失效：否则 TTL 内的旧票据仍能开配对窗口
+            if let Some(port) = port {
+                self.tickets.revoke_port(port);
+            }
             self.recount().await?;
             self.emit(
                 "tunnel-state",
@@ -456,23 +520,29 @@ impl TunnelManager {
             return Err(TunnelError::new(CODE_PEER_OFFLINE, "目标端口为 0"));
         }
         let addrs = parse_addrs(addrs_json)?;
-        let (lan_addrs, wan_addrs) = split_addrs(&addrs);
-        let wan = !wan_addrs.is_empty();
-        if wan {
-            let config = self.config_of(plugin_id);
-            if !config.allow_wan {
-                return Err(TunnelError::new(
-                    CODE_WAN_DISABLED,
-                    "allowWan=false：拒绝经中继拨号（LAN 入口不受影响）",
-                ));
-            }
-            if config.parse_relay_addrs()?.is_empty() {
-                return Err(TunnelError::new(
-                    CODE_WAN_DISABLED,
-                    "未配置 relay 地址，无法建立外网通道",
-                ));
-            }
+        let (lan_addrs, wan_candidates) = split_addrs(&addrs);
+        // `allowWan=false` / 未配置 relay = 关闭外网通道，但**不关闭内网**：把 relay
+        // 候选过滤掉继续拨 LAN；只有连一条 LAN 候选都没有时才显性失败。
+        // （旧实现只要候选里带 relay 就整体拒绝，QR v2 的 LAN+relay 载荷在关闭
+        // 远程访问的手机上连同一 Wi-Fi 也连不上。）
+        let config = self.config_of(plugin_id);
+        let wan_configured = !config.parse_relay_addrs()?.is_empty();
+        let wan_addrs: Vec<Multiaddr> = if config.allow_wan && wan_configured {
+            wan_candidates
+        } else {
+            Vec::new()
+        };
+        if lan_addrs.is_empty() && wan_addrs.is_empty() {
+            let detail = if !config.allow_wan {
+                "allowWan=false 且没有可用的 LAN 候选（外网访问已关闭）"
+            } else if !wan_configured {
+                "未配置 relay 地址，且没有可用的 LAN 候选"
+            } else {
+                "候选里没有可用的 LAN / relay 地址"
+            };
+            return Err(TunnelError::new(CODE_WAN_DISABLED, detail));
         }
+        let wan = !wan_addrs.is_empty();
 
         let plan = self.plan_mode(plugin_id, &node_key, &lan_addrs, &wan_addrs).await?;
         self.ensure_running().await?;
@@ -486,22 +556,33 @@ impl TunnelManager {
                 self.mode_transition(|modes| modes.set(&node_key, TransferMode::LanProbing, None));
                 match self.engine.dial_classified(&node_id, &lan_addrs).await {
                     Ok(()) => (Path::Lan, None),
-                    Err(failure) => match mode::judge_after_lan_failure(failure.kind) {
-                        LanFailureVerdict::SwitchWan(switch_reason) if wan => (Path::Wan, Some(switch_reason)),
-                        _ => {
-                            // 判据不明确 / 安全错误：保持 LAN，显性报错并留手动出口
-                            self.mode_transition(|modes| modes.mark_lan_unreachable(&node_key));
-                            self.emit_tunnel_error(&node_key, CODE_LAN_UNREACHABLE, &failure.detail);
+                    Err(failure) => {
+                        // 认证 / 未匹配 / Noise 失败：安全错误，保持当前模式并显性
+                        // 报错——绝不为了绕过失败切 relay，也不误报成「内网不可达」。
+                        if failure.kind == LanFailure::Auth {
+                            self.emit_tunnel_error(&node_key, CODE_NOT_MATCHED, &failure.detail);
                             return Err(TunnelError::new(
-                                CODE_LAN_UNREACHABLE,
-                                format!(
-                                    "内网不可达（{}）：{}；可手动「尝试外网」",
-                                    failure_word(failure.kind),
-                                    failure.detail
-                                ),
+                                CODE_NOT_MATCHED,
+                                format!("认证 / 匹配校验失败：{}", failure.detail),
                             ));
                         }
-                    },
+                        match mode::judge_after_lan_failure(failure.kind) {
+                            LanFailureVerdict::SwitchWan(switch_reason) if wan => (Path::Wan, Some(switch_reason)),
+                            _ => {
+                                // 判据不明确：保持 LAN，显性报错并留手动出口
+                                self.mode_transition(|modes| modes.mark_lan_unreachable(&node_key));
+                                self.emit_tunnel_error(&node_key, CODE_LAN_UNREACHABLE, &failure.detail);
+                                return Err(TunnelError::new(
+                                    CODE_LAN_UNREACHABLE,
+                                    format!(
+                                        "内网不可达（{}）：{}；可手动「尝试外网」",
+                                        failure_word(failure.kind),
+                                        failure.detail
+                                    ),
+                                ));
+                            }
+                        }
+                    }
                 }
             }
             Plan::Wan(reason) => (Path::Wan, Some(reason)),
@@ -515,6 +596,15 @@ impl TunnelManager {
             self.acquire_wan(plugin_id).await?;
             if let Err(failure) = self.engine.dial_classified(&node_id, &wan_addrs).await {
                 self.release_wan(plugin_id).await;
+                // 认证 / 未匹配失败不是「中继不可达」：不标 wan-unavailable、不把
+                // 安全错误混成网络错误（否则用户被引导去排查 relay）。
+                if failure.kind == LanFailure::Auth {
+                    self.emit_tunnel_error(&node_key, CODE_NOT_MATCHED, &failure.detail);
+                    return Err(TunnelError::new(
+                        CODE_NOT_MATCHED,
+                        format!("中继链路认证 / 匹配校验失败：{}", failure.detail),
+                    ));
+                }
                 self.mode_transition(|modes| modes.mark_wan_unavailable(&node_key, ModeReason::RelayUnavailable));
                 self.emit_tunnel_error(&node_key, CODE_RELAY_UNREACHABLE, &failure.detail);
                 return Err(TunnelError::new(
@@ -548,10 +638,26 @@ impl TunnelManager {
             }
         };
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let event_engine = Arc::clone(&self.engine);
+        let event_node = node_key.clone();
         tokio::spawn(async move {
             if let Err(e) = run_proxy(listener, connector, shutdown_rx).await {
-                // 代理退出必须可见：否则应用只看到本地端口「连上又断」而不知道原因
+                // 代理退出必须可见：否则应用只看到本地端口「连上又断」而不知道原因，
+                // 状态栏还会继续显示「已连接」。事件与状态回落都发。
                 tracing::warn!(code = e.code, "tunnel proxy exited: {}", e.detail);
+                event_engine.emit(
+                    "tunnel-error",
+                    serde_json::json!({
+                        "nodeId": event_node,
+                        "code": e.code,
+                        "detail": e.detail,
+                        "atMs": mode::now_ms(),
+                    }),
+                );
+                event_engine.emit(
+                    "tunnel-state",
+                    serde_json::json!({ "nodeId": event_node, "state": "error" }),
+                );
             }
         });
 
@@ -580,7 +686,9 @@ impl TunnelManager {
         );
         Ok(ConnectEntry {
             handle,
-            address: addr.to_string(),
+            // 只回 IP 字面量：`TunnelStatus` / 应用会把 `address` 与 `port` 拼 URL
+            // （`ws://{address}:{port}`）；回 `"127.0.0.1:5000"` 会拼成双端口。
+            address: addr.ip().to_string(),
             port: addr.port(),
         })
     }
@@ -711,7 +819,18 @@ impl TunnelManager {
         if entry.wan {
             self.release_wan(plugin_id).await;
         }
-        self.recount().await?;
+        // 句柄已出表、shutdown 已发：这里是「释放 relay 失败」而非「关闭失败」。
+        // `has_open_resources` 已为 false（服务租约可回落），reservation 由下次
+        // recount 重试；不回滚句柄（回滚会让已关闭的代理重新出现在句柄表里）。
+        // 失败仍要可见（事件 + 日志），不静默吞掉。
+        if let Err(e) = self.recount().await {
+            tracing::warn!(
+                code = e.code,
+                "tunnel reservation release failed after close: {}",
+                e.detail
+            );
+            self.emit_tunnel_error(&entry.node_id, e.code, &e.detail);
+        }
         let still_connected = {
             let state = self.state.lock().expect("tunnel state poisoned");
             state.connects.values().any(|c| c.node_id == entry.node_id)
@@ -772,10 +891,24 @@ impl TunnelManager {
         let _gate = self.start_gate.lock().await;
         self.engine.ensure_node().await?;
         let mut task = self.inbound_task.lock().expect("inbound task lock poisoned");
-        if task.is_none() {
+        // 接收循环异常退出后必须能重启（节点重启 / 接收器失效）：旧实现只看
+        // `is_none()`，任务结束后句柄仍在，入站隧道会永久失效。
+        let restart = task.as_ref().is_none_or(JoinHandle::is_finished);
+        if restart {
+            if let Some(old) = task.take() {
+                old.abort();
+            }
+            let cancel = CancellationToken::new();
+            {
+                let mut slot = self.inbound_cancel.lock().expect("inbound cancel lock poisoned");
+                if let Some(old) = slot.take() {
+                    old.cancel();
+                }
+                *slot = Some(cancel.clone());
+            }
             let engine = Arc::clone(&self.engine);
             let server = Arc::clone(&self.server);
-            *task = Some(tokio::spawn(run_inbound_loop(engine, server)).abort_handle());
+            *task = Some(tokio::spawn(run_inbound_loop(engine, server, cancel)));
         }
         Ok(())
     }
@@ -824,62 +957,87 @@ impl TunnelManager {
     /// 单一引用计数：0→1 建立 reservation，1→0 释放。
     ///
     /// 计数 = 生效 expose 规则（其属主 `allowWan=true` 且配置了 relay 地址）+ 在飞
-    /// WAN 通道；地址取所有相关插件配置的并集（去重，保持声明顺序）。
+    /// WAN 通道（同样只在 `allowWan=true` 时计入——关闭外网立即停止 WAN 入口，
+    /// 不保留 reservation）；地址取所有相关插件配置的并集（去重，保持声明顺序）。
+    ///
+    /// 地址变化且 `desired>0` 时以新地址重建 reservation（T02 的 reserve 幂等替换）；
+    /// 重建失败保留旧 reservation 并显性告警，不把已生效的入口打死。
     async fn recount(&self) -> Result<()> {
         let _gate = self.recount_gate.lock().await;
-        let (desired, addrs, need_reserve, need_release) = {
+        // 锁内只做纯计算；域名解析是 I/O（`lookup_host`），必须在锁外。
+        let (desired, configs, reserved, reserved_addrs) = {
             let state = self.state.lock().expect("tunnel state poisoned");
-            let mut eligible_plugins: BTreeSet<&str> = BTreeSet::new();
-            let mut rule_count = 0usize;
-            for entry in state.rules.values() {
-                if state
+            let eligible = |plugin: &str| {
+                state
                     .configs
-                    .get(&entry.owner)
+                    .get(plugin)
                     .map(|c| c.allow_wan && !c.relay_addrs.is_empty())
                     .unwrap_or(false)
-                {
+            };
+            let mut plugins: BTreeSet<String> = BTreeSet::new();
+            let mut rule_count = 0usize;
+            for entry in state.rules.values() {
+                if eligible(&entry.owner) {
                     rule_count += 1;
-                    eligible_plugins.insert(entry.owner.as_str());
+                    plugins.insert(entry.owner.clone());
                 }
             }
-            let wan_count: usize = state.inbound_wan.values().sum();
-            let desired = rule_count + wan_count;
-            let mut addrs: Vec<Multiaddr> = Vec::new();
-            for plugin in &eligible_plugins {
-                if let Some(config) = state.configs.get(*plugin) {
-                    for addr in config.parse_relay_addrs()? {
-                        if !addrs.contains(&addr) {
-                            addrs.push(addr);
-                        }
-                    }
+            let mut wan_count = 0usize;
+            for (plugin, count) in &state.inbound_wan {
+                if eligible(plugin) {
+                    wan_count += count;
+                    plugins.insert(plugin.clone());
                 }
             }
-            // 在飞 WAN 通道也参与地址并集（插件可能只有 connect 没有 expose）
-            for plugin in state.inbound_wan.keys() {
-                if let Some(config) = state.configs.get(plugin) {
-                    for addr in config.parse_relay_addrs()? {
-                        if !addrs.contains(&addr) {
-                            addrs.push(addr);
-                        }
-                    }
-                }
-            }
-            let need_reserve = desired > 0 && !state.reserved && !addrs.is_empty();
-            let need_release = desired == 0 && state.reserved;
-            (desired, addrs, need_reserve, need_release)
+            let configs: Vec<TunnelConfig> = plugins
+                .iter()
+                .filter_map(|plugin| state.configs.get(plugin).cloned())
+                .collect();
+            (
+                rule_count + wan_count,
+                configs,
+                state.reserved,
+                state.reserved_addrs.clone(),
+            )
         };
 
+        let mut addrs: Vec<Multiaddr> = Vec::new();
+        for config in &configs {
+            for addr in config.resolved_relay_addrs().await? {
+                if !addrs.contains(&addr) {
+                    addrs.push(addr);
+                }
+            }
+        }
+
+        let need_release = desired == 0 && reserved;
+        let need_reserve = desired > 0 && !addrs.is_empty() && (!reserved || reserved_addrs != addrs);
         if need_reserve {
-            self.engine.reserve_relay(&addrs).await?;
-            let mut state = self.state.lock().expect("tunnel state poisoned");
-            state.reserved = true;
-            tracing::info!(desired, relays = addrs.len(), "tunnel relay reservation established");
+            match self.engine.reserve_relay(&addrs).await {
+                Ok(()) => {
+                    let mut state = self.state.lock().expect("tunnel state poisoned");
+                    state.reserved = true;
+                    state.reserved_addrs = addrs;
+                    tracing::info!(desired, "tunnel relay reservation established");
+                }
+                Err(e) if reserved => {
+                    // 地址切换失败：旧 reservation 仍可用（旧地址集合继续生效）；
+                    // 显性告警（下一次 recount 会重试），不回滚 LAN / 旧 WAN 入口。
+                    tracing::warn!(
+                        code = e.code,
+                        "tunnel relay reservation refresh failed; keeping previous: {}",
+                        e.detail
+                    );
+                }
+                Err(e) => return Err(e),
+            }
         } else if need_release {
             self.engine.release_relay().await?;
             let mut state = self.state.lock().expect("tunnel state poisoned");
             state.reserved = false;
+            state.reserved_addrs.clear();
             tracing::info!("tunnel relay reservation released");
-        } else if desired > 0 {
+        } else if desired > 0 && addrs.is_empty() {
             // 需要外网但没有可用地址：显性告警（status 里 reservation=false 可见），
             // 不回滚已经生效的 LAN 入口。
             tracing::warn!(
@@ -893,13 +1051,27 @@ impl TunnelManager {
 
 // ==================== 入站流接收 ====================
 
-async fn run_inbound_loop(engine: Arc<dyn TunnelEngine>, server: Arc<TunnelServer>) {
+async fn run_inbound_loop(engine: Arc<dyn TunnelEngine>, server: Arc<TunnelServer>, cancel: CancellationToken) {
     // 单 peer 并发流计数：任务结束时归还（配额上限由 `TunnelPolicy` 判定）
     let active: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
     loop {
-        let Some((node_id, access_path, mut io)) = engine.next_inbound().await else {
+        if cancel.is_cancelled() {
             break;
+        }
+        let next = tokio::select! {
+            _ = cancel.cancelled() => break,
+            next = engine.next_inbound() => next,
         };
+        let Some((node_id, access_path, mut io)) = next else {
+            // 接收器结束（节点重启 / `accept_streams` 短暂失败）：不能 `break`
+            // 让入站永久失效；稍等后重新拉接收器（下次 `next_inbound` 自建）。
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            continue;
+        };
+        // `matched` 的当前口径（spec §9.2#2 默认 = A：宿主全局传输信任）：
+        // 「应用配对 + 传输信任两层」在信任表层面已合并——auth-center 配对成功、
+        // file-transfer 首连确认都写同一张 peer 信任表；因此这里只查传输信任。
+        // 若将来改 per-app 隔离口径（B），必须在此注入应用配对端口，不要在前端补判。
         let matched = engine.trust_contains(&node_id).await;
         let key = node_id.as_str().to_string();
         let streams = {
@@ -916,9 +1088,16 @@ async fn run_inbound_loop(engine: Arc<dyn TunnelEngine>, server: Arc<TunnelServe
         };
         let server = Arc::clone(&server);
         let active = Arc::clone(&active);
+        let cancel = cancel.clone();
         tokio::spawn(async move {
-            if let Err(e) = server.handle_stream(&mut io, &ctx).await {
-                tracing::debug!(code = e.code, "tunnel stream rejected: {}", e.detail);
+            // `stop` 取消：在飞配对 / 业务流必须关（只 abort 接收循环杀不掉已 spawn 的流）
+            tokio::select! {
+                _ = cancel.cancelled() => {}
+                result = server.handle_stream(&mut io, &ctx) => {
+                    if let Err(e) = result {
+                        tracing::debug!(code = e.code, "tunnel stream rejected: {}", e.detail);
+                    }
+                }
             }
             let mut table = active.lock().expect("tunnel stream counter poisoned");
             if let Some(counter) = table.get_mut(&key) {
@@ -1005,6 +1184,12 @@ impl PeerCtxEngine {
         }
     }
 
+    /// 取启动期预注册的 TUNNEL 接收器（`RunningNode` 持有；取走后由管理器消费）
+    async fn take_pre_registered_tunnel(&self) -> Option<wasmnest_p2p_engine::links::IncomingStreams> {
+        let mut guard = self.ctx.state.runtime.lock().await;
+        guard.as_mut()?.take_tunnel_streams()
+    }
+
     async fn running(&self) -> Result<wasmnest_p2p_engine::engine::RunningNode> {
         let guard = self.ctx.state.runtime.lock().await;
         guard
@@ -1049,7 +1234,7 @@ impl TunnelEngine for PeerCtxEngine {
             .dial_addrs(addrs, expected, DIAL_PER_ADDR_TIMEOUT)
             .await
             .map(|_| ())
-            .map_err(|e| DialFailure::new(classify_p2p_dial(&e), e.to_string()))
+            .map_err(|e| classify_p2p_dial(&e))
     }
 
     /// §4.9：宿主侧网络事实（接口子网 + 蜂窝判定；应用 JS 不可见）
@@ -1076,24 +1261,48 @@ impl TunnelEngine for PeerCtxEngine {
     async fn next_inbound(&self) -> Option<(NodeId, AccessPath, TunnelIo)> {
         use tokio_util::compat::FuturesAsyncReadCompatExt;
         let mut guard = self.inbound.lock().await;
-        if guard.is_none() {
-            let running = self.running().await.ok()?;
-            let incoming = running
-                .accept_streams(wasmnest_p2p_engine::stream_proto::TUNNEL, false)
-                .await
-                .ok()?;
-            *guard = Some(incoming);
-        }
-        let inbound = guard.as_mut()?.next().await?;
-        let node_id = NodeId::parse(inbound.node_id.as_str()).ok()?;
-        let access_path = {
-            let running = self.running().await.ok()?;
-            match running.peer_link(&inbound.node_id) {
-                Some(link) if link.transport == wasmnest_p2p_engine::relay::Transport::WanRelay => AccessPath::WanRelay,
-                _ => AccessPath::LanDirect,
+        loop {
+            if guard.is_none() {
+                // 优先取启动期预注册的接收器（T05：监听开始前已注册 TUNNEL，
+                // `require_admitted=false`）——消除「节点已监听、接收器未注册」
+                // 窗口；仅旧节点 / 测试无预注册时回退到懒注册。
+                let mut pre_registered = self.take_pre_registered_tunnel().await;
+                if pre_registered.is_none() {
+                    if let Ok(running) = self.running().await {
+                        pre_registered = running
+                            .accept_streams(wasmnest_p2p_engine::stream_proto::TUNNEL, false)
+                            .await
+                            .ok();
+                    }
+                }
+                match pre_registered {
+                    Some(incoming) => *guard = Some(incoming),
+                    None => {
+                        // 节点未启动 / 注册失败：短退避后重试，不让接收循环退出
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        continue;
+                    }
+                }
             }
-        };
-        Some((node_id, access_path, Box::new(inbound.stream.compat())))
+            let inbound = guard.as_mut()?.next().await;
+            let Some(inbound) = inbound else {
+                // 接收器结束（节点重启 / 流控制面重建）：丢掉旧引用，下一轮重建
+                *guard = None;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            };
+            let node_id = NodeId::parse(inbound.node_id.as_str()).ok()?;
+            let access_path = {
+                let running = self.running().await.ok()?;
+                match running.peer_link(&inbound.node_id) {
+                    Some(link) if link.transport == wasmnest_p2p_engine::relay::Transport::WanRelay => {
+                        AccessPath::WanRelay
+                    }
+                    _ => AccessPath::LanDirect,
+                }
+            };
+            return Some((node_id, access_path, Box::new(inbound.stream.compat())));
+        }
     }
 
     async fn trust_contains(&self, node_id: &NodeId) -> bool {
@@ -1143,9 +1352,11 @@ impl TunnelEngine for PeerCtxEngine {
         match guard.as_ref() {
             Some(runtime) => {
                 let running = runtime.running.p2p_handle();
-                // relay 预留生效时 `relay_addr` 才为 Some：此时 circuit 地址对本节点是
-                // 可达的（对端经中继找过来），作为跨网候选追加在 LAN 候选之后。
-                let relay_addr = running.relay_status().relay_addr.map(|a| a.to_string());
+                // 只有预留生效（`Reserved`）时 circuit 地址对本节点才可达；
+                // `Connecting` / `Lost` 的 endpoint 只是「最近一次尝试的地址」，
+                // 写进 QR 会让对端拨一个不可用地址（T08 `peer.addrs` 必须可拨）。
+                let status = running.relay_status();
+                let relay_addr = advertised_relay_addr(status.state, status.relay_addr.as_ref());
                 NodeSnapshot {
                     started: true,
                     node_id: Some(runtime.node_id.clone()),
@@ -1160,6 +1371,16 @@ impl TunnelEngine for PeerCtxEngine {
             None => NodeSnapshot::default(),
         }
     }
+}
+
+/// 可对外宣告的 relay circuit 地址：只有预留已建立时才有值。
+///
+/// `relay_status().relay_addr` 在 `Connecting` / `Lost` 也会保留最近端点；
+/// 直接外发会让 QR / 连接串带上拨不通的候选（T08 要求 `peer.addrs` 可拨）。
+fn advertised_relay_addr(state: RelayState, addr: Option<&Multiaddr>) -> Option<String> {
+    (state == RelayState::Reserved)
+        .then(|| addr.map(|a| a.to_string()))
+        .flatten()
 }
 
 struct EngineOpener {
@@ -1242,18 +1463,34 @@ fn failure_word(kind: LanFailure) -> &'static str {
     }
 }
 
-/// 引擎拨号错误 → §4.9 失败成因。
+/// 引擎拨号错误 → §4.9 失败成因（逐候选结构化；**不解析聚合文本**）。
 ///
 /// 保守口径：认不出的成因归 [`LanFailure::Other`]（= 判据不明确 → 保持 LAN），
-/// 绝不因为「没分类」把流量推给中继。
-fn classify_p2p_dial(error: &wasmnest_p2p_engine::error::P2pError) -> LanFailure {
-    use wasmnest_p2p_engine::error::P2pError as E;
-    match error {
-        E::DialTimeout => LanFailure::Timeout,
-        E::NotAdmitted(_) | E::NodeIdMismatch { .. } | E::UnsupportedPeerIdentity(_) => LanFailure::Auth,
-        E::Dial(text) => classify_dial_text(text),
-        E::DialAllFailed { detail, .. } => classify_dial_text(detail),
-        _ => LanFailure::Other,
+/// 绝不因为「没分类」把流量推给中继；混合候选由 [`DialFailure::from_causes`]
+/// 归并为「判据不明确」，仍保持 LAN。
+fn classify_p2p_dial(error: &P2pError) -> DialFailure {
+    let causes: Vec<LanFailure> = match error {
+        P2pError::DialAllFailed { failures, .. } if !failures.is_empty() => {
+            failures.iter().map(|failure| map_dial_cause(failure.cause)).collect()
+        }
+        P2pError::DialTimeout => vec![LanFailure::Timeout],
+        P2pError::NotAdmitted(_) | P2pError::NodeIdMismatch { .. } | P2pError::UnsupportedPeerIdentity(_) => {
+            vec![LanFailure::Auth]
+        }
+        P2pError::Dial(text) => vec![classify_dial_text(text)],
+        _ => vec![LanFailure::Other],
+    };
+    DialFailure::from_causes(causes, error.to_string())
+}
+
+/// engine 的中性成因 → tunnel 的判据类别
+fn map_dial_cause(cause: DialCause) -> LanFailure {
+    match cause {
+        DialCause::Timeout => LanFailure::Timeout,
+        DialCause::Unreachable => LanFailure::Unreachable,
+        DialCause::Refused => LanFailure::Refused,
+        DialCause::NotAdmitted | DialCause::IdentityMismatch => LanFailure::Auth,
+        DialCause::Relay | DialCause::Other => LanFailure::Other,
     }
 }
 

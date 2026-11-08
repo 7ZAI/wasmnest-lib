@@ -169,6 +169,13 @@ struct PeerNetRuntime {
     node_id: String,
 }
 
+impl PeerNetRuntime {
+    /// 取走启动期预注册的 TUNNEL 接收器（只允许一次；隧道管理器持有后自行消费）
+    fn take_tunnel_streams(&mut self) -> Option<wasmnest_p2p_engine::links::IncomingStreams> {
+        self.running.take_tunnel_streams()
+    }
+}
+
 /// 首连确认回执登记项：等待前端应答的弹窗请求
 struct PendingConsent {
     node_id: NodeId,
@@ -342,7 +349,7 @@ pub async fn stop_peer_node(ctx: Arc<PeerCtx>) -> Result<()> {
 pub struct DialEndpoint {
     /// 对端节点 ID（64 位小写 hex 公钥指纹）
     pub node_id: String,
-    /// 对端监听地址（IP 或主机名，不带端口）
+    /// 对端监听地址（IPv4 / IPv6 字面量或主机名，不带端口；IPv6 不需要方括号）
     pub addr: String,
     /// 对端监听端口
     pub port: u16,
@@ -394,14 +401,18 @@ pub fn parse_peer_addrs(addrs: &[String]) -> Result<Vec<wasmnest_p2p_engine::Mul
 /// 元数据，Phase 4 数据面全面句柄化后此观察分支随旧路径一并退役。
 pub async fn dial_peer_endpoint(ctx: Arc<PeerCtx>, endpoint: DialEndpoint) -> Result<DialPeerResultDto> {
     let parsed = parse_node_id(&endpoint.node_id)?;
-    let addr: SocketAddr = format!("{}:{}", endpoint.addr.trim(), endpoint.port)
-        .parse()
-        .map_err(|_| {
+    let host = endpoint.addr.trim();
+    // IPv6 字面量必须先包 `SocketAddr::new`，直接拼 "::1:8765" 会解析失败；
+    // 主机名仍走 `host:port` 形态（由 std 解析）。
+    let addr: SocketAddr = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => SocketAddr::new(ip, endpoint.port),
+        Err(_) => format!("{host}:{}", endpoint.port).parse().map_err(|_| {
             AppError::InvalidInput(format!(
                 "peer-net dial failed: invalid endpoint addr '{}:{}'",
                 endpoint.addr, endpoint.port
             ))
-        })?;
+        })?,
+    };
     tracing::info!(
         node_id = %parsed,
         short = %parsed.short_fingerprint(),

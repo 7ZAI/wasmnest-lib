@@ -1,8 +1,11 @@
 //! 暴露规则与隧道准入（不变量 2 / 8 / 16）。
 //!
-//! 判定顺序固定：首帧形状 → 规则（port + kind）→ 配额 → 已匹配校验 →
-//! `allowedPeers` → 后端选择。任何一步失败都以点名错误码拒绝，绝不静默降级到
-//! 「直接连 8765」或「按回环当本机」。
+//! 判定顺序固定：首帧形状 → 规则（port + kind）→ 已匹配校验 → `allowedPeers`
+//! （配对窗口不受限）→ 配对窗口 kind → 并发配额 → 后端选择。任何一步失败都以
+//! 点名错误码拒绝，绝不静默降级到「直接连 8765」或「按回环当本机」。
+//!
+//! **票据在准入通过后才消费**（见 [`super::server::TunnelServer::handle_stream`]）：
+//! 端口 / kind 不匹配的尝试不得把一次性票据白白作废（`ticket validate` 只读）。
 //!
 //! `matched` 由宿主按「应用配对 + 传输层信任」两层同时成立后给出；本模块不自行
 //! 查信任表、不采信客户端自报的 `peerNodeId`（值必须来自隧道层已验证上下文）。
@@ -172,7 +175,7 @@ impl TunnelPolicy {
         }
     }
 
-    /// 登记规则；同 `(port, kind)` 重复登记返回既有 id（幂等，默认不暴露任何端口）
+    /// 登记规则；同 `(port, kind)` 重复登记返回既有 id（幂等更新标签 / ACL）
     pub fn expose(&self, config: ExposeConfig) -> Result<String> {
         if config.port == 0 {
             return Err(TunnelError::new(CODE_PORT_NOT_EXPOSED, "目标端口为 0"));
@@ -194,7 +197,14 @@ impl TunnelPolicy {
                 .map_err(|_| TunnelError::new(CODE_NOT_MATCHED, "allowedPeers 含非法 node id（须 64 位小写 hex）"))?;
         }
         let mut rules = self.rules.write().expect("expose rules poisoned");
-        if let Some(existing) = rules.values().find(|r| r.port == config.port && r.kind == config.kind) {
+        if let Some(existing) = rules
+            .values_mut()
+            .find(|r| r.port == config.port && r.kind == config.kind)
+        {
+            // 幂等重登记 = 以调用方最新声明为准：旧 ACL / 标签不得在新调用方名下
+            // 静默残留（否则「重开端口」实际沿用上一次的 allowedPeers）。
+            existing.label = config.label;
+            existing.allowed_peers = config.allowed_peers;
             return Ok(existing.id.clone());
         }
         let id = format!("tunnel-rule-{}", Uuid::new_v4());
@@ -217,6 +227,25 @@ impl TunnelPolicy {
             .expect("expose rules poisoned")
             .remove(rule_id)
             .is_some()
+    }
+
+    /// 同 `(port, kind)` 的既有规则 id（属主仲裁在写入前判定用）
+    pub fn rule_id_for(&self, port: u16, kind: TunnelKind) -> Option<String> {
+        self.rules
+            .read()
+            .expect("expose rules poisoned")
+            .values()
+            .find(|rule| rule.port == port && rule.kind == kind)
+            .map(|rule| rule.id.clone())
+    }
+
+    /// 规则绑定的目标端口（`unexpose` 时按端口撤销票据用；未知规则返回 `None`）
+    pub fn rule_port(&self, rule_id: &str) -> Option<u16> {
+        self.rules
+            .read()
+            .expect("expose rules poisoned")
+            .get(rule_id)
+            .map(|rule| rule.port)
     }
 
     pub fn rules(&self) -> Vec<ExposeRule> {
@@ -248,13 +277,6 @@ impl TunnelPolicy {
                 )
             })?;
 
-        if ctx.active_streams >= cfg.max_streams_per_peer {
-            return Err(TunnelError::new(
-                CODE_TUNNEL_LIMIT,
-                format!("单 peer 并发流达上限 {}", cfg.max_streams_per_peer),
-            ));
-        }
-
         // 未匹配 peer 只有配对票据这一条例外；缺校验过的 node id 的已匹配声明
         // 同样拒绝（不变量 16：不得由客户端自报身份补齐）。
         let pairing = if ctx.matched {
@@ -273,7 +295,10 @@ impl TunnelPolicy {
                 "已匹配声明缺少隧道层验证过的 peerNodeId",
             ));
         }
-        if !rule.allowed_peers.is_empty() {
+
+        // 配对窗口不受 `allowedPeers` 约束：票据是带外的一次性授权，新设备
+        // 尚未进入任何名单；窗口本身只放行配对端点（下面再限制 kind）。
+        if !pairing && !rule.allowed_peers.is_empty() {
             let allowed = ctx
                 .peer_node_id
                 .as_deref()
@@ -281,6 +306,24 @@ impl TunnelPolicy {
             if !allowed {
                 return Err(TunnelError::new(CODE_NOT_MATCHED, "对端不在该端口的 allowedPeers 内"));
             }
+        }
+
+        // 配对窗口只放行配对端点（`kind=http` → 对等面的 `/api/auth/*` 白名单）；
+        // `kind=tcp` 没有路径白名单，票据持有者不得借此直连业务回环端口。
+        if pairing && hello.kind == TunnelKind::Tcp {
+            return Err(TunnelError::new(
+                CODE_NOT_MATCHED,
+                "配对窗口只允许 kind=http 的配对端点（kind=tcp 需已匹配）",
+            ));
+        }
+
+        // `active_streams` 已包含本条在飞流：用 `>` 才是「最多 max 条」；`>=` 会
+        // 实际只允许 max-1 条（off-by-one）。
+        if ctx.active_streams > cfg.max_streams_per_peer {
+            return Err(TunnelError::new(
+                CODE_TUNNEL_LIMIT,
+                format!("单 peer 并发流达上限 {}", cfg.max_streams_per_peer),
+            ));
         }
 
         // kind=tcp 的端口黑名单在 expose 已查一次，这里再查：规则可能来自旧
@@ -502,11 +545,19 @@ mod tests {
                 port: 39002,
                 kind: TunnelKind::Tcp,
                 label: "two".into(),
-                allowed_peers: vec![],
+                allowed_peers: vec![NODE_A.into()],
             })
             .unwrap();
         assert_eq!(a, b);
-        assert_eq!(f.policy.rules().len(), 1);
+        let rules = f.policy.rules();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].label, "two", "幂等重登记必须刷新标签");
+        // ACL 也以最新声明为准（旧 allowedPeers 不得静默残留）
+        assert_eq!(
+            rules[0].allowed_peers,
+            vec![NODE_A.to_string()],
+            "幂等重登记必须刷新 ACL"
+        );
         assert_eq!(
             f.policy
                 .admit(&TunnelHello::new(39003, TunnelKind::Tcp, None), &matched_ctx())
@@ -525,17 +576,60 @@ mod tests {
     }
 
     #[test]
-    fn stream_quota_is_enforced() {
+    fn stream_quota_allows_exactly_max_streams() {
         let f = fixture();
         expose(&f.policy, DEFAULT_SERVER_PORT, TunnelKind::Http, vec![]);
         let mut ctx = matched_ctx();
+        // `active_streams` 含本条在飞流：max 条时必须放行（旧 `>=` 只允许 max-1）
         ctx.active_streams = DEFAULT_MAX_STREAMS_PER_PEER;
+        assert!(f
+            .policy
+            .admit(&TunnelHello::new(8765, TunnelKind::Http, None), &ctx)
+            .is_ok());
+        ctx.active_streams = DEFAULT_MAX_STREAMS_PER_PEER + 1;
         assert_eq!(
             f.policy
                 .admit(&TunnelHello::new(8765, TunnelKind::Http, None), &ctx)
                 .unwrap_err()
                 .code,
             CODE_TUNNEL_LIMIT
+        );
+    }
+
+    /// 配对窗口只开配对端点（kind=http；路径白名单在对等面），`kind=tcp` 拒绝；
+    /// 一次性票据是带外授权，新设备不在 `allowedPeers` 里也应能进窗口。
+    #[test]
+    fn pairing_window_rejects_tcp_and_ignores_allowed_peers() {
+        let f = fixture();
+        expose(&f.policy, DEFAULT_SERVER_PORT, TunnelKind::Http, vec![NODE_A.into()]);
+        expose(&f.policy, 39002, TunnelKind::Tcp, vec![NODE_A.into()]);
+        let mut pairing = AdmissionContext {
+            peer_node_id: None,
+            matched: false,
+            ticket_valid: true,
+            active_streams: 1,
+        };
+
+        let window = f
+            .policy
+            .admit(&TunnelHello::new(8765, TunnelKind::Http, Some("tk-1".into())), &pairing)
+            .unwrap();
+        assert!(window.pairing);
+
+        let err = f
+            .policy
+            .admit(&TunnelHello::new(39002, TunnelKind::Tcp, Some("tk-1".into())), &pairing)
+            .unwrap_err();
+        assert_eq!(err.code, CODE_NOT_MATCHED, "配对窗口不得直连 kind=tcp 业务端口");
+
+        // 端口被撤: 窗口随规则消失（不靠票据兜底）
+        pairing.ticket_valid = true;
+        assert_eq!(
+            f.policy
+                .admit(&TunnelHello::new(39003, TunnelKind::Tcp, Some("tk-1".into())), &pairing)
+                .unwrap_err()
+                .code,
+            CODE_PORT_NOT_EXPOSED
         );
     }
 

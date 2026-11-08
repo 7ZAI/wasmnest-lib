@@ -88,6 +88,28 @@ impl TicketIssuer {
         Ok(id)
     }
 
+    /// 校验票据但**不消费**（准入判定阶段用）：过期 / 端口不符只报错，条目不摘除。
+    ///
+    /// 用于「先判规则 / 端口 / kind，再决定是否烧掉票据」的顺序：端口填错、配对
+    /// 窗口不允许的 kind 等失败不得把一次性票据白白作废。真正的单次消费由
+    /// [`Self::consume`] 在准入通过后完成。
+    pub fn validate(&self, ticket: &str, port: u16, _path: AccessPath) -> Result<()> {
+        let entries = self.entries.lock().expect("ticket table poisoned");
+        let entry = entries
+            .get(ticket)
+            .ok_or_else(|| TunnelError::new(CODE_TICKET_EXPIRED, "票据已使用或不存在"))?;
+        if entry.expires_at_ms <= (self.now_ms)() {
+            return Err(TunnelError::new(CODE_TICKET_EXPIRED, "票据已过期"));
+        }
+        if entry.port != port {
+            return Err(TunnelError::new(
+                CODE_TICKET_EXPIRED,
+                format!("票据绑定的目标端口 {}", entry.port),
+            ));
+        }
+        Ok(())
+    }
+
     /// 消费：任何使用尝试都先摘除条目（防重放 / 防枚举），再判过期与端口
     pub fn consume(&self, ticket: &str, port: u16, _path: AccessPath) -> Result<()> {
         let entry = self
@@ -115,6 +137,19 @@ impl TicketIssuer {
             .expect("ticket table poisoned")
             .remove(ticket)
             .is_some()
+    }
+
+    /// 撤销绑定到某端口的全部票据（`unexpose` / 规则消失时调用）
+    pub fn revoke_port(&self, port: u16) -> usize {
+        let mut entries = self.entries.lock().expect("ticket table poisoned");
+        let before = entries.len();
+        entries.retain(|_, t| t.port != port);
+        before - entries.len()
+    }
+
+    /// 服务租约 1→0：停用隧道时清空全部票据（TTL 内的旧票据不得跨租约存活）
+    pub fn clear(&self) {
+        self.entries.lock().expect("ticket table poisoned").clear();
     }
 
     pub fn purge_expired(&self) -> usize {
@@ -194,6 +229,35 @@ mod tests {
             issuer.consume(&ticket, 8765, AccessPath::WanRelay).unwrap_err().code,
             CODE_TICKET_EXPIRED
         );
+    }
+
+    #[test]
+    fn validate_does_not_burn_the_ticket_on_wrong_port() {
+        let (clock, _) = fixed_clock();
+        let issuer = TicketIssuer::with_clock(clock);
+        let ticket = issuer.issue(8765, 60).unwrap();
+
+        assert_eq!(
+            issuer.validate(&ticket, 9999, AccessPath::LanDirect).unwrap_err().code,
+            CODE_TICKET_EXPIRED
+        );
+        assert_eq!(issuer.len(), 1, "端口不符的校验不得消耗票据（先判规则再烧票）");
+        assert!(issuer.validate(&ticket, 8765, AccessPath::LanDirect).is_ok());
+        assert_eq!(issuer.len(), 1, "validate 只读");
+        assert!(issuer.consume(&ticket, 8765, AccessPath::LanDirect).is_ok());
+        assert!(issuer.is_empty(), "准入通过后的 consume 才是单次消费");
+    }
+
+    #[test]
+    fn revoke_port_and_clear_drop_the_pairing_window() {
+        let (clock, _) = fixed_clock();
+        let issuer = TicketIssuer::with_clock(clock);
+        let _t8765 = issuer.issue(8765, 60).unwrap();
+        let _t39002 = issuer.issue(39002, 60).unwrap();
+        assert_eq!(issuer.revoke_port(8765), 1, "unexpose 按端口撤销票据");
+        assert_eq!(issuer.len(), 1, "其他端口的票据不受影响");
+        issuer.clear();
+        assert!(issuer.is_empty(), "stop 清空全部票据");
     }
 
     #[test]

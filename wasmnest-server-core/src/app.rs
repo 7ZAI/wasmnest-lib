@@ -183,6 +183,26 @@ enum BindTarget {
     Listener(std::net::TcpListener),
 }
 
+/// 对等面绑定自证：只允许 loopback（端口 0 允许，由 system 分配）
+fn validate_peer_face_bind(bind: &BindTarget) -> std::io::Result<()> {
+    let addr = match bind {
+        BindTarget::Listener(listener) => listener.local_addr()?,
+        BindTarget::Addr(addr) => addr.parse().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("对等面绑定地址必须为 <loopback>:<port>：{addr}"),
+            )
+        })?,
+    };
+    if !addr.ip().is_loopback() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            format!("对等面只能绑回环地址，拒绝 {addr}"),
+        ));
+    }
+    Ok(())
+}
+
 async fn serve_on(
     bind: BindTarget,
     config: &NetworkConfig,
@@ -201,6 +221,11 @@ async fn serve_on(
             .map(|a| a.to_string())
             .unwrap_or_else(|_| "<listener>".to_string()),
     };
+    // 对等面只能绑回环（不变量 1 / T03）：listener 由调用方传入，机制层必须
+    // 自证，不能只靠调用方自觉（误用非回环 listener 会把 peer 面暴露到 LAN）。
+    if face.is_peer() {
+        validate_peer_face_bind(&bind)?;
+    }
     tracing::info!(
         "Starting Actix Web server (HTTP + WS) on {} (peer face: {})",
         bind_label,
@@ -282,4 +307,40 @@ async fn serve_on(
     let handle = server.handle();
 
     Ok((addrs, handle, server))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 不变量 1 / T03：对等面 listener 必须自证 loopback——调用方误传非回环
+    /// listener 时机制层拒绝，而不是把 peer 面暴露到 LAN。
+    #[tokio::test]
+    async fn peer_face_rejects_non_loopback_listener() {
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let err = match serve_peer_face_on(listener, &NetworkConfig::default(), Vec::new(), None).await {
+            Ok(_) => panic!("非回环 listener 必须被拒绝"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrNotAvailable);
+    }
+
+    /// `Addr` 形态同样拒绝非回环绑定（`serve_peer_face` 之外的自定义调用面）
+    #[tokio::test]
+    async fn peer_face_rejects_non_loopback_addr_bind() {
+        let err = match serve_on(
+            BindTarget::Addr("0.0.0.0:0".to_string()),
+            &NetworkConfig::default(),
+            Vec::new(),
+            RequestFace::peer_face(None, false),
+            None,
+        )
+        .await
+        {
+            Ok(_) => panic!("非回环绑定必须被拒绝"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrNotAvailable);
+    }
 }

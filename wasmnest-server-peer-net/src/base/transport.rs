@@ -524,7 +524,7 @@ fn map_p2p_error(e: P2pError) -> PeerNetError {
         P2pError::RelayDisabled => PeerNetError::Transport {
             detail: "relay disabled in this build".to_string(),
         },
-        P2pError::DialAllFailed { attempts, detail } => PeerNetError::Transport {
+        P2pError::DialAllFailed { attempts, detail, .. } => PeerNetError::Transport {
             detail: format!("all {attempts} dial candidates failed: {detail}"),
         },
     }
@@ -540,12 +540,19 @@ pub struct RunningNode {
     p2p: P2pRunningNode,
     local_addr: SocketAddr,
     accept_tasks: Vec<JoinHandle<()>>,
+    /// 启动期预注册的隧道接收器（`require_admitted=false`）；管理器取走后自行消费
+    tunnel_streams: Option<IncomingStreams>,
 }
 
 impl RunningNode {
     /// 实际监听地址（端口 0 已展开）
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// 取走启动期预注册的隧道接收器（只允许取一次；取走后管理器持有）
+    pub(crate) fn take_tunnel_streams(&mut self) -> Option<IncomingStreams> {
+        self.tunnel_streams.take()
     }
 
     /// 引擎节点句柄（`PeerNetNode::dial` 与诊断用）
@@ -569,6 +576,21 @@ impl RunningNode {
         tracing::info!("peer-net node shut down cleanly (libp2p)");
     }
 }
+
+/// 节点启动期预注册的入站协议（顺序固定；`bool` = `require_admitted`）
+///
+/// - `TRUST_STATUS` / `TUNNEL` 必须 `false`：前者是闸门放行前的唯一协议，
+///   后者要允许未匹配 peer 凭配对票据进配对窗口（匹配校验在通道层逐条裁决）；
+/// - 其余业务流 `true`：未达准入的连接不得碰传输 / 共享目录 / 会话面。
+///
+/// 预注册发生在 `listen_on` 之前，消除「监听已开、协议未登记」窗口（T05/T06）。
+const STARTUP_PROTOCOLS: &[(&str, bool)] = &[
+    (stream_proto::TRUST_STATUS, false),
+    (stream_proto::TRANSFER, true),
+    (stream_proto::SHARED_DIR, true),
+    (stream_proto::SESSION, true),
+    (stream_proto::TUNNEL, false),
+];
 
 /// 启动引擎与入站协议接收循环
 ///
@@ -640,13 +662,8 @@ pub(crate) fn spawn_running_node(
         }),
         events: Arc::new(LogEventSink),
     };
-    let protocols = [
-        stream_proto::TRUST_STATUS,
-        stream_proto::TRANSFER,
-        stream_proto::SHARED_DIR,
-        stream_proto::SESSION,
-    ];
-    let (p2p, mut incoming) = P2pEngine::start_with_protocols(key, config, ports, &protocols).map_err(map_p2p_error)?;
+    let (p2p, mut incoming) =
+        P2pEngine::start_with_protocols_admission(key, config, ports, STARTUP_PROTOCOLS).map_err(map_p2p_error)?;
 
     let own_node_id = identity.node_id().clone();
     let mut accept_tasks = Vec::new();
@@ -659,6 +676,12 @@ pub(crate) fn spawn_running_node(
         )));
     } else {
         tracing::error!("trust-status protocol acceptor missing after engine start");
+    }
+    // 隧道接收器不在这里起循环：由隧道管理器（`PeerCtxEngine::next_inbound`）
+    // 取走后按自己的生命周期消费（`stop` 时连在飞流一起取消）。
+    let tunnel_streams = incoming.remove(stream_proto::TUNNEL);
+    if tunnel_streams.is_none() {
+        tracing::error!("tunnel protocol acceptor missing after engine start");
     }
     for protocol in [stream_proto::TRANSFER, stream_proto::SHARED_DIR, stream_proto::SESSION] {
         if let Some(streams) = incoming.remove(protocol) {
@@ -677,5 +700,26 @@ pub(crate) fn spawn_running_node(
         p2p,
         local_addr: resolved_addr,
         accept_tasks,
+        tunnel_streams,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T05/T06：隧道协议必须在**开始监听前**预注册，且 `require_admitted=false`
+    /// （未匹配 peer 凭配对票据进配对窗口）；其余业务流保持 `true`。
+    #[test]
+    fn startup_protocols_register_tunnel_before_listen() {
+        let tunnel = STARTUP_PROTOCOLS
+            .iter()
+            .find(|(protocol, _)| *protocol == stream_proto::TUNNEL)
+            .expect("启动协议表必须登记 TUNNEL（否则监听窗口内开流会失败）");
+        assert!(!tunnel.1, "TUNNEL 必须以 require_admitted=false 注册");
+        for (protocol, require_admitted) in STARTUP_PROTOCOLS {
+            let expected = !matches!(*protocol, stream_proto::TRUST_STATUS | stream_proto::TUNNEL);
+            assert_eq!(*require_admitted, expected, "{protocol} 的准入门漂移");
+        }
+    }
 }
