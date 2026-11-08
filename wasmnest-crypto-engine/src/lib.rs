@@ -11,9 +11,17 @@
 //!
 //! 宿主经 `crate::crypto` / `crate::utils::crypto` 两个薄壳回导本 crate 的
 //! 同名模块，其余代码引用路径不变。
+//!
+//! **依赖面（2026-11-08，P0 默认形态依赖边界）**：本 crate **零内部 crate 依赖**
+//! ——错误类型自带 [`CryptoError`] / [`CryptoResult`]（此前为拿一个错误信封复用
+//! `server-base` 的 `AppError`，把 tauri / rusqlite / mdns-sd / sysinfo / notify
+//! 整条桌面依赖链钉进了中性算法原语）。消费方在边界按变体语义显式映射回自己的
+//! 错误类型，映射是显式且可测的（见 `error` 模块的文案兼容约束）。
 
 pub mod aes_gcm;
 pub mod chacha;
+/// 加密引擎错误类型（`CryptoError` / `CryptoResult`）
+pub mod error;
 pub mod hybrid;
 pub mod kdf;
 pub mod provider;
@@ -21,6 +29,7 @@ pub mod registry;
 pub mod rsa;
 pub mod x25519;
 
+pub use error::{CryptoError, CryptoResult};
 pub use registry::{resolve_aead, resolve_kdf, resolve_key_agreement, PROVIDERS};
 
 // 平铺便捷名（与旧 `utils::crypto` 根导出对齐）

@@ -17,7 +17,7 @@ use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey, SharedSecret as DalekSharedSecret, StaticSecret};
 
-use wasmnest_server_base::error::Result;
+use crate::error::CryptoResult;
 
 /// X25519 公钥/私钥长度（字节，32）
 pub const KEY_LEN: usize = 32;
@@ -80,7 +80,7 @@ pub fn x25519_generate() -> X25519KeyPair {
 /// 用本端私钥与对端公钥计算 ECDH 共享密钥
 ///
 /// `peer_public` 必须为对端 X25519 公钥（32 字节）。
-pub fn x25519_diffie_hellman(local: &X25519KeyPair, peer_public: &[u8; KEY_LEN]) -> Result<X25519SharedSecret> {
+pub fn x25519_diffie_hellman(local: &X25519KeyPair, peer_public: &[u8; KEY_LEN]) -> CryptoResult<X25519SharedSecret> {
     let secret = StaticSecret::from(*local.private());
     let peer = PublicKey::from(*peer_public);
     let shared: DalekSharedSecret = secret.diffie_hellman(&peer);

@@ -38,6 +38,35 @@ use wasmnest_crypto_engine::registry::{resolve_aead, resolve_kdf, resolve_key_ag
 use crate::filter::{Direction, FilterContext, TrafficChannel, TrafficFilter, TrafficFilterChain, Verdict};
 use wasmnest_server_base::error::{AppError, Result};
 
+// ==================== 错误边界映射（2026-11-08，P0 默认形态依赖边界） ====================
+//
+// `wasmnest-server-base` 不再为 `LinkCryptoError` / `CryptoError` 提供 `From` impl
+// （那两条边把 link-crypto 与 crypto-engine 的归属钉在了地基层）。映射改在本边界显式
+// 完成——**文案逐字不变**：`LinkCryptoError` 与 `CryptoError` 的 `Display` 已是旧文案
+// 原文，映射后由 `AppError` 变体前缀补回 `Invalid input:` / `Internal error:`。
+//
+// 分派判据按**变体语义**而非字符串匹配：输入非法（密钥 / nonce 长度、未知算法、
+// 其它非法输入）→ `InvalidInput`；算法执行失败 → `Internal`。
+
+/// `CryptoError` → `AppError`（按变体语义分派）
+fn crypto_to_app_error(err: wasmnest_crypto_engine::CryptoError) -> AppError {
+    if err.is_invalid_input() {
+        AppError::InvalidInput(err.detail().to_string())
+    } else {
+        AppError::Internal(err.detail().to_string())
+    }
+}
+
+/// `LinkCryptoError` → `AppError::Internal`（协议核心错误一律视为内部失败，文案不变）
+fn link_crypto_to_app_error(err: wasmnest_link_crypto::LinkCryptoError) -> AppError {
+    AppError::Internal(err.to_string())
+}
+
+/// rusqlite 错误 → `AppError::Database`（`Database` 不再携带 `rusqlite::Error`）
+fn db_error(err: rusqlite::Error) -> AppError {
+    AppError::Database(err.to_string())
+}
+
 // ==================== 引擎注册表抽象（票 02：WS/HTTP 只留加密抽象层） ====================
 // 生产运行时路径的算法调用一律经 crypto 引擎注册表按名解析，模块不再直接依赖具体
 // 算法实现。先解析为模块级 lazy 引用，避免逐帧重复查表。
@@ -303,7 +332,8 @@ pub fn persist_app_policies_to_db(
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
         rusqlite::params![APP_POLICY_SETTING_KEY, json, now],
-    )?;
+    )
+    .map_err(db_error)?;
     Ok(())
 }
 
@@ -527,8 +557,12 @@ pub struct HttpTrafficKeys {
 /// info 区分方向（request ≠ response，单向泄露不波及另一向）。
 pub fn derive_http_traffic_keys(shared_ikm: &[u8], http_path: &str) -> Result<HttpTrafficKeys> {
     let salt = http_path.as_bytes();
-    let req = DATA_KDF.derive(Some(salt), shared_ikm, HTTP_INFO_REQUEST, 32)?;
-    let resp = DATA_KDF.derive(Some(salt), shared_ikm, HTTP_INFO_RESPONSE, 32)?;
+    let req = DATA_KDF
+        .derive(Some(salt), shared_ikm, HTTP_INFO_REQUEST, 32)
+        .map_err(crypto_to_app_error)?;
+    let resp = DATA_KDF
+        .derive(Some(salt), shared_ikm, HTTP_INFO_RESPONSE, 32)
+        .map_err(crypto_to_app_error)?;
     let to_arr = |v: Vec<u8>| {
         let mut out = [0u8; 32];
         out.copy_from_slice(&v);
@@ -638,7 +672,8 @@ pub fn derive_ws_session_ciphers(client_ek_b64: &str) -> Result<WsHandshake> {
         return Err(AppError::Internal("link identity unavailable".to_string()));
     };
     let (s_ephemeral_private, _s_public_unused) = proto::generate_ephemeral();
-    let hs = proto::derive_server_handshake(client_ek_b64, identity.keypair().private(), &s_ephemeral_private)?;
+    let hs = proto::derive_server_handshake(client_ek_b64, identity.keypair().private(), &s_ephemeral_private)
+        .map_err(link_crypto_to_app_error)?;
 
     Ok(WsHandshake {
         server_ek_b64: hs.server_ek_b64,
@@ -743,11 +778,11 @@ pub(crate) fn ws_decrypt_inbound_text(addr: &str, channel_str: &str, body: &[u8]
             envelope.v
         )));
     }
-    let nonce_v = b64_decode(&envelope.n)?;
+    let nonce_v = b64_decode(&envelope.n).map_err(link_crypto_to_app_error)?;
     let nonce: [u8; 12] = nonce_v
         .try_into()
         .map_err(|v: Vec<u8>| AppError::Internal(format!("nonce length mismatch: {}", v.len())))?;
-    let ciphertext = b64_decode(&envelope.ct)?;
+    let ciphertext = b64_decode(&envelope.ct).map_err(link_crypto_to_app_error)?;
 
     let mut map = WS_CIPHERS
         .lock()
@@ -761,12 +796,14 @@ pub(crate) fn ws_decrypt_inbound_text(addr: &str, channel_str: &str, body: &[u8]
             c.c2s_expected_seq, envelope.seq
         )));
     }
-    let plain = DATA_AEAD.decrypt(
-        &c.client_to_server.key,
-        &nonce,
-        &ciphertext,
-        Some(&ws_aad(channel_str, Direction::Inbound, ORIGIN_TEXT)),
-    )?;
+    let plain = DATA_AEAD
+        .decrypt(
+            &c.client_to_server.key,
+            &nonce,
+            &ciphertext,
+            Some(&ws_aad(channel_str, Direction::Inbound, ORIGIN_TEXT)),
+        )
+        .map_err(crypto_to_app_error)?;
     c.c2s_expected_seq += 1;
     String::from_utf8(plain).map_err(|e| AppError::Internal(format!("decrypted text not utf-8: {e}")))
 }
@@ -778,7 +815,9 @@ struct SealedPayload {
 
 fn encrypt_ws_payload(cipher: &WsDirectionCipher, seq: u64, plaintext: &[u8], aad: &[u8]) -> Result<SealedPayload> {
     let nonce = ws_nonce(&cipher.nonce_prefix, seq);
-    let ciphertext = DATA_AEAD.encrypt(&cipher.key, &nonce, plaintext, Some(aad))?;
+    let ciphertext = DATA_AEAD
+        .encrypt(&cipher.key, &nonce, plaintext, Some(aad))
+        .map_err(crypto_to_app_error)?;
     Ok(SealedPayload { nonce, ciphertext })
 }
 
@@ -826,12 +865,14 @@ pub(crate) fn ws_decrypt_inbound_binary(addr: &str, channel_str: &str, data: &[u
             c.c2s_expected_seq, seq
         )));
     }
-    let plain = DATA_AEAD.decrypt(
-        &c.client_to_server.key,
-        &ws_nonce(&c.client_to_server.nonce_prefix, seq),
-        ciphertext,
-        Some(&ws_aad(channel_str, Direction::Inbound, ORIGIN_BINARY)),
-    )?;
+    let plain = DATA_AEAD
+        .decrypt(
+            &c.client_to_server.key,
+            &ws_nonce(&c.client_to_server.nonce_prefix, seq),
+            ciphertext,
+            Some(&ws_aad(channel_str, Direction::Inbound, ORIGIN_BINARY)),
+        )
+        .map_err(crypto_to_app_error)?;
     c.c2s_expected_seq += 1;
     Ok(plain)
 }
@@ -1100,17 +1141,20 @@ impl LinkEncryptionFilter {
         // 须在闭包前捕获（闭包会把 ctx.data 替换为明文）
         let had_body = !ctx.data.is_empty();
         let result = (|| -> Result<()> {
-            let ek_raw = b64_decode(ek_b64)?;
+            let ek_raw = b64_decode(ek_b64).map_err(link_crypto_to_app_error)?;
             let peer_public: [u8; 32] = ek_raw.try_into().map_err(|v: Vec<u8>| {
                 AppError::Internal(format!("negotiation key length mismatch: expected 32, got {}", v.len()))
             })?;
-            let shared = DATA_ECDH.compute_shared(identity.keypair().private(), &peer_public)?;
+            let shared = DATA_ECDH
+                .compute_shared(identity.keypair().private(), &peer_public)
+                .map_err(crypto_to_app_error)?;
             let keys = derive_http_traffic_keys(&shared, ctx.route)?;
             // GET/HEAD 空 body：无载荷可解，协商仅用于响应加密（密钥派生已足以
             // 证明对端持有临时私钥）——空 body 直接通过，不尝试解信封
             if had_body {
                 let request_key = keys.request;
-                let plaintext = decrypt_http_body(&request_key, &ctx.data, &http_aad(Direction::Inbound, ctx.route))?;
+                let plaintext = decrypt_http_body(&request_key, &ctx.data, &http_aad(Direction::Inbound, ctx.route))
+                    .map_err(link_crypto_to_app_error)?;
                 ctx.data = plaintext;
             }
             store_http_keys(ctx.peer, ek_b64, keys);
@@ -2625,5 +2669,60 @@ mod tests {
         ] {
             assert!(json.get(key).is_some(), "能力查询 wire 缺字段 {key}: {json}");
         }
+    }
+
+    // ---------- 错误边界映射（P0：crypto-engine / link-crypto 错误归域后） ----------
+
+    /// 输入非法类 `CryptoError` 落 `AppError::InvalidInput`，文案逐字保留
+    /// （`Display` = 变体前缀 + detail 原文；改造前 detail 直接就是 `InvalidInput` 载荷）
+    #[test]
+    fn crypto_error_maps_to_app_error_by_variant_semantics() {
+        let invalid_input_cases = [
+            wasmnest_crypto_engine::CryptoError::invalid_key_length("aes-256-gcm: 密钥长度必须为 32 字节，收到 5"),
+            wasmnest_crypto_engine::CryptoError::invalid_nonce_length("aes-256-gcm: nonce 长度必须为 12 字节，收到 3"),
+            wasmnest_crypto_engine::CryptoError::unsupported_algorithm("未知 AEAD 算法: 'toy'（不在白名单）"),
+            wasmnest_crypto_engine::CryptoError::invalid_input("base64 解码失败: invalid symbol"),
+        ];
+        for err in invalid_input_cases {
+            let detail = err.detail().to_string();
+            let mapped = crypto_to_app_error(err);
+            assert!(
+                matches!(mapped, AppError::InvalidInput(_)),
+                "输入非法类必须映射到 InvalidInput: {mapped}"
+            );
+            // 逐字：变体前缀 + 原文 detail（与改造前 AppError::InvalidInput 的 Display 一致）
+            assert_eq!(mapped.to_string(), format!("Invalid input: {detail}"));
+        }
+
+        let detail = "AES-256-GCM 解密失败: aead::Error";
+        let mapped = crypto_to_app_error(wasmnest_crypto_engine::CryptoError::operation_failed(detail));
+        assert!(
+            matches!(mapped, AppError::Internal(_)),
+            "算法执行失败必须映射到 Internal"
+        );
+        assert_eq!(mapped.to_string(), format!("Internal error: {detail}"));
+    }
+
+    /// `LinkCryptoError` 落 `AppError::Internal`，文案逐字保留
+    #[test]
+    fn link_crypto_error_maps_to_app_error_internal_verbatim() {
+        // 用协议核心真实错误路径构造（非法 base64 是最稳定的输入侧失败）
+        let err = b64_decode("!!!not-base64!!!").expect_err("非法 base64 必须失败");
+        let detail = err.to_string();
+        let mapped = link_crypto_to_app_error(err);
+        assert!(matches!(mapped, AppError::Internal(_)));
+        assert_eq!(mapped.to_string(), format!("Internal error: {detail}"));
+    }
+
+    /// rusqlite 错误 → `AppError::Database(String)`：信封语义不变（仍落 host.internal 兜底码）
+    #[test]
+    fn db_error_maps_to_string_variant_without_envelope_change() {
+        let mapped = db_error(rusqlite::Error::InvalidQuery);
+        match &mapped {
+            AppError::Database(msg) => assert!(!msg.is_empty(), "Database 必须携带非空文案"),
+            other => panic!("rusqlite 错误必须落 Database: {other}"),
+        }
+        let envelope = serde_json::to_value(&mapped).expect("AppError 必须可序列化");
+        assert_eq!(envelope["code"], serde_json::json!("host.internal"));
     }
 }

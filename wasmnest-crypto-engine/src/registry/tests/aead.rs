@@ -22,11 +22,17 @@ fn aead_wrong_key_length_rejected() {
     let p = resolve_aead(AEAD_AES_256_GCM).unwrap();
     // 31 字节密钥，非法
     let err = p.encrypt(&[0u8; 31], &[0u8; 12], b"data", None).unwrap_err();
-    assert!(matches!(err, AppError::InvalidInput(_)), "变长密钥必须显式拒绝: {err}");
+    assert!(
+        matches!(err, CryptoError::InvalidKeyLength { .. }),
+        "非法密钥长度必须显式拒绝且落 InvalidKeyLength: {err}"
+    );
 }
 #[test]
 fn aead_wrong_nonce_length_rejected() {
     let p = resolve_aead(AEAD_AES_256_GCM).unwrap();
     let err = p.encrypt(&[0u8; 32], &[0u8; 4], b"data", None).unwrap_err();
-    assert!(matches!(err, AppError::InvalidInput(_)));
+    assert!(
+        matches!(err, CryptoError::InvalidNonceLength { .. }),
+        "非法 nonce 长度必须显式拒绝且落 InvalidNonceLength: {err}"
+    );
 }

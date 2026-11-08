@@ -9,11 +9,11 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use crate::error::{CryptoError, CryptoResult};
 use crate::provider::{
     AeadProvider, AesGcmProvider, ChaCha20Poly1305Provider, HkdfSha256Provider, KdfProvider, KeyAgreementProvider,
     X25519Provider,
 };
-use wasmnest_server_base::error::{AppError, Result};
 
 // ==================== 域注册表 ====================
 
@@ -50,30 +50,30 @@ pub static PROVIDERS: LazyLock<CryptoProviders> = LazyLock::new(CryptoProviders:
 // ==================== 按名调度（宿主唯一入口） ====================
 
 /// 按名取 AEAD（认证加密）实现
-pub fn resolve_aead(name: &str) -> Result<&'static dyn AeadProvider> {
+pub fn resolve_aead(name: &str) -> CryptoResult<&'static dyn AeadProvider> {
     PROVIDERS
         .aead
         .get(name)
         .copied()
-        .ok_or_else(|| AppError::InvalidInput(format!("未知 AEAD 算法: '{name}'（不在白名单）")))
+        .ok_or_else(|| CryptoError::unsupported_algorithm(format!("未知 AEAD 算法: '{name}'（不在白名单）")))
 }
 
 /// 按名取 KDF（密钥派生）实现
-pub fn resolve_kdf(name: &str) -> Result<&'static dyn KdfProvider> {
+pub fn resolve_kdf(name: &str) -> CryptoResult<&'static dyn KdfProvider> {
     PROVIDERS
         .kdf
         .get(name)
         .copied()
-        .ok_or_else(|| AppError::InvalidInput(format!("未知 KDF 算法: '{name}'（不在白名单）")))
+        .ok_or_else(|| CryptoError::unsupported_algorithm(format!("未知 KDF 算法: '{name}'（不在白名单）")))
 }
 
 /// 按名取密钥交换（ECDH）实现
-pub fn resolve_key_agreement(name: &str) -> Result<&'static dyn KeyAgreementProvider> {
+pub fn resolve_key_agreement(name: &str) -> CryptoResult<&'static dyn KeyAgreementProvider> {
     PROVIDERS
         .key_agreement
         .get(name)
         .copied()
-        .ok_or_else(|| AppError::InvalidInput(format!("未知密钥交换算法: '{name}'（不在白名单）")))
+        .ok_or_else(|| CryptoError::unsupported_algorithm(format!("未知密钥交换算法: '{name}'（不在白名单）")))
 }
 
 // ==================== 白名单词汇（供审计 / 校验 / 测试断言） ====================

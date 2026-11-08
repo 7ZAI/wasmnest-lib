@@ -18,7 +18,7 @@ use aes_gcm::{
 use rand::rngs::OsRng;
 use rand::RngCore;
 
-use wasmnest_server_base::error::{AppError, Result};
+use crate::error::{CryptoError, CryptoResult};
 
 /// AES-256-GCM 密钥长度（字节）
 pub const KEY_LEN: usize = 32;
@@ -47,7 +47,12 @@ pub fn generate_nonce() -> [u8; NONCE_LEN] {
 /// - `aad`：可选的关联数据（不加密但参与认证），如协议头、文件元数据
 ///
 /// 返回值包含密文与 GCM 认证标签（标签附在密文末尾，长度 = 明文长度 + 16 字节）。
-pub fn encrypt(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], plaintext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>> {
+pub fn encrypt(
+    key: &[u8; KEY_LEN],
+    nonce: &[u8; NONCE_LEN],
+    plaintext: &[u8],
+    aad: Option<&[u8]>,
+) -> CryptoResult<Vec<u8>> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let payload = Payload {
         msg: plaintext,
@@ -55,14 +60,19 @@ pub fn encrypt(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], plaintext: &[u8], a
     };
     cipher
         .encrypt(Nonce::from_slice(nonce), payload)
-        .map_err(|e| AppError::Internal(format!("AES-256-GCM 加密失败: {e}")))
+        .map_err(|e| CryptoError::operation_failed(format!("AES-256-GCM 加密失败: {e}")))
 }
 
 /// 使用 AES-256-GCM 解密
 ///
-/// 参数与 [`encrypt`] 对应；若密文或 aad 被篡改，返回 `AppError::Internal`，
+/// 参数与 [`encrypt`] 对应；若密文或 aad 被篡改，返回 `CryptoError::OperationFailed`，
 /// 调用方应将其视为完整性校验失败而非普通错误。
-pub fn decrypt(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], ciphertext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>> {
+pub fn decrypt(
+    key: &[u8; KEY_LEN],
+    nonce: &[u8; NONCE_LEN],
+    ciphertext: &[u8],
+    aad: Option<&[u8]>,
+) -> CryptoResult<Vec<u8>> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let payload = Payload {
         msg: ciphertext,
@@ -70,7 +80,7 @@ pub fn decrypt(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], ciphertext: &[u8], 
     };
     cipher
         .decrypt(Nonce::from_slice(nonce), payload)
-        .map_err(|e| AppError::Internal(format!("AES-256-GCM 解密失败: {e}")))
+        .map_err(|e| CryptoError::operation_failed(format!("AES-256-GCM 解密失败: {e}")))
 }
 
 #[cfg(test)]

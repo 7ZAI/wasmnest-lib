@@ -18,5 +18,5 @@ fn x25519_shared_secret_via_registry() {
 fn x25519_wrong_key_length_rejected() {
     let p = resolve_key_agreement(KEY_AGREEMENT_X25519).unwrap();
     let err = p.compute_shared(&[0u8; 31], &[0u8; 32]).unwrap_err();
-    assert!(matches!(err, AppError::InvalidInput(_)));
+    assert!(matches!(err, CryptoError::InvalidKeyLength { .. }));
 }

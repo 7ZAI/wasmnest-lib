@@ -17,9 +17,9 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::aes_gcm::{self, NONCE_LEN};
+use crate::error::{CryptoError, CryptoResult};
 use crate::kdf::derive_aes_key;
 use crate::x25519::{x25519_diffie_hellman, X25519KeyPair, X25519PublicKeyEnvelope, KEY_LEN as X25519_KEY_LEN};
-use wasmnest_server_base::error::{AppError, Result};
 
 /// 加密用途上下文（绑定 HKDF info），防止会话密钥跨场景复用
 const INFO_HTTP: &[u8] = b"wasmnest-hybrid-http";
@@ -80,15 +80,15 @@ impl HybridCiphertext {
     }
 
     /// 从信封还原
-    pub fn from_envelope(env: &HybridEnvelope) -> Result<Self> {
+    pub fn from_envelope(env: &HybridEnvelope) -> CryptoResult<Self> {
         let b64 = base64::engine::general_purpose::STANDARD;
         let ephemeral_public = decode_fixed(&env.ephemeral_public_b64)
-            .map_err(|e| AppError::InvalidInput(format!("临时公钥 base64 解码失败: {e}")))?;
-        let nonce =
-            decode_fixed(&env.nonce_b64).map_err(|e| AppError::InvalidInput(format!("nonce base64 解码失败: {e}")))?;
+            .map_err(|e| CryptoError::invalid_input(format!("临时公钥 base64 解码失败: {e}")))?;
+        let nonce = decode_fixed(&env.nonce_b64)
+            .map_err(|e| CryptoError::invalid_input(format!("nonce base64 解码失败: {e}")))?;
         let ciphertext = b64
             .decode(&env.ciphertext_b64)
-            .map_err(|e| AppError::InvalidInput(format!("密文 base64 解码失败: {e}")))?;
+            .map_err(|e| CryptoError::invalid_input(format!("密文 base64 解码失败: {e}")))?;
         Ok(Self {
             ephemeral_public,
             nonce,
@@ -97,12 +97,12 @@ impl HybridCiphertext {
     }
 }
 
-fn decode_fixed<const N: usize>(b64: &str) -> Result<[u8; N]> {
+fn decode_fixed<const N: usize>(b64: &str) -> CryptoResult<[u8; N]> {
     let buf = base64::engine::general_purpose::STANDARD
         .decode(b64)
-        .map_err(|e| AppError::InvalidInput(format!("base64 解码失败: {e}")))?;
+        .map_err(|e| CryptoError::invalid_input(format!("base64 解码失败: {e}")))?;
     buf.try_into()
-        .map_err(|buf: Vec<u8>| AppError::InvalidInput(format!("长度不匹配：期望 {N} 字节，得到 {}", buf.len())))
+        .map_err(|buf: Vec<u8>| CryptoError::invalid_input(format!("长度不匹配：期望 {N} 字节，得到 {}", buf.len())))
 }
 
 /// 使用接收方 X25519 公钥进行混合加密
@@ -113,7 +113,7 @@ pub fn x25519_encrypt(
     recipient_public: &[u8; X25519_KEY_LEN],
     plaintext: &[u8],
     purpose: HybridPurpose,
-) -> Result<HybridCiphertext> {
+) -> CryptoResult<HybridCiphertext> {
     // 发送方临时密钥对，每次加密新生成，避免 nonce 复用风险传导到长期密钥
     let ephemeral = crate::x25519::x25519_generate();
     let shared = x25519_diffie_hellman(&ephemeral, recipient_public)?;
@@ -131,7 +131,7 @@ pub fn x25519_encrypt(
 /// 使用接收方 X25519 私钥解密
 ///
 /// `recipient_key_pair` 为接收方长期密钥对，`env` 为对端发来的信封。
-pub fn x25519_decrypt(recipient_key_pair: &X25519KeyPair, env: &HybridEnvelope) -> Result<Vec<u8>> {
+pub fn x25519_decrypt(recipient_key_pair: &X25519KeyPair, env: &HybridEnvelope) -> CryptoResult<Vec<u8>> {
     let ct = HybridCiphertext::from_envelope(env)?;
     let shared = x25519_diffie_hellman(recipient_key_pair, &ct.ephemeral_public)?;
     let session_key = derive_aes_key(shared.as_bytes(), env.purpose.info())?;
