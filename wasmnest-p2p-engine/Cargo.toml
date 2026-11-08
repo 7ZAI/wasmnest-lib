@@ -17,6 +17,9 @@ license = "MIT"
 repository = "https://github.com/7ZAI/wasmnest-lib"
 edition = "2021"
 
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
 [dependencies]
 # libp2p 机制引擎本体（2026-10-25 定版 0.57.1，MSRV Rust 1.88，本机 1.98.1 满足）。
 # feature 显式收窄（default-features = false 去掉默认 dns——LAN 场景拨 IP 字面量

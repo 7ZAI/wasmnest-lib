@@ -6,6 +6,9 @@ description = "WasmNest 桌面 server 基础层：错误/常量/错误边界/系
 authors = ["binblink"]
 edition = "2021"
 
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
 [features]
 # `tauri-compat`（默认开）：只为 `From<tauri::Error> for AppError` 一个 impl 而存在。
 #

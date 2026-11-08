@@ -6,6 +6,9 @@ description = "WasmNest 桌面 server 内核层：生命周期/流量过滤链/�
 authors = ["binblink"]
 edition = "2021"
 
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
 [dependencies]
 # Actix Web（HTTP + WS 单端口组合）
 actix-web = "4"
@@ -35,7 +38,6 @@ async-trait = "0.1"
 # 测试/内部使用
 base64 = "0.22"
 hex = "0.4"
-uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

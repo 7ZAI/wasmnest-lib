@@ -6,6 +6,9 @@ description = "WasmNest 加密引擎：算法实现（x25519/aes_gcm/chacha/hkdf
 authors = ["binblink"]
 edition = "2021"
 
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
 [dependencies]
 # 对称 AEAD（AES-256-GCM）
 aes-gcm = "0.10"

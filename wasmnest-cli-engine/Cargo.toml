@@ -21,6 +21,9 @@ license = "MIT"
 repository = "https://github.com/7ZAI/wasmnest-lib"
 edition = "2021"
 
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
 [dependencies]
 # 错误信封（WireError 的提取源；关 tauri-compat 的原因见文件头注）
 wasmnest-server-base = { path = "../wasmnest-server-base", default-features = false }

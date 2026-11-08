@@ -19,6 +19,9 @@ license = "MIT"
 repository = "https://github.com/7ZAI/BedCode"
 edition = "2021"
 
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
 [dependencies]
 # 异步运行时原语（任务派生经端口交宿主运行时；本 crate 不假设自身处于 runtime 上下文）
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync", "time", "macros"] }

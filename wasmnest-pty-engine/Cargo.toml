@@ -6,6 +6,9 @@ description = "WasmNest PTY 能力域（host-pty 6 原语 + 插件私有伪终�
 authors = ["binblink"]
 edition = "2021"
 
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
 [features]
 # 默认 = 纯引擎（任何宿主可引用：移动端 / 无头测试宿主 / 第三方宿主）
 default = []

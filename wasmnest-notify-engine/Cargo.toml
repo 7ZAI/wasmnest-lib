@@ -5,5 +5,8 @@ license = "MIT"
 edition = "2021"
 description = "WasmNest 通知域契约房（只持 WIT 契约，零实现）— 双端 host-notify 的唯一真源"
 
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
 # 契约房 crate：无生产依赖（实现按端住宿主，见 src/lib.rs 模块文档）
 [dependencies]

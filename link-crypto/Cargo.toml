@@ -6,6 +6,9 @@ description = "WasmNest 局域网链路报文加密协议核心——桌面 serv
 authors = ["binblink"]
 edition = "2021"
 
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
 [dependencies]
 # AES-256-GCM AEAD（HTTP 信封与 WS 帧载荷）；主版本与桌面宿主一致（0.10）
 aes-gcm = "0.10"

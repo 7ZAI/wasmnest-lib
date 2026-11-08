@@ -6,6 +6,9 @@ description = "无头测试宿主探针：以非桌面宿主形态默认引用�
 authors = ["binblink"]
 edition = "2021"
 
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
 [dependencies]
 # 五个带桌面 WIT 绑定面的能力域（默认形态 = 纯引擎；本 crate 永不开 common-host）。
 # 任一行开回桌面绑定依赖（feature 传递 / optional 依赖收不干净）都会在本 crate 的
