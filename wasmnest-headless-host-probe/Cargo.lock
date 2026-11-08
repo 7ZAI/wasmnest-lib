@@ -4706,6 +4706,7 @@ dependencies = [
  "flume",
  "hex",
  "hkdf 0.12.4",
+ "if-addrs",
  "local-ip-address",
  "mdns-sd",
  "rand_core 0.6.4",
