@@ -4,10 +4,12 @@
 
 **Blocked by:** 03（同一链路加密文件与错误边界，避免并行改同一面）
 
-**Status:** ready-for-agent
+**Status:** done (2026-11-08)
 
-- [ ] `CryptoError` 覆盖五类语义（非法密钥长度 / 非法 nonce 长度 / 未知算法 / 其它非法输入 / 算法执行失败），`Display` 返回原文。
-- [ ] 所有 provider trait / 注册表 / 算法实现的返回类型改为 `CryptoResult`；`crypto-engine` 依赖清单零内部 crate。
-- [ ] `cargo tree --offline -e normal -i wasmnest-server-base` 从 `crypto-engine` 无输出。
-- [ ] `server-core` 按变体语义映射回 `InvalidInput` / `Internal`，对外文案与现状逐字一致；链路加密测试绿。
-- [ ] 既有算法向量测试保留；新增 `CryptoError` 的 Display 与映射测试。
+- [x] `CryptoError` 覆盖五类语义（非法密钥长度 / 非法 nonce 长度 / 未知算法 / 其它非法输入 / 算法执行失败），`Display` 返回原文。
+- [x] 所有 provider trait / 注册表 / 算法实现的返回类型改为 `CryptoResult`；`crypto-engine` 依赖清单零内部 crate。
+- [x] `cargo tree --offline -e normal -i wasmnest-server-base` 从 `crypto-engine` 无输出。
+- [x] `server-core` 按变体语义映射回 `InvalidInput` / `Internal`，对外文案与现状逐字一致；链路加密测试绿。
+- [x] 既有算法向量测试保留；新增 `CryptoError` 的 Display 与映射测试。
+
+**实施记录（2026-11-08）**：crypto-engine 30 / server-core 60 绿；`crypto -i server-base` 无匹配；五变体 `Display` 均返回 `detail` 原文。

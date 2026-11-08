@@ -4,9 +4,11 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done (2026-11-08)
 
-- [ ] 仓根全部顶层 crate（含合流后的 `wasmnest-relay`）已声明 `publish = false`；夹具 crate 保持既有声明。
-- [ ] `wasmnest-server-core` 正常依赖树不再出现 `uuid`（`cargo tree --offline -e normal -i uuid` 无输出）。
-- [ ] 受影响 crate 的 `Cargo.lock` 经 cargo 刷新后随提交，未手编。
-- [ ] 全部顶层 crate `cargo check --offline` 绿；`wasmnest-server-core` `cargo test --offline` 绿。
+- [x] 仓根全部顶层 crate（含合流后的 `wasmnest-relay`）已声明 `publish = false`；夹具 crate 保持既有声明。
+- [x] `wasmnest-server-core` 正常依赖树不再出现 `uuid`（`cargo tree --offline -e normal -i uuid` 无输出）。
+- [x] 受影响 crate 的 `Cargo.lock` 经 cargo 刷新后随提交，未手编。
+- [x] 全部顶层 crate `cargo check --offline` 绿；`wasmnest-server-core` `cargo test --offline` 绿。
+
+**实施记录（2026-11-08）**：dev 的 19 个顶层 crate 全部 `publish = false`；第 20 个 `wasmnest-relay` 已随 `integration/relay`（`14c6353`）就位（同样声明），ff 进 dev 后生效。`cargo tree --offline -e normal -i uuid`（server-core）无匹配。

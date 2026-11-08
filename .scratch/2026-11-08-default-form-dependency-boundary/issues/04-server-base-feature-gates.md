@@ -4,10 +4,12 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** done (2026-11-08)
 
-- [ ] `MdnsPort` / `MdnsTypeSubscription` / `ServerPorts.mdns` 受 `mdns` feature 门控；`SystemInfo::collect()` 与 IP 辅助函数受 `system-info` 门控；`SystemInfo` DTO 与 `SystemInfoPort` 常编译。
-- [ ] `server-base` 默认依赖树无 `mdns-sd` / `flume` / `sysinfo` / `local-ip-address`。
-- [ ] `wasmnest-server-peer-net` 显式开启 `mdns`，其测试与 `common-host` 形态编译、测试绿。
-- [ ] `server-base` 既有测试按 feature 加 `#[cfg]`，默认 `cargo test --offline` 不依赖 mdns / sysinfo。
-- [ ] 桌面宿主开启 `system-info`（由 09 承接）；无头宿主可自行实现 `SystemInfoPort`。
+- [x] `MdnsPort` / `MdnsTypeSubscription` / `ServerPorts.mdns` 受 `mdns` feature 门控；`SystemInfo::collect()` 与 IP 辅助函数受 `system-info` 门控；`SystemInfo` DTO 与 `SystemInfoPort` 常编译。
+- [x] `server-base` 默认依赖树无 `mdns-sd` / `flume` / `sysinfo` / `local-ip-address`。
+- [x] `wasmnest-server-peer-net` 显式开启 `mdns`，其测试与 `common-host` 形态编译、测试绿。
+- [x] `server-base` 既有测试按 feature 加 `#[cfg]`，默认 `cargo test --offline` 不依赖 mdns / sysinfo。
+- [x] 桌面宿主开启 `system-info`（由 09 承接）；无头宿主可自行实现 `SystemInfoPort`。
+
+**实施记录（2026-11-08）**：server-base 默认树零 `mdns-sd/flume/sysinfo/local-ip-address`；peer-net 显式 `features = ["mdns"]`；base 35 / discovery 42 / pty 98 / ws-client 21 绿。

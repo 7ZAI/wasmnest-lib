@@ -4,10 +4,12 @@
 
 **Blocked by:** 02、03、04、05、06、07
 
-**Status:** ready-for-agent
+**Status:** done (2026-11-08)
 
-- [ ] AGENTS / README / README_en 的 crate 表条数与仓根 `ls -d */` 实际一致（含合流后的 `wasmnest-relay`）；补 `wasmnest-cli-engine` / `wasmnest-clipboard-engine` / `wasmnest-p2p-engine`。
-- [ ] 「默认形态」表述改为「零 WIT / 零 SDK / 零宿主框架」；明确 `server-http` / `-websocket` / `-core` / `wasm-core` 仍依赖 actix / Tauri。
-- [ ] 契约仓定位改为「零依赖共享词汇（包名 / 版本 + 跨层常量）」；消费口径改为「宿主经 `wasm-core` re-export；库内零依赖共享词汇可直接依赖」。
-- [ ] `server-core` 描述、`notify-engine` / `clipboard-engine` 契约房标注、`cli-engine` 不登记 `SPLIT_CRATES` 的豁免理由、`server-base` feature 默认值同批修正。
-- [ ] 各 crate `Cargo.toml` 描述与 `lib.rs` 头注同步；文档中不出现平台仓目录名（`platform_reference_registry_lock` 绿）。
+- [x] AGENTS / README / README_en 的 crate 表条数与仓根 `ls -d */` 实际一致（含合流后的 `wasmnest-relay`）；补 `wasmnest-cli-engine` / `wasmnest-clipboard-engine` / `wasmnest-p2p-engine`。
+- [x] 「默认形态」表述改为「零 WIT / 零 SDK / 零宿主框架」；明确 `server-http` / `-websocket` / `-core` / `wasm-core` 仍依赖 actix / Tauri。
+- [x] 契约仓定位改为「零依赖共享词汇（包名 / 版本 + 跨层常量）」；消费口径改为「宿主经 `wasm-core` re-export；库内零依赖共享词汇可直接依赖」。
+- [x] `server-core` 描述、`notify-engine` / `clipboard-engine` 契约房标注、`cli-engine` 不登记 `SPLIT_CRATES` 的豁免理由、`server-base` feature 默认值同批修正。
+- [x] 各 crate `Cargo.toml` 描述与 `lib.rs` 头注同步；文档中不出现平台仓目录名（`platform_reference_registry_lock` 绿）。
+
+**实施记录（2026-11-08）**：AGENTS / README / README_en 计数 19 与 dev 顶层 crate 一致；`wasmnest-relay` 行随后续 ff（`integration/relay`）变为 20。零平台目录名扫描仅 2 个登记豁免命中。
