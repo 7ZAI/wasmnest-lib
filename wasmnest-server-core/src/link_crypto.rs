@@ -29,6 +29,8 @@ use std::sync::{LazyLock, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use wasmnest_server_base::face::RequestFace;
 
 use wasmnest_crypto_engine::provider::{
     AeadProvider, KdfProvider, KeyAgreementProvider, AEAD_AES_256_GCM, KDF_HKDF_SHA256, KEY_AGREEMENT_X25519,
@@ -954,6 +956,10 @@ fn take_http_keys(peer: &str, ek_b64: &str) -> Option<HttpTrafficKeys> {
 /// 明文白名单路由（HTTP）：配对引导期端点——它们本身是 pinning 建立即刻，
 /// 必须明文可达；健康检查供探活。豁免不受任何配置开关影响（spec §6 硬约束）。
 fn is_plaintext_whitelisted(route: &str) -> bool {
+    // 路径穿越不得以 `/api/auth/` 前缀骗取白名单豁免（配对窗口闸门同判据）
+    if route.contains("..") || route.to_ascii_lowercase().contains("%2e%2e") {
+        return false;
+    }
     route.starts_with("/api/auth/") || route == "/health" || route == "/api/health"
 }
 
@@ -969,11 +975,17 @@ pub fn is_loopback_peer(peer: &str) -> bool {
     parse_peer(peer).is_some_and(|addr| addr.ip().is_loopback())
 }
 
-/// 本地豁免判定（spec §4，硬约束不受开关影响）：
-/// ① 环回对端（hook 脚本调 /api/plugin/*、本机工具直连 REST）；
-/// ② 配对引导白名单路由。
-/// peer 无法解析时视为远端（fail-safe：宁多过滤不放行）。
+/// 本地豁免判定（spec §4 + 内网穿透 T04 不变量 15）：
+/// ① 普通面的环回对端（hook 脚本调 /api/plugin/*、本机工具直连 REST）；
+/// ② 配对引导白名单路由（HTTP；peer 面同样保留，Noise 内明文 HTTP 是有意设计）。
+///
+/// **面标记优先**：peer 面的 TCP 对端必然是 127.0.0.1（隧道入口），按源 IP
+/// 判环回会把远端流量静默豁免，「required」被击穿。故 peer 面直接跳过环回
+/// 分支，只保留路由白名单；peer 无法解析时按远端处理（fail-safe）。
 fn is_exempt(ctx: &FilterContext<'_>) -> bool {
+    if ctx.face.is_peer() {
+        return matches!(ctx.channel, TrafficChannel::Http) && is_plaintext_whitelisted(ctx.route);
+    }
     if is_loopback_peer(ctx.peer) {
         return true;
     }
@@ -1355,6 +1367,7 @@ mod tests {
             negotiation: "",
             data: b"payload".to_vec(),
             outbound_headers: Vec::new(),
+            face: RequestFace::default(),
         }
     }
 
@@ -2625,5 +2638,41 @@ mod tests {
         ] {
             assert!(json.get(key).is_some(), "能力查询 wire 缺字段 {key}: {json}");
         }
+    }
+
+    /// 不变量 15（桌面侧测试锁）：peer 面 loopback 流量不得被环回豁免
+    #[test]
+    fn peer_face_loopback_is_never_exempt() {
+        let mut ctx = mk_ctx(TrafficChannel::Http, "127.0.0.1:54321", "/api/sessions");
+        ctx.face = RequestFace::peer_face(Some("node-1".to_string()), false);
+        assert!(
+            LinkEncryptionFilter::policy_of(&ctx).is_some(),
+            "peer 面即使源地址为 loopback 也必须进入加密裁决"
+        );
+    }
+
+    /// 不变量 15：peer 面仅保留配对引导白名单，路径穿越不得骗豁免
+    #[test]
+    fn peer_face_exempts_pairing_endpoint_only() {
+        let face = RequestFace::peer_face(None, true);
+        let mut pairing = mk_ctx(TrafficChannel::Http, "127.0.0.1:54321", "/api/auth/pairing");
+        pairing.face = face.clone();
+        assert!(LinkEncryptionFilter::policy_of(&pairing).is_none());
+
+        for route in ["/api/auth/../plugin/bedcode/task-status", "/api/sessions"] {
+            let mut ctx = mk_ctx(TrafficChannel::Http, "127.0.0.1:54321", route);
+            ctx.face = face.clone();
+            assert!(
+                LinkEncryptionFilter::policy_of(&ctx).is_some(),
+                "peer 面路径 {route} 不得豁免"
+            );
+        }
+    }
+
+    /// 回归保护：普通面的 loopback 本地豁免不受面标记改动影响
+    #[test]
+    fn ordinary_face_loopback_remains_exempt() {
+        let ctx = mk_ctx(TrafficChannel::Http, "127.0.0.1:54321", "/api/sessions");
+        assert!(LinkEncryptionFilter::policy_of(&ctx).is_none());
     }
 }

@@ -636,6 +636,101 @@ mod tests {
         chain.clear();
     }
 
+    /// 测试用中间件：模拟对等面 listener 在 extensions 注入 `RequestFace`
+    struct InsertPeerFace;
+
+    impl<S, B> actix_web::dev::Transform<S, ServiceRequest> for InsertPeerFace
+    where
+        S: actix_web::dev::Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>,
+        S::Future: 'static,
+        B: 'static,
+    {
+        type Response = ServiceResponse<B>;
+        type Error = actix_web::Error;
+        type InitError = ();
+        type Transform = InsertPeerFaceMiddleware<S>;
+        type Future = std::future::Ready<Result<Self::Transform, Self::InitError>>;
+
+        fn new_transform(&self, service: S) -> Self::Future {
+            std::future::ready(Ok(InsertPeerFaceMiddleware { service }))
+        }
+    }
+
+    struct InsertPeerFaceMiddleware<S> {
+        service: S,
+    }
+
+    impl<S, B> actix_web::dev::Service<ServiceRequest> for InsertPeerFaceMiddleware<S>
+    where
+        S: actix_web::dev::Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>,
+        S::Future: 'static,
+        B: 'static,
+    {
+        type Response = ServiceResponse<B>;
+        type Error = actix_web::Error;
+        type Future = S::Future;
+
+        fn poll_ready(&self, ctx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+            self.service.poll_ready(ctx)
+        }
+
+        fn call(&self, req: ServiceRequest) -> Self::Future {
+            req.extensions_mut()
+                .insert(RequestFace::peer_face(Some("peer-node-test".to_string()), false));
+            self.service.call(req)
+        }
+    }
+
+    /// 探针过滤器：记录每次过滤上下文里的面标记
+    struct FaceProbe(std::sync::Arc<std::sync::Mutex<Vec<RequestFace>>>);
+
+    impl TrafficFilter for FaceProbe {
+        fn name(&self) -> &str {
+            "face-probe"
+        }
+        fn on_inbound(&self, ctx: &mut FilterContext<'_>) -> Verdict {
+            self.0.lock().unwrap().push(ctx.face.clone());
+            Verdict::Continue
+        }
+        fn on_outbound(&self, ctx: &mut FilterContext<'_>) -> Verdict {
+            self.0.lock().unwrap().push(ctx.face.clone());
+            Verdict::Continue
+        }
+    }
+
+    /// 不变量 15 服务级锁：listener 注入的 `RequestFace` 必须原样进入
+    /// `FilterContext.face`（链加密豁免判据的唯一来源），入站 / 出站一致。
+    #[actix_web::test]
+    async fn listener_face_marker_reaches_filter_context() {
+        let _guard = GLOBAL_CHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let chain = TrafficFilterChain::global();
+        chain.clear();
+        chain.register(std::sync::Arc::new(FaceProbe(std::sync::Arc::clone(&captured))));
+
+        // `.wrap(TrafficFilter).wrap(InsertPeerFace)`：后者在外层，先注入再过滤
+        let app = test::init_service(
+            App::new()
+                .wrap(TrafficFilter)
+                .wrap(InsertPeerFace)
+                .route("/echo", web::post().to(echo_handler)),
+        )
+        .await;
+        let req = test::TestRequest::post().uri("/echo").set_payload("x").to_request();
+        let res = test::call_service(&app, req).await;
+        assert!(res.status().is_success());
+
+        let faces = captured.lock().unwrap();
+        assert_eq!(faces.len(), 2, "入站与出站各进一次过滤链");
+        for face in faces.iter() {
+            assert!(face.is_peer(), "面标记必须随请求进入过滤上下文");
+            assert_eq!(face.peer_node_id.as_deref(), Some("peer-node-test"));
+            assert!(!face.is_pairing());
+        }
+        drop(faces);
+        chain.clear();
+    }
+
     #[actix_web::test]
     async fn inbound_rejection_returns_400_without_reaching_handler() {
         let _guard = GLOBAL_CHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
