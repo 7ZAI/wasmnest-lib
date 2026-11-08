@@ -27,9 +27,22 @@ fn pairing_ws_upgrade_allowed(face: &RequestFace) -> bool {
     !face.is_pairing()
 }
 use wasmnest_server_core::link_crypto::{
-    app_policy, derive_ws_session_ciphers, is_loopback_peer, parse_negotiation, ws_register_ciphers, ws_remove_ciphers,
-    EncryptionPolicy, NEGOTIATION_HEADER, PROTOCOL_VERSION, WS_POLICY_HEADER,
+    app_policy, coded_reason, derive_ws_session_ciphers, is_loopback_peer, parse_negotiation, ws_register_ciphers,
+    ws_remove_ciphers, EncryptionPolicy, CODE_ENCRYPTION_REQUIRED, CODE_ENCRYPTION_UNSUPPORTED, ERROR_HEADER,
+    NEGOTIATION_HEADER, PROTOCOL_VERSION, WS_POLICY_HEADER,
 };
+
+/// 链路加密协商拒绝（400 text/plain + 稳定码）
+///
+/// 头 `ERROR_HEADER` 与正文 `<code>: ` 前缀同源：客户端（移动宿主）按头把拒绝映射成
+/// `encryption-unsupported`（对端不会协商 → 升级 / 先配对）或 `encryption-required`
+/// （协商建不起来 → 检查链路身份 / 重新配对），不必从自由文本里猜（内网穿透 T07）。
+fn reject_crypto(code: &'static str, detail: String) -> HttpResponse {
+    HttpResponse::BadRequest()
+        .content_type("text/plain; charset=utf-8")
+        .insert_header((ERROR_HEADER, code))
+        .body(coded_reason(code, detail))
+}
 
 /// WS 帧/消息大小上限（字节）
 ///
@@ -115,9 +128,8 @@ async fn plugin_endpoint_ws(
                 %reason,
                 "plugin ws endpoint rejected malformed link encryption offer"
             );
-            return Ok(HttpResponse::BadRequest()
-                .content_type("text/plain; charset=utf-8")
-                .body(reason));
+            // 带过头但格式非法 = 发起过协商、建不起来
+            return Ok(reject_crypto(CODE_ENCRYPTION_REQUIRED, reason));
         }
     };
     // 环回与 HTTP 面同口径（本地豁免）：本机客户端不要求协商，也不接受协商——
@@ -132,14 +144,19 @@ async fn plugin_endpoint_ws(
             peer = %client_id,
             "plugin ws endpoint requires link encryption but the upgrade request carries no offer, rejecting 400"
         );
-        return Ok(HttpResponse::BadRequest()
-            .content_type("text/plain; charset=utf-8")
-            .body(format!(
+        // 无提案 = 对端压根不会协商（旧客户端），或还没有 pin 信任锚（未配对）。
+        // 宿主无法区分，文案把两条出路都点名；升级期就拒，不建立一条随后必被
+        // 帧过滤器断开的连接。
+        return Ok(reject_crypto(
+            CODE_ENCRYPTION_UNSUPPORTED,
+            format!(
                 "link encryption required: endpoint '{}' of plugin '{}' has app policy 'required', but this \
-                 connection carries no '{NEGOTIATION_HEADER}' negotiation header; pair the client or change \
-                 the app's link encryption setting",
+                 connection carries no '{NEGOTIATION_HEADER}' negotiation header — the peer never started \
+                 link-crypto negotiation (old client without link-crypto support, or a client with no pinned \
+                 trust anchor); upgrade the peer or pair it first, plaintext is not accepted",
                 entry.endpoint_id, entry.owner
-            )));
+            ),
+        ));
     }
 
     // 所有可能在升级后失败的步骤都在 start 之前完成（派生 / 头值构造）；
@@ -189,12 +206,13 @@ async fn plugin_endpoint_ws(
                 %error,
                 "plugin ws endpoint rejected invalid link encryption offer"
             );
-            return Ok(HttpResponse::BadRequest()
-                .content_type("text/plain; charset=utf-8")
-                .body(format!(
+            return Ok(reject_crypto(
+                CODE_ENCRYPTION_REQUIRED,
+                format!(
                     "invalid link encryption offer on endpoint '{}' of plugin '{}': {error}",
                     entry.endpoint_id, entry.owner
-                )));
+                ),
+            ));
         }
     };
 
@@ -328,6 +346,28 @@ mod tests {
             let parsed = parse_ws_offer(&req);
             assert!(parsed.is_err(), "取值 {bad:?} 必须显性拒绝，got {parsed:?}");
         }
+    }
+
+    /// 升级期拒绝必须带稳定码（头 + 正文前缀同源）：旧客户端无提案 →
+    /// `encryption-unsupported`，坏提案 / 坏协商 → `encryption-required`
+    #[test]
+    fn crypto_rejection_carries_code_in_header_and_body() {
+        let unsupported = reject_crypto(CODE_ENCRYPTION_UNSUPPORTED, "no offer".to_string());
+        assert_eq!(unsupported.status(), actix_web::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            unsupported.headers().get(ERROR_HEADER).and_then(|v| v.to_str().ok()),
+            Some(CODE_ENCRYPTION_UNSUPPORTED),
+            "旧客户端拒绝码必须进响应头（客户端按头分类，不从正文猜）"
+        );
+
+        let required = reject_crypto(CODE_ENCRYPTION_REQUIRED, "bad offer".to_string());
+        let header = required
+            .headers()
+            .get(ERROR_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .expect("坏协商也必须带码");
+        assert_eq!(header, CODE_ENCRYPTION_REQUIRED);
+        assert_ne!(header, CODE_ENCRYPTION_UNSUPPORTED, "两类拒绝不得混码");
     }
 
     #[test]

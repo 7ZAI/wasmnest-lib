@@ -58,6 +58,57 @@ pub const WS_POLICY_HEADER: &str = "X-WasmNest-Crypto-Policy";
 /// WS 插件端点通道串（AAD 绑定；与桌面 `TrafficChannel::WsPlugin.as_str()` 一致）
 pub const WS_PLUGIN_CHANNEL: &str = "ws-plugin";
 
+// ==================== 拒绝码（fail-visible 的分类出口） ====================
+//
+// 背景（内网穿透 T07）：`required` 策略下拒绝对端时，此前只有一段自由文本。
+// 客户端与日志无法机器分类「对端是旧版本、压根不会协商」与「协商了但链路建不
+// 起来」——前者要给「升级对端」，后者要给「检查链路身份 / 重新配对」。
+// 现在同一个码三处同源：HTTP 400 的 `ERROR_HEADER` 响应头、响应正文 / 日志的
+// `<code>: ` 前缀（[`coded_reason`]）、WS 升级 400 的同一响应头。
+
+/// 拒绝码头（HTTP 400 / WS 升级 400）：值是下面两个码之一
+pub const ERROR_HEADER: &str = "X-WasmNest-Crypto-Error";
+
+/// 拒绝码：对端**没有发起**链路加密协商（HTTP 无协商头 / WS 升级无提案）
+///
+/// 语义 = 对端不具备链路加密能力：旧版本客户端，或还没有 pin 信任锚的客户端。
+/// 宿主**无法**区分这两者（两者都不会发协商头），所以文案同时给「升级对端」与
+/// 「先完成配对」两条出路，不假装知道是哪一种。
+pub const CODE_ENCRYPTION_UNSUPPORTED: &str = "encryption-unsupported";
+
+/// 拒绝码：对端发起过协商，但链路建不起来
+///
+/// 覆盖：协商头畸形 / 公钥非法 / 派生失败 / 解密失败 / 本端链路身份缺失 /
+/// 响应密钥缺失 / WS 会话无密码 / 本端 link-crypto 未参与。
+pub const CODE_ENCRYPTION_REQUIRED: &str = "encryption-required";
+
+/// 已登记拒绝码（`reason_code` 识别的全部取值；新增码必须同处登记）
+pub const REJECTION_CODES: [&str; 2] = [CODE_ENCRYPTION_UNSUPPORTED, CODE_ENCRYPTION_REQUIRED];
+
+/// 给拒绝原因加稳定码前缀：`<code>: <detail>`
+///
+/// 正文 / 日志 / WS Close 描述共用这一个格式，避免「头里一个码、正文另一套词」。
+pub fn coded_reason(code: &'static str, detail: impl std::fmt::Display) -> String {
+    format!("{code}: {detail}")
+}
+
+/// 从拒绝原因取码：只认 [`REJECTION_CODES`] 登记值，且必须是完整词（`<code>:`）
+///
+/// 返回 `None` = 不是链路加密的拒绝（其他过滤器的自由文本），调用方不猜、不下码。
+pub fn reason_code(reason: &str) -> Option<&'static str> {
+    REJECTION_CODES.into_iter().find(|code| {
+        reason
+            .strip_prefix(code)
+            .is_some_and(|rest| rest.starts_with(':'))
+    })
+}
+
+/// 从 [`ERROR_HEADER`] 取值取码：只认登记值（对端自报的任意字符串不得进入错误分类）
+pub fn parse_code(value: &str) -> Option<&'static str> {
+    let value = value.trim();
+    REJECTION_CODES.into_iter().find(|code| *code == value)
+}
+
 // HKDF info 常量——协议兼容性表面，各端实现必须逐字节一致
 /// HTTP 请求方向派生 info
 pub const HTTP_INFO_REQUEST: &[u8] = b"wasmnest-link-crypto/v1/http/request";
@@ -392,6 +443,46 @@ mod tests {
         assert!(fp
             .chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    /// 拒绝码契约：前缀必须是完整码 + 冒号，不认近似词，也不把自由文本当码
+    #[test]
+    fn rejection_code_roundtrip_and_boundaries() {
+        for code in REJECTION_CODES {
+            let reason = coded_reason(code, "detail text");
+            assert!(
+                reason.starts_with(&format!("{code}: ")),
+                "格式契约: {reason}"
+            );
+            assert_eq!(reason_code(&reason), Some(code));
+        }
+
+        // 只有码没有分隔符 / 只写了前缀词 / 别的过滤器自由文本 → 一律不认
+        assert_eq!(reason_code(CODE_ENCRYPTION_REQUIRED), None);
+        assert_eq!(reason_code("encryption-required-ish: x"), None);
+        assert_eq!(
+            reason_code("Traffic filter rejected request: blocked by test"),
+            None
+        );
+        assert_eq!(reason_code(""), None);
+
+        // 头值路径：只认登记值（对端自报的任意串不得成为本地错误分类）
+        assert_eq!(
+            parse_code(CODE_ENCRYPTION_UNSUPPORTED),
+            Some(CODE_ENCRYPTION_UNSUPPORTED)
+        );
+        assert_eq!(
+            parse_code("  encryption-required\n"),
+            Some(CODE_ENCRYPTION_REQUIRED)
+        );
+        for junk in [
+            "",
+            "encryption-required-ish",
+            "ENCRYPTION-REQUIRED",
+            "whatever",
+        ] {
+            assert_eq!(parse_code(junk), None, "非登记码不得被采信: {junk:?}");
+        }
     }
 
     /// derive_http_keys 金样：固定向量来自真实前端 linkCrypto.ts（@noble

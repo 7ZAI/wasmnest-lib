@@ -61,9 +61,10 @@ static DATA_ECDH: LazyLock<&'static dyn KeyAgreementProvider> =
 use wasmnest_link_crypto as proto;
 
 pub use proto::{
-    b64_decode, b64_encode, decrypt_http_body, encrypt_http_body, generate_ephemeral, parse_negotiation,
-    ClientWsCrypto, HttpEnvelope, WsDirectionCipher, WsTextEnvelope, HTTP_INFO_REQUEST, HTTP_INFO_RESPONSE,
-    NEGOTIATION_HEADER, ORIGIN_BINARY, ORIGIN_TEXT, PROTOCOL_VERSION, WS_BINARY_HEADER_LEN, WS_FRAME_VERSION,
+    b64_decode, b64_encode, coded_reason, decrypt_http_body, encrypt_http_body, generate_ephemeral, parse_negotiation,
+    reason_code, ClientWsCrypto, HttpEnvelope, WsDirectionCipher, WsTextEnvelope, CODE_ENCRYPTION_REQUIRED,
+    CODE_ENCRYPTION_UNSUPPORTED, ERROR_HEADER, HTTP_INFO_REQUEST, HTTP_INFO_RESPONSE, NEGOTIATION_HEADER,
+    ORIGIN_BINARY, ORIGIN_TEXT, PROTOCOL_VERSION, REJECTION_CODES, WS_BINARY_HEADER_LEN, WS_FRAME_VERSION,
     WS_INFO_CLIENT_TO_SERVER, WS_INFO_SERVER_TO_CLIENT, WS_PLUGIN_CHANNEL, WS_POLICY_HEADER, WS_TRANSCRIPT_PREFIX,
 };
 
@@ -1024,16 +1025,24 @@ impl LinkEncryptionFilter {
 
     /// WS 入站/出站统一入口：连接已注册密码 → 帧级加解密（fail-closed，
     /// Reject 由 WS 接线点升级为 Close 4003）；未注册（明文会话）→ 按应用策略裁决
+    ///
+    /// 拒绝原因带拒绝码（内网穿透 T07）：帧层只能观测到「会话没有密码」，分不出
+    /// 「从未协商」与「协商后丢失」，因此**不**下 `encryption-unsupported`——
+    /// 旧客户端由升级期（`routes.rs` 无提案门禁）判定，这里一律
+    /// `encryption-required`。
     fn on_ws_frame(ctx: &mut FilterContext<'_>, policy: EncryptionPolicy) -> Verdict {
         if !ws_has_ciphers(ctx.peer) {
             return if policy.allows_plaintext() {
                 Self::audit_plaintext(ctx, policy);
                 Verdict::Continue
             } else {
-                Verdict::Reject(format!(
-                    "link encryption required (policy '{}') but this connection has no negotiated session cipher: {}; pair the client or change the app's encryption setting",
-                    policy.as_str(),
-                    Self::endpoint_hint(ctx)
+                Verdict::Reject(coded_reason(
+                    CODE_ENCRYPTION_REQUIRED,
+                    format!(
+                        "link encryption required (policy '{}') but this connection has no negotiated session cipher: {}; pair the client or change the app's encryption setting",
+                        policy.as_str(),
+                        Self::endpoint_hint(ctx)
+                    ),
                 ))
             };
         }
@@ -1055,7 +1064,10 @@ impl LinkEncryptionFilter {
             }
             Err(e) => {
                 crate::metrics::MetricsCollector::global().inc_decrypt_failure();
-                Verdict::Reject(format!("ws frame crypto failed: {e}"))
+                Verdict::Reject(coded_reason(
+                    CODE_ENCRYPTION_REQUIRED,
+                    format!("ws frame crypto failed: {e}"),
+                ))
             }
         }
     }
@@ -1091,20 +1103,28 @@ impl LinkEncryptionFilter {
         // 果仍是插件收到明文）。真正危险的是「本端无法解密却放行密文」——
         // 那条由中间件的 fail-visible 分支处理（过滤器不在链上 → 400）。
         let Some(ek_b64) = parse_negotiation(ctx.negotiation) else {
-            // 无协商：`preferred` 放行明文；`required` 必拒（不降级）
+            // 无协商：`preferred` 放行明文；`required` 必拒（不降级）。
+            //
+            // 拒绝码 = `encryption-unsupported`：对端**根本没有发起**协商。宿主无法
+            // 区分「旧版本客户端（不会协商）」与「没有 pin 信任锚的客户端（筹不出
+            // 密钥）」，所以文案把两条出路都点名，不假装知道是哪一种（T07 判据：
+            // 显性失败 + 升级提示，无明文回退）。
             return if policy.allows_plaintext() {
                 Self::audit_plaintext(ctx, policy);
                 Verdict::Continue
             } else {
-                Verdict::Reject(format!(
-                    "link encryption required (policy '{}') but the request carries no '{NEGOTIATION_HEADER}' negotiation header: {}; upgrade the peer or change the app's encryption setting",
-                    policy.as_str(),
-                    Self::endpoint_hint(ctx)
+                Verdict::Reject(coded_reason(
+                    CODE_ENCRYPTION_UNSUPPORTED,
+                    format!(
+                        "link encryption required (policy '{}') but the request carries no '{NEGOTIATION_HEADER}' negotiation header: {}; the peer never started link-crypto negotiation (old client without link-crypto support, or a client with no pinned trust anchor) — upgrade the peer or pair it first; plaintext is not accepted",
+                        policy.as_str(),
+                        Self::endpoint_hint(ctx)
+                    ),
                 ))
             };
         };
         let Some(identity) = IDENTITY.get() else {
-            return Verdict::Reject("link identity unavailable".to_string());
+            return Verdict::Reject(coded_reason(CODE_ENCRYPTION_REQUIRED, "link identity unavailable"));
         };
 
         // GET/HEAD 空 body：无载荷可解，协商仅用于响应加密（密钥派生已足以
@@ -1140,7 +1160,10 @@ impl LinkEncryptionFilter {
             }
             Err(e) => {
                 crate::metrics::MetricsCollector::global().inc_decrypt_failure();
-                Verdict::Reject(format!("http request decrypt failed: {e}"))
+                Verdict::Reject(coded_reason(
+                    CODE_ENCRYPTION_REQUIRED,
+                    format!("http request decrypt failed: {e}"),
+                ))
             }
         }
     }
@@ -1157,9 +1180,12 @@ impl LinkEncryptionFilter {
         let Some(keys) = take_http_keys(ctx.peer, ek_b64) else {
             crate::metrics::MetricsCollector::global().inc_response_key_miss();
             if policy == EncryptionPolicy::Required {
-                return Verdict::Reject(format!(
-                    "response encryption failed: no cached response key for a 'required' endpoint: {}; refusing to answer in plaintext",
-                    Self::endpoint_hint(ctx)
+                return Verdict::Reject(coded_reason(
+                    CODE_ENCRYPTION_REQUIRED,
+                    format!(
+                        "response encryption failed: no cached response key for a 'required' endpoint: {}; refusing to answer in plaintext",
+                        Self::endpoint_hint(ctx)
+                    ),
                 ));
             }
             // 入站已协商但出站取 key 失败（TTL 竞态/锁毒化/密钥失配）→ 响应
@@ -1186,7 +1212,10 @@ impl LinkEncryptionFilter {
             }
             Err(e) => {
                 crate::metrics::MetricsCollector::global().inc_decrypt_failure();
-                Verdict::Reject(format!("http response encrypt failed: {e}"))
+                Verdict::Reject(coded_reason(
+                    CODE_ENCRYPTION_REQUIRED,
+                    format!("http response encrypt failed: {e}"),
+                ))
             }
         }
     }
@@ -2649,6 +2678,104 @@ mod tests {
             LinkEncryptionFilter::policy_of(&ctx).is_some(),
             "peer 面即使源地址为 loopback 也必须进入加密裁决"
         );
+    }
+
+    /// T07 测试锁：旧客户端（不发起协商）在 `required` 下被显性判为
+    /// `encryption-unsupported`，且**没有明文回退**。
+    ///
+    /// 判据三层同时断言：① 拒绝码是 `encryption-unsupported`（不是笼统的
+    /// `encryption-required`，也不是无码自由文本）；② 文案点名升级 / 配对出路；
+    /// ③ 请求体没有被替换成「放行」——`Reject` 而不是 `Continue`。
+    #[test]
+    fn required_without_any_negotiation_is_encryption_unsupported() {
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let owner = "com.example.legacy-client";
+        set_app_policy(owner, EncryptionPolicy::Required).unwrap();
+
+        // ① 普通面（LAN 旧客户端直连）：无协商头
+        let mut lan = mk_endpoint_ctx(
+            TrafficChannel::Http,
+            "192.168.1.40:55002",
+            "/api/sessions",
+            owner,
+            "http-req",
+        );
+        let lan_verdict = LinkEncryptionFilter.on_inbound(&mut lan);
+        assert_eq!(
+            reason_code(match &lan_verdict {
+                Verdict::Reject(reason) => reason,
+                other => panic!("required + 无协商必须拒绝，实际 {other:?}"),
+            }),
+            Some(CODE_ENCRYPTION_UNSUPPORTED),
+            "无协商头 = 对端不具备协商能力，拒绝码必须是 encryption-unsupported"
+        );
+
+        // ② peer 面（隧道入口的旧客户端）：同样无协商头，同样不得豁免
+        let mut peer = mk_endpoint_ctx(
+            TrafficChannel::Http,
+            "127.0.0.1:54322",
+            "/api/sessions",
+            owner,
+            "http-req",
+        );
+        peer.face = RequestFace::peer_face(Some("node-legacy".to_string()), false);
+        let peer_verdict = LinkEncryptionFilter.on_inbound(&mut peer);
+        let peer_reason = match &peer_verdict {
+            Verdict::Reject(reason) => reason,
+            other => panic!("peer 面 required + 无协商必须拒绝，实际 {other:?}"),
+        };
+        assert_eq!(reason_code(peer_reason), Some(CODE_ENCRYPTION_UNSUPPORTED));
+        // 文案给出路：升级对端 / 先配对（宿主不知道是哪一种，不假装知道）
+        let text = peer_reason.to_ascii_lowercase();
+        assert!(text.contains("upgrade the peer"), "必须给升级提示: {peer_reason}");
+        assert!(text.contains("pair it first"), "未配对客户端也要有出路: {peer_reason}");
+        assert!(
+            text.contains("plaintext is not accepted"),
+            "不得让用户以为可降级: {peer_reason}"
+        );
+        assert_eq!(peer.data, b"payload".to_vec(), "拒绝路径不得把载荷当明文放行");
+
+        remove_app_policy(owner);
+    }
+
+    /// T07 测试锁（对照）：**发起过**协商但链路建不起来 → `encryption-required`
+    ///
+    /// 两类必须分开：旧客户端（无协商）给升级提示，坏协商给「检查链路身份 / 重新
+    /// 配对」——否则用户会被告知去升级一个已经升级过的对端。
+    #[test]
+    fn required_with_broken_negotiation_is_encryption_required() {
+        use wasmnest_crypto_engine::x25519::x25519_generate;
+
+        let dir = tempfile::tempdir().unwrap();
+        init_identity(dir.path()).unwrap();
+
+        let _guard = POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let owner = "com.example.broken-negotiation";
+        set_app_policy(owner, EncryptionPolicy::Required).unwrap();
+
+        // 协商头合法、密钥正常，但信封载荷损坏（对端僵实现 / 中间件改写）
+        let client_eph = x25519_generate();
+        let negotiation = format!("v1 {}", b64_encode(client_eph.public()));
+        let mut ctx = mk_endpoint_ctx(
+            TrafficChannel::Http,
+            "192.168.1.41:55003",
+            "/api/sessions",
+            owner,
+            "http-req",
+        );
+        ctx.negotiation = &negotiation;
+        ctx.data = b"definitely-not-an-envelope".to_vec();
+        let verdict = LinkEncryptionFilter.on_inbound(&mut ctx);
+        match verdict {
+            Verdict::Reject(reason) => assert_eq!(
+                reason_code(&reason),
+                Some(CODE_ENCRYPTION_REQUIRED),
+                "协商已发起但解密失败应归 encryption-required: {reason}"
+            ),
+            other => panic!("坏协商必须拒绝，实际 {other:?}"),
+        }
+
+        remove_app_policy(owner);
     }
 
     /// 不变量 15：peer 面仅保留配对引导白名单，路径穿越不得骗豁免
