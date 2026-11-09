@@ -76,7 +76,10 @@ impl PluginStorage {
         plugin_id: &str,
         key: &str,
     ) -> crate::Result<Option<serde_json::Value>> {
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let conn = db.conn();
         let mut stmt = conn
             .prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")
@@ -103,7 +106,10 @@ impl PluginStorage {
         key: &str,
         value: serde_json::Value,
     ) -> crate::Result<()> {
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let json_str = serde_json::to_string(&value)?;
         let now = Utc::now().to_rfc3339();
 
@@ -121,7 +127,10 @@ impl PluginStorage {
 
     /// 删除插件存储值
     pub async fn delete(&self, plugin_id: &str, key: &str) -> crate::Result<()> {
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         db.conn()
             .execute(
                 "DELETE FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
@@ -144,7 +153,10 @@ impl PluginStorage {
     where
         F: FnOnce(Option<serde_json::Value>) -> crate::Result<serde_json::Value>,
     {
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let conn = db.conn();
         let previous = {
             let mut stmt = conn
@@ -176,7 +188,10 @@ impl PluginStorage {
     /// 只读判定，与 [`Self::clear_all`] 同一张表：keep_data 卸载后主库 KV 行仍在，
     /// 重装时由壳层据此提示「是否恢复旧应用数据」。
     pub async fn has_any(&self, plugin_id: &str) -> crate::Result<bool> {
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut stmt = db
             .conn()
             .prepare("SELECT EXISTS(SELECT 1 FROM plugin_storage WHERE plugin_id = ?1)")
@@ -189,7 +204,10 @@ impl PluginStorage {
 
     /// 清空插件所有存储（插件卸载时使用）
     pub async fn clear_all(&self, plugin_id: &str) -> crate::Result<()> {
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         db.conn()
             .execute(
                 "DELETE FROM plugin_storage WHERE plugin_id = ?1",
@@ -255,7 +273,10 @@ impl PluginStorage {
         if !plugins_dir.exists() {
             return Ok(());
         }
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entries = match std::fs::read_dir(&plugins_dir) {
             Ok(entries) => entries,
             Err(e) => {

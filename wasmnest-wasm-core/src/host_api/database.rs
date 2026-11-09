@@ -34,17 +34,21 @@ pub fn plugin_db_execute(
     if !ports.check_permission(plugin_id, PERMISSION_STORAGE, "host_plugin_db_execute") {
         return Err("permission denied".to_string());
     }
-    core_db::reject_bare_transaction_control(sql)?;
+    // 裸事务控制 + 文件边界语句（ATTACH / VACUUM INTO）都在入口拒：
+    // 两条都是「0 行语句」，step 期不报错，副作用会留在缓存的连接上。
+    core_db::reject_unsafe_sql(sql)?;
     let timeout = Duration::from_secs(core_db::PLUGIN_DB_STATEMENT_TIMEOUT_SECS);
     block_on(ports, async {
         let db_arc = ports
             .plugin_db(plugin_id.to_string())
             .await
             .map_err(|e| e.to_string())?;
-        let db = db_arc.lock().expect("plugin db lock poisoned");
+        let db = db_arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         core_db::with_statement_timeout(plugin_id, db.conn(), timeout, |conn| {
             conn.execute(sql, [])
-                .map(|n| n as u32)
+                .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
                 .map_err(|e| e.to_string())
         })
     })
@@ -66,7 +70,9 @@ pub fn plugin_db_query(
             .plugin_db(plugin_id.to_string())
             .await
             .map_err(|e| e.to_string())?;
-        let db = db_arc.lock().expect("plugin db lock poisoned");
+        let db = db_arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         core_db::with_statement_timeout(plugin_id, db.conn(), timeout, |conn| {
             core_db::query_to_json(plugin_id, conn, sql)
         })
@@ -91,7 +97,7 @@ pub fn plugin_db_execute_params(
     ) {
         return Err("permission denied".to_string());
     }
-    core_db::reject_bare_transaction_control(sql)?;
+    core_db::reject_unsafe_sql(sql)?;
     let params = core_db::parse_params_json(params_json)?;
     let timeout = Duration::from_secs(core_db::PLUGIN_DB_STATEMENT_TIMEOUT_SECS);
     block_on(ports, async {
@@ -99,9 +105,12 @@ pub fn plugin_db_execute_params(
             .plugin_db(plugin_id.to_string())
             .await
             .map_err(|e| e.to_string())?;
-        let db = db_arc.lock().expect("plugin db lock poisoned");
+        let db = db_arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         core_db::with_statement_timeout(plugin_id, db.conn(), timeout, |conn| {
-            core_db::execute_with_params(conn, sql, &params).map(|n| n as u32)
+            core_db::execute_with_params(conn, sql, &params)
+                .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
         })
     })
     .map_err(|e| format!("database error: {}", e))
@@ -124,7 +133,9 @@ pub fn plugin_db_query_params(
             .plugin_db(plugin_id.to_string())
             .await
             .map_err(|e| e.to_string())?;
-        let db = db_arc.lock().expect("plugin db lock poisoned");
+        let db = db_arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         core_db::with_statement_timeout(plugin_id, db.conn(), timeout, |conn| {
             core_db::query_with_params_to_json(plugin_id, conn, sql, &params)
         })
@@ -161,7 +172,9 @@ pub fn plugin_db_execute_batch(
             .plugin_db(plugin_id.to_string())
             .await
             .map_err(|e| e.to_string())?;
-        let db = db_arc.lock().expect("plugin db lock poisoned");
+        let db = db_arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         core_db::with_statement_timeout(plugin_id, db.conn(), timeout, |conn| {
             core_db::execute_batch_on_conn(conn, &sqls)
         })

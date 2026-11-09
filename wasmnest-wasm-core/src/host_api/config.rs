@@ -147,7 +147,7 @@ fn auth_setting_seconds(
     let db = db.database().clone();
     let setting_key = key.to_string();
     let stored = block_on_async(async move {
-        let db = db.lock().expect("config db lock poisoned");
+        let db = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         db.get_setting(&setting_key)
             .map_err(|e| format!("database error: {}", e))
     })?;

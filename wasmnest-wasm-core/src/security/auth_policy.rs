@@ -759,7 +759,10 @@ mod tests {
         source: &str,
         created_at: i64,
     ) {
-        let db = store.db.lock().expect("auth policy db lock poisoned");
+        let db = store
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         db.conn()
             .execute(
                 "INSERT INTO plugin_auth_records \
@@ -785,7 +788,10 @@ mod tests {
         resource: &str,
         strategy: &str,
     ) {
-        let db = store.db.lock().expect("auth policy db lock poisoned");
+        let db = store
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         db.conn()
             .execute(
                 "INSERT INTO plugin_auth_policies (plugin_id, resource, strategy, updated_at) \
@@ -1448,7 +1454,10 @@ mod tests {
             .await
             .unwrap();
         let rows: i64 = {
-            let db = store.db.lock().expect("auth policy db lock poisoned");
+            let db = store
+                .db
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             db.conn()
                 .query_row(
                     "SELECT COUNT(*) FROM plugin_auth_policies WHERE plugin_id = ?1",

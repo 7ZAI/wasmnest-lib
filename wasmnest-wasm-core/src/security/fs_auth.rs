@@ -535,9 +535,13 @@ impl FsAuthChecker {
             // 实测单分钟刷 1121 行。放行本身由 core-monitor 的授权决策计数承担，
             // 真正需要留痕的拒绝 / 弹窗 / 规范化失败路径在各自分支单独记录。
             NoDialogDecision::Allowed(_) => true,
-            // 最后一层：弹窗授权（前面都未命中才走到这里）
+            // 最后一层：弹窗授权（前面都未命中才走到这里）。
+            // 传**规范路径**：弹窗展示与落账必须是同一个目标（用户同意的是
+            // 这个确切路径，不是插件可写的原始串——原串里的符号链接可被
+            // 换成别处，见 2026-11-09 审核 2.3）。
             NoDialogDecision::Ask(strategy) => {
-                self.request_user_auth(plugin_id, path, FsOps::single(operation), strategy)
+                let canonical = canonical.to_string_lossy().into_owned();
+                self.request_user_auth(plugin_id, &canonical, FsOps::single(operation), strategy)
                     .await
             }
         }
@@ -651,10 +655,12 @@ impl FsAuthChecker {
 
         let mut signals = RecordSignals::default();
         for row in &rows {
-            let Some(record_path) = Self::canonicalize_path(&row.target) else {
-                continue;
-            };
-            if canonical.strip_prefix(&record_path).is_err() {
+            // 记录里的目标在落账时已经过 `grant_target` 规范化（spec §5.1），且本
+            // 判定入口的 `canonical` 也已规范化 ⇒ 直接组件边界比较。旧实现对每行
+            // 目标重新 canonicalize（逐组件 syscall），「始终允许」档按访问路径持续
+            // 落账后记录数只增不减（上限 500），一次 fs.read 能打出上百次系统调用
+            // （2026-11-09 审核 3.3）。换链防护移到落账 / 应答两侧。
+            if canonical.strip_prefix(Path::new(&row.target)).is_err() {
                 continue;
             }
             if row.effect == AUTH_EFFECT_DENY {
@@ -733,6 +739,22 @@ impl FsAuthChecker {
             return;
         };
 
+        // 弹窗期间换链防护（2026-11-09 审核 2.3）：请求里的路径是**判定时已规范化**
+        // 的目标；应答时重新解析一次，结果变了就是中间有人把某段换成了链接
+        // （插件可写位置 / 插件自己的目录）。此时既不落账也不放行：用户点的是
+        // 原来那个目标，把它落到新目标等于静默扩大授权（同模块 approval.rs
+        // 用内容哈希防的正是同一类「在位替换」）。
+        if !Self::request_paths_still_resolve(&request) {
+            tracing::warn!(
+                plugin_id = %request.plugin_id,
+                request_id = %request_id,
+                paths = ?request.paths,
+                "fs_auth: authorization target changed while the prompt was open; denying"
+            );
+            let _ = request.reply_tx.send(false);
+            return;
+        }
+
         // 「记住」只在弹出时档位会读记录的前提下才落账。等待应答期间档位可能已被
         // 改成「总是询问」，但那不影响**这个**弹窗的口径（spec §8.1：已等待应答的
         // 弹窗按弹出时的旧策略走完）。越界的 `allow_remember`（该弹窗根本没给
@@ -754,6 +776,23 @@ impl FsAuthChecker {
             self.land_deny_records(&request).await;
         }
         let _ = request.reply_tx.send(decision.is_allow());
+    }
+
+    /// 应答时复核：待授权路径仍解析到判定时那个目标
+    ///
+    /// `PendingRequest.paths` 自 2026-11-09 起只装**规范路径**（`check` /
+    /// `check_batch_scoped` 入队前已 canonicalize）。这里再 canonicalize 一次：
+    /// 同一字符串若在弹窗期间被换链，结果就会变——发现即拒绝（fail-closed）。
+    fn request_paths_still_resolve(request: &PendingRequest) -> bool {
+        request.paths.iter().all(|path| {
+            if is_content_uri(path) {
+                return true;
+            }
+            match Self::canonicalize_path(path) {
+                Some(canonical) => canonical.to_string_lossy() == path.as_str(),
+                None => false,
+            }
+        })
     }
 
     /// 「始终允许」档的免询问放行留痕（spec §4.1 第 2 档：不问，但必须落账）
@@ -1052,7 +1091,9 @@ impl FsAuthChecker {
                 NoDialogDecision::Allowed(_) => continue,
                 NoDialogDecision::Ask(strategy) => {
                     ask_strategy.get_or_insert(strategy);
-                    ungranted.push(path.clone());
+                    // 入队 / 弹窗 / 落账全部用**规范路径**：判定用的是它，用户看到的也必须是它
+                    // （原串里的符号链接在 30s 弹窗窗口内可被换掉，落账会落到别处）。
+                    ungranted.push(canonical.to_string_lossy().into_owned());
                 }
             }
         }
@@ -3620,6 +3661,93 @@ mod tests {
         assert!(
             checker.pending_requests.lock().await.is_empty(),
             "应答后 pending 必须清空"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 弹窗展示的路径 = 判定时的规范路径（2026-11-09 审核 2.3）
+    ///
+    /// 旧实现把插件给的**原始串**入队 / 发给前端、却按规范路径判定，用户看到的
+    /// 目标与实际要授予的目标可能不是同一个（路径里任一符号链接可把授予引到别处）。
+    /// 本条锁住：弹窗 payload 与落账记录都必须是 canonical 后的目标。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompt_payload_and_landed_record_use_the_canonical_path() {
+        let (checker, log) = promptable_checker(Duration::from_secs(30)).await;
+        let dir = fixture_dir("fs-auth-prompt-canonical");
+        let real = dir.join("real.txt");
+        std::fs::write(&real, b"x").unwrap();
+        let link = dir.join("link.txt");
+        std::fs::remove_file(&link).ok();
+        std::os::unix::fs::symlink(&real, &link).expect("symlink fixture");
+        let requested = link.to_string_lossy().to_string();
+        let expected = real.to_string_lossy().to_string();
+
+        let (allowed, ()) = tokio::join!(
+            checker.check("com.wasmnest.test", &requested, FsOp::Read),
+            async {
+                let prompt = wait_for_prompt(&log).await;
+                assert_eq!(
+                    prompt["path"].as_str(),
+                    Some(expected.as_str()),
+                    "弹窗展示必须是规范化路径，而不是插件给的链接串"
+                );
+                let request_id = prompt["requestId"].as_str().expect("requestId").to_string();
+                checker
+                    .respond(&request_id, FsDecision::AllowRemember)
+                    .await;
+            }
+        );
+        assert!(allowed, "用户同意后应放行");
+        let records = fs_records(&checker, "com.wasmnest.test").await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].target, expected,
+            "落账目标必须与弹窗展示的是同一个规范路径"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 弹窗期间换链 ⇒ 授权不落到新目标（fail-closed，2026-11-09 审核 2.3）
+    ///
+    /// 请求路径在判定时是 `dir/target/file.txt`（canonical）。等待应答期间把
+    /// `dir/target` 换成指向 `dir/evil` 的链接：再次规范化会得到另一个目标
+    /// ——这正是「用户同意的是展现在他眼前的那一个」的 TOCTOU 窗口。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn swapped_target_during_prompt_is_denied_and_not_landed() {
+        let (checker, log) = promptable_checker(Duration::from_secs(30)).await;
+        let dir = fixture_dir("fs-auth-prompt-swap");
+        let target = dir.join("target");
+        let evil = dir.join("evil");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&evil).unwrap();
+        std::fs::write(target.join("file.txt"), b"ok").unwrap();
+        std::fs::write(evil.join("file.txt"), b"evil").unwrap();
+        let requested = target.join("file.txt").to_string_lossy().to_string();
+
+        let (allowed, ()) = tokio::join!(
+            checker.check("com.wasmnest.test", &requested, FsOp::Read),
+            async {
+                let prompt = wait_for_prompt(&log).await;
+                // 应答前换链：target 目录 → evil 目录
+                std::fs::remove_dir_all(&target).unwrap();
+                std::os::unix::fs::symlink(&evil, &target).expect("swap symlink");
+                let request_id = prompt["requestId"].as_str().expect("requestId").to_string();
+                checker
+                    .respond(&request_id, FsDecision::AllowRemember)
+                    .await;
+            }
+        );
+
+        assert!(!allowed, "换链后的目标不得放行");
+        assert!(
+            fs_records(&checker, "com.wasmnest.test").await.is_empty(),
+            "换链后的目标不得落账（否则授权被静默扩大到新目标）"
+        );
+        assert!(
+            checker.pending_requests.lock().await.is_empty(),
+            "拒绝后 pending 必须清空"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

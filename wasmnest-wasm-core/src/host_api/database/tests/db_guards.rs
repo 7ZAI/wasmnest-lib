@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use crate::host_api::database::{
-    plugin_db_execute, plugin_db_execute_params, plugin_db_query, plugin_db_query_params,
-    query_to_json, with_statement_timeout,
+    plugin_db_execute, plugin_db_execute_batch, plugin_db_execute_params, plugin_db_query,
+    plugin_db_query_params, query_to_json, with_statement_timeout,
 };
 use crate::host_api::sqlite_scaffold::*;
 use crate::permission::PERMISSION_STORAGE;
@@ -104,6 +104,50 @@ fn query_exceeding_byte_limit_rejected() {
         "error should state byte limit, got: {}",
         err
     );
+}
+
+/// 文件边界语句：ATTACH / VACUUM INTO 在五个 WIT 原语入口全部被拒（2026-11-09 审核 2.1）
+///
+/// 两类语句都是「0 行 + step 期副作用」：旧实现的 `query` / `query_params` / `batch`
+/// 能静默挂载任意 SQLite 文件（绕过 `fs_auth` 的文件授权模型）或写任意路径。
+/// 用真实入口链路（FakePorts 的私有库也是 `Database::new`，连接层闸同样在位）。
+#[test]
+fn plugin_db_rejects_file_boundary_sql() {
+    let fake = FakePorts::new();
+    let ports = as_ports(&fake);
+    fake.grant("p1", &[PERMISSION_STORAGE]);
+    fake.set_plugin_db("p1");
+    plugin_db_execute(ports, "p1", "CREATE TABLE t (x INTEGER)").expect("create table");
+
+    for sql in [
+        "ATTACH DATABASE '/tmp/wasmnest-escape.db' AS x",
+        "VACUUM INTO '/tmp/wasmnest-escape.db'",
+        "-- 前导注释\nATTACH ':memory:' AS x",
+    ] {
+        let outcomes = [
+            plugin_db_execute(ports, "p1", sql).map(|_| ()),
+            plugin_db_execute_params(ports, "p1", sql, "[]").map(|_| ()),
+            plugin_db_query(ports, "p1", sql).map(|_| ()),
+            plugin_db_query_params(ports, "p1", sql, "[]").map(|_| ()),
+            plugin_db_execute_batch(ports, "p1", &serde_json::to_string(&[sql]).unwrap())
+                .map(|_| ()),
+        ];
+        for outcome in outcomes {
+            let err = outcome.expect_err(&format!("'{sql}' must be rejected at every entry"));
+            assert!(
+                err.contains("confined to their own file"),
+                "unexpected error for '{sql}': {err}"
+            );
+        }
+    }
+
+    // 正常 DML / 查询 / 批次不受影响
+    plugin_db_execute(ports, "p1", "INSERT INTO t (x) VALUES (1)")
+        .expect("normal insert still works");
+    let out = plugin_db_query(ports, "p1", "SELECT x FROM t")
+        .expect("query")
+        .expect("query result json");
+    assert_eq!(out, "[{\"x\":1}]");
 }
 
 /// 入口级回归：插件私有库 execute/query/参数绑定经护栏全链路（权限 + 超时/上限；

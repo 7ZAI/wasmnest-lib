@@ -184,7 +184,9 @@ pub fn purge_for_plugin(plugin_id: &str) {
 /// （session_e2e / system_component_test）与 wasm-core 内部测试都经
 /// `crate::test_support::reset` 消费（test_support re-export）。
 pub fn reset() {
-    *registry().lock().expect("registry lock") = None;
+    *registry()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
 /// 测试闸门：串行化使用全局注册表的集成用例（单中心 desk 天然独占，并行测试

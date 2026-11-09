@@ -483,7 +483,10 @@ impl WasmRuntime {
             return Err(crate::AppError::Config(format!("内核配置非法: {}", reason)));
         }
         {
-            let current = self.config.read().expect("core config lock poisoned");
+            let current = self
+                .config
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if current.engine != cfg.engine {
                 tracing::warn!(
                     "set_config 携带了 Engine 参数变更，但 Engine 构建期已固化，本次覆盖不会生效（需重建运行时）"
@@ -499,7 +502,10 @@ impl WasmRuntime {
                 );
             }
         }
-        *self.config.write().expect("core config lock poisoned") = cfg;
+        *self
+            .config
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = cfg;
         Ok(())
     }
 
@@ -573,7 +579,10 @@ impl WasmRuntime {
         resource_overrides: Option<&ResourceOverrides>,
     ) -> crate::Result<LoadedWasmPlugin> {
         let (limits, fuel_enabled, wasi_cfg) = {
-            let cfg = self.config.read().expect("core config lock poisoned");
+            let cfg = self
+                .config
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             (
                 host_ctx
                     .security()

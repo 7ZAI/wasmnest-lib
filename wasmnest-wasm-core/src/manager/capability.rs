@@ -929,18 +929,46 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let mut out: Vec<String> = Vec::new();
-        let needle = "\"host-mdns\", \"";
+        // 按 **调用** 解析而不是按形如 `"host-mdns", "` 的同行字面量匹配：
+        // rustfmt 会把超长行折成多行调用（参数各占一行），同行 needle 会让本锁
+        // 在纯格式化后误报「词汇缺失」——2026-11-09 审核 2.2 的 fmt 修复实测踩到。
         let mut rest = code.as_str();
-        while let Some(idx) = rest.find(needle) {
-            let after = &rest[idx + needle.len()..];
-            let end = after
-                .find('"')
-                .unwrap_or_else(|| panic!("export_item 调用缺右引号：{after}"));
-            out.push(after[..end].to_string());
-            rest = &after[end..];
+        while let Some(idx) = rest.find("export_item") {
+            let tail = &rest[idx..];
+            let Some(open) = tail.find('(') else {
+                rest = &tail[1..];
+                continue;
+            };
+            let after_open = &tail[open + 1..];
+            let Some(close) = after_open.find(')') else {
+                rest = after_open;
+                continue;
+            };
+            let lits = quoted_literals(&after_open[..close]);
+            // [iface, func]：接口名是 `export_item` 的第一参、`export_item_in` 的第二参；
+            // 包常量不是字面量，故两种形态下「倒数第二个字面量 = 接口名」恒成立。
+            if lits.len() >= 2 && lits[lits.len() - 2] == "host-mdns" {
+                out.push(lits[lits.len() - 1].clone());
+            }
+            rest = &after_open[close..];
         }
         out.sort();
         out.dedup();
+        out
+    }
+
+    /// 抽一段源码里的字符串字面量（不处理转义：本锁只读接口 / 函数名词汇）
+    fn quoted_literals(src: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = src;
+        while let Some(start) = rest.find('"') {
+            let after = &rest[start + 1..];
+            let Some(end) = after.find('"') else {
+                break;
+            };
+            out.push(after[..end].to_string());
+            rest = &after[end + 1..];
+        }
         out
     }
 

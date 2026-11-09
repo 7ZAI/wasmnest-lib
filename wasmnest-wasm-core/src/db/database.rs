@@ -59,10 +59,37 @@ fn explicit_indexes(conn: &Connection, table: &str) -> crate::Result<Vec<String>
     Ok(names)
 }
 
+/// 插件私有库连接的文件边界加固（2026-11-09 审核 2.1）
+///
+/// SQLite 侧两道闸：
+/// - `SQLITE_LIMIT_ATTACHED = 0`：运行期拒绝一切 `ATTACH`；
+/// - authorizer 拒绝 `Attach` / `Detach`（纵深防御：即便 limit 被后续代码放宽，
+///   或 SQLite 版本对 limit 的解释变化，挂载仍过不去）。
+///
+/// `VACUUM INTO '<path>'` 不走 authorizer，它的 SQL 文本拒绝在
+/// `wasmnest-host-api-core::database::reject_file_boundary_sql`（五个 WIT 原语入口
+/// 都经过那里）——两处一起才是完整的文件边界。
+fn harden_connection(conn: &Connection) {
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0);
+    conn.authorizer(Some(|ctx: rusqlite::hooks::AuthContext<'_>| {
+        use rusqlite::hooks::{AuthAction, Authorization};
+        match ctx.action {
+            AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
+            _ => Authorization::Allow,
+        }
+    }));
+}
+
 impl Database {
     /// Create a new database connection
+    ///
+    /// 打开即做**文件边界加固**（[`harden_connection`]）：本 wrapper 是 guest SQL
+    /// 唯一可达的连接面（插件私有库），`ATTACH` 能在 step 期把一个任意 SQLite
+    /// 文件挂在连接上（返回 0 行，不报错，副作用留在缓存的连接里）——等于绕过
+    /// `fs_auth` 的文件授权模型读其它插件私有库 / 宿主主库。
     pub fn new(path: &Path) -> crate::Result<Self> {
         let conn = Connection::open(path).db()?;
+        harden_connection(&conn);
         Ok(Self { conn })
     }
 
@@ -72,7 +99,11 @@ impl Database {
     /// 2026-10-14 实证：宿主自持副本建出的旧 `plugin_auth_records` 缺 `id`，
     /// `security::fs_auth` 每次读取都报 `no such column: id`（按未命中处理 ⇒
     /// 授权记录面恒失败）。移动 host_domains/db 域消费；桌面宿主按需复用。
+    ///
+    /// 同样做文件边界加固（[`harden_connection`]）：主库虽不直接接 guest SQL，
+    /// 但「同一段护栏适用于本 wrapper 的每一条连接」比「按开库入口分辨」更难写错。
     pub fn from_connection(conn: Connection) -> Self {
+        harden_connection(&conn);
         Self { conn }
     }
 
@@ -264,6 +295,26 @@ mod tests {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
         db.init_schema().expect("init schema");
         db
+    }
+
+    /// 插件私有库连接不得 `ATTACH` 任意文件（2026-11-09 审核 2.1）
+    ///
+    /// 两层都在：`SQLITE_LIMIT_ATTACHED = 0`（报 too many attached databases）与
+    /// authorizer 拒 Attach（报 not authorized）。只要求 Err，不锁具体文案——
+    /// SQLite 版本差异不应让这条安全用例变脆。
+    #[test]
+    fn attach_is_denied_at_connection_level() {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        assert!(
+            db.conn()
+                .prepare("ATTACH DATABASE ':memory:' AS x")
+                .is_err(),
+            "plugin database connections must not attach other files"
+        );
+        // 普通 SQL 不受影响
+        db.conn()
+            .execute("CREATE TABLE t (x INTEGER)", [])
+            .expect("normal DDL must still work");
     }
 
     /// sqlite_master 里某类对象的同名条目数（建表 / 建索引幂等的唯一可观测面）

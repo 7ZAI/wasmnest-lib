@@ -463,6 +463,30 @@ impl ProcessRegistry {
         let runs = self.runs.read().unwrap_or_else(|e| e.into_inner());
         runs.len()
     }
+
+    /// 终止某插件的全部派生进程组并从注册表移除
+    ///
+    /// 插件停用 / 卸载是唯一销毁点：guest 自己来不及或无法 `process_kill` 时，
+    /// 宿主必须在回收权限前兜底，否则进程会继续运行到超时（默认 600s）。
+    /// 返回杀死的进程数（0 = 无在跑进程）。
+    pub async fn kill_all_for(&self, plugin_id: &str) -> usize {
+        let pids: Vec<u32> = {
+            let mut runs = self.runs.write().unwrap_or_else(|e| e.into_inner());
+            let run_ids: Vec<String> = runs
+                .iter()
+                .filter(|(_, proc)| proc.plugin_id == plugin_id)
+                .map(|(run_id, _)| run_id.clone())
+                .collect();
+            run_ids
+                .into_iter()
+                .filter_map(|run_id| runs.remove(&run_id).map(|proc| proc.pid))
+                .collect()
+        };
+        for pid in &pids {
+            kill_process_group(*pid).await;
+        }
+        pids.len()
+    }
 }
 
 /// 终止进程组（尽力而为，超时 kill 与插件取消共用）
@@ -1040,7 +1064,10 @@ impl WasmHostContext {
     ) -> crate::Result<Arc<Mutex<Database>>> {
         // 快速路径：已缓存
         {
-            let dbs = self.plugin_dbs.lock().expect("plugin dbs lock poisoned");
+            let dbs = self
+                .plugin_dbs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(db) = dbs.get(plugin_id) {
                 return Ok(db.clone());
             }
@@ -1082,7 +1109,10 @@ impl WasmHostContext {
         // 缓存连接
         let db_arc = Arc::new(Mutex::new(db));
         {
-            let mut dbs = self.plugin_dbs.lock().expect("plugin dbs lock poisoned");
+            let mut dbs = self
+                .plugin_dbs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             // 双重检查：另一个线程可能已插入
             if let Some(existing) = dbs.get(plugin_id) {
                 return Ok(existing.clone());

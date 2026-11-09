@@ -207,15 +207,31 @@ impl OpKind {
             Self::CapStorageGet => crate::contract::export_item("host-storage", "get"),
             Self::CapStorageSet => crate::contract::export_item("host-storage", "set"),
             Self::CapStorageDelete => crate::contract::export_item("host-storage", "delete"),
-            Self::CapMdnsBrowse => crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "browse"),
-            Self::CapMdnsStopBrowse => crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "stop-browse"),
-            Self::CapMdnsAdvertise => crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "advertise"),
-            Self::CapMdnsStopAdvertise => {
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "stop-advertise")
-            }
-            Self::CapMdnsIsAdvertising => {
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "is-advertising")
-            }
+            Self::CapMdnsBrowse => crate::contract::export_item_in(
+                crate::contract::MDNS_PACKAGE,
+                "host-mdns",
+                "browse",
+            ),
+            Self::CapMdnsStopBrowse => crate::contract::export_item_in(
+                crate::contract::MDNS_PACKAGE,
+                "host-mdns",
+                "stop-browse",
+            ),
+            Self::CapMdnsAdvertise => crate::contract::export_item_in(
+                crate::contract::MDNS_PACKAGE,
+                "host-mdns",
+                "advertise",
+            ),
+            Self::CapMdnsStopAdvertise => crate::contract::export_item_in(
+                crate::contract::MDNS_PACKAGE,
+                "host-mdns",
+                "stop-advertise",
+            ),
+            Self::CapMdnsIsAdvertising => crate::contract::export_item_in(
+                crate::contract::MDNS_PACKAGE,
+                "host-mdns",
+                "is-advertising",
+            ),
             Self::CapAuthVerifyDeviceToken => {
                 crate::contract::export_item("auth-policy", "verify-device-token")
             }
@@ -392,31 +408,51 @@ pub(crate) fn dispatch_mutex_op(
             .map(|(r,)| GuestReply::GuestUnit(r)),
         GuestOp::CapMdnsBrowse { service_type } => plugin
             .call_capability_export::<(String,), (Result<String, String>,)>(
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "browse"),
+                crate::contract::export_item_in(
+                    crate::contract::MDNS_PACKAGE,
+                    "host-mdns",
+                    "browse",
+                ),
                 (service_type,),
             )
             .map(|(r,)| GuestReply::GuestStr(r)),
         GuestOp::CapMdnsStopBrowse { browser_id } => plugin
             .call_capability_export::<(String,), (Result<bool, String>,)>(
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "stop-browse"),
+                crate::contract::export_item_in(
+                    crate::contract::MDNS_PACKAGE,
+                    "host-mdns",
+                    "stop-browse",
+                ),
                 (browser_id,),
             )
             .map(|(r,)| GuestReply::GuestBool(r)),
         GuestOp::CapMdnsAdvertise { config_json } => plugin
             .call_capability_export::<(String,), (Result<String, String>,)>(
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "advertise"),
+                crate::contract::export_item_in(
+                    crate::contract::MDNS_PACKAGE,
+                    "host-mdns",
+                    "advertise",
+                ),
                 (config_json,),
             )
             .map(|(r,)| GuestReply::GuestStr(r)),
         GuestOp::CapMdnsStopAdvertise { advertise_id } => plugin
             .call_capability_export::<(String,), (Result<bool, String>,)>(
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "stop-advertise"),
+                crate::contract::export_item_in(
+                    crate::contract::MDNS_PACKAGE,
+                    "host-mdns",
+                    "stop-advertise",
+                ),
                 (advertise_id,),
             )
             .map(|(r,)| GuestReply::GuestBool(r)),
         GuestOp::CapMdnsIsAdvertising { advertise_id } => plugin
             .call_capability_export::<(String,), (Result<bool, String>,)>(
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "is-advertising"),
+                crate::contract::export_item_in(
+                    crate::contract::MDNS_PACKAGE,
+                    "host-mdns",
+                    "is-advertising",
+                ),
                 (advertise_id,),
             )
             .map(|(r,)| GuestReply::GuestBool(r)),
@@ -1264,7 +1300,11 @@ fn start_op<'a>(
             GuestOp::CapMdnsBrowse { service_type } => start_typed(
                 &mut access,
                 instance,
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "browse"),
+                crate::contract::export_item_in(
+                    crate::contract::MDNS_PACKAGE,
+                    "host-mdns",
+                    "browse",
+                ),
                 (service_type,),
                 owned,
                 timer,
@@ -1276,7 +1316,11 @@ fn start_op<'a>(
             GuestOp::CapMdnsStopBrowse { browser_id } => start_typed(
                 &mut access,
                 instance,
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "stop-browse"),
+                crate::contract::export_item_in(
+                    crate::contract::MDNS_PACKAGE,
+                    "host-mdns",
+                    "stop-browse",
+                ),
                 (browser_id,),
                 owned,
                 timer,
@@ -1288,7 +1332,11 @@ fn start_op<'a>(
             GuestOp::CapMdnsAdvertise { config_json } => start_typed(
                 &mut access,
                 instance,
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "advertise"),
+                crate::contract::export_item_in(
+                    crate::contract::MDNS_PACKAGE,
+                    "host-mdns",
+                    "advertise",
+                ),
                 (config_json,),
                 owned,
                 timer,
@@ -1300,7 +1348,11 @@ fn start_op<'a>(
             GuestOp::CapMdnsStopAdvertise { advertise_id } => start_typed(
                 &mut access,
                 instance,
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "stop-advertise"),
+                crate::contract::export_item_in(
+                    crate::contract::MDNS_PACKAGE,
+                    "host-mdns",
+                    "stop-advertise",
+                ),
                 (advertise_id,),
                 owned,
                 timer,
@@ -1312,7 +1364,11 @@ fn start_op<'a>(
             GuestOp::CapMdnsIsAdvertising { advertise_id } => start_typed(
                 &mut access,
                 instance,
-                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", "is-advertising"),
+                crate::contract::export_item_in(
+                    crate::contract::MDNS_PACKAGE,
+                    "host-mdns",
+                    "is-advertising",
+                ),
                 (advertise_id,),
                 owned,
                 timer,

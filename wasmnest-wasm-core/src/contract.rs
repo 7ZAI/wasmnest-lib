@@ -37,15 +37,34 @@ pub use wasmnest_contract::{PACKAGE, PACKAGE_NAME, PACKAGE_VERSION, WORKER_INTER
 static DERIVED: OnceLock<Mutex<Vec<(String, &'static str)>>> = OnceLock::new();
 
 /// 单点派生入口：返回池中已有的 `&'static str`，无则构造并存入
+///
+/// `make()` 必须在**锁外**执行：它经 [`package_version`] 对缺 `@` 的包名 panic，
+/// 持锁 panic 会把 `DERIVED` 永久毒化——一次拼错包名就让进程内**所有**建核 / 实例化
+/// 路径连坐（注释点名的历史路径）。锁中毒后也从内部值恢复（`PoisonError::into_inner`）：
+/// 池里只有只读派生结果，不存在被写坏的可变状态。
 fn derive(key: String, make: impl FnOnce() -> String) -> &'static str {
     let pool = DERIVED.get_or_init(|| Mutex::new(Vec::new()));
-    let mut pool = pool.lock().expect("派生池锁中毒（先前一次派生 panic）");
+    // 快速路径：命中已有条目（锁只包住查找）
+    {
+        let pool = pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, value)) = pool.iter().find(|(k, _)| *k == key) {
+            return value;
+        }
+    }
+
+    // 构造在锁外：make() panic 不影响池锁；并发同 key 时后到者丢弃自己的副本
+    // 并返回先到的指针（池内条目恒定不变，先到先得只影响一次性的泄漏量）。
+    let made: &'static str = Box::leak(make().into_boxed_str());
+    let mut pool = pool
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((_, value)) = pool.iter().find(|(k, _)| *k == key) {
         return value;
     }
-    let value: &'static str = Box::leak(make().into_boxed_str());
-    pool.push((key, value));
-    value
+    pool.push((key, made));
+    made
 }
 
 /// `host-mdns` 所在 WIT 包（ADR 0061 按能力域拆包后独立包全名）
@@ -74,7 +93,11 @@ pub fn export_item(interface: &str, func: &str) -> &'static str {
 pub fn export_item_in(package: &str, interface: &str, func: &str) -> &'static str {
     let key = format!("{package}/{interface}.{func}");
     derive(key, || {
-        format!("{}/{interface}.{func}@{}", package_name(package), package_version(package))
+        format!(
+            "{}/{interface}.{func}@{}",
+            package_name(package),
+            package_version(package)
+        )
     })
 }
 
@@ -89,7 +112,11 @@ pub fn interface_path(interface: &str) -> &'static str {
 pub fn interface_path_in(package: &str, interface: &str) -> &'static str {
     let key = format!("iface:{package}/{interface}");
     derive(key, || {
-        format!("{}/{interface}@{}", package_name(package), package_version(package))
+        format!(
+            "{}/{interface}@{}",
+            package_name(package),
+            package_version(package)
+        )
     })
 }
 
@@ -193,6 +220,28 @@ mod tests {
         assert_ne!(
             export_item("events", "on-message"),
             export_item("events", "on-process-done")
+        );
+    }
+
+    /// 一次派生 panic 不得毒化派生池（2026-11-09 审核 3.5）
+    ///
+    /// 缺 `@` 的包名全名会 panic；旧实现把 `make()` 放在锁里，一次拼错就让
+    /// `DERIVED` 永久中毒——此后**所有**建核 / 实例化路径连坐 panic。
+    #[test]
+    fn derive_panic_does_not_poison_the_pool() {
+        let bad =
+            std::panic::catch_unwind(|| export_item_in("wasmnest:plugin", "events", "on-message"));
+        assert!(bad.is_err(), "缺版本段的包名必须 panic（自身失效即红）");
+
+        // 后续正常派生仍可用（锁未被毒化），且同一键仍返回同一指针
+        let name = export_item("events", "on-message");
+        assert_eq!(
+            name,
+            format!("wasmnest:plugin/events.on-message@{PACKAGE_VERSION}")
+        );
+        assert_eq!(
+            name as *const str,
+            export_item("events", "on-message") as *const str
         );
     }
 

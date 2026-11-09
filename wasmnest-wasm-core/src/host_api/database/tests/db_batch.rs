@@ -4,7 +4,8 @@
 //! 持有事务会占住全局连接锁，必须引导到批次原语。
 
 use crate::host_api::database::{
-    plugin_db_execute, plugin_db_execute_batch, plugin_db_query, reject_bare_transaction_control,
+    plugin_db_execute, plugin_db_execute_batch, plugin_db_query, plugin_db_query_params,
+    reject_bare_transaction_control,
 };
 use crate::host_api::sqlite_scaffold::*;
 use crate::permission::PERMISSION_STORAGE;
@@ -98,6 +99,17 @@ fn bare_transaction_control_rejected_at_execute() {
         let err =
             plugin_db_execute(ports, "p1", sql).expect_err(&format!("'{}' must be rejected", sql));
         assert!(err.contains("execute-batch"), "'{}' err: {}", sql, err);
+    }
+    // query / query_params 同一族护栏（旧实现只在 execute 面检查——三缺二）
+    for sql in ["BEGIN", "COMMIT;", "SAVEPOINT sp1"] {
+        assert!(
+            plugin_db_query(ports, "p1", sql).is_err(),
+            "query must reject '{sql}'"
+        );
+        assert!(
+            plugin_db_query_params(ports, "p1", sql, "[]").is_err(),
+            "query_params must reject '{sql}'"
+        );
     }
 }
 
