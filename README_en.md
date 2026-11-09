@@ -15,13 +15,14 @@ English | [简体中文](README.md)
 
 - **No root workspace**: 19 independent crates (each with its own `Cargo.toml` and tracked `Cargo.lock`) plus 4 fixture crates. All commands run inside a crate directory; there is no repository-level `cargo test`.
 - **Version line**: every crate restarts at `0.0.1`; the contract version `wasmnest:plugin@0.1.0` has a single handwritten source of truth in `wasmnest-contract` (which is also the **zero-dependency shared vocabulary** crate: package name / version + cross-layer guard constants).
+- **WIT is split per package**: `wasmnest:plugin@0.1.0` (core imports + guest exports) plus independently versioned domain packages (`wasmnest:{mdns,pty,peer,tunnel,http,ws,notify,clipboard}@0.0.1`). Bump only the package you change; the platform `release-manifest.json` pins each package in `contract.packages`.
 - **Consumption**: the platform's two hosts and the test repo depend on this working tree directly through sibling paths (no copies, no registry publication). The only exception is `wasmnest-wasm-core`'s `desktop-assembly` dependency on the published desktop SDK `wasmnest-plugin-api`, which consumers redirect back to the SDK working tree with `[patch.crates-io]`.
 
 ## 2. Dependency Layering
 
 Capability crates default to **pure engine mechanisms + port abstractions** (zero WIT / zero SDK / zero wasmtime / **zero host frameworks (Tauri, actix) / zero bundled SQLite / zero system-info collection and file watching**), so any host can depend on them. Only the `common-host` feature adds the WIT binding layer. The criterion is executable: `sh scripts/check-default-form-deps.sh` (the same command CI runs).
 
-> **Boundary note**: `wasmnest-server-http` / `-websocket` / `-core` and `wasmnest-wasm-core` are **not** covered by that promise — the first three still pull actix by default (`server-core` also rusqlite), and `wasm-core` still pulls Tauri / actix; decoupling them is follow-up work (P1/P2). This README no longer describes them as "consumable by any host".
+> **Boundary note**: `wasmnest-server-http` / `-websocket` / `-core` and `wasmnest-wasm-core` are **not** covered by that promise — the first three still pull actix by default (`server-core` also rusqlite), and `wasm-core` still pulls Tauri / actix / rusqlite; decoupling them is follow-up work (P1/P2). This README no longer describes them as "consumable by any host".
 
 Dependencies point downward; horizontal edges are pinned by each crate's `dependency_direction_lock.rs` / `boundary_lock.rs`:
 
@@ -50,7 +51,8 @@ desktop / mobile host src-tauri/src/ (composition root · thin shell) — platfo
 | `wasmnest-server-core` | **Cross-transport** server core: supervisor / filter chain / link_crypto / metrics / `TransportFace` + actix composition runtime (`serve`); still pulls actix / rusqlite (P1 follow-up) | no features | — | platform assembly, http/ws depend downward, test repo |
 | `wasmnest-server-http` | HTTP transport + `host-http` binding layer (endpoint registry / gateway / middleware / DTO anchors) | `default = []`; `common-host` | `wit/http.wit` | desktop host (common-host), wasm-core (engine face), mobile host (engine face), test repo |
 | `wasmnest-server-websocket` | WebSocket transport + `host-websocket` client-domain wiring / server-side engine functions | same as above | `wit/ws.wit` (shared with ws-client-engine) | same as http |
-| `wasmnest-server-peer-net` | Peer-to-peer **engine domain** (incl. base mechanisms in `base/`: identity/TLS/trust/mDNS registration/transfer-session primitives — absorbed from the former `wasmnest-peer-net`) + `host-peer` binding layer (not a transport; does not join the actix composition) | same as above | `wit/peer.wit` | desktop (common-host), mobile (engine face), wasm-core (`PeerCtx`), test repo |
+| `wasmnest-server-peer-net` | Peer-to-peer **engine domain** (incl. base mechanisms in `base/`: identity/libp2p transport/trust/mDNS registration/transfer-session primitives — absorbed from the former `wasmnest-peer-net`) + `host-peer` binding layer (not a transport; does not join the actix composition) | same as above | `wit/{peer,tunnel}.wit` | desktop (common-host), mobile (engine face), wasm-core (`PeerCtx`), test repo |
+| `wasmnest-p2p-engine` | **libp2p mechanism engine**: node identity bridge (node_id ↔ PeerId) / swarm lifecycle / inbound admission gate / named-stream protocols and link registry (peer-net's transport stack since P1) | `default = []`; optional `relay` | — | `wasmnest-server-peer-net`, test repo |
 | `wasmnest-discovery-engine` | mDNS capability domain: shared daemon + type hub + browse/advertise handle tables + host advertiser face | same as above | `wit/mdns.wit` | desktop (common-host), mobile (engine face), test repo |
 | `wasmnest-pty-engine` | PTY capability domain + cross-platform pseudo-terminal engine (process lifecycle / reader thread / ring buffer) | same as above | `wit/pty.wit` | desktop host (common-host) |
 | `wasmnest-ws-client-engine` | WS **outbound client** domain: handle table / two tasks / heartbeat / backoff reconnect / reclaim on disable | no features | `wit/ws.wit` (shared contract source) | mobile host, test repo |
@@ -78,7 +80,7 @@ Default shape = **pure engine mechanisms + port abstractions**, with zero WIT / 
 
 - **`wasmnest-server-http`**: HTTP transport + `host-http` binding layer (2 inbound + 1 outbound primitive).
 - **`wasmnest-server-websocket`**: WebSocket transport (connection skeleton / plugin endpoint channels / registry / graceful shutdown) + `host-websocket` binding layer.
-- **`wasmnest-server-peer-net`**: the peer-to-peer **engine domain**, not a transport — it does not join the actix composition, filter chain or link encryption. mDNS handles are injected as plain values through `MdnsPort` (single-listener invariant). Product business (transfer tasks / policies / history / shared roots / browsing orchestration) lives in apps-repo plugins; this crate keeps only engine primitives and lifecycle, plus the base mechanisms (absorbed from `wasmnest-peer-net` in 2026-10-22: identity/TLS/trust/mDNS registration/transfer-session primitives) as its own `base/` submodule.
+- **`wasmnest-server-peer-net`**: the peer-to-peer **engine domain**, not a transport — it does not join the actix composition, filter chain or link encryption. mDNS handles are injected as plain values through `MdnsPort` (single-listener invariant). Product business (transfer tasks / policies / history / shared roots / browsing orchestration) lives in apps-repo plugins; this crate keeps only engine primitives and lifecycle, plus the base mechanisms (absorbed from `wasmnest-peer-net` into `base/`: identity/trust/mDNS registration/transfer-session primitives) as its own content, with the transport stack provided by `wasmnest-p2p-engine` (noise/yamux named streams).
 - **`wasmnest-discovery-engine`**: mDNS capability domain. The process-wide shared daemon may only be created once, in `engine.rs`; for a given service type only `type_hub.rs` may call `daemon.browse` / `stop_browse` (a duplicate browse silently kills other event streams).
 - **`wasmnest-pty-engine`**: PTY capability domain (`host-pty` 6 primitives) plus the plugin-private pseudo-terminal engine face. The engine face is cross-platform and wasm-free; it accepts only caller-computed argv and does no shell wrapping; output goes through a ring buffer with watermark notifications.
 
@@ -86,11 +88,12 @@ Default shape = **pure engine mechanisms + port abstractions**, with zero WIT / 
 
 - **`wasmnest-server-base`** is the leaf foundation: its default dependency tree depends only on the zero-dependency contract crate (no tauri / rusqlite / notify / link-crypto / mdns-sd / sysinfo). The three features `tauri-compat` / `mdns` / `system-info` are **off by default** and must be enabled explicitly by consumers (the desktop host enables all three; `server-peer-net` enables `mdns`); when off, boundaries use explicit `map_err` (orphan rule). Changing its dependency surface affects the whole repo (including the headless host).
 - **`wasmnest-server-core`** is cross-transport (**not** transport-agnostic): supervisor / filter chain / link_crypto / metrics / `TransportFace` + actix composition runtime `serve`, with dependency inversion. http / ws depend only downward on it, have zero horizontal imports between them, and must not know about hosts. Its default dependency tree still contains actix / rusqlite (P1 follow-up).
-- The transport crates (http / websocket) are the only layer allowed to use actix.
+- Capability domains in default shape must not pull actix; transports, `server-core` (composition runtime) and `wasm-core` are the exceptions.
 
 ### 4.4 Foundations, Independent Domains and the Contract Room
 
-- **Peer-to-peer base mechanisms** (absorbed from the former `wasmnest-peer-net` crate into `wasmnest-server-peer-net`'s `base/` in the 2026-10-22 dissolve): reinstalling means a new identity (deliberately separate from device identity); certificate public key = node public key, fingerprint = identity (`node_id = hex(SHA-256(raw ed25519 key))`); untrusted inbound connections stop at an application-layer confirmation gate; `_wasmnest-peer._tcp.local.` is completely independent of the legacy terminal link service `_wasmnest._tcp`.
+- **Peer-to-peer base mechanisms** (absorbed from the former `wasmnest-peer-net` crate into `wasmnest-server-peer-net`'s `base/`): reinstalling means a new identity (deliberately separate from device identity); libp2p noise identity public key = node public key, fingerprint = identity (`node_id = hex(SHA-256(raw ed25519 key))`, PeerId cross-verified through `identity_bridge`); untrusted inbound connections stop at an application-layer confirmation gate; `_wasmnest-peer._tcp.local.` is completely independent of the legacy terminal link service `_wasmnest._tcp`.
+- **`wasmnest-p2p-engine`**: libp2p mechanism engine (peer-net's transport stack since P1) — how connections are built, streams opened, identities verified and the admission gate enforced; trust lists, wire semantics and the `host-peer` WIT domain stay in peer-net. Zero internal crate dependencies; optional `relay` feature (Circuit Relay v2 client).
 - **`link-crypto`**: link-message encryption protocol core, pure byte protocol only. Constants and algorithms are a compatibility surface and must match the mobile TypeScript implementation byte for byte — changing a constant is a cross-end breaking change.
 - **`wasmnest-ws-client-engine`**: WS outbound client domain (`host-websocket` client subset, 5 primitives + reclaim on disable). Platform differences (permission gate / delivery / background tasks / jwt issuance / backoff) are injected through `WsClientPorts`; the production dependency list contains zero internal crates.
 - **`wasmnest-crypto-engine`**: exposes only neutral algorithm primitives with no business semantics; no authentication orchestration, negotiation or key policy; key material is always supplied by the caller, and host identity keys are never touched. It carries its own `CryptoError` (`Display` returns the legacy message verbatim) with zero internal crate dependencies — mapping back to envelope errors is the consumer's explicit boundary responsibility.
@@ -131,11 +134,12 @@ The platform does not copy, mirror or submodule this repo. The default location 
 This repo has **no root workspace**; commands always run inside a crate:
 
 ```bash
-cd wasmnest-wasm-core && cargo test
-cd ../wasmnest-host-kit && cargo test
-cd ../wasmnest-headless-host-probe && cargo test
+cd wasmnest-host-kit && cargo test --offline
+cd ../wasmnest-server-base && cargo test --offline
+cd ../wasmnest-headless-host-probe && cargo test --offline
 ```
 
+- `wasmnest-wasm-core` cannot be tested directly: `desktop-assembly` depends on the unpublished `wasmnest-plugin-api`, so use the `--config patch.crates-io...` escape hatch from AGENTS §4.2 (it rewrites `Cargo.lock`; restore it before committing).
 - The root `.cargo/config.toml` forces `rustc-wrapper = "sccache"`; without it cargo fails immediately. This is intentional; do not bypass it.
 - `jobs = 4` is a memory fallback; override it with `CARGO_BUILD_JOBS` when memory allows. **Never set `CARGO_INCREMENTAL=1`**, because sccache refuses to run.
 - Cross-repo contracts and real interop are verified in the test repo's `wasmnest-test/cross-end-tests` (wire / permission-vocabulary / mDNS locks + cross-end scenarios).
@@ -146,7 +150,7 @@ cd ../wasmnest-headless-host-probe && cargo test
 | --- | --- |
 | Development navigation and hard constraints | [AGENTS.md](./AGENTS.md) |
 | Contract package name / version source | `wasmnest-contract/src/lib.rs` |
-| Core / domain WIT | `wasmnest-wasm-core/wit/core.wit` + `wit/worker.wit` and each domain's `wit/<domain>.wit` (mdns / pty / http / peer / ws / notify) |
+| Core / domain WIT | `wasmnest-wasm-core/wit/core.wit` + `wit/worker.wit` and each domain's `wit/<domain>.wit` (mdns / pty / http / peer / tunnel / ws / notify / clipboard) |
 | Permission vocabulary source | `wasmnest-wasm-core/src/permission.rs` |
 | Main database schema | `wasmnest-wasm-core/src/db/schema.sql` |
 | Cross-repo locks (wire / permissions / mDNS) | Test repo `wasmnest-test/cross-end-tests/tests/{wire_drift_locks,permission_vocabulary_lock,mdns_browse_singleton_lock}.rs` |
@@ -156,7 +160,7 @@ cd ../wasmnest-headless-host-probe && cargo test
 ## 9. Project Status
 
 - Early development, version line `0.0.1`; no external ABI compatibility obligations, so breaking changes are allowed directly, while cross-repo contracts are pinned by exact tags.
-- This repo has its own tag line `lib-vX.Y.Z`; releases are pinned by the platform's `release-manifest.json` together with the contract version and WIT fingerprint.
+- This repo has its own tag line `lib-vX.Y.Z`; releases are pinned by the platform's `release-manifest.json` together with the contract version, `contract.packages` (per-package versions) and the WIT fingerprint.
 - Versions and tags are bumped only for releases; day-to-day development does not bump.
 
 ## 10. License

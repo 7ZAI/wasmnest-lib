@@ -15,13 +15,14 @@
 
 - **无根 workspace**：19 个独立 crate（各自 `Cargo.toml` + 随仓库跟踪的 `Cargo.lock`）+ 4 个夹具 crate。命令一律在 crate 目录执行，不存在「仓级 cargo test」。
 - **版本线**：全部 crate 自 `0.0.1` 重开；契约版本 `wasmnest:plugin@0.1.0` 唯一手写真源在 `wasmnest-contract`（该 crate 同时是**零依赖共享词汇**：包名 / 版本 + 跨层护栏常量）。
+- **WIT 按包拆分**：`wasmnest:plugin@0.1.0`（core import + guest 导出面）+ 各域包独立版本（`wasmnest:{mdns,pty,peer,tunnel,http,ws,notify,clipboard}@0.0.1`）；改哪个包 bump 哪个包，平台 `release-manifest.json` 的 `contract.packages` 逐包钉版本。
 - **消费方式**：平台双端宿主与测试仓经 sibling path 直接依赖本仓工作树（本仓不复制、不发布到 registry；唯一例外是 `wasmnest-wasm-core` 的 `desktop-assembly` 对桌面 SDK `wasmnest-plugin-api` 的版本依赖，消费侧用 `[patch.crates-io]` 指回 SDK 工作树）。
 
 ## 2. 依赖分层
 
 能力 crate 默认形态 = **纯引擎机制 + 端口抽象**（零 WIT / 零 SDK / 零 wasmtime / **零宿主框架（Tauri、actix）/ 零 bundled SQLite / 零系统信息采集与文件监听**），任何宿主可直接引用；`common-host` feature 才装配 WIT 绑定层。判据可执行：`sh scripts/check-default-form-deps.sh`（CI 同一条命令）。
 
-> **边界声明**：`wasmnest-server-http` / `-websocket` / `-core` 与 `wasmnest-wasm-core` **不在**上述承诺内——前三个默认形态仍带 actix（`server-core` 另带 rusqlite），`wasm-core` 仍带 Tauri / actix；它们的解耦是后续票据（P1/P2），本文不再把它们描述为「任何宿主可直接引用」。
+> **边界声明**：`wasmnest-server-http` / `-websocket` / `-core` 与 `wasmnest-wasm-core` **不在**上述承诺内——前三个默认形态仍带 actix（`server-core` 另带 rusqlite），`wasm-core` 仍带 Tauri / actix / rusqlite；它们的解耦是后续票据（P1/P2），本文不再把它们描述为「任何宿主可直接引用」。
 
 依赖方向自上而下，横向边由各 crate 的 `dependency_direction_lock.rs` / `boundary_lock.rs` 钉死：
 
@@ -50,7 +51,8 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 | `wasmnest-server-core` | **跨传输**的 server 内核：supervisor / 过滤链 / link_crypto / metrics / `TransportFace` + actix 组合运行时（`serve`）；仍带 actix / rusqlite（P1 再拆） | 无 feature | — | 平台双端装配、http/ws 向下依赖、测试仓 |
 | `wasmnest-server-http` | HTTP 传输面 + `host-http` 绑定层（端点注册表 / 网关 / 中间件 / DTO 锚点） | `default = []`；`common-host` | `wit/http.wit` | 桌面宿主（common-host）、wasm-core（引擎面）、移动宿主（引擎面）、测试仓 |
 | `wasmnest-server-websocket` | WebSocket 传输面 + `host-websocket` 客户端域接线 / 服务端引擎函数 | 同上 | `wit/ws.wit`（与 ws-client-engine 共享契约分片） | 同 http |
-| `wasmnest-server-peer-net` | 对等网络**引擎域**（含底座机制 `base/`：身份/TLS/信任/mDNS 注册/传输会话引擎原语——原 `wasmnest-peer-net` 拆分并入）+ `host-peer` 绑定层（非传输面，不参与 actix 组合） | 同上 | `wit/peer.wit` | 桌面（common-host）、移动（引擎面）、wasm-core（`PeerCtx`）、测试仓 |
+| `wasmnest-server-peer-net` | 对等网络**引擎域**（含底座机制 `base/`：身份/libp2p 传输/信任/mDNS 注册/传输会话引擎原语——原 `wasmnest-peer-net` 拆分并入）+ `host-peer` 绑定层（非传输面，不参与 actix 组合） | 同上 | `wit/{peer,tunnel}.wit` | 桌面（common-host）、移动（引擎面）、wasm-core（`PeerCtx`）、测试仓 |
+| `wasmnest-p2p-engine` | **libp2p 机制引擎**：节点身份桥（node_id ↔ PeerId）/ swarm 生命周期 / 入站准入闸门 / 具名流协议与链路登记（P1 起 peer-net 传输栈消费） | `default = []`；`relay` 可选 | — | `wasmnest-server-peer-net`、测试仓 |
 | `wasmnest-discovery-engine` | mDNS 能力域：共享守护 + 类型中枢 + 浏览/广播双句柄表 + 宿主自播面 | 同上 | `wit/mdns.wit` | 桌面（common-host）、移动（引擎面）、测试仓 |
 | `wasmnest-pty-engine` | PTY 能力域 + 跨平台伪终端引擎（进程生命周期 / 读取线程 / 环形缓冲） | 同上 | `wit/pty.wit` | 桌面宿主（common-host） |
 | `wasmnest-ws-client-engine` | WS **出站客户端**能力域：句柄表 / 双任务 / 心跳 / 退避重连 / 停用回收 | 无 feature | `wit/ws.wit`（共享契约真源） | 移动宿主、测试仓 |
@@ -78,7 +80,7 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 
 - **`wasmnest-server-http`**：HTTP 传输面 + `host-http` 能力域绑定层（入站 2 + 出站 1 原语）。
 - **`wasmnest-server-websocket`**：WebSocket 传输面（连接骨架 / 插件端点通道 / 注册表 / 优雅停机）+ `host-websocket` 绑定层。
-- **`wasmnest-server-peer-net`**：对等网络**引擎域**，不是传输面——不过 actix 组合、不过过滤链、不用链路加密；mDNS 句柄以纯值经 `MdnsPort` 注入（单 listener 不变量）。产品业务（传输任务 / 策略 / 历史 / 共享根 / 浏览编排）在应用仓插件，本 crate 只留引擎原语与生命周期；底座机制（原 `wasmnest-peer-net`，2026-10-22 拆分并入 `base/`：身份/TLS/信任/mDNS 注册/传输会话引擎原语）为 crate 自身内容。
+- **`wasmnest-server-peer-net`**：对等网络**引擎域**，不是传输面——不过 actix 组合、不过过滤链、不用链路加密；mDNS 句柄以纯值经 `MdnsPort` 注入（单 listener 不变量）。产品业务（传输任务 / 策略 / 历史 / 共享根 / 浏览编排）在应用仓插件，本 crate 只留引擎原语与生命周期；底座机制（原 `wasmnest-peer-net` 拆分并入 `base/`：身份/信任/mDNS 注册/传输会话引擎原语）为 crate 自身内容，传输栈经 `wasmnest-p2p-engine`（noise/yamux 具名流）。
 - **`wasmnest-discovery-engine`**：mDNS 能力域。全进程共享守护只允许 `engine.rs` 创建一次；对同一服务类型只允许 `type_hub.rs` 调 `daemon.browse` / `stop_browse`（重复 browse 会静默杀死别人的事件流）。
 - **`wasmnest-pty-engine`**：PTY 能力域（`host-pty` 6 原语）+ 插件私有伪终端引擎面。引擎面跨平台零 wasm；只接受调用方算好的 argv，不做 shell 包装；输出走环形缓冲 + 水印通知。
 
@@ -86,11 +88,12 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 
 - **`wasmnest-server-base`** 是叶子地基：默认依赖树只依赖零依赖契约仓（无 tauri / rusqlite / notify / link-crypto / mdns-sd / sysinfo）。`tauri-compat` / `mdns` / `system-info` 三个 feature **默认关**，由消费方显式开启（桌面宿主开全部三项，`server-peer-net` 开 `mdns`）；不开时边界处显式 `map_err`（孤儿规则）。改它的依赖面影响全仓（含无头宿主）。
 - **`wasmnest-server-core`** 跨传输（**不是**传输无关）：supervisor / 过滤链 / link_crypto / metrics / `TransportFace` + actix 组合运行时 `serve`，依赖倒置；http / ws 只向下依赖它，彼此零横向 import，也不得反向认识宿主。默认依赖树仍带 actix / rusqlite（P1 再拆）。
-- 传输面（http / websocket）是唯一被允许使用 actix 的 crate 层。
+- 能力域默认形态禁止 actix；传输面、`server-core`（组合运行时）与 `wasm-core` 是例外。
 
 ### 4.4 底座、独立能力域与契约房
 
-- **对等网络底座机制**（原 `wasmnest-peer-net` crate，2026-10-22 peer-net-dissolve 拆分并入 `wasmnest-server-peer-net` 的 `base/`）：重装即新身份（与设备身份刻意分离）；证书公钥即节点公钥、指纹即身份（`node_id = hex(SHA-256(raw ed25519 key))`）；未信任拨入停应用层确认闸门；`_wasmnest-peer._tcp.local.` 与终端链路旧 `_wasmnest._tcp` 完全独立。
+- **对等网络底座机制**（原 `wasmnest-peer-net` crate 拆分并入 `wasmnest-server-peer-net` 的 `base/`）：重装即新身份（与设备身份刻意分离）；libp2p noise 身份公钥即节点公钥、指纹即身份（`node_id = hex(SHA-256(raw ed25519 key))`，PeerId 经 `identity_bridge` 互验）；未信任拨入停应用层确认闸门；`_wasmnest-peer._tcp.local.` 与终端链路旧 `_wasmnest._tcp` 完全独立。
+- **`wasmnest-p2p-engine`**：libp2p 机制引擎（P1 起 peer-net 传输栈）——连接怎么建 / 流怎么开 / 身份怎么验 / 闸门怎么拦；信任列表、线协议语义与 `host-peer` WIT 域留 peer-net。零内部 crate 依赖，`relay` feature（Circuit Relay v2 客户端）可选。
 - **`link-crypto`**：链路报文加密协议核心，只做纯字节协议。常量与算法是协议兼容性表面，与移动 TS 实现逐字节一致——改常量 = 跨端破坏性变更。
 - **`wasmnest-ws-client-engine`**：WS 出站客户端能力域（`host-websocket` 客户端子集 5 原语 + 停用回收）。平台差（权限门 / 投递 / 后台任务 / jwt 代发 / 退避）全经 `WsClientPorts` 注入；生产清单零内部 crate 依赖。
 - **`wasmnest-crypto-engine`**：只暴露无业务语义的中性算法原语；不做认证编排 / 协商 / 密钥策略；密钥材料一律由调用方提供，不触碰宿主身份密钥。自带 `CryptoError`（`Display` 返回旧文案原文），零内部 crate 依赖——映射回信封错误是消费方边界的显式责任。
@@ -131,11 +134,12 @@ wasmnest-test/   测试仓：跨端真实互连 + 跨仓契约锁
 本仓**无根 workspace**，命令一律在 crate 目录执行：
 
 ```bash
-cd wasmnest-wasm-core && cargo test
-cd ../wasmnest-host-kit && cargo test
-cd ../wasmnest-headless-host-probe && cargo test
+cd wasmnest-host-kit && cargo test --offline
+cd ../wasmnest-server-base && cargo test --offline
+cd ../wasmnest-headless-host-probe && cargo test --offline
 ```
 
+- `wasmnest-wasm-core` 不能直接 `cargo test`：`desktop-assembly` 依赖未发布的 `wasmnest-plugin-api`，需按 AGENTS §4.2 的 `--config patch.crates-io...` 逃生阀（会改写 `Cargo.lock`，提交前还原）。
 - 根 `.cargo/config.toml` 强制 `rustc-wrapper = "sccache"`；未安装时 cargo 直接失败，这是显性设计，不要绕过。
 - `jobs = 4` 是内存兜底；内存充足时用 `CARGO_BUILD_JOBS` 覆盖。**不要设 `CARGO_INCREMENTAL=1`**，sccache 会拒绝执行。
 - 跨仓契约与真实互连验证在测试仓 `wasmnest-test/cross-end-tests`（wire / 权限词汇 / mDNS 锁 + 跨端场景）。
@@ -146,7 +150,7 @@ cd ../wasmnest-headless-host-probe && cargo test
 | --- | --- |
 | 开发导航与硬约束 | 本仓 [AGENTS.md](./AGENTS.md) |
 | 契约包名 / 版本真源 | `wasmnest-contract/src/lib.rs` |
-| 核心 WIT / 域 WIT | `wasmnest-wasm-core/wit/core.wit` + `wit/worker.wit`、各能力域 `wit/<domain>.wit`（mdns / pty / http / peer / ws / notify） |
+| 核心 WIT / 域 WIT | `wasmnest-wasm-core/wit/core.wit` + `wit/worker.wit`、各能力域 `wit/<domain>.wit`（mdns / pty / http / peer / tunnel / ws / notify / clipboard） |
 | 权限词汇真源 | `wasmnest-wasm-core/src/permission.rs` |
 | 主库 schema | `wasmnest-wasm-core/src/db/schema.sql` |
 | 跨仓锁（wire / 权限 / mDNS） | 测试仓 `wasmnest-test/cross-end-tests/tests/{wire_drift_locks,permission_vocabulary_lock,mdns_browse_singleton_lock}.rs` |
@@ -156,7 +160,7 @@ cd ../wasmnest-headless-host-probe && cargo test
 ## 9. 项目状态
 
 - 研发起步期，版本线 `0.0.1`；无对外 ABI 兼容义务，破坏性变更可直接进行，但跨仓契约按精确 tag 钉住。
-- 本仓独立 tag 线 `lib-vX.Y.Z`；发布时由平台仓 `release-manifest.json` 钉住精确 tag，并同步契约版本与 WIT 指纹。
+- 本仓独立 tag 线 `lib-vX.Y.Z`；发布时由平台仓 `release-manifest.json` 钉住精确 tag，并同步契约版本、`contract.packages`（逐包版本）与 WIT 指纹。
 - 只有发布时才 bump 版本号 / 打 tag；日常开发不 bump。
 
 ## 10. 许可证
