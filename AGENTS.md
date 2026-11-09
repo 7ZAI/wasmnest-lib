@@ -347,6 +347,10 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 - 不新增旁路认证 / 静默降级；失败一律 fail-closed 或 fail-visible（端口缺席 / 未声明权限的 WIT 调用 / 非法 JSON 载荷都要显性失败）。
 - 对等网络：指纹即身份（双向 verifier 真实签名验证）；未信任方停应用层确认闸门；不要为「好用」加静默信任。
 
+### 6.7 Rust 编写与审核（强制 skill）
+
+> **规则**：本仓全是 Rust——任何 crate / 模块 / `Cargo.toml` / 测试 / rustdoc / unsafe 的**编写与审核**，动手前与完成审核时**必须**显式加载并遵循 `/skill:rust-best-practices`（skill 落点 `~/.agents/skills/rust-best-practices/SKILL.md`）；未加载即开始写或评审 = 流程违规，视为未完成交付 / 无效评审。该 skill 是通用惯用法与 API 设计判据层（占 §0 裁决第 5 档「通用工程经验」），与本仓硬约束（§2 契约 / §3 形态不变量 / §6 各节 / crate 根 `rustfmt.toml`）冲突时**以本仓为准**；其自带的自检命令（fmt / clippy）不替代 §4.3 的测试与锁门禁。
+
 ---
 
 ## 7. 完成定义
