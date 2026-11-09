@@ -187,7 +187,7 @@ pub struct WorkerDecl {
     /// 读盘比对；装载入口只保文件存在性，不重复算摘要。
     #[serde(default)]
     pub wasm_hash: String,
-    /// 单 worker 资源覆盖请求（缺省继承缺省档：内存 128 MiB、燃料与主插件同基数；
+    /// 单 worker 资源覆盖请求（缺省继承缺省档：内存 64 MiB、燃料与主插件同基数；
     /// 六字段可逐 worker 覆盖，与主插件 `resourceOverrides` 同形）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_overrides: Option<ResourceOverrides>,

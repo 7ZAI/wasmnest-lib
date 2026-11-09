@@ -152,7 +152,7 @@ pub const PLUGIN_HTTP_TIMEOUT_SECS: u64 = 120;
 /// serde 解析（guest 指令，消耗单次导出调用 fuel 预算）。无上限响应体可能耗尽
 /// fuel 触发 trap 污染 Store（`CannotEnterComponent`）；大载荷必须走
 /// `stream:true` 流式模式（宿主后台任务经事件逐 chunk 推送，不经 guest 内存）。
-/// 32MB 对目录列举/元数据绰绰有余（guest 解析约几 G 指令，远低于 FUEL_PER_CALL 64G）。
+/// 32MB 对目录列举/元数据绰绰有余（guest 解析约几 G 指令，远低于 FUEL_PER_CALL 32G）。
 pub const PLUGIN_HTTP_RESPONSE_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 
 /// 单插件可注册 HTTP 端点数量上限（ABI v29 服务端域）：超限 `register-endpoint`
@@ -352,7 +352,7 @@ pub const PLUGIN_WORKER_MAX_CONCURRENT_PER_PLUGIN: usize = 4;
 
 /// 单个 manifest 可声明的 worker 条目数上限（装载期结构校验）
 ///
-/// 每个条目都是一个独立 Store 的潜在实例化目标（默认 128 MiB 档、per-plugin 并发 4），
+/// 每个条目都是一个独立 Store 的潜在实例化目标（默认 64 MiB 档、per-plugin 并发 4），
 /// 条数不设上限等于把宿主资源面交给清单——装载期挡在实例化之前，取值留出
 /// 「并发档位 × 2」的池化余量。
 pub const PLUGIN_WORKER_DECLARATIONS_MAX: usize = 8;

@@ -587,9 +587,9 @@ mod tests {
     #[test]
     fn defaults_match_legacy_constants() {
         let cfg = CoreConfig::default();
-        assert_eq!(cfg.store.fuel_per_call, 64_000_000_000);
+        assert_eq!(cfg.store.fuel_per_call, 32_000_000_000);
         assert_eq!(cfg.store.fuel_debug_multiplier, 32);
-        assert_eq!(cfg.store.max_memory_bytes, 128 * 1024 * 1024);
+        assert_eq!(cfg.store.max_memory_bytes, 64 * 1024 * 1024);
         assert_eq!(cfg.store.max_table_entries, 1_000_000);
         assert_eq!(cfg.store.max_wasm_stack_bytes, 512 * 1024);
         assert_eq!(cfg.store.max_instances, 8);
@@ -597,7 +597,7 @@ mod tests {
         assert_eq!(cfg.store.max_tables, 16);
         assert!(cfg.engine.consume_fuel);
         assert_eq!(cfg.engine.wasm_backtrace_max_frames, 32);
-        assert_eq!(cfg.engine.memory_reservation_bytes, 128 * 1024 * 1024);
+        assert_eq!(cfg.engine.memory_reservation_bytes, 64 * 1024 * 1024);
         assert!(cfg.engine.compile_cache);
         cfg.validate().expect("默认配置必须合法");
     }

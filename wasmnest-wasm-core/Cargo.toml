@@ -133,7 +133,9 @@ wasmnest-plugin-api = { version = "0.0.1", optional = true }
 # 2026-10-22 peer-net-dissolve：`wasmnest-peer-net` 已拆分并入
 # `wasmnest-server-peer-net`（本 crate 的 PeerCtx 消费链本就指向后者），此死依赖删除
 # 链路报文加密协议核心（link_crypto 算法）——双端共享
-wasmnest-link-crypto = { path = "../link-crypto", version = "0.0.1" }
+# 2026-11-07 死依赖删除：本 crate 源码对 `wasmnest_link_crypto` 零引用（唯一命中是
+# `src/manifest.rs` 的一处注释）。真实消费方是 server-core 的 `link_crypto` 宿主模块
+# 与双端宿主的 HTTP 代理直连——链路密文协议面不属内核机制面（AGENTS §3.4）。
 
 # 能力模块自报（inventory::submit! / collect!）
 inventory = "0.3"
@@ -171,7 +173,9 @@ dirs = "6.0.0"
 # 本 crate 只保留与后端无关的 `stream`（body 流类型），不锁任何 TLS 后端。
 reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 # 数据库
-rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
+# `limits`：插件私有库连接把 `SQLITE_LIMIT_ATTACHED` 钉成 0（2026-11-09 审核 2.1：
+# guest SQL 不得用 ATTACH 把任意文件挂到本连接上——绕过 fs_auth 的文件授权模型）
+rusqlite = { version = "0.32", features = ["bundled", "hooks", "limits"] }
 # 用户插件 zip 解压安装
 zip = "4.6"
 # 随机数 / 编码（通用原语，随整核保留）
