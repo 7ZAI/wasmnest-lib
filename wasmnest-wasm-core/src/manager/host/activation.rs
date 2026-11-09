@@ -916,6 +916,22 @@ impl PluginHost {
         // 回调队列已摘除），补上这个次序小窗。
         crate::manager::task::purge_for_plugin(plugin_id);
 
+        // 插件派生进程（`process_run`）随停用回收：停用是唯一销毁点，不依赖
+        // guest 自己 `process_kill`（guest 清理可能被跳过或失败）。放在 guest
+        // 清理之后、撤权之前：guest 清理期仍可自行 kill / 读取进程结果。
+        let killed = self
+            .wasm_host_ctx
+            .process_registry()
+            .kill_all_for(plugin_id)
+            .await;
+        if killed > 0 {
+            tracing::warn!(
+                plugin_id = %plugin_id,
+                killed,
+                "plugin deactivate: killed running process groups"
+            );
+        }
+
         // 统一清理：取消注册和撤销权限
         self.registry.unregister_plugin(plugin_id).await;
         self.permission.revoke_all(plugin_id);

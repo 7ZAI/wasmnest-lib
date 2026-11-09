@@ -52,6 +52,12 @@ pub fn validate_manifest_required(manifest: &PluginManifest) -> crate::Result<()
     // 装载期经 `DomainHooks::on_manifest_load` 由 `wasmnest-pty-engine` 自解析、自仲裁，
     // 越界即拒绝装载（`Err` ⇒ 不装载）——内核不再解释该字段（AGENTS §5.1 B6）。
     // 本函数只保住两处入口（目录扫描 / zip 安装）共用的结构性必填字段。
+    // `rustLibrary` 是拼插件目录内 wasm 路径的唯一输入：必须是单段文件 stem，
+    // 否则 `Path::join` 可被绝对路径 / `..` 替换基路径（目录外 wasm 不在审批
+    // 哈希的钉扎范围内）。
+    if !manifest.rust_library.is_empty() {
+        validate_rust_library_name(&manifest.rust_library)?;
+    }
     // 运行期传输租约的 opt-in 必须与入站权限位同声明（两侧入口同口径）。
     validate_background_transport(manifest)?;
     // worker 声明的结构面（name 唯一 / file 形状）：双端同机制（ADR 0059），
@@ -68,6 +74,28 @@ pub fn validate_manifest_required(manifest: &PluginManifest) -> crate::Result<()
         validate_lifecycle(manifest)?;
         validate_preopen_category(manifest)?;
         validate_platform(manifest)?;
+    }
+    Ok(())
+}
+
+/// 校验 manifest `rustLibrary` 是单段文件 stem（不含路径成分）
+///
+/// `rustLibrary` 会被拼成 `插件目录/{rustLibrary}.wasm`。`Path::join` 遇绝对路径
+/// 会替换基路径、`..` 可逃逸；审批哈希只覆盖插件目录，指向目录外的 wasm 不在
+/// 钉扎范围内——用户批准“目录内良性 wasm”后实际加载的可能是别处的产物。
+///
+/// 空串合法（纯前端插件）；非空必须是单段文件名，拒绝 `/` `\` `:`（Windows
+/// 盘符/ADS）、`.`、`..` 与任何以 `.` 开头的隐藏名。装载期另做 canonicalize
+/// 检查（防符号链接），此处是安装/装载共用的第一道门。
+pub fn validate_rust_library_name(name: &str) -> crate::Result<()> {
+    if name.chars().any(|c| matches!(c, '/' | '\\' | ':'))
+        || name == "."
+        || name == ".."
+        || name.starts_with('.')
+    {
+        return Err(crate::AppError::Plugin(format!(
+            "plugin.json rustLibrary must be a single file stem (no path separators): {name:?}"
+        )));
     }
     Ok(())
 }
@@ -177,7 +205,7 @@ pub fn validate_preopen_category(manifest: &PluginManifest) -> crate::Result<()>
 /// 校验 manifest 声明的内嵌 worker 条目的结构面（worker 机制 / ADR 0059，双端同机制）
 ///
 /// - **条目数上限**：`PLUGIN_WORKER_DECLARATIONS_MAX`——每个条目都是一个独立 Store
-///   的潜在实例化目标（默认 128 MiB 档），条数不设上限等于把宿主资源面交给清单；
+///   的潜在实例化目标（默认 64 MiB 档），条数不设上限等于把宿主资源面交给清单；
 /// - **name 在同一清单内唯一**：`host-worker.submit(worker)` 按名寻址，重名会让
 ///   第二个声明永远不可达——静默忽略重名等于让作者以为两个 worker 都存在；
 /// - **name / file 非空**：空 name 无法寻址、空 file 无法定位，均为结构性必填；
@@ -193,7 +221,7 @@ pub fn validate_worker_declarations(manifest: &PluginManifest) -> crate::Result<
     if manifest.workers.len() > max {
         return Err(crate::AppError::Plugin(format!(
             "plugin.json workers[] 共 {} 条，超过上限 {max}：每个 worker 都是一次独立 \
-             Store 的实例化目标（默认 128 MiB 档），条数必须收敛",
+             Store 的实例化目标（默认 64 MiB 档），条数必须收敛",
             manifest.workers.len()
         )));
     }
@@ -448,6 +476,34 @@ pub fn validate_dir_binding(dir_name: &str, manifest_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rust_library_must_be_single_file_stem() {
+        for ok in ["bedcode_plugin", "a", "plugin-1"] {
+            assert!(
+                validate_rust_library_name(ok).is_ok(),
+                "{ok:?} 应为合法 stem"
+            );
+        }
+        for bad in [
+            "/tmp/evil",
+            "../evil",
+            "..",
+            ".",
+            ".hidden",
+            "a/b",
+            "a\\b",
+            "C:evil",
+            "a:b",
+        ] {
+            let err = validate_rust_library_name(bad).expect_err("路径成分必须被拒绝");
+            let text = err.to_string();
+            assert!(
+                text.contains("rustLibrary") && text.contains(&format!("{bad:?}")),
+                "错误必须点名字段与取值，got: {text}"
+            );
+        }
+    }
 
     #[test]
     fn test_valid_ids() {

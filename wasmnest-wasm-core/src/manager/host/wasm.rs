@@ -51,6 +51,24 @@ impl PluginHost {
                 None,
             );
         }
+        // 双保险（第一道 = manifest 校验拒绝路径成分）：目录内符号链接仍可把
+        // `{rustLibrary}.wasm` 指到目录外，而审批哈希只覆盖插件目录内容。
+        if !wasm_path_inside_plugin_dir(Path::new(&loaded.extension_path), &wasm_path) {
+            tracing::error!(
+                plugin_id = %manifest.id,
+                path = %wasm_path.display(),
+                "WASM module escapes plugin dir; plugin kept as Error state"
+            );
+            return (
+                LoadedPlugin {
+                    state: PluginState::Error {
+                        error: format!("WASM module escapes plugin dir: {}", wasm_path.display()),
+                    },
+                    ..loaded.clone()
+                },
+                None,
+            );
+        }
 
         match self.wasm_runtime.load_plugin_from_file(
             &wasm_path,
@@ -179,6 +197,12 @@ impl PluginHost {
         let plugin_dir = Path::new(&extension_path);
         let wasm_filename = format!("{}.wasm", rust_library);
         let wasm_path = plugin_dir.join(&wasm_filename);
+        if !wasm_path_inside_plugin_dir(plugin_dir, &wasm_path) {
+            return Err(crate::AppError::Plugin(format!(
+                "WASM module escapes plugin dir: {}",
+                wasm_path.display()
+            )));
+        }
 
         // 先停旧属主再动 map（I3③：旧实例的 store 丢弃后才做后续回收；
         // 禁止先替换 Arc——那会让旧属主与资源回收竞争）
@@ -262,4 +286,19 @@ impl PluginHost {
         tracing::info!(plugin_id = %plugin_id, "WASM plugin hot-reloaded successfully");
         Ok(())
     }
+}
+
+/// 最终 wasm 路径 canonicalize 后是否仍在插件目录内（防符号链接逃逸）
+///
+/// manifest 校验已拒绝路径分隔符 / `..`；本检查是装载期双保险：插件目录里的
+/// 符号链接仍可把 `{rustLibrary}.wasm` 指到目录外。canonicalize 失败（路径
+/// 不存在 / 环）按不安全处理。
+fn wasm_path_inside_plugin_dir(plugin_dir: &Path, wasm_path: &Path) -> bool {
+    let Ok(root) = plugin_dir.canonicalize() else {
+        return false;
+    };
+    let Ok(file) = wasm_path.canonicalize() else {
+        return false;
+    };
+    file.starts_with(&root)
 }
