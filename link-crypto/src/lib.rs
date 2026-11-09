@@ -43,6 +43,9 @@ pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
 /// 线上信封版本与协商头 "vN" 前缀共用此源
 pub const PROTOCOL_VERSION: u8 = 1;
 
+/// 协商头版本前缀（与 [`PROTOCOL_VERSION`] 必须同步；下方单测钉住）
+const NEGOTIATION_VERSION_PREFIX: &str = "v1";
+
 /// 链路加密协商头：HTTP 请求/响应与 WS 升级请求/101 响应共用
 ///
 /// - HTTP 请求：`v1 <客户端临时公钥>`；HTTP 响应：`v1`（响应密钥由请求派生）
@@ -192,9 +195,7 @@ pub(crate) fn hkdf_sha256(
 pub fn parse_negotiation(negotiation: &str) -> Option<&str> {
     let mut parts = negotiation.trim().split_whitespace();
     match (parts.next(), parts.next(), parts.next()) {
-        (Some(v), Some(ek), None) if *v == format!("v{PROTOCOL_VERSION}") && !ek.is_empty() => {
-            Some(ek)
-        }
+        (Some(v), Some(ek), None) if v == NEGOTIATION_VERSION_PREFIX && !ek.is_empty() => Some(ek),
         _ => None,
     }
 }
@@ -426,6 +427,11 @@ mod tests {
     /// 协商头解析：仅接受 "v1 <非空 ek>"
     #[test]
     fn negotiation_parsing_accepts_only_v1_pair() {
+        assert_eq!(
+            NEGOTIATION_VERSION_PREFIX,
+            format!("v{PROTOCOL_VERSION}"),
+            "版本前缀必须与 PROTOCOL_VERSION 同步"
+        );
         assert_eq!(parse_negotiation("v1 QUJD"), Some("QUJD"));
         assert_eq!(parse_negotiation("  v1   QUJD  "), Some("QUJD"));
         assert_eq!(parse_negotiation("v2 QUJD"), None);

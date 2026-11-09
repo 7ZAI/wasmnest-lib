@@ -52,6 +52,22 @@ pub enum PeerNetError {
         source: serde_json::Error,
     },
 
+    /// 创建身份文件失败（首启 `create_new` 抢占）
+    #[error("create node identity file failed: {path}: {source}")]
+    IdentityCreate {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// 写入身份文件失败（首启 create_new 后的 write / sync）
+    #[error("write node identity file failed: {path}: {source}")]
+    IdentityWrite {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     /// 写入临时文件失败（原子写第一步）
     #[error("write node identity temp file failed: {path}: {source}")]
     IdentityWriteTemp {

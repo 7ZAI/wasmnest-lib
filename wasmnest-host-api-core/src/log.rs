@@ -59,12 +59,19 @@ impl Callsite for PluginLogCallsite {
 ///
 /// `Event::dispatch` 要求 Metadata 为 `'static`，而插件 file 是 WASM 线性内存
 /// 中的运行时字符串，首次出现时泄漏一份（Box::leak）转为 `'static` 复用。
-/// 插件日志调用点数量有限（每个插件几十个），缓存有界，不会无限增长。
+/// **信任边界**：键必须是宿主派生的有限词汇（见 [`plugin_log_metadata`]）；
+/// 当前生产调用恒为 `("", 0)`，实际条目 ≤ 4。
 static PLUGIN_LOG_META_CACHE: OnceLock<
     Mutex<HashMap<(String, u32, Level), &'static Metadata<'static>>>,
 > = OnceLock::new();
 
 /// 获取（或缓存构造）指定插件调用点的日志 Metadata
+///
+/// # 信任边界
+/// `file` / `line` 必须是宿主侧派生的**有限词汇**（如编译期常量或 `""` / `0`），
+/// 不得直接透传 guest 提供的任意字符串——本缓存按 `(file, line, level)` 泄漏式
+/// 驻留（`Box::leak` 转 `'static`），无界键 = 无界宿主堆增长。当前 WIT host-log 面
+/// 不携带调用点参数，生产调用恒为 `("", 0)`。
 pub fn plugin_log_metadata(level: Level, file: &str, line: u32) -> &'static Metadata<'static> {
     let cache = PLUGIN_LOG_META_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());

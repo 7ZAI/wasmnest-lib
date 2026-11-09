@@ -238,7 +238,7 @@ async fn serve_on(
         KeepAlive::Timeout(Duration::from_secs(config.keep_alive_secs))
     };
 
-    let faces_for_metrics: Arc<Vec<Arc<dyn TransportFace>>> = faces.into();
+    let faces_shared: Arc<Vec<Arc<dyn TransportFace>>> = faces.into();
     let face_for_inject = face.clone();
     let resolver_for_inject = resolver.clone();
 
@@ -251,7 +251,7 @@ async fn serve_on(
 
         let face = face_for_inject.clone();
         let resolver = resolver_for_inject.clone();
-        let faces = Arc::clone(&faces_for_metrics);
+        let faces = Arc::clone(&faces_shared);
         App::new()
             .wrap(cors)
             .wrap(actix_web::middleware::Logger::default())
@@ -277,7 +277,7 @@ async fn serve_on(
                 apply_face_wraps(req, srv, faces.clone())
             }))
             .configure(|cfg| {
-                for face in faces_for_metrics.iter() {
+                for face in faces_shared.iter() {
                     face.configure(cfg);
                 }
             })

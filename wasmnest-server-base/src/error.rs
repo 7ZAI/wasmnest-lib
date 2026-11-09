@@ -1,8 +1,6 @@
-//! Error types for Claude Code Remote
+//! `WasmNest` server 错误类型（错误信封 ADR 0030 的真源）
 //!
-//! 共享错误类型 - 桌面端和移动端都可用
-//!
-//! 桌面端专属：错误信封（ADR 0030）——跨进程失败一律承载为 `{ code, request_id, params? }`，
+//! 桌面端专属：错误信封——跨进程失败一律承载为 `{ code, request_id, params? }`，
 //! 技术详情（原文 / anyhow 链 / 堆栈）**永不出产生方进程**；移动端不跟演（error.rs 独立副本）。
 
 use rand::Rng;
@@ -20,9 +18,6 @@ pub use wasmnest_contract::DEFAULT_ERROR_CODE;
 
 #[derive(Error, Debug)]
 pub enum AppError {
-    #[error("Session error: {0}")]
-    Session(String),
-
     /// 数据库错误（技术详情已是字符串）
     ///
     /// 2026-11-08（P0 默认形态依赖边界）：原本是 `Database(#[from] rusqlite::Error)`，
@@ -149,7 +144,8 @@ impl Serialize for AppError {
 /// 跨边界失败（IPC 信封 / 事件信封）共用这一个生成器：同一形态便于按值 grep
 pub fn new_request_id() -> String {
     let mut rng = rand::thread_rng();
-    (0..8).map(|_| format!("{:x}", rng.gen_range(0..16u8))).collect()
+    // 单次 32bit 随机数 → 定长 8 位小写 hex（形状不变，碰撞概率优于逐字符 4bit）
+    format!("{:08x}", rng.gen::<u32>())
 }
 
 /// 事件通道错误信封（ADR 0030 决定 7：事件与 IPC 同形状）

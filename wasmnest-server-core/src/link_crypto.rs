@@ -434,10 +434,14 @@ impl std::fmt::Debug for LinkIdentity {
 
 impl LinkIdentity {
     /// 加载或生成身份密钥：
-    /// - 目录下无文件 → 生成新密钥对并落盘（首次启动）；
-    /// - 文件存在且合法 → 加载（重启后指纹不变，pin 不失效）；
-    /// - 文件存在但损坏/版本不符 → 报错拒绝重建：静默换钥会让移动端 pin 全部
+    /// - 目录下无文件 → 原子创建新密钥对并落盘（首次启动）；
+    /// - 文件已存在（含并发首启的输家）→ 加载既有身份（弃用本次生成）；
+    /// - 文件存在且损坏/版本不符 → 报错拒绝重建：静默换钥会让移动端 pin 全部
     ///   失效，宁可本次启动禁用加密并由用户显式处理。
+    ///
+    /// 生成路径先写同目录唯一 tmp，再 `hard_link` 发布到正式名（目标已存在即失败）：
+    /// 并发的两个首启不会各写一份不同密钥（后到者回退加载既有身份，内存指纹与磁盘
+    /// 密钥始终一致），读者也永远看不到半截 JSON（进程中途被杀只留下 tmp）。
     pub fn load_or_create(dir: &Path) -> Result<Self> {
         let path = dir.join(IDENTITY_FILE);
         if path.exists() {
@@ -451,7 +455,47 @@ impl LinkIdentity {
         };
         let json = serde_json::to_string_pretty(&file)
             .map_err(|e| AppError::Internal(format!("serialize link identity failed: {e}")))?;
-        std::fs::write(&path, json).map_err(|e| AppError::Internal(format!("write {}: {e}", path.display())))?;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let tmp = path.with_extension(format!("{}.{nanos}.tmp", std::process::id()));
+
+        use std::io::Write;
+        let mut opened = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| AppError::Internal(format!("create {}: {e}", tmp.display())))?;
+        // 私钥文件限属主可读（与 peer-net 身份文件同模式）
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            opened
+                .set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| AppError::Internal(format!("chmod {}: {e}", tmp.display())))?;
+        }
+        let written = opened
+            .write_all(json.as_bytes())
+            .and_then(|_| opened.sync_all())
+            .map_err(|e| AppError::Internal(format!("write {}: {e}", tmp.display())));
+        drop(opened);
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+
+        let published = match std::fs::hard_link(&tmp, &path) {
+            Ok(()) => Ok(true),
+            // 并发初始化已有人写盘：加载既有身份，丢弃本次生成
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(AppError::Internal(format!("publish {}: {e}", path.display()))),
+        };
+        let _ = std::fs::remove_file(&tmp);
+        if !published? {
+            return Self::load(&path);
+        }
         tracing::info!(file = %path.display(), "link crypto identity generated");
         Self::from_keypair(keypair)
     }
@@ -1267,8 +1311,8 @@ impl LinkEncryptionFilter {
 
 /// 链路加密过滤器（转换型）
 ///
-/// 注册进全局责任链后对所有通道的收发载荷生效；裁决按 `(owner, endpoint)` 的
-/// 生效策略（宿主下限 ▸ 端点声明），本地豁免流量零介入直通。
+/// 注册进全局责任链后对所有通道的收发载荷生效；裁决按 `owner` 的应用策略
+/// （`app_policy`，见模块头 §1），本地豁免流量零介入直通。
 pub struct LinkEncryptionFilter;
 
 impl TrafficFilter for LinkEncryptionFilter {
@@ -1575,6 +1619,44 @@ mod tests {
         // 重启模拟：重新加载指纹不变
         let second = LinkIdentity::load_or_create(dir.path()).unwrap();
         assert_eq!(second.fingerprint(), fp1);
+
+        // 私钥文件限属主可读（与 peer-net 身份文件同模式）
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join(IDENTITY_FILE))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "私钥文件必须 0600，实际 {mode:o}");
+        }
+        // 原子发布的 tmp 必须清理干净
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "遗留 tmp: {leftovers:?}");
+    }
+
+    /// 并发首启只产生一份身份：所有线程拿到同一指纹（不覆盖既有文件）
+    #[test]
+    fn identity_concurrent_first_start_converges() {
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let path = dir.path().to_path_buf();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                LinkIdentity::load_or_create(&path).unwrap().fingerprint().to_string()
+            }));
+        }
+        let fps: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert!(fps.windows(2).all(|p| p[0] == p[1]), "并发首启出现了不同密钥: {fps:?}");
+        assert_eq!(LinkIdentity::load_or_create(dir.path()).unwrap().fingerprint(), fps[0]);
     }
 
     #[test]

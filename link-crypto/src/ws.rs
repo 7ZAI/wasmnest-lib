@@ -29,10 +29,19 @@ pub enum Direction {
 }
 
 /// 单方向密码上下文（HKDF OKM 切片：32B key + 4B nonce 前缀）
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WsDirectionCipher {
     pub key: [u8; 32],
     pub nonce_prefix: [u8; 4],
+}
+
+impl std::fmt::Debug for WsDirectionCipher {
+    /// 手写 Debug：`key` 是会话密钥，永不进日志（`nonce_prefix` 非机密）
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsDirectionCipher")
+            .field("nonce_prefix", &self.nonce_prefix)
+            .finish_non_exhaustive()
+    }
 }
 
 /// 派生单个 WS 方向密码上下文
@@ -60,12 +69,23 @@ pub fn generate_ephemeral() -> ([u8; X25519_KEY_LEN], [u8; X25519_KEY_LEN]) {
 // ==================== 服务端握手 ====================
 
 /// 服务端握手产物：临时公钥回执 + 两方向密码
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerHandshake {
     /// 服务端临时公钥（base64，随 auth/auth_ok 回执下发）
     pub server_ek_b64: String,
     pub client_to_server: WsDirectionCipher,
     pub server_to_client: WsDirectionCipher,
+}
+
+impl std::fmt::Debug for ServerHandshake {
+    /// 手写 Debug：只打公开的临时公钥与屏蔽后的方向密码（不泄漏会话密钥）
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerHandshake")
+            .field("server_ek_b64", &self.server_ek_b64)
+            .field("client_to_server", &self.client_to_server)
+            .field("server_to_client", &self.server_to_client)
+            .finish()
+    }
 }
 
 /// 服务端双 ECDH 派生（纯函数；宿主负责身份私钥与临时密钥生命周期）
@@ -229,7 +249,10 @@ impl ClientWsCrypto {
                 crate::ORIGIN_TEXT,
             )),
         )?;
-        self.recv_seq += 1;
+        self.recv_seq = self
+            .recv_seq
+            .checked_add(1)
+            .ok_or_else(|| crate::LinkCryptoError("ws seq overflow".into()))?;
         String::from_utf8(plain)
             .map_err(|e| crate::LinkCryptoError(format!("decrypted text not utf-8: {e}")))
     }
@@ -276,7 +299,10 @@ impl ClientWsCrypto {
                 crate::ORIGIN_BINARY,
             )),
         )?;
-        self.recv_seq += 1;
+        self.recv_seq = self
+            .recv_seq
+            .checked_add(1)
+            .ok_or_else(|| crate::LinkCryptoError("ws seq overflow".into()))?;
         Ok(plain)
     }
 }

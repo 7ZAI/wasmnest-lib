@@ -37,6 +37,12 @@
 //!   pull）的引擎适配模块；插件经 host-peer `*_plugin` 转发入口逐原语调用，
 //!   传输任务快照经 `publish_bus_only` 只推 `peer:transfer` / `peer:receive`
 //!   总线 topic，插件按 batchId 归并持久化业务视图。
+//!
+//! ## 锁中毒策略
+//!
+//! 本 crate 统一采用「锁中毒即 panic（快速失败）」：中毒意味着持锁线程已 panic，
+//! 受保护状态可能半改，继续运行比显性崩溃更危险。与 `server-core` 对纯数据表
+//! 使用 `into_inner()` 恢复的口径不同——两处取舍都写在各自头注，不算漂移。
 
 /// 对等网络底座机制（原 `wasmnest-peer-net` 拆分并入，2026-10-22 peer-net-dissolve）：
 /// 身份 / libp2p 传输 / 信任 / 帧 / 节点 / 连接 / mDNS 注册 / 传输会话引擎原语 / 共享目录线协议。
@@ -180,6 +186,33 @@ impl PeerNetRuntime {
 struct PendingConsent {
     node_id: NodeId,
     reply: tokio::sync::oneshot::Sender<bool>,
+    /// 插入时刻：用于 TTL 清扫与容量逐出（闸门超时后 `reply` 已无人认领）
+    created_at: std::time::Instant,
+}
+
+/// 待应答确认表的硬上限（对端可按新身份无限重拨，必须给资源上限）
+const MAX_PENDING_CONSENTS: usize = 32;
+/// 待应答确认的保留时长：闸门 `CONFIRM_TIMEOUT`（30s）之后留缓冲
+const PENDING_CONSENT_TTL: std::time::Duration = std::time::Duration::from_secs(CONFIRM_TIMEOUT.as_secs() + 60);
+
+/// 为新弹窗腾位：先清过期项，再按插入时刻逐出最旧一条（fail-closed：
+/// 被逐出条目的 `reply` 随 drop 关闭，闸门据此按拒绝结算）
+fn admit_consent_slot(pending: &mut HashMap<String, PendingConsent>, now: std::time::Instant) {
+    pending.retain(|_, consent| now.duration_since(consent.created_at) < PENDING_CONSENT_TTL);
+    if pending.len() >= MAX_PENDING_CONSENTS {
+        if let Some(oldest) = pending
+            .iter()
+            .min_by_key(|(_, consent)| consent.created_at)
+            .map(|(request_id, _)| request_id.clone())
+        {
+            pending.remove(&oldest);
+            tracing::warn!(
+                request_id = %oldest,
+                cap = MAX_PENDING_CONSENTS,
+                "pending consent table full, evicted oldest request"
+            );
+        }
+    }
 }
 
 /// Tauri 托管的节点状态容器
@@ -735,7 +768,7 @@ pub async fn respond_peer_consent(ctx: Arc<PeerCtx>, request_id: String, accepte
         .lock()
         .expect("consent table lock poisoned")
         .remove(&request_id);
-    let Some(PendingConsent { node_id, reply }) = pending else {
+    let Some(PendingConsent { node_id, reply, .. }) = pending else {
         tracing::warn!(request_id = %request_id, "consent respond for unknown/expired request");
         return Ok(false);
     };
@@ -1398,11 +1431,13 @@ async fn drive_gate(
                 {
                     let state = &ctx.state;
                     let mut pending = state.consents.lock().expect("consent table lock poisoned");
+                    admit_consent_slot(&mut pending, std::time::Instant::now());
                     pending.insert(
                         request_id.clone(),
                         PendingConsent {
                             node_id: node_id.clone(),
                             reply,
+                            created_at: std::time::Instant::now(),
                         },
                     );
                 }
@@ -2304,5 +2339,52 @@ mod wit_package_lock {
                 super::WIT_PACKAGE
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod consent_table_tests {
+    use super::*;
+
+    fn consent() -> (PendingConsent, tokio::sync::oneshot::Receiver<bool>) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (
+            PendingConsent {
+                node_id: NodeId::parse(&format!("{}", "ab".repeat(32))).unwrap(),
+                reply: tx,
+                created_at: std::time::Instant::now(),
+            },
+            rx,
+        )
+    }
+
+    /// 表满时逐出最旧条目（fail-closed：reply 关闭 ⇒ 闸门按拒绝结算）
+    #[test]
+    fn consent_table_evicts_oldest_at_cap() {
+        let mut table = HashMap::new();
+        let old_at = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        for i in 0..MAX_PENDING_CONSENTS {
+            let (mut c, _rx) = consent();
+            c.created_at = old_at;
+            table.insert(format!("req-{i}"), c);
+        }
+        let (fresh, _rx) = consent();
+        admit_consent_slot(&mut table, std::time::Instant::now());
+        assert_eq!(table.len(), MAX_PENDING_CONSENTS - 1);
+        table.insert("fresh".into(), fresh);
+        assert_eq!(table.len(), MAX_PENDING_CONSENTS);
+        assert!(table.contains_key("fresh"));
+    }
+
+    /// 超过 TTL 的条目在下次插入前被清扫（闸门早已超时，reply 无人认领）
+    #[test]
+    fn consent_table_purges_expired_entries() {
+        let mut table = HashMap::new();
+        let (mut stale, _rx) = consent();
+        stale.created_at = std::time::Instant::now() - PENDING_CONSENT_TTL - std::time::Duration::from_secs(1);
+        table.insert("stale".into(), stale);
+        let now = std::time::Instant::now();
+        admit_consent_slot(&mut table, now);
+        assert!(table.is_empty(), "过期条目必须回收");
     }
 }

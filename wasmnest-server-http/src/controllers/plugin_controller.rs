@@ -319,7 +319,9 @@ pub(crate) fn plugin_http_unauthenticated_response(full_path: &str) -> HttpRespo
 pub async fn plugin_http_endpoint(
     req: HttpRequest,
     path: web::Path<(String, String)>,
-    body: Option<web::Json<serde_json::Value>>,
+    // 原始字节而非 Json 提取器：非法 JSON 必须回宿主业务信封（与网关面同形），
+    // 而不是 actix 原生 400——同一请求经两条转发面不得答出两版
+    body: Option<web::Bytes>,
     query: web::Query<HashMap<String, String>>,
 ) -> HttpResponse {
     let (plugin_id, endpoint_path) = path.into_inner();
@@ -385,11 +387,30 @@ pub async fn plugin_http_endpoint(
     // 老插件忽略未知字段（字段演进增量原则）
     let method = req.method().as_str();
     let request_headers = filter_plugin_request_headers(req.headers());
+    let body = match body {
+        None => serde_json::Value::Null,
+        Some(bytes) if bytes.is_empty() => serde_json::Value::Null,
+        Some(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::warn!(
+                    plugin_id = %owner,
+                    path = %full_path,
+                    error = %e,
+                    "plugin http endpoint: invalid JSON body"
+                );
+                return HttpResponse::Ok().json(ApiResponse::<()>::error(
+                    CODE_INVALID_REQUEST,
+                    &format!("Invalid JSON body: {e}"),
+                ));
+            }
+        },
+    };
     let request = PluginHttpRequest {
         endpoint_path: &endpoint_path,
         method,
         headers: request_headers,
-        body: body.map(|b| b.into_inner()).unwrap_or(serde_json::Value::Null),
+        body,
         query: serde_json::Value::Object(
             query
                 .into_inner()

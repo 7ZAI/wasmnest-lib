@@ -1,4 +1,4 @@
-//! WasmNest 插件契约包名与版本——**全仓唯一手写真源**（ADR 0051 D3/D4）
+//! `WasmNest` 插件契约包名与版本——**全仓唯一手写真源**（ADR 0051 D3/D4）
 //!
 //! 为什么是 Rust 常量而不是 JSON（票 03 实施期修正）：能力域 crate 的导出名清单走
 //! `inventory` 静态自报（`wasmnest-discovery-engine/src/routing.rs` 的
@@ -135,6 +135,10 @@ mod tests {
                 line.starts_with("[dependencies")
                     || line.starts_with("[build-dependencies")
                     || line.starts_with("[dev-dependencies")
+                    // target 专属段也是依赖面（`[target.'cfg(unix)'.dependencies]`
+                    // 以 `[target` 开头，旧判据对它全程失明）；用 contains 收窄，
+                    // 避免把 linker / rustflags 配置误伤成依赖
+                    || (line.starts_with("[target") && line.contains("dependencies"))
             })
             .collect();
         // 允许存在空的 `[dependencies]` 段（保持「零依赖」可见），但不允许任何

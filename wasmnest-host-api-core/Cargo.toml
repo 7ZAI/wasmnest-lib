@@ -30,4 +30,4 @@ serde_json = "1"
 tracing = "0.1"
 # host-database 实现层：SQLite 执行封装 + 语句超时护栏
 # （hooks feature：progress handler 是插件库超时护栏的引擎层机制，机制级依赖）
-rusqlite = { version = "0.32", features = ["hooks"] }
+rusqlite = { version = "0.32", features = ["hooks", "extra_check"] }

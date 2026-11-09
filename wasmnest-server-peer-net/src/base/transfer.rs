@@ -471,6 +471,21 @@ fn part_file_name(batch_id: &str, index: u32) -> String {
     format!(".wasmnest-transfer-{batch_id}-{index}.part")
 }
 
+/// 对端可控的 `batch_id` 参与落盘文件名：只收保守字符集与长度
+///
+/// `batch_id` 直接来自 Offer 帧，而 `.part` 会拼进 `download_dir` 下的路径；
+/// 允许 `/` / `..` 会让恶意 Offer 把临时文件写到落位目录之外（`sanitize_relative_path`
+/// 只覆盖 `meta.path`，此函数是同一不变量的另一半）。
+fn is_valid_batch_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && !id.contains("..")
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        && id != "."
+        && id != ".."
+}
+
 /// 上报一条事件；宿主已弃收通道时不阻断会话主流程
 pub(crate) async fn emit(events: &mpsc::Sender<TransferEvent>, event: TransferEvent) {
     if events.send(event).await.is_err() {
@@ -743,6 +758,12 @@ pub(crate) async fn run_receive(
             ))
         }
     };
+    if !is_valid_batch_id(&batch_id) {
+        return Err(proto_violation(
+            ROLE,
+            format!("offer carries invalid batch id: {batch_id:?}"),
+        ));
+    }
     *batch_slot = Some(batch_id.clone());
 
     // ---- 接收策略分流（spec Decision 10）----
@@ -2041,5 +2062,25 @@ mod tests {
             rate.sample_at(2 * 1024 * 1024, base + Duration::from_millis(600)),
             first
         );
+    }
+
+    #[test]
+    fn batch_id_must_be_path_safe() {
+        for ok in ["batch-1", "B_2", "a.b", "0123456789abcdef"] {
+            assert!(is_valid_batch_id(ok), "合法批 ID 被拒: {ok}");
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a/../../b",
+            "a\\b",
+            "a..b",
+            "a b",
+            "../x",
+            &"x".repeat(65),
+        ] {
+            assert!(!is_valid_batch_id(bad), "越界批 ID 被放行: {bad:?}");
+        }
     }
 }

@@ -54,6 +54,12 @@ const SUBSCRIBER_CHANNEL_CAPACITY: usize = 64;
 /// 重查合并窗（spec §2.3-D3）：周期 / 即时重查前缘吞并；新订阅者加入后缘补齐
 const MERGE_WINDOW: Duration = Duration::from_millis(100);
 
+/// 进程内同时存在的服务类型上限（每个类型一条常驻 `daemon.browse` + 泵任务）
+///
+/// 类型完全由调用方定义；没有上限时持有 mdns 权限的插件可用无限新类型把
+/// mdns-sd 的查询表与宿主任务堆满。上限与插件句柄配额（引擎侧）叠加生效。
+pub const MAX_ACTIVE_TYPES: usize = 32;
+
 /// 控制通道容量：只承载「唤醒」语义（Join / Requery / Shutdown），满即吞并
 /// （请求本身不带业务数据，重复请求等价于一次唤醒）
 const CONTROL_CHANNEL_CAPACITY: usize = 8;
@@ -239,6 +245,8 @@ pub struct TypeHubSet {
     /// 重查合并窗（生产 = [`MERGE_WINDOW`]；单测注入短窗，免真实等待）
     window: Duration,
     hubs: Mutex<HashMap<String, Arc<Hub>>>,
+    /// 同时存在的服务类型上限（生产 = [`MAX_ACTIVE_TYPES`]；单测可注入小值）
+    max_types: usize,
     next_hub_id: AtomicU64,
     next_subscriber_id: AtomicU64,
 }
@@ -250,11 +258,22 @@ impl TypeHubSet {
         spawner: Arc<dyn TaskSpawner>,
         window: Duration,
     ) -> Self {
+        Self::with_parts_and_cap(daemon, spawner, window, MAX_ACTIVE_TYPES)
+    }
+
+    /// 同 [`Self::with_parts`]，但显式指定服务类型上限（单测验配额用）
+    pub fn with_parts_and_cap(
+        daemon: Arc<dyn TypeDaemon>,
+        spawner: Arc<dyn TaskSpawner>,
+        window: Duration,
+        max_types: usize,
+    ) -> Self {
         Self {
             daemon,
             spawner,
             window,
             hubs: Mutex::new(HashMap::new()),
+            max_types,
             next_hub_id: AtomicU64::new(1),
             next_subscriber_id: AtomicU64::new(1),
         }
@@ -300,6 +319,14 @@ impl TypeHubSet {
                 // 唤醒泵重读后缘补齐窗口（命令不带数据；通道满 = 已有待处理唤醒，等价）
                 let _ = hub.control.try_send(HubCmd::Join);
                 return Ok(subscription);
+            }
+            // 建档前检查全局类型配额：新类型会新建一条常驻 browse + 泵任务
+            if hubs.len() >= self.max_types {
+                return Err(format!(
+                    "mdns type hub: active service type limit reached ({}/{})",
+                    hubs.len(),
+                    self.max_types
+                ));
             }
             // 建档：唯一 browse。**持注册表锁调用**（理由见结构体文档），
             // 失败原样上报调用方（首个订阅者拿得到错误，不静默）
@@ -1355,6 +1382,41 @@ mod tests {
         assert!(daemon.browse_calls().is_empty(), "拒绝路径不得触碰 daemon");
         assert!(!hubs.is_active(""), "被拒绝的订阅不得留下注册表行");
         assert_eq!(hubs.subscriber_count(""), 0);
+    }
+
+    /// 契约：服务类型总数达上限时，新类型必须在触网前拒绝（已有类型仍可复用）
+    #[tokio::test]
+    async fn active_service_type_limit_is_enforced_before_browse() {
+        let daemon = Arc::new(FakeDaemon::new(false));
+        let spawner = Arc::new(TestSpawner::default());
+        let hubs = Arc::new(TypeHubSet::with_parts_and_cap(
+            daemon.clone(),
+            spawner,
+            Duration::from_secs(60),
+            1,
+        ));
+
+        let (_rx_a, guard_a) = hubs
+            .subscribe("_hub-a._tcp.local.")
+            .expect("首个类型建档")
+            .into_parts();
+        let err = hubs
+            .subscribe("_hub-b._tcp.local.")
+            .err()
+            .expect("超过类型上限必须拒绝");
+        assert!(err.contains("type limit reached"), "{err}");
+        assert_eq!(
+            daemon.browse_calls(),
+            vec!["_hub-a._tcp.local.".to_string()],
+            "被配额拒绝的类型不得触发 browse"
+        );
+        // 已有类型复用不受上限影响
+        let (_rx_a2, guard_a2) = hubs
+            .subscribe("_hub-a._tcp.local.")
+            .expect("已有类型可复用")
+            .into_parts();
+        drop(guard_a);
+        drop(guard_a2);
     }
 
     /// 附加（R1 / D2）：订阅者通道满 ⇒ 只丢该订阅者的事件，不阻塞也不剔除；其他订阅者照常

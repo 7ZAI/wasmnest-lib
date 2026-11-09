@@ -5,8 +5,8 @@
 //! 能力域脱绑（P1–P5）之后，根 `packages/` 的能力域 crate 默认形态 = 纯引擎
 //! 机制 + 端口抽象（零 WIT 依赖），**任何宿主**可直接引用。本 crate 就是那个
 //! 「任何宿主」的最小实证：以非桌面宿主形态（永不开 `common-host` feature）
-//! 引用全部五个带桌面 WIT 绑定面的能力域 + server 地基，编译通过 + 引擎面
-//! smoke 断言即门禁。
+//! 引用五个带桌面 WIT 绑定面的能力域 + CLI 机制 + server 地基/内核，编译通过 +
+//! 引擎面 smoke 断言即门禁。
 //!
 //! ## 钉住的三件事
 //!
@@ -29,14 +29,18 @@
 
 // ==================== 强制引用（rlib 进编译图的最小面） ====================
 //
-// 五行缺一不可：少一行 = 该 crate 未被链接 = 「可引用」断言静默缩水。
-// `common-host` 未开 ⇒ 这些引用不触发任何 inventory 注册（非桌面宿主
-// 不应注册——它没有插件宿主机制，语义见各能力域 plugin_binding 模块头）。
+//! 五行缺一不可：少一行 = 该 crate 未被链接 = 「可引用」断言静默缩水。
+//! `common-host` 未开 ⇒ 这些引用不触发任何 inventory 注册（非桌面宿主
+//! 不应注册——它没有插件宿主机制，语义见各能力域 plugin_binding 模块头）。
 use wasmnest_discovery_engine as _;
 use wasmnest_pty_engine as _;
 use wasmnest_server_http as _;
 use wasmnest_server_peer_net as _;
 use wasmnest_server_websocket as _;
+// CLI 机制与 server 内核也必须在**链接**面自证：只被编译未被引用时，
+// 「非桌面宿主可链接」对它们不成立（编译过 ≠ 链接得过）。
+use wasmnest_cli_engine as _;
+use wasmnest_server_core as _;
 
 /// server 地基的总线消息契约（P5 自持副本的公开消费形状）
 pub use wasmnest_server_base::wire::BusMessage;

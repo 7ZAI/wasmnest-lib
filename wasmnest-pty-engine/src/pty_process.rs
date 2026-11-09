@@ -472,23 +472,37 @@ impl Drop for PtySession {
             self.kill_requested.store(true, Ordering::SeqCst);
 
             // 尝试终止进程（同步方式，因为 Drop 不能是 async）
-            if let Ok(state) = self.state.try_lock() {
-                if let Some(pid) = state.process_id {
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = create_command("cmd")
-                            .args(["/C", &format!("taskkill /F /T /PID {}", pid)])
-                            .output();
+            match self.state.try_lock() {
+                Ok(state) => {
+                    if let Some(pid) = state.process_id {
+                        #[cfg(target_os = "windows")]
+                        {
+                            let _ = create_command("cmd")
+                                .args(["/C", &format!("taskkill /F /T /PID {}", pid)])
+                                .output();
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            let _ = std::process::Command::new("kill")
+                                .args(["-9", &pid.to_string()])
+                                .output();
+                        }
+                        tracing::info!(session_id = %self.id, pid = %pid, "PTY session killed on drop");
                     }
-                    #[cfg(not(target_os = "windows"))]
-                    {
-                        let _ = std::process::Command::new("kill")
-                            .args(["-9", &pid.to_string()])
-                            .output();
-                    }
-                    tracing::info!(session_id = %self.id, pid = %pid, "PTY session killed on drop");
                 }
+                // 锁被占用时无法兜底 kill：必须留下可查事件（否则「会话回收了但进程还在」
+                // 会变成不可诊断的静默泄漏）
+                Err(_) => tracing::error!(
+                    session_id = %self.id,
+                    "PTY session dropped while state lock was busy; process may leak"
+                ),
             }
+        } else {
+            tracing::debug!(
+                session_id = %self.id,
+                refs = Arc::strong_count(&self.state),
+                "PTY session dropped with outstanding state clone; deferring kill to the last owner"
+            );
         }
     }
 }

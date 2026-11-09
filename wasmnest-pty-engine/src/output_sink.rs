@@ -67,16 +67,6 @@ mod tests {
     use super::test_support::CollectingSink;
     use super::*;
 
-    fn unique_id(prefix: &str) -> String {
-        format!(
-            "{prefix}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        )
-    }
-
     /// C-002 正例：自备 sink 只收自己的字节（按序、不合并、不改写）
     ///
     /// 票 11：原用例还断言「业务总线不留痕」——业务输出环随 `session/` 目录删除，

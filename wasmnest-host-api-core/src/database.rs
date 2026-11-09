@@ -51,7 +51,22 @@ pub fn parse_sqls_json(sqls_json: &str) -> Result<Vec<String>, String> {
         .map_err(|e| format!("invalid sqls JSON array: {}", e))
 }
 
+/// 参数无法无损绑定到 SQLite（不静默降级成 `0.0` / 空串）
+#[derive(Debug)]
+struct UnbindableJsonValue(&'static str);
+
+impl std::fmt::Display for UnbindableJsonValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JSON value cannot be bound to SQLite: {}", self.0)
+    }
+}
+
+impl std::error::Error for UnbindableJsonValue {}
+
 /// 将 JSON 参数绑定到预编译语句（1-based 索引，rusqlite 真绑定，防注入）
+///
+/// 无法无损转换的输入（超出 f64 范围的数字 / 序列化失败的数组对象）**报错**，
+/// 不落到 `0.0` / 空串——静默降级会让插件拿到看似成功却已丢数据的 round-trip。
 pub fn bind_json_params(
     stmt: &mut rusqlite::Statement<'_>,
     params: &[serde_json::Value],
@@ -65,14 +80,20 @@ pub fn bind_json_params(
                 // 整数优先；非整数按浮点绑定
                 if let Some(iv) = n.as_i64() {
                     stmt.raw_bind_parameter(idx, iv)?;
+                } else if let Some(fv) = n.as_f64() {
+                    stmt.raw_bind_parameter(idx, fv)?;
                 } else {
-                    stmt.raw_bind_parameter(idx, n.as_f64().unwrap_or(0.0))?;
+                    return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                        UnbindableJsonValue("number out of range"),
+                    )));
                 }
             }
             serde_json::Value::String(s) => stmt.raw_bind_parameter(idx, s.as_str())?,
             // 数组/对象 fallback：序列化为 JSON 字符串存储
             other => {
-                stmt.raw_bind_parameter(idx, serde_json::to_string(other).unwrap_or_default())?
+                let json = serde_json::to_string(other)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                stmt.raw_bind_parameter(idx, json)?;
             }
         }
     }
@@ -85,6 +106,7 @@ pub fn execute_with_params(
     sql: &str,
     params: &[serde_json::Value],
 ) -> Result<usize, String> {
+    reject_unsafe_sql(sql)?;
     let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare: {}", e))?;
     bind_json_params(&mut stmt, params).map_err(|e| format!("bind: {}", e))?;
     stmt.raw_execute().map_err(|e| format!("execute: {}", e))
@@ -139,6 +161,9 @@ pub fn query_to_json(
     conn: &rusqlite::Connection,
     sql: &str,
 ) -> Result<serde_json::Value, String> {
+    // prepare + step 能执行的文件边界语句（ATTACH / VACUUM INTO）必须在这里就拒：
+    // 它们返回 0 行，旧实现会「成功」并把副作用留在缓存的连接上。
+    reject_unsafe_sql(sql)?;
     let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare: {}", e))?;
 
     let column_count = stmt.column_count();
@@ -182,6 +207,7 @@ pub fn query_with_params_to_json(
     sql: &str,
     params: &[serde_json::Value],
 ) -> Result<serde_json::Value, String> {
+    reject_unsafe_sql(sql)?;
     let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare: {}", e))?;
     bind_json_params(&mut stmt, params).map_err(|e| format!("bind: {}", e))?;
 
@@ -215,45 +241,42 @@ pub fn query_with_params_to_json(
 
 /// 将 rusqlite 行的指定列转换为 serde_json::Value
 ///
-/// 按类型优先级尝试读取：i64 -> f64 -> String -> bool -> blob（hex）-> Null
+/// **按 SQLite 的存储类型分支**（`ValueRef`），不再「能读成 i64 就当整数」：
+/// `1.0` / `SUM(...)` 这类 REAL 必须回浮点，否则插件 round-trip 后类型漂移
+/// （WIT 面只给 `string`，错了也不报）。BLOB 转 hex 字符串，TEXT 按 UTF-8 读。
 pub fn column_to_json(row: &rusqlite::Row<'_>, col_index: usize) -> serde_json::Value {
-    // 先尝试整数
-    if let Ok(v) = row.get::<_, i64>(col_index) {
-        // 区分整数和浮点数：如果该列实际是 REAL 类型，i64 读取可能截断
-        if let Ok(fv) = row.get::<_, f64>(col_index) {
-            if (fv as i64) as f64 != fv {
-                return serde_json::Value::Number(
-                    serde_json::Number::from_f64(fv).unwrap_or(serde_json::Number::from(0)),
-                );
+    use rusqlite::types::ValueRef;
+
+    match row.get_ref(col_index) {
+        Ok(ValueRef::Null) => serde_json::Value::Null,
+        Ok(ValueRef::Integer(v)) => serde_json::Value::Number(serde_json::Number::from(v)),
+        // 非有限值（±Inf / NaN）JSON 无法表达：显式字符串化，不伪装成合法数字 0
+        Ok(ValueRef::Real(v)) => serde_json::Number::from_f64(v)
+            .map(serde_json::Value::Number)
+            .unwrap_or_else(|| {
+                let label = if v.is_infinite() {
+                    if v.is_sign_positive() {
+                        "Infinity"
+                    } else {
+                        "-Infinity"
+                    }
+                } else {
+                    "NaN"
+                };
+                serde_json::Value::String(label.to_string())
+            }),
+        Ok(ValueRef::Text(t)) => serde_json::Value::String(String::from_utf8_lossy(t).into_owned()),
+        Ok(ValueRef::Blob(v)) => {
+            use std::fmt::Write;
+            let mut hex = String::with_capacity(v.len() * 2);
+            for byte in v {
+                write!(hex, "{:02x}", byte).unwrap();
             }
+            serde_json::Value::String(hex)
         }
-        return serde_json::Value::Number(serde_json::Number::from(v));
+        // 读取失败（类型不可读 / 越界）不是可表达的值：按 NULL 处理（与旧行为同向）
+        Err(_) => serde_json::Value::Null,
     }
-    // 尝试浮点数
-    if let Ok(v) = row.get::<_, f64>(col_index) {
-        return serde_json::Value::Number(
-            serde_json::Number::from_f64(v).unwrap_or(serde_json::Number::from(0)),
-        );
-    }
-    // 尝试字符串
-    if let Ok(v) = row.get::<_, String>(col_index) {
-        return serde_json::Value::String(v);
-    }
-    // 尝试布尔值
-    if let Ok(v) = row.get::<_, bool>(col_index) {
-        return serde_json::Value::Bool(v);
-    }
-    // 尝试 blob（Vec<u8>）— 转为 hex 字符串
-    if let Ok(v) = row.get::<_, Vec<u8>>(col_index) {
-        use std::fmt::Write;
-        let mut hex = String::with_capacity(v.len() * 2);
-        for byte in &v {
-            write!(hex, "{:02x}", byte).unwrap();
-        }
-        return serde_json::Value::String(hex);
-    }
-    // NULL 或无法识别的类型
-    serde_json::Value::Null
 }
 
 // ==================== 语句超时护栏 ====================
@@ -270,13 +293,13 @@ pub fn with_statement_timeout<T>(
     timeout: Duration,
     f: impl FnOnce(&rusqlite::Connection) -> Result<T, String>,
 ) -> Result<T, String> {
-    let deadline = Instant::now();
+    let started = Instant::now();
     let timed_out = Arc::new(AtomicBool::new(false));
     let flag = timed_out.clone();
     conn.progress_handler(
         1000,
         Some(move || {
-            if deadline.elapsed() > timeout {
+            if started.elapsed() > timeout {
                 flag.store(true, Ordering::Relaxed);
                 true
             } else {
@@ -293,7 +316,7 @@ pub fn with_statement_timeout<T>(
             "plugin SQL statement timed out and was interrupted"
         );
         Err(format!(
-            "database error: statement timed out after {}s (limit: {}s)",
+            "database error: statement timed out after {}s (global limit: {}s)",
             timeout.as_secs(),
             PLUGIN_DB_STATEMENT_TIMEOUT_SECS
         ))
@@ -324,25 +347,7 @@ impl Drop for ProgressHandlerGuard<'_> {
 /// 尽力而为的检测：去除首尾空白与前导注释后取首/末 token 匹配白名单，
 /// 覆盖 BEGIN/COMMIT/END/ROLLBACK/SAVEPOINT/RELEASE 常见形态，不做完整 SQL 解析。
 pub fn reject_bare_transaction_control(sql: &str) -> Result<(), String> {
-    let mut s = sql.trim();
-    // 剥离前导注释（-- 行注释 / /* 块注释），最多剥 8 层防病态输入
-    for _ in 0..8 {
-        if let Some(rest) = s.strip_prefix("--") {
-            s = rest
-                .split_once('\n')
-                .map(|(_, after)| after)
-                .unwrap_or("")
-                .trim_start();
-        } else if let Some(rest) = s.strip_prefix("/*") {
-            s = rest
-                .split_once("*/")
-                .map(|(_, after)| after)
-                .unwrap_or("")
-                .trim_start();
-        } else {
-            break;
-        }
-    }
+    let s = strip_leading_sql_comments(sql);
     let first = s.split_whitespace().next().map(normalize_sql_token);
     let last = s.split_whitespace().next_back().map(normalize_sql_token);
     let is_bare_transaction = matches!(
@@ -362,9 +367,77 @@ pub fn reject_bare_transaction_control(sql: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 剥掉前导空白与最多 8 层行/块注释（病态输入不无限剥）
+fn strip_leading_sql_comments(sql: &str) -> &str {
+    let mut s = sql.trim();
+    for _ in 0..8 {
+        if let Some(rest) = s.strip_prefix("--") {
+            s = rest
+                .split_once('\n')
+                .map(|(_, after)| after)
+                .unwrap_or("")
+                .trim_start();
+        } else if let Some(rest) = s.strip_prefix("/*") {
+            s = rest
+                .split_once("*/")
+                .map(|(_, after)| after)
+                .unwrap_or("")
+                .trim_start();
+        } else {
+            break;
+        }
+    }
+    s
+}
+
 /// 归一化 SQL token：去尾分号 + 小写（用于事务控制白名单匹配）
 pub fn normalize_sql_token(t: &str) -> String {
     t.trim_end_matches(';').to_lowercase()
+}
+
+// ==================== 文件边界语句拒绝 ====================
+
+/// 拒绝以文件为目标的 SQL 语句（`ATTACH` / `DETACH` / `VACUUM`）
+///
+/// `ATTACH DATABASE '<file>'` 在 `prepare` / `step` 期把任意 SQLite 文件挂到当前
+/// 连接（返回 0 行，旧实现不报错，且挂载状态留在缓存的连接里）——绕过 `fs_auth`
+/// 的文件授权模型，可读其它插件私有库与宿主主库；`VACUUM INTO '<file>'` 同样是
+/// 「0 行语句 + 任意文件写」。
+///
+/// 纵深三层：
+/// - 连接层（`wasmnest-wasm-core` 的 `Database::new`）：`SQLITE_LIMIT_ATTACHED = 0`
+///   + authorizer 拒 Attach / Detach；
+/// - 本函数（SQL 文本首 token）：覆盖 authorizer **不覆盖**的 `VACUUM INTO`，
+///   并在语句还没到 SQLite 时就给出可读错误；
+/// - 五个 WIT 原语入口全部经过本函数（`execute` / `execute_params` / `query` /
+///   `query_params` / `execute_batch`）。
+///
+/// 检测是首 token 白名单（与 [`reject_bare_transaction_control`] 同粒度）：SQLite
+/// 的 `prepare` 只执行第一条语句，`ATTACH` 只能出现在语句开头；前导注释会被剥掉。
+pub fn reject_file_boundary_sql(sql: &str) -> Result<(), String> {
+    let first = strip_leading_sql_comments(sql)
+        .split_whitespace()
+        .next()
+        .map(normalize_sql_token);
+    match first.as_deref() {
+        Some(token @ ("attach" | "detach" | "vacuum")) => Err(format!(
+            "database error: {token} is rejected (plugin databases are confined to their own file)"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// 所有 execute / query 入口共用的 SQL 护栏（裸事务控制 + 文件边界语句）
+///
+/// # 单语句契约
+/// 每个入口只执行**第一条**语句：`prepare` 编译后停在首条语句末尾，尾部语句
+/// （`"A; B"` 的 `B`）既不执行也不报错——这是本护栏的前提（尾部若被执行，
+/// ATTACH / VACUUM / 事务控制的文本检查就不再覆盖全部执行面）。批处理请走
+/// [`execute_batch_on_conn`] / `execute-batch`（逐条传入，每条独立检查；且
+/// rusqlite 的 `extra_check` 会让带尾部的单条元素直接报 `MultipleStatement`）。
+pub fn reject_unsafe_sql(sql: &str) -> Result<(), String> {
+    reject_bare_transaction_control(sql)?;
+    reject_file_boundary_sql(sql)
 }
 
 /// 事务内顺序执行多语句：任一句失败整体回滚，返回受影响行数合计
@@ -373,10 +446,11 @@ pub fn normalize_sql_token(t: &str) -> String {
 /// 数据库全局锁独占连接，无并发风险）在 `&Connection` 上开启事务；事务对象 Drop 时
 /// 未提交自动回滚。超时护栏由外层 [`with_statement_timeout`] 覆盖整个批次。
 ///
-/// 每语句先做裸事务控制拒绝（batch 内部也不允许 BEGIN 等，提前拒绝给可读文案）。
+/// 每语句先做裸事务控制 / 文件边界拒绝（batch 内部也不允许 BEGIN / ATTACH 等，
+/// 提前拒绝给可读文案）。
 pub fn execute_batch_on_conn(conn: &rusqlite::Connection, sqls: &[String]) -> Result<u32, String> {
     for sql in sqls {
-        reject_bare_transaction_control(sql)?;
+        reject_unsafe_sql(sql)?;
     }
     let tx = conn
         .unchecked_transaction()
@@ -386,7 +460,9 @@ pub fn execute_batch_on_conn(conn: &rusqlite::Connection, sqls: &[String]) -> Re
         let affected = tx
             .execute(sql.as_str(), [])
             .map_err(|e| format!("execute '{}': {}", sql, e))?;
-        total_affected = total_affected.checked_add(affected as u32).ok_or_else(|| {
+        // 与 adapter 同口径：WIT 返回 u32，超限饱和而不是回绕
+        let affected = u32::try_from(affected).unwrap_or(u32::MAX);
+        total_affected = total_affected.checked_add(affected).ok_or_else(|| {
             "database error: execute-batch affected row count overflow".to_string()
         })?;
     }
@@ -494,6 +570,59 @@ mod tests {
         assert!(reject_bare_transaction_control("ROLLBACK").is_err());
     }
 
+    /// REAL 列不得降级成整数：`1.0` / `SUM(...)` round-trip 后仍是浮点
+    #[test]
+    fn real_columns_stay_floats() {
+        let conn = mem_conn();
+        conn.execute("CREATE TABLE t (r REAL)", []).unwrap();
+        conn.execute("INSERT INTO t (r) VALUES (1.0)", []).unwrap();
+        let out = query_to_json("p1", &conn, "SELECT r, SUM(r) AS s FROM t").unwrap();
+        for col in ["r", "s"] {
+            let value = &out[0][col];
+            assert_eq!(value.as_f64(), Some(1.0), "{col} must stay REAL: {value}");
+            assert!(
+                !value.is_i64(),
+                "{col} must not be downgraded to integer: {value}"
+            );
+            assert_eq!(value.to_string(), "1.0");
+        }
+    }
+
+    /// 非有限 REAL（`1e999` = +Inf）不得静默变 0：JSON 无法表达时显式字符串化
+    #[test]
+    fn non_finite_real_is_not_silently_zeroed() {
+        let conn = mem_conn();
+        let out = query_to_json("p1", &conn, "SELECT 1e999 AS inf, -1e999 AS neg").unwrap();
+        assert_eq!(out[0]["inf"], serde_json::json!("Infinity"));
+        assert_eq!(out[0]["neg"], serde_json::json!("-Infinity"));
+        assert_ne!(out[0]["inf"], serde_json::json!(0));
+    }
+
+    /// 文件边界语句（ATTACH / DETACH / VACUUM）在五个入口均被拒；普通 SQL 不受影响
+    #[test]
+    fn file_boundary_statements_rejected() {
+        let conn = mem_conn();
+        for sql in [
+            "ATTACH DATABASE '/tmp/wasmnest-attach.db' AS x",
+            "-- 前导注释\nATTACH ':memory:' AS x",
+            "/* block */ DETACH DATABASE x",
+            "VACUUM INTO '/tmp/wasmnest-vacuum.db'",
+            "vacuum;",
+        ] {
+            assert!(
+                reject_file_boundary_sql(sql).is_err(),
+                "{sql} must be rejected"
+            );
+        }
+        assert!(reject_file_boundary_sql("SELECT 'attach' AS word").is_ok());
+        assert!(reject_file_boundary_sql("INSERT INTO t (x) VALUES ('vacuum')").is_ok());
+
+        assert!(query_to_json("p1", &conn, "ATTACH ':memory:' AS x").is_err());
+        assert!(query_with_params_to_json("p1", &conn, "ATTACH ':memory:' AS x", &[]).is_err());
+        assert!(execute_with_params(&conn, "VACUUM INTO '/tmp/y.db'", &[]).is_err());
+        assert!(execute_batch_on_conn(&conn, &["ATTACH ':memory:' AS x".to_string()]).is_err());
+    }
+
     /// 批次事务：全提交 / 冲突回滚 / 内部裸事务拒绝
     #[test]
     fn batch_transaction_semantics() {
@@ -536,6 +665,25 @@ mod tests {
             ]
         )
         .is_err());
+        // 单条元素带尾部语句：extra_check 让 tx.execute 报 MultipleStatement，
+        // 不得静默只执行第一条
+        let err = execute_batch_on_conn(
+            &conn,
+            &[
+                "INSERT INTO t (id, v) VALUES (10, 'x'); INSERT INTO t (id, v) VALUES (11, 'y')"
+                    .to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            err.to_lowercase().contains("multiple"),
+            "尾部语句必须显性拒绝，got: {err}"
+        );
+        assert_eq!(
+            query_to_json("p1", &conn, "SELECT COUNT(*) AS n FROM t").unwrap()[0]["n"],
+            2,
+            "被拒绝的批次不得部分落库"
+        );
     }
 
     /// 超时护栏：零超时 + 大量 VM 步（递归 CTE，>1000 步必触发 progress handler

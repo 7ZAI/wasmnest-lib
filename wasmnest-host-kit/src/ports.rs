@@ -54,6 +54,15 @@ pub trait HostPorts: Send + Sync + 'static {
     /// 向下转型出口（可变版）
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
+    /// 诊断用实际类型名（向下转型失败时填入错误串）
+    ///
+    /// `Any` 无法从 `TypeId` 反查名字，而trait object 的 `type_name_of_val` 只会给出
+    /// 擦除后的 `dyn ...::HostPorts`；因此留一个可覆盖的诊断入口：宿主若愿意，
+    /// 在自己的 `HostPorts` 实现里返回具体上下文类型名（`type_name::<Self>()`）。
+    /// 缺省值就是诚实描述（**不再伪造具体类型**）。这是诊断辅助，不是业务方法。
+    fn diagnostic_type_name(&self) -> &'static str {
+        "<type-erased dyn wasmnest_host_kit::ports::HostPorts>"
+    }
     /// 实例级能力域端口下发（可选）
     ///
     /// 宿主把**与本插件实例同一份上下文绑定**的窄端口挂在上下文上；能力域用
@@ -92,7 +101,7 @@ pub fn downcast_host<P: 'static>(ports: &dyn HostPorts) -> &P {
             "{}",
             crate::HostKitError::HostPortUnavailable {
                 expected: std::any::type_name::<P>(),
-                actual: std::any::type_name_of_val(ports.as_any()),
+                actual: ports.diagnostic_type_name(),
             }
         ),
     }
@@ -104,7 +113,7 @@ pub fn downcast_host<P: 'static>(ports: &dyn HostPorts) -> &P {
 /// 类型不符时 panic，见 [`downcast_host`]。
 pub fn downcast_host_mut<P: 'static>(ports: &mut dyn HostPorts) -> &mut P {
     // 先取实际类型名再可变借用：闭包里再借用 `ports` 会与 `as_any_mut` 的可变借用冲突
-    let actual = std::any::type_name_of_val(ports.as_any());
+    let actual = ports.diagnostic_type_name();
     match ports.as_any_mut().downcast_mut::<P>() {
         Some(ctx) => ctx,
         None => panic!(

@@ -9,6 +9,8 @@
 //! - RSA 加密体积受限于密钥长度（如 2048 位密钥 OAEP-SHA256 最多约 190 字节明文），
 //!   因此直接用 RSA 加密大文件不现实；请改用 [`crate::hybrid`] 混合方案。
 //! - OAEP 填充默认使用 SHA-256 作为 MGF 哈希，已满足现代安全要求。
+//! - 签名固定为 **RSA-PSS**（`rsa` crate 的 `SigningKey<Sha256>` 默认 PSS），不是
+//!   PKCS#1 v1.5；跨端实现验证签名时必须按 PSS 处理，否则会表现为「签名总是不通过」。
 
 use base64::Engine;
 use rand::rngs::OsRng;

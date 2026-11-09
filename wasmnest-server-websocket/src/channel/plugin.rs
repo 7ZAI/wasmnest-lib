@@ -323,6 +323,17 @@ impl ChannelHandler for PluginChannel {
                     "ws_endpoint_delivery",
                     run_endpoint_delivery(rx, bus, owner, endpoint_id, client_id),
                 );
+            } else {
+                // 无 ambient runtime（无头 / 装配中间态）：投递任务无法派生。
+                // 降级方向是 fail-closed（帧最终 1013），但必须立刻点名，别让
+                // 「前 N 帧静默入队、之后才断开」成为唯一的失败信号。
+                tracing::warn!(
+                    owner = %owner,
+                    endpoint_id = %endpoint_id,
+                    client_id = %client_id,
+                    "ws endpoint delivery task not spawned (no runtime context); frames cannot be delivered"
+                );
+                drop(rx);
             }
         }
     }

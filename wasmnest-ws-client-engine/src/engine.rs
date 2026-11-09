@@ -67,6 +67,11 @@ const STATE_OPEN: u8 = 1;
 const STATE_CLOSED: u8 = 2;
 
 /// 单插件并发连接数上限（超限时 [`connect`] 直接 `Err`，无任何副作用）
+///
+/// **跨端已知差异（待裁决）**：桌面 `host-websocket` 客户端域消费
+/// `wasmnest_server_base::constants::PLUGIN_WS_MAX_CONNS_PER_PLUGIN = 32`，本引擎
+/// （移动端）/ 同一 `host-websocket` 契约取 8。两侧不是同一份实现，差异未在契约
+/// 层登记；收紧或对齐需产品裁决（见 2026-11-09 审核 ws-client #1）。
 const MAX_CONNS_PER_PLUGIN: usize = 8;
 /// 单连接发送队列容量（满则 `send_*` 报 `ws send queue full`，不阻塞实例）
 const SEND_QUEUE_CAPACITY: usize = 64;
@@ -77,6 +82,8 @@ const CONNECT_TIMEOUT_SECS: u64 = 5;
 const MAX_MESSAGE_BYTES_DEFAULT: usize = 8 * 1024 * 1024;
 /// 单帧字节硬顶（插件不能把宿主内存上限当自己的帧上限用）
 const MAX_MESSAGE_BYTES_CAP: usize = 16 * 1024 * 1024;
+/// 单帧字节下限：低于此值的配置会让所有帧被拒，属配置错误而非运行期流量
+const MAX_MESSAGE_BYTES_MIN: usize = 1024;
 
 /// 心跳缺省周期（秒）与静默判死倍数（30s Ping / 90s 判死；「心跳归引擎」对齐桌面
 /// server 骨架级心跳 conn.rs）
@@ -318,6 +325,14 @@ fn validate_config(config: &ConnectConfig) -> Result<(), String> {
              (wss:// needs CA/custom-cert configuration, not implemented yet)"
         ));
     }
+    if let Some(limit) = config.max_message_bytes {
+        if limit < MAX_MESSAGE_BYTES_MIN {
+            return Err(format!(
+                "ws connect: max-message-bytes must be >= {MAX_MESSAGE_BYTES_MIN} (got {limit}); \
+                 smaller limits would reject every frame"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -363,7 +378,7 @@ fn spawn_connection(
             .clamp(1, CONNECT_TIMEOUT_SECS);
         let limit = MAX_MESSAGE_BYTES_DEFAULT
             .min(config.max_message_bytes.unwrap_or(usize::MAX))
-            .clamp(1, MAX_MESSAGE_BYTES_CAP);
+            .clamp(MAX_MESSAGE_BYTES_MIN, MAX_MESSAGE_BYTES_CAP);
         let ws_config = WebSocketConfig {
             max_message_size: Some(limit),
             max_frame_size: Some(limit),

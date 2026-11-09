@@ -60,6 +60,11 @@ pub trait FsHostPorts: Send + Sync {
     fn check_permission(&self, plugin_id: &str, permission: &str, api: &str) -> bool;
 
     /// 单路径访问裁决（路径白名单 / 弹窗 / 持久授权的真源在宿主）
+    ///
+    /// # 信任边界（TOCTOU）
+    /// 返回 `true` 与本层随后的读写之间路径可被替换（符号链接 / 重命名）——本层只见
+    /// `bool`，不提供原子性。裁决与真实 IO 之间的窗口由宿主侧授权模型负责（fd 级
+    /// 授权 / `O_NOFOLLOW` 等）；不要因为「这里已判过」而把本层当成安全边界。
     fn check_access(&self, plugin_id: &str, path: &str, op: FsOp) -> bool;
 
     /// 批量路径访问裁决（`request-auth` 面；「全部同意」语义）

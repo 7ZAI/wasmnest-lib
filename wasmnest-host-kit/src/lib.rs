@@ -116,7 +116,8 @@ impl std::fmt::Display for HostKitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Register { module, source } => {
-                write!(f, "host module '{module}' registration failed: {source}")
+                // `{:#}` 展开 anyhow 错误链（`Caused by: ...`）；`{source}` 只打最外层
+                write!(f, "host module '{module}' registration failed: {source:#}")
             }
             Self::WhitelistMismatch { unlisted, missing } => write!(
                 f,

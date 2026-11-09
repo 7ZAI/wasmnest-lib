@@ -179,6 +179,10 @@ impl PtyRing {
             // 驻留起点不受影响（只动尾块）
         }
         if rest.is_empty() {
+            // ① 分支在并入期间可能已淘汰旧块：驻留起点必须同步前移，否则
+            // `fetch` 的 `truncated` 会失真（旧游标落在已淘汰区间却报 false，
+            // 消费者把数据缺口当成「已追平」）。
+            self.refresh_min_offset();
             return;
         }
         // ② 余量作为新块（先淘汰腾位）
@@ -198,6 +202,11 @@ impl PtyRing {
         self.resident_bytes += len;
         self.max_offset = start + len;
         // 淘汰后驻留起点前移；环此前为空时即本块起点
+        self.refresh_min_offset();
+    }
+
+    /// 按当前驻留块刷新 `min_offset`（淘汰发生在任意 push 分支时必须调用）
+    fn refresh_min_offset(&mut self) {
         self.min_offset = self
             .chunks
             .front()
@@ -617,6 +626,31 @@ mod tests {
             ring.chunk_count() <= 4 * 1024 * 1024 / PtyRing::COALESCE_TARGET + 1,
             "块数由「容量 / 合并目标」决定（4 MiB → ≤257），不得回到「一次 push 一块」：{}",
             ring.chunk_count()
+        );
+    }
+
+    /// 回归（2026-11-09 审核 Must fix）：合并分支淘汰后提前返回必须前移 `min_offset`
+    ///
+    /// 旧实现：50 KiB + 14 KiB + 1 KiB（cap=64 KiB）时，第二次 push 在尾块合并
+    /// 期间淘汰了 A 块，但 `rest` 耗尽后直接 return，`min_offset` 停在 0，
+    /// `fetch(0).truncated` 因此报 false。
+    #[test]
+    fn coalesce_eviction_advances_min_offset() {
+        let capacity = 64 * 1024;
+        let mut ring = PtyRing::new(capacity);
+        ring.push(&vec![b'a'; 50 * 1024]);
+        ring.push(&vec![b'b'; 14 * 1024]);
+        ring.push(&vec![b'c'; 1024]);
+
+        let (min, _) = ring.watermarks();
+        assert_eq!(min, 50 * 1024, "淘汰旧块后驻留起点必须前移");
+
+        let fetched = ring.fetch(0, 1024);
+        assert!(fetched.truncated, "落后于驻留起点的游标必须报缺口");
+        assert_eq!(
+            fetched.next_offset,
+            50 * 1024 + 1024,
+            "从驻留起点起按请求上限推进"
         );
     }
 

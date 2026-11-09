@@ -234,6 +234,9 @@ pub fn register(
                 .insert((h.clone(), m.clone()), entry.endpoint_id.clone());
         }
     }
+    // 先释放注册表锁再落日志：注册路径与请求热路径（find_by_host）共用同一把锁，
+    // 慢日志后端不应把注册风暴传导成请求延迟
+    drop(table);
     tracing::info!(
         plugin_id = %owner,
         endpoint_id = %entry.endpoint_id,
@@ -284,7 +287,10 @@ pub fn find_by_host(path: &str, method: &str) -> Option<HostMatch> {
         .collect();
     drop(table);
     for entry in candidates {
-        let host = entry.host_path.as_ref()?;
+        // 用 continue 而不是 `?`：单条候选缺 host_path 不得放弃整个搜索
+        let Some(host) = entry.host_path.as_ref() else {
+            continue;
+        };
         if !entry.methods.iter().any(|m| m == method) {
             continue;
         }

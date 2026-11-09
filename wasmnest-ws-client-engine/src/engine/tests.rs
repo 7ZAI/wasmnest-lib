@@ -522,6 +522,10 @@ async fn connect_input_validation() {
         .await
         .expect_err("non-ws scheme");
     assert!(err.contains("url scheme not supported"), "{err}");
+    let err = connect(&p, &owner, r#"{"url":"ws://example/","maxMessageBytes":1}"#)
+        .await
+        .expect_err("tiny frame limit is a config error");
+    assert!(err.contains("max-message-bytes must be"), "{err}");
     let err = connect(&p, &owner, r#"{"url":"  "}"#)
         .await
         .expect_err("empty url");

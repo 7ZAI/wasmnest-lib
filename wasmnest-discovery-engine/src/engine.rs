@@ -128,6 +128,51 @@ pub fn daemon_if_initialized() -> Option<ServiceDaemon> {
 /// 身份广播续期由引擎自己的 re-announce 循环负责，本间隔只服务插件 advertise 句柄
 const REANNOUNCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
 
+/// 单插件同时存活的浏览句柄上限（与 ws 端点 / pty 会话同档的机制配额）
+///
+/// 每个句柄背后是一条常驻 fan-out 任务；服务类型还可不同（中枢按类型建查询）。
+pub const MAX_BROWSERS_PER_PLUGIN: usize = 16;
+
+/// 单插件同时存活的广播句柄上限
+///
+/// 每个句柄背后是一条 re-announce 循环任务。
+pub const MAX_ADVERTISES_PER_PLUGIN: usize = 16;
+
+/// 服务类型形状校验（RFC 6763 名称的保守子集）
+///
+/// 服务类型直接进入 mdns-sd 内部构造与查询键，必须限制长度与字符集；
+/// 只收 `[A-Za-z0-9._-]`，拒绝空白、斜杠与超长串（fail-visible，不静默 trim 后接受）。
+fn validate_service_type(kind: &str, service_type: &str) -> Result<(), String> {
+    if service_type.is_empty() {
+        return Err(format!("mdns {kind}: service type must not be empty"));
+    }
+    if service_type.len() > 255 {
+        return Err(format!(
+            "mdns {kind}: service type too long ({} > 255 bytes)",
+            service_type.len()
+        ));
+    }
+    if !service_type
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(format!(
+            "mdns {kind}: service type has invalid characters: {service_type:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// 属主配额判定（调用方已取出当前计数）
+fn check_owner_quota(kind: &str, current: usize, cap: usize) -> Result<(), String> {
+    if current >= cap {
+        return Err(format!(
+            "mdns {kind}: per-plugin handle limit reached ({current}/{cap})"
+        ));
+    }
+    Ok(())
+}
+
 // ==================== 句柄表 ====================
 
 /// 单条浏览订阅：服务类型 + 事件任务句柄 + 中枢退订守卫
@@ -203,8 +248,19 @@ pub fn browse(
         return result;
     }
     let service_type = service_type.trim().to_string();
-    if service_type.is_empty() {
-        return Err("mdns browse: service type must not be empty".to_string());
+    validate_service_type("browse", &service_type)?;
+    {
+        // 配额在副作用（中枢订阅 + fan-out 任务）之前判定；插件调用面经 store
+        // 串行，检查与登记之间的窗口与 pty 同口径。
+        let browsers = BROWSERS.lock().expect("mdns browser table lock poisoned");
+        check_owner_quota(
+            "browse",
+            browsers
+                .values()
+                .filter(|entry| entry.owner == plugin_id)
+                .count(),
+            MAX_BROWSERS_PER_PLUGIN,
+        )?;
     }
     let (receiver, subscription_guard) =
         crate::type_hub::subscribe_type(&service_type)?.into_parts();
@@ -371,8 +427,19 @@ pub fn advertise(
     let config: AdvertiseConfig = serde_json::from_str(config_json)
         .map_err(|e| format!("mdns advertise: invalid config: {e}"))?;
     let service_type = config.service_type.trim().to_string();
-    if service_type.is_empty() {
-        return Err("mdns advertise: service type must not be empty".to_string());
+    validate_service_type("advertise", &service_type)?;
+    {
+        let advertisers = ADVERTISERS
+            .lock()
+            .expect("mdns advertiser table lock poisoned");
+        check_owner_quota(
+            "advertise",
+            advertisers
+                .values()
+                .filter(|entry| entry.owner == plugin_id)
+                .count(),
+            MAX_ADVERTISES_PER_PLUGIN,
+        )?;
     }
     let instance_name = match config.instance_name {
         // 显式实例名优先；空白视为缺省
@@ -1339,5 +1406,47 @@ mod tests {
             "unauthorized caller must be rejected before routing"
         );
         assert!(fake.routed_calls().is_empty());
+    }
+
+    #[test]
+    fn service_type_shape_is_validated() {
+        for ok in ["_wasmnest._tcp.local.", "_my-app._udp", "A.b-c_1"] {
+            assert!(
+                validate_service_type("browse", ok).is_ok(),
+                "合法类型被拒: {ok}"
+            );
+        }
+        for bad in [
+            "",
+            "   ",
+            "_svc/../x",
+            "_svc tcp",
+            "服务._tcp",
+            &"x".repeat(256),
+        ] {
+            assert!(
+                validate_service_type("browse", bad).is_err(),
+                "非法类型被放行: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn per_plugin_handle_quota_is_enforced() {
+        assert!(check_owner_quota(
+            "browse",
+            MAX_BROWSERS_PER_PLUGIN - 1,
+            MAX_BROWSERS_PER_PLUGIN
+        )
+        .is_ok());
+        let err = check_owner_quota("browse", MAX_BROWSERS_PER_PLUGIN, MAX_BROWSERS_PER_PLUGIN)
+            .expect_err("到达上限必须拒绝");
+        assert!(err.contains("per-plugin handle limit"), "{err}");
+        assert!(check_owner_quota(
+            "advertise",
+            MAX_ADVERTISES_PER_PLUGIN,
+            MAX_ADVERTISES_PER_PLUGIN
+        )
+        .is_err());
     }
 }

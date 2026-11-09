@@ -7,6 +7,7 @@
 use crate::catalog::ArgType;
 
 /// 内建命令的静态参数声明
+#[derive(Debug)]
 pub struct BuiltinArg {
     pub name: &'static str,
     pub ty: ArgType,
@@ -15,6 +16,7 @@ pub struct BuiltinArg {
 }
 
 /// 内建命令的静态目录条目
+#[derive(Debug)]
 pub struct BuiltinEntry {
     /// 命令路径词元（首词元必须在 [`RESERVED_NAMESPACES`] 内——自洽单测钉住）
     pub path: &'static [&'static str],
@@ -218,12 +220,8 @@ mod tests {
     #[test]
     fn confirmation_implies_reason() {
         for entry in BUILT_IN {
-            if entry.confirmation.is_some() {
-                assert!(
-                    !entry.confirmation.unwrap().is_empty(),
-                    "{:?} 的确认理由为空",
-                    entry.path
-                );
+            if let Some(reason) = entry.confirmation {
+                assert!(!reason.is_empty(), "{:?} 的确认理由为空", entry.path);
             }
         }
     }

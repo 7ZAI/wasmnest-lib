@@ -237,7 +237,7 @@ pub const PLUGIN_WS_ENDPOINT_PATH_MAX_LEN: usize = 64;
 /// 超限 `spawn` 直接 `Err`（fail-visible，不排队、不静默淘汰自己已有的句柄，spec D9）
 ///
 /// 取值依据：一条私有 PTY 的资源画像 = 一个子进程 + 一对 fd + 一条读线程 + 一块
-/// 输出环，与 `PLUGIN_WS_MAX_CONNS_PER_PLUGIN`（出站连接 8 条）同档；8 条够
+/// 输出环，与 `PLUGIN_WS_MAX_CONNS_PER_PLUGIN`（出站连接上限）同档；8 条够
 /// 「多 shell 并发」型插件的常态用量，且越界不牵连同宿主其他插件的配额。
 ///
 /// 会话引擎下沉 P1（H1）后业务会话也住在本注册表，「用户可开多少终端」随属主插件

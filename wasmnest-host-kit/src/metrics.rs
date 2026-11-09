@@ -180,6 +180,7 @@ const DURATION_BUCKET_COUNT: usize = DURATION_BUCKET_BOUNDS_US.len() + 1;
 // ==================== 插件维度指标 ====================
 
 /// 单插件指标集（全原子字段，埋点热路径零分配零锁）
+#[derive(Debug)]
 pub struct PluginMetrics {
     /// 线性内存当前值（字节，ResourceLimiter 增长回调记账）
     memory_current_bytes: AtomicU64,
@@ -505,8 +506,10 @@ pub struct CallTimer {
 
 impl Drop for CallTimer {
     fn drop(&mut self) {
-        self.metrics
-            .record_call_duration(self.start.elapsed().as_micros() as u64);
+        // 截断需约 58.5 万年（u128 微秒 → u64），实际不可达；保留饱和转换消歧
+        #[allow(clippy::cast_possible_truncation)]
+        let elapsed_us = self.start.elapsed().as_micros() as u64;
+        self.metrics.record_call_duration(elapsed_us);
     }
 }
 

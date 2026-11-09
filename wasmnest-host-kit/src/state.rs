@@ -43,7 +43,7 @@ pub type OnTaskEventExport = TypedFunc<(String,), ()>;
 /// 实例化一个插件 Store 所需的全部配置与埋点句柄
 ///
 /// 由宿主 `core-config` × `core-monitor` 交汇产出；本 crate 只收结构不收来源。
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct StoreSpec {
     /// Store 资源上限快照
     pub limits: StoreLimits,

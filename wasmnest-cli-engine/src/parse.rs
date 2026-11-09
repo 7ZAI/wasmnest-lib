@@ -184,10 +184,22 @@ fn coerce(name: &str, ty: ArgType, raw: &str) -> Result<Value, ParseError> {
     match ty {
         ArgType::String => Ok(Value::String(raw.to_string())),
         ArgType::Number => {
-            // 先整型后浮点：CLI 字面量的整型保真（配置值等场景 7 ≠ 7.0 的 JSON 形状）
+            // 先整型后浮点：CLI 字面量的整型保真（配置值等场景 7 ≠ 7.0 的 JSON 形状）。
+            // 纯整数字面量超出 i64 时**拒绝**而不是降级成 f64——后者会把用户写的精确
+            // 整数静默持久化成近似值（写配置路径上的隐性丢精度）。
             raw.parse::<i64>()
                 .map(Value::from)
-                .or_else(|_| raw.parse::<f64>().map(Value::from))
+                .or_else(|_| {
+                    let looks_integer = raw
+                        .strip_prefix('-')
+                        .unwrap_or(raw)
+                        .bytes()
+                        .all(|b| b.is_ascii_digit());
+                    if looks_integer {
+                        return Err(());
+                    }
+                    raw.parse::<f64>().map(Value::from).map_err(|_| ())
+                })
                 .map_err(|_| ParseError::BadValue {
                     arg: name.to_string(),
                     reason: format!("{} 不是合法数字", raw),
@@ -325,5 +337,17 @@ mod tests {
             parse(&c, &[]).unwrap_err(),
             ParseError::UnknownCommand { .. }
         ));
+    }
+
+    #[test]
+    fn integer_overflow_is_rejected_instead_of_downgraded_to_f64() {
+        // 超出 i64 的纯整数字面量不得静默转成 f64（写配置路径上的精度丢失）
+        let err = coerce("n", ArgType::Number, "12345678901234567890").unwrap_err();
+        assert!(matches!(err, ParseError::BadValue { arg, .. } if arg == "n"));
+        // 带小数点 / 指数仍按浮点接受
+        assert_eq!(coerce("n", ArgType::Number, "1.5").unwrap(), json!(1.5));
+        assert_eq!(coerce("n", ArgType::Number, "1e3").unwrap(), json!(1000.0));
+        // i64 范围内的精确整数保持整型
+        assert_eq!(coerce("n", ArgType::Number, "42").unwrap(), json!(42));
     }
 }

@@ -1,4 +1,4 @@
-//! WasmNest 通知域契约房（**只持契约，零实现**；ADR 0052 D2/D4 · 票 04）
+//! `WasmNest` 通知域契约房（**只持契约，零实现**；ADR 0052 D2/D4 · 票 04）
 //!
 //! ## 为什么是一个独立 crate
 //!
@@ -31,6 +31,38 @@ pub const WIT_PACKAGE: &str = "wasmnest:notify@0.0.1";
 
 #[cfg(test)]
 mod wit_package_lock {
+    /// 契约房身份自证：`[dependencies]` 恒空（「零 Rust 实现」的唯一退化方向
+    /// 是被顺手加一个 engine 模块/依赖，与 `wasmnest-contract` 同款常驻断言）
+    #[test]
+    fn manifest_has_no_dependencies() {
+        let manifest = include_str!("../Cargo.toml");
+        let offenders: Vec<&str> = manifest
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                line.starts_with("[dependencies")
+                    || line.starts_with("[build-dependencies")
+                    || line.starts_with("[dev-dependencies")
+                    || (line.starts_with("[target") && line.contains("dependencies"))
+            })
+            .collect();
+        assert!(
+            offenders.len() <= 1 && offenders.iter().all(|s| *s == "[dependencies]"),
+            "契约房必须保持零依赖：{offenders:?}"
+        );
+        let mut in_deps = false;
+        for line in manifest.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_deps = trimmed == "[dependencies]";
+                continue;
+            }
+            assert!(
+                !in_deps || trimmed.is_empty() || trimmed.starts_with('#'),
+                "契约房 `[dependencies]` 段出现依赖条目：{trimmed}"
+            );
+        }
+    }
     /// 常量 ↔ 分片真源 package 行（两侧任一手改即红）
     #[test]
     fn wit_package_matches_slice_package_line() {

@@ -125,13 +125,23 @@ pub fn parse_cli_segment(
         return Err(format!("命令 {} 的 cli 段必须是对象", command_id));
     };
     for key in obj.keys() {
-        if !matches!(key.as_str(), "namespace" | "help" | "visibility" | "args") {
+        if !matches!(
+            key.as_str(),
+            "title" | "namespace" | "help" | "visibility" | "args"
+        ) {
             return Err(format!(
-                "命令 {} 的 cli 段含未知键 {}（合法键：namespace / help / visibility / args）",
+                "命令 {} 的 cli 段含未知键 {}（合法键：title / namespace / help / visibility / args）",
                 command_id, key
             ));
         }
     }
+    let title = match obj.get("title") {
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(v) => v
+            .as_str()
+            .ok_or_else(|| format!("命令 {} 的 cli.title 必须是字符串", command_id))?
+            .to_string(),
+    };
     let namespace = match obj.get("namespace") {
         None | Some(serde_json::Value::Null) => None,
         Some(v) => Some(
@@ -170,7 +180,7 @@ pub fn parse_cli_segment(
     }
     Ok(PluginCommandMeta {
         command_id: command_id.to_string(),
-        title: String::new(),
+        title,
         namespace,
         help,
         hidden,
@@ -320,7 +330,9 @@ impl Catalog {
 
     /// 插入一条命令（路径冲突 / 命名空间越界显性拒绝）
     fn insert_checked(&mut self, spec: CommandSpec) -> Result<(), String> {
-        let namespace = &spec.path[0];
+        let Some(namespace) = spec.path.first() else {
+            return Err("命令路径不能为空".to_string());
+        };
         if RESERVED_NAMESPACES.contains(&namespace.as_str())
             && !matches!(spec.kind, CommandKind::BuiltIn)
         {
@@ -354,7 +366,6 @@ impl Catalog {
         self.commands.iter()
     }
 
-    /// 以 `prefix` 为前缀的全部命令路径（未知命令建议 / 补全的候选源）
     /// 以 `prefix` 为前缀的**可见**命令路径（未知命令建议 / 补全的候选源；
     /// 隐藏命令不进用户面——显式执行仍走 [`lookup`](Self::lookup)）
     pub fn paths_starting_with(&self, prefix: &[&str]) -> Vec<Vec<String>> {
@@ -485,6 +496,37 @@ mod tests {
         assert!(parse_cli_segment("demo.run", &json!({ "visibility": "secret" })).is_err());
         // 非对象段
         assert!(parse_cli_segment("demo.run", &json!("x")).is_err());
+    }
+
+    #[test]
+    fn parse_cli_segment_reads_optional_title() {
+        let meta = parse_cli_segment("demo.run", &json!({ "title": "跑" })).unwrap();
+        assert_eq!(meta.title, "跑");
+        // 缺省仍是空串（merge_plugin 回退到外层 command title）
+        assert!(parse_cli_segment("demo.run", &json!({}))
+            .unwrap()
+            .title
+            .is_empty());
+        // 形状错误显性拒绝
+        assert!(parse_cli_segment("demo.run", &json!({ "title": 1 })).is_err());
+    }
+
+    #[test]
+    fn empty_command_path_is_rejected_not_panicking() {
+        let mut catalog = Catalog {
+            commands: Vec::new(),
+        };
+        let spec = CommandSpec {
+            path: Vec::new(),
+            kind: CommandKind::BuiltIn,
+            title: String::new(),
+            help: None,
+            args: Vec::new(),
+            hidden: false,
+            confirm_reason: None,
+        };
+        let err = catalog.insert_checked(spec).expect_err("空路径必须拒绝");
+        assert!(err.contains("不能为空"), "{err}");
     }
 
     #[test]
