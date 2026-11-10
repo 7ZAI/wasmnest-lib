@@ -22,6 +22,7 @@ pub mod netinfo;
 pub mod pipe;
 pub mod plugin_binding;
 pub mod policy;
+pub mod probe;
 pub mod proxy;
 pub mod registry;
 pub mod server;
@@ -41,6 +42,7 @@ pub use mode::{
 pub use netinfo::{classify_interface, facts_from, system_network_facts, InterfaceFact, InterfaceKind};
 pub use pipe::{pipe_with_limits, PipeLimits, PipeStats};
 pub use policy::{Admission, AdmissionContext, Backend, ExposeConfig, ExposeRule, PolicyConfig, TunnelPolicy};
+pub use probe::{probe_relay, PROBE_COOLDOWN, PROBE_DEFAULT_TIMEOUT_MS, PROBE_MAX_ADDRS, PROBE_MAX_TIMEOUT_MS};
 pub use proxy::{bind_loopback_proxy, run_proxy, AsyncStream, TunnelConnector, TunnelIo};
 pub use registry::PairingRegistry;
 pub use server::{BackendConnector, TunnelServer, TunnelStreamContext};
@@ -59,6 +61,7 @@ pub const HOST_TUNNEL_FUNCTIONS: &[&str] = &[
     "connect",
     "close",
     "issue-pairing-ticket",
+    "probe-relay",
     "status",
 ];
 
@@ -95,6 +98,12 @@ pub const CODE_LAN_UNREACHABLE: &str = "lan-unreachable";
 pub const CODE_RELAY_UNREACHABLE: &str = "relay-unreachable";
 /// 本端不提供该通道形态（移动端无对等 HTTP/WS 面时 `expose` 显性失败）
 pub const CODE_TUNNEL_UNAVAILABLE: &str = "tunnel-unavailable";
+/// relay 探测的地址形状非法（空 / 非 multiaddr / 含 `/p2p-circuit` / 跨 PeerId）
+pub const CODE_RELAY_ADDRESS_INVALID: &str = "relay-address-invalid";
+/// relay 握手实测身份与地址钉住值不符（安全事件：地址可能被替换）
+pub const CODE_RELAY_IDENTITY_MISMATCH: &str = "relay-identity-mismatch";
+/// 同插件探测在飞 / 冷却期内重复点击（不排队）
+pub const CODE_PROBE_RATE_LIMITED: &str = "probe-rate-limited";
 /// 非句柄属主的探测请求
 pub const CODE_NOT_OWNER: &str = "not-owner";
 
@@ -148,7 +157,7 @@ mod tests {
                 "WIT 缺原语 {name}，契约与实现登记表漂移"
             );
         }
-        assert_eq!(HOST_TUNNEL_FUNCTIONS.len(), 7);
+        assert_eq!(HOST_TUNNEL_FUNCTIONS.len(), 8);
         assert!(WIT.contains("record expose-config"));
         assert!(WIT.contains("record tunnel-config"));
         assert!(WIT.contains("allow-wan: bool"));

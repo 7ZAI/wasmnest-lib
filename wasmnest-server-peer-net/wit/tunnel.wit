@@ -10,8 +10,10 @@ package wasmnest:tunnel@0.0.1;
 // 仅能凭一次性配对票据进入短命配对窗口。配对票据绑定目标端口、TTL ≤ 120s，
 // 且不绑定接入路径（LAN 直连与中继两路径均可使用）。
 //
-// 版本纪律：T06 增加 `configure` 原语（allowWan / relay 地址），仍属 0.0.1
-// 预发布线——本包首个消费者（T07/T09）落地前不承诺兼容。
+// 版本纪律：T06 增加 `configure` 原语（allowWan / relay 地址），T19 增加只读
+// `probe-relay`，仍属 0.0.1 预发布线——本包首个消费者（T07/T09）落地前不承诺
+// 兼容。两次都是**只加导出**：旧 guest 的 import 集合是新集合的子集，实例化不受
+// 影响；包版本进入 import 名，贸然升 0.0.2 会迫使所有 tunnel 消费者重打。
 // ======================================================================
 
 interface host-tunnel {
@@ -57,6 +59,16 @@ interface host-tunnel {
     /// 服务端：签发一次性配对票据（只开配对窗口，不建立应用信任）。
     /// 票据绑定目标端口 + TTL（≤120s）；签发方不得把明文票据写入日志
     issue-pairing-ticket: func(port: u16, ttl-secs: u32) -> result<string, string>;
+
+    /// 只读探测：对给定 relay 端点做一次 TCP + Noise + PeerId 校验 + ping。
+    ///
+    /// relay-addrs-json = multiaddr 字符串数组（每个都必须钉住
+    /// `/p2p/<relay>`，不得含 `/p2p-circuit`）；timeout-ms = 0 用宿主默认
+    /// （8000），上限 15000、下限 1000。
+    /// 成功返回 JSON report（v / addr / peerId / peerIdSha256 / handshakeMs /
+    /// rttMs / checkedAt）；失败返回 `code: detail`。
+    /// **无持久副作用**：不建 reservation、不登记规则、不写信任、不发事件。
+    probe-relay: func(relay-addrs-json: string, timeout-ms: u32) -> result<string, string>;
 
     /// 传输状态（JSON 字符串，camelCase）：node{started,nodeId,addrs} /
     /// peerFace / allowWan / relayAddrsConfigured / reservation /

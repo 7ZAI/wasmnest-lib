@@ -41,18 +41,23 @@ use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
+use wasmnest_p2p_engine::probe::{ProbeError, ProbeReport};
+use wasmnest_p2p_engine::Multiaddr;
 use wasmnest_server_base::service::ServiceRegistry;
 
 use crate::tunnel::frame::TunnelKind;
 use crate::tunnel::manager::{TunnelConfig, TunnelManager};
 use crate::tunnel::policy::ExposeConfig;
 use crate::tunnel::service::NET_TUNNEL_SERVICE_KEY;
-use crate::wire::{PERMISSION_TUNNEL_CONNECT, PERMISSION_TUNNEL_SERVE};
+use crate::wire::{PERMISSION_TUNNEL_CONNECT, PERMISSION_TUNNEL_PROBE, PERMISSION_TUNNEL_SERVE};
 
 // ==================== 宿主端口 ====================
 
 /// 类型擦除的「同步驱动异步」入参（与 peer 端口同款）
 pub type BoxedBlocked = Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>>;
+
+/// 探测实现（T19）：默认走真实引擎；测试替身覆盖以便不触网地测域层
+pub type BoxedProbe = Pin<Box<dyn Future<Output = Result<ProbeReport, ProbeError>> + Send>>;
 
 /// 宿主能力端口（边界层）
 pub trait TunnelPorts: Send + Sync + 'static {
@@ -71,6 +76,14 @@ pub trait TunnelPorts: Send + Sync + 'static {
     /// 应用作用域服务注册表（`None` = 无头 / 测试装配，退化为不记账并落一次 warn）
     fn service_registry(&self) -> Option<Arc<ServiceRegistry>> {
         None
+    }
+
+    /// relay 连通性探测（T19）：默认接真实引擎，测试替身可覆盖
+    ///
+    /// 探测**不**持有任何隧道资源（无 reservation / 规则 / 租约），故不需要
+    /// [`Self::tunnel_manager`]；宿主未装配该原语时缺的是 WIT 导出本身。
+    fn probe_relay(&self, addrs: Vec<Multiaddr>, timeout: Duration) -> BoxedProbe {
+        Box::pin(async move { wasmnest_p2p_engine::probe::probe_relay(&addrs, timeout).await })
     }
 }
 
@@ -107,6 +120,7 @@ pub fn ports() -> Arc<dyn TunnelPorts> {
 
 const DENIED_SERVE: &str = "permission denied: tunnel:serve";
 const DENIED_CONNECT: &str = "permission denied: tunnel:connect";
+const DENIED_PROBE: &str = "permission denied: tunnel:probe";
 const MANAGER_UNAVAILABLE: &str = "tunnel manager is not assembled (host boot must install it)";
 
 fn warn_no_lease(api: &str) {
@@ -125,6 +139,8 @@ fn require(ports: &Arc<dyn TunnelPorts>, plugin_id: &str, permission: &str, api:
         Ok(())
     } else if permission == PERMISSION_TUNNEL_SERVE {
         Err(DENIED_SERVE.to_string())
+    } else if permission == PERMISSION_TUNNEL_PROBE {
+        Err(DENIED_PROBE.to_string())
     } else {
         Err(DENIED_CONNECT.to_string())
     }
@@ -389,6 +405,19 @@ pub fn tunnel_issue_pairing_ticket(
     }
 }
 
+/// `tunnel.probe-relay`：只读连通性探测（T19）
+///
+/// 与其余原语不同，本函数**不碰管理器也不取服务租约**：探测无持久副作用
+/// （见 `tunnel::probe` 模块头注）。域层实现住 `tunnel::probe`。
+pub fn tunnel_probe_relay(
+    ports: &Arc<dyn TunnelPorts>,
+    plugin_id: &str,
+    addrs_json: &str,
+    timeout_ms: u32,
+) -> Result<String, String> {
+    crate::tunnel::probe::probe_relay(ports, plugin_id, addrs_json, timeout_ms)
+}
+
 /// `tunnel.status`：只读投影（两权限任一；不触达网络写面）
 pub fn tunnel_status(ports: &Arc<dyn TunnelPorts>, plugin_id: &str) -> Result<String, String> {
     require_either(ports, plugin_id, "host_tunnel_status")?;
@@ -413,8 +442,15 @@ mod wit_layer {
     pub const MODULE_NAME: &str = "tunnel";
     /// 本域提供的 WIT 接口（必须与分片逐字一致）
     pub const MODULE_INTERFACES: &[&str] = &["wasmnest:tunnel@0.0.1/host-tunnel"];
-    /// 本域读写的权限位（双位：serve / connect）
-    pub const MODULE_PERMISSIONS: &[&str] = &[PERMISSION_TUNNEL_SERVE, PERMISSION_TUNNEL_CONNECT];
+    /// 本域读写的权限位（三位：serve / connect / probe）
+    ///
+    /// T19 的 `tunnel:probe` 只授予 `probe-relay`，**不**授权任何写面——第三位的
+    /// 存在本身是安全判据（配置中心不因「测一下」获得端口映射能力）。
+    pub const MODULE_PERMISSIONS: &[&str] = &[
+        PERMISSION_TUNNEL_SERVE,
+        PERMISSION_TUNNEL_CONNECT,
+        PERMISSION_TUNNEL_PROBE,
+    ];
 
     const DESC: HostModuleDesc = HostModuleDesc {
         name: MODULE_NAME,
@@ -514,6 +550,10 @@ mod wit_layer {
             tunnel_issue_pairing_ticket(&ports_for(self), &self.plugin_id, port, ttl_secs)
         }
 
+        fn probe_relay(&mut self, relay_addrs_json: String, timeout_ms: u32) -> Result<String, String> {
+            tunnel_probe_relay(&ports_for(self), &self.plugin_id, &relay_addrs_json, timeout_ms)
+        }
+
         fn status(&mut self) -> Result<String, String> {
             tunnel_status(&ports_for(self), &self.plugin_id)
         }
@@ -588,6 +628,29 @@ mod tests {
         assert!(tunnel_status(&none, "p").is_err());
         assert!(tunnel_configure(&none, "p", false, "[]").is_err());
         assert!(tunnel_issue_pairing_ticket(&none, "p", 8765, 60).is_err());
+        assert_eq!(
+            tunnel_probe_relay(&none, "p", "[]", 0).unwrap_err(),
+            DENIED_PROBE,
+            "tunnel:probe 未声明时探测必须 fail-closed"
+        );
+    }
+
+    /// T19：probe 位是**独立第三位**——只声明 serve / connect 不获得探测面
+    #[test]
+    fn probe_is_a_separate_bit() {
+        for bit in [PERMISSION_TUNNEL_SERVE, PERMISSION_TUNNEL_CONNECT] {
+            let ports = fake(vec![(bit, "x")]);
+            assert_eq!(
+                tunnel_probe_relay(&ports, "p", "[]", 0).unwrap_err(),
+                DENIED_PROBE,
+                "只声明 {bit} 不应获得 tunnel:probe"
+            );
+        }
+        // 只声明 probe：地址校验先于任何管理器 / 端口调用
+        let probe_only = fake(vec![(PERMISSION_TUNNEL_PROBE, "tunnel:probe")]);
+        assert!(tunnel_probe_relay(&probe_only, "p", "not-json", 0)
+            .unwrap_err()
+            .starts_with("relay-address-invalid:"));
     }
 
     #[test]
@@ -618,8 +681,13 @@ mod tests {
             assert_eq!(*iface, "wasmnest:tunnel@0.0.1/host-tunnel");
         }
         for perm in crate::tunnel::plugin_binding::MODULE_PERMISSIONS {
-            assert!(["tunnel:serve", "tunnel:connect"].contains(perm));
+            assert!(["tunnel:serve", "tunnel:connect", "tunnel:probe"].contains(perm));
         }
+        assert_eq!(
+            crate::tunnel::plugin_binding::MODULE_PERMISSIONS.len(),
+            3,
+            "T19 起隧道域是三位：serve / connect / probe"
+        );
         assert_eq!(crate::tunnel::plugin_binding::MODULE_NAME, "tunnel");
     }
 }

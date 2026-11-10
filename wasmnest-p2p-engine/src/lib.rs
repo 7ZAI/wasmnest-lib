@@ -63,6 +63,8 @@ pub mod identity_bridge;
 pub mod links;
 /// 宿主端口面：PeerAdmissionPort（首连确认）+ P2pEventSink（连接态事件出口）
 pub mod ports;
+/// relay 连通性探测（T19）：一次性临时 swarm 拨号 + 握手身份校验 + ping 往返
+pub mod probe;
 /// Circuit Relay v2 地址面：relay 端点校验/钉住、域名解析、传输形态与预留状态
 pub mod relay;
 /// 流协议名注册表（P1 线协议迁移的单一事实源 + 漂移单测）

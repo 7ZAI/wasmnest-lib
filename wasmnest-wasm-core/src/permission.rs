@@ -178,6 +178,13 @@ pub const PERMISSION_TUNNEL_SERVE: &str = "tunnel:serve";
 /// 客户端只在本机 `127.0.0.1` 起临时端口（不变量 1），但会把远端端口映射成
 /// 本机可访问面，且拨号可消耗中继带宽；故与应用侧配对语义分开授权。
 pub const PERMISSION_TUNNEL_CONNECT: &str = "tunnel:connect";
+/// 内网穿透·只读探测（T19）：`host-tunnel` 的 probe-relay
+///
+/// **为什么不复用 `tunnel:connect`**：connect 能把任意远端端口映射到本机回环，
+/// 那是比「测一下通不通」大得多的权力；配置中心（`servers/net-config`）只为一
+/// 个诊断按钮，不应获得端口映射能力。本位不蕴含任何写面：不建 reservation、
+/// 不登记 expose 规则、不写信任、不改配置。
+pub const PERMISSION_TUNNEL_PROBE: &str = "tunnel:probe";
 
 /// 权限词汇反射表：`(常量标识符, 权限串)`
 ///
@@ -250,6 +257,7 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
         stringify!(PERMISSION_TUNNEL_CONNECT),
         PERMISSION_TUNNEL_CONNECT,
     ),
+    (stringify!(PERMISSION_TUNNEL_PROBE), PERMISSION_TUNNEL_PROBE),
 ];
 
 /// 合法权限集合 — 桌面端权限词汇的**唯一真源**（由 [`PERMISSION_VOCABULARY`] 派生）
@@ -466,6 +474,9 @@ pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
         PERMISSION_TUNNEL_CONNECT,
         &["tunnel.connect", "tunnel.close"],
     ),
+    // T19：只读连通性探测。与 serve / connect 都不共享——探测不持有任何隧道
+    // 资源，也不映射端口（门禁在 `tunnel/plugin_binding.rs::tunnel_probe_relay`）。
+    (PERMISSION_TUNNEL_PROBE, &["tunnel.probeRelay"]),
 ];
 
 /// 权限管理器
@@ -656,6 +667,7 @@ mod retired_permissions_tests {
     fn tunnel_vocabulary_registered() {
         assert!(VALID_PERMISSIONS.contains(&PERMISSION_TUNNEL_SERVE));
         assert!(VALID_PERMISSIONS.contains(&PERMISSION_TUNNEL_CONNECT));
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_TUNNEL_PROBE));
 
         let serve = PERMISSION_API_MAP
             .iter()
@@ -674,6 +686,13 @@ mod retired_permissions_tests {
             .find(|(perm, _)| *perm == PERMISSION_TUNNEL_CONNECT)
             .expect("tunnel:connect 应在 API 映射表内");
         assert_eq!(connect.1, &["tunnel.connect", "tunnel.close"][..]);
+
+        // T19：探测是独立第三位，只登记只读原语
+        let probe = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_TUNNEL_PROBE)
+            .expect("tunnel:probe 应在 API 映射表内");
+        assert_eq!(probe.1, &["tunnel.probeRelay"][..]);
 
         // 分域判据：只声明客户端位不获得 expose / issue 面
         let pm = PermissionManager::new();

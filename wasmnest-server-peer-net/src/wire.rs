@@ -29,3 +29,5 @@ pub const PERMISSION_PEER: &str = "peer";
 // 漂移锁按文本比对，新增位不得混进该块）。
 pub const PERMISSION_TUNNEL_SERVE: &str = "tunnel:serve";
 pub const PERMISSION_TUNNEL_CONNECT: &str = "tunnel:connect";
+/// T19：只读连通性探测（`host-tunnel.probe-relay`）；不蕴含任何写面
+pub const PERMISSION_TUNNEL_PROBE: &str = "tunnel:probe";
