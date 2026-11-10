@@ -13,7 +13,7 @@ English | [简体中文](README.md)
 
 ## 1. Project Shape
 
-- **No root workspace**: 19 independent crates (each with its own `Cargo.toml` and tracked `Cargo.lock`) plus 4 fixture crates. All commands run inside a crate directory; there is no repository-level `cargo test`.
+- **No root workspace**: 20 independent crates (each with its own `Cargo.toml` and tracked `Cargo.lock`) plus 4 fixture crates. All commands run inside a crate directory; there is no repository-level `cargo test`.
 - **Version line**: every crate restarts at `0.0.1`; the contract version `wasmnest:plugin@0.1.0` has a single handwritten source of truth in `wasmnest-contract` (which is also the **zero-dependency shared vocabulary** crate: package name / version + cross-layer guard constants).
 - **WIT is split per package**: `wasmnest:plugin@0.1.0` (core imports + guest exports) plus independently versioned domain packages (`wasmnest:{mdns,pty,peer,tunnel,http,ws,notify,clipboard}@0.0.1`). Bump only the package you change; the platform `release-manifest.json` pins each package in `contract.packages`.
 - **Consumption**: the platform's two hosts and the test repo depend on this working tree directly through sibling paths (no copies, no registry publication). The only exception is `wasmnest-wasm-core`'s `desktop-assembly` dependency on the published desktop SDK `wasmnest-plugin-api`, which consumers redirect back to the SDK working tree with `[patch.crates-io]`.
@@ -61,6 +61,7 @@ desktop / mobile host src-tauri/src/ (composition root · thin shell) — platfo
 | `wasmnest-crypto-engine` | Neutral cryptographic primitives (aes_gcm/chacha/hybrid/kdf/rsa/x25519) + name-addressed registry + its own `CryptoError`; zero internal crate dependencies | no features | — (WIT face lives in host `plugin/crypto.rs`) | desktop host, server-core |
 | `wasmnest-notify-engine` | Notification **contract room**: holds only WIT + port vocabulary (currently no ports), zero Rust implementation | no features | `wit/notify.wit` | both hosts' `compose.json` — **no Rust consumer** |
 | `link-crypto` (`wasmnest-link-crypto`) | Link-message encryption protocol core: HTTP envelope / WS handshake IKM / binary frames | no features | — | wasm-core (`link_crypto`), both hosts |
+| `wasmnest-relay` | **WAN-traversal relay daemon**: libp2p Circuit Relay v2 server + quotas / metrics / enrollment tokens + `init`/`run`/`doctor`/`print-addrs`; standalone Linux binary + Docker + Compose (`deploy/relay/`), zero internal crate dependencies | no features | — | public relay deployments only (**never enters host dependency lists**) |
 | `wasmnest-headless-host-probe` | Headless-host probe: references every capability domain in non-desktop form, proving "default shape needs no plugin-host mechanism" | no features (never enables `common-host`), zero dev-deps | — | gate only — **must not enter any host dependency list** |
 
 > The only directory name that differs from its package name is `link-crypto` (package `wasmnest-link-crypto`).

@@ -13,7 +13,7 @@
 
 ## 1. 工程形态
 
-- **无根 workspace**：19 个独立 crate（各自 `Cargo.toml` + 随仓库跟踪的 `Cargo.lock`）+ 4 个夹具 crate。命令一律在 crate 目录执行，不存在「仓级 cargo test」。
+- **无根 workspace**：20 个独立 crate（各自 `Cargo.toml` + 随仓库跟踪的 `Cargo.lock`）+ 4 个夹具 crate。命令一律在 crate 目录执行，不存在「仓级 cargo test」。
 - **版本线**：全部 crate 自 `0.0.1` 重开；契约版本 `wasmnest:plugin@0.1.0` 唯一手写真源在 `wasmnest-contract`（该 crate 同时是**零依赖共享词汇**：包名 / 版本 + 跨层护栏常量）。
 - **WIT 按包拆分**：`wasmnest:plugin@0.1.0`（core import + guest 导出面）+ 各域包独立版本（`wasmnest:{mdns,pty,peer,tunnel,http,ws,notify,clipboard}@0.0.1`）；改哪个包 bump 哪个包，平台 `release-manifest.json` 的 `contract.packages` 逐包钉版本。
 - **消费方式**：平台双端宿主与测试仓经 sibling path 直接依赖本仓工作树（本仓不复制、不发布到 registry；唯一例外是 `wasmnest-wasm-core` 的 `desktop-assembly` 对桌面 SDK `wasmnest-plugin-api` 的版本依赖，消费侧用 `[patch.crates-io]` 指回 SDK 工作树）。
@@ -61,6 +61,7 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 | `wasmnest-crypto-engine` | 中性加密算法原语（aes_gcm/chacha/hybrid/kdf/rsa/x25519）+ 名称寻址注册表 + 自带 `CryptoError`；零内部 crate 依赖 | 无 feature | —（WIT 面在宿主 `plugin/crypto.rs`） | 桌面宿主、server-core |
 | `wasmnest-notify-engine` | 通知域**契约房**：只持 WIT + 端口词汇（当前无端口），零 Rust 实现 | 无 feature | `wit/notify.wit` | 双端 `compose.json` 组合——**无 Rust 消费者** |
 | `link-crypto`（`wasmnest-link-crypto`） | 链路报文加密协议核心：HTTP 信封 / WS 握手 IKM / 二进制帧 | 无 feature | — | wasm-core（`link_crypto`）、双端宿主 |
+| `wasmnest-relay` | **内网穿透中继守护进程**：libp2p Circuit Relay v2 服务端 + 配额 / 指标 / enrollment token + `init`/`run`/`doctor`/`print-addrs` 一键运维；独立 Linux 二进制 + Docker + Compose（`deploy/relay/`），零内部 crate 依赖 | 无 feature | — | 仅公网 relay 部署（**不进宿主依赖清单**） |
 | `wasmnest-headless-host-probe` | 无头宿主探针：以非桌面形态引用全部能力域，钉「默认形态不需要插件宿主机制」 | 无 feature（永不开 `common-host`）、零 dev-deps | — | 仅门禁——**不得进任何宿主依赖清单** |
 
 > 目录名与包名不同形的唯一例外：`link-crypto`（包名 `wasmnest-link-crypto`），引用时看清。

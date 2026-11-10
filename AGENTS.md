@@ -37,7 +37,7 @@
 
 ## 1. 仓速览
 
-**无根 workspace**：19 个独立 crate（各自 `Cargo.toml` + 跟踪的 `Cargo.lock`）+ 4 个夹具。**命令在 crate 目录跑，一个 crate 一次 cargo；没有仓级 `cargo test`。**
+**无根 workspace**：20 个独立 crate（各自 `Cargo.toml` + 跟踪的 `Cargo.lock`）+ 4 个夹具。**命令在 crate 目录跑，一个 crate 一次 cargo；没有仓级 `cargo test`。**
 
 ```text
 插件（应用仓）
@@ -73,6 +73,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 | `wasmnest-crypto-engine` | 中性加密原语 + 名称寻址注册表；自带 `CryptoError` | 零内部依赖 |
 | `wasmnest-clipboard-engine` / `wasmnest-notify-engine` | 契约房：只持 WIT，零 Rust 实现 | `wit/{clipboard,notify}.wit` |
 | `link-crypto`（包 `wasmnest-link-crypto`） | 链路加密协议：HTTP 信封 / WS 握手 IKM / 二进制帧 | 目录名 ≠ 包名唯一例外 |
+| `wasmnest-relay` | 内网穿透中继守护进程：libp2p Circuit Relay v2 服务端 + 配额 / 指标 / enrollment token + `init`/`run`/`doctor`/`print-addrs`；独立 Linux 二进制 + `deploy/relay/` | 无 feature；零内部 crate 依赖；**不进任何宿主清单** |
 | `wasmnest-headless-host-probe` | 无头探针：非桌面形态引用全部能力域，钉默认形态可引用性 | 永不开 `common-host`；零 dev-deps；**不进任何宿主清单** |
 
 夹具（不入表、不发布）：`wasmnest-host-kit/fixtures/forced-link-probe`、`wasmnest-wasm-core/fixtures/{wasi-test,wasip3-test,p3-async-host-import-test}`（自持、绑 `wit/core.wit`、零 SDK）。

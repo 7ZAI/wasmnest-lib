@@ -1,0 +1,69 @@
+# ==================== wasmnest-relay：内网穿透中继守护进程 ====================
+# 公网 / 自建 Linux 服务器上的**独立守护进程**（不是 wasm，不是宿主内嵌服务）：
+# libp2p Circuit Relay v2 服务端 + 配额 + 指标 + 一键配置/一键运行 CLI。
+#
+# 依赖纪律（与 p2p-engine 同款口径）：
+# - 零内部 crate 依赖——中继节点必须能脱离整个能力仓单独构建/交叉编译成静态
+#   Linux 二进制；`src/boundary_lock.rs` 单测钉死（Cargo.toml 内不得出现 path 依赖）。
+# - 只允许机制级依赖：libp2p 传输栈 / 异步运行时 / 序列化 / 摘要 / 日志。
+# - libp2p 显式收窄 feature（default-features = false）：中继只用 TCP + Noise +
+#   Yamux，不启用 quic/tls/webrtc——那些会拉 rustls / quinn / aws-lc，且对中继
+#   转发无收益（Noise 已在 libp2p 层完成加密，无需 TLS 证书）。
+
+[package]
+name = "wasmnest-relay"
+version = "0.0.1"
+description = "WasmNest 中继节点：libp2p Circuit Relay v2 服务端（配额 / 指标 / 一键配置 / 一键运行），独立 Linux 守护进程；不是 wasm、不是宿主内嵌服务，reservation 不代表授权"
+authors = ["binblink"]
+license = "MIT"
+repository = "https://github.com/7ZAI/wasmnest-lib"
+edition = "2021"
+
+[[bin]]
+name = "wasmnest-relay"
+path = "src/main.rs"
+
+[dependencies]
+# 中继服务端本体。relay = Circuit Relay v2 的 HOP 服务端面（`Behaviour::set_status(Enable)`
+# 才会对外通告 HOP；默认 Disable 时客户端收到 `Reservation(Unsupported)`）。
+libp2p = { version = "0.57.1", default-features = false, features = [
+    "tokio",
+    "tcp",
+    "noise",
+    "yamux",
+    "ping",
+    "macros",
+    "ed25519",
+    "relay",
+] }
+# 控制协议（`/wasmnest/relay-control/1`）：版本/模式查询 + enrollment token 兑换。
+# 0.5.0-alpha 与 libp2p 0.57.1 同锁步（libp2p-core 0.44 / libp2p-swarm 0.48）。
+libp2p-stream = "0.5.0-alpha"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "net",
+    "signal",
+    "io-util",
+    "fs",
+] }
+# 事件泵驱动 swarm（`select_next_some`）与控制流的 async IO 组合
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 配置文件格式（TOML）：运维可手改、可注释；JSON 只用于对外机器可读输出
+toml = "0.8"
+# 身份指纹与 enrollment token 摘要（只落哈希，不落明文）
+sha2 = "0.10"
+hex = "0.4"
+# enrollment token 生成需要密码学随机源（Linux 上 getrandom）
+rand = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "ansi", "env-filter"] }
+thiserror = "1"
+
+[dev-dependencies]
+# 测试数据一律走临时目录（不污染真实配置/身份目录）
+tempfile = "3"
