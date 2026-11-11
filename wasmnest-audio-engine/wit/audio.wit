@@ -1,0 +1,127 @@
+package wasmnest:audio@0.0.1;
+// ======================================================================
+/// 插件私有音频采集（host-audio，v1）：裸 PCM 采集引擎原语，零业务语义
+///
+/// **本接口的定位**：宿主侧唯一的麦克风出口。它只做四件机制事——枚举输入设备、按参数
+/// 打开一条采集流、把采集到的 PCM 归一后放进**有界帧环**供属主插件按游标拉取、给出电平
+/// 快照。**不含**任何产品语义：无「录音会话」「转写」「说话人」「VAD 分段」，也不认识
+/// 任何 ASR 引擎。语音→文字的编排（本地 whisper / 云端 ASR / 分段策略 / 文本落库）
+/// 归应用仓插件，它拉走的就是标准 S16LE PCM。
+///
+/// 约定与红线：
+/// - **属主隔离**：句柄 `audio-<uuid>` 仅创建者插件可调，他人 → `not owner of audio
+///   stream handle`；插件停用时宿主回收其全部采集流（停流 + 摘注册表）。
+/// - **产出格式固定**：帧环里永远是**交错 S16LE PCM**，采样率与声道数由 `open` 的
+///   `targetSampleRate` / `targetChannels` 决定（缺省 16000 Hz 单声道 = ASR 通用档位）。
+///   设备原生格式（48k 立体声 f32 / AAudio i16 等）由引擎归一，`status` 回报协商结果。
+/// - **输出纯拉取**（无 push 回调）：宿主为每条流维护有界帧环，插件按自己的节奏以游标
+///   拉取；慢插件只损失自己的历史（淘汰最旧 + `truncated`），背压绝不回传到采集线程。
+/// - **采集线程零阻塞**：设备回调线程只做「归一 + 追加环」，不解释字节、不做 IO、
+///   不等消费者；因此本接口**没有**事件面，状态变化靠 `status` 快照自愈（v1 刻意如此，
+///   事件面需要宿主任务投递，随接线票另议）。
+/// - **权限两域**（可独立授予 / 审计）：`audio:capture`（open / start / stop / close——
+///   占用麦克风的高风险面）与 `audio:io`（list-devices / status / ring-fetch / level——
+///   数据面与元数据面）。
+/// - **明确不做**（业务语义归插件层）：VAD / 分段 / 编码（opus / wav 容器）/ 降噪 /
+///   回放 / 设备热插拔事件 / 多流混音 / 权限申请 UI（系统麦克风授权由宿主负责）。
+///
+/// `open` 的 config-json（camelCase，纯引擎参数）：
+/// `{ deviceId?, targetSampleRate?, targetChannels?, ringBytes? }`
+/// ——`deviceId` 缺省取系统默认输入设备；`ringBytes` 是本条流的帧环容量，缺省取宿主默认，
+/// 超出宿主上限或超出每插件在册条数上限一律 `Err`（配额类失败可见，不静默降级）。
+interface host-audio {
+    /// 一台输入设备的元数据（`id` 是后端内不透明标识，跨重启不保证稳定——
+    /// 需要长期记忆设备的插件自己存 `name` 并在打开失败时回落默认设备）
+    record device-info {
+        /// 后端给出的不透明设备标识（传给 `open` 的 `deviceId`）
+        id: string,
+        /// 人类可读设备名（系统混音器里的那个名字）
+        name: string,
+        /// 是否系统当前默认输入设备
+        is-default: bool,
+        /// 该设备支持的最大输入声道数
+        max-input-channels: u32,
+        /// 该设备支持的采样率（Hz，去重升序；协商时优先命中目标采样率）
+        sample-rates: list<u32>,
+    }
+
+    /// 一次帧环拉取的返回（游标语义见 `ring-fetch`）
+    record ring-fetch-result {
+        /// `[实际起点, next-offset)` 区间的 PCM 字节（交错 S16LE，未解码）
+        data: list<u8>,
+        /// 下一次拉取应传的游标
+        next-offset: u64,
+        /// `from-offset` 落后于环驻留起点（中间字节已被淘汰）→ 调用方按 resync 重建上下文
+        truncated: bool,
+    }
+
+    /// 电平快照（归一后 PCM 上的计量，供上层做「有没有人在说话」这类判断）
+    record level-snapshot {
+        /// 均方根幅度，0.0..=1.0（满刻度为 1.0）
+        rms: f32,
+        /// 窗口内峰值幅度，0.0..=1.0
+        peak: f32,
+        /// 该窗口覆盖的样本数（每声道计数，与采样率相除即窗口时长）
+        window-samples: u32,
+    }
+
+    /// 采集流的实际格式（协商结果，字段与 `open` 的目标参数未必相同——
+    /// 目标只约束**产出**，本记录描述**设备交出来的东西**）
+    record actual-format {
+        /// 设备实际采样率（Hz）
+        sample-rate: u32,
+        /// 设备实际声道数
+        channels: u32,
+        /// 设备实际样本宽度：`s16` / `f32`（引擎按此解码后归一到 S16LE）
+        sample-format: string,
+    }
+
+    /// 流状态快照（`status` 的返回；JSON 文本，camelCase）
+    /// 形状：`{ handle, state, backend, targetSampleRate, targetChannels, actualFormat,
+    /// framesCaptured, bytesProduced, ringBytes, ringUsageBytes, ringDroppedBytes,
+    /// producedMs, termination?, callbacks, backendErrors, ignoredCallbacks }`，其中
+    /// `state = "idle" | "running" | "stopped" | "terminated"`，
+    /// `actualFormat = { sampleRate, channels, sampleFormat }`（`sampleFormat = "s16" | "f32"`，
+    /// 描述**设备交出来的东西**），`termination = { code, detail, suggestsReopen }`
+    /// （设备掉线 / 路由切换 / 权限被拒等终止原因，停止后仍在册，供插件区分「自己停的」
+    /// 与「设备没了」）。`handle` / `ringBytes` / 三个回调计数是诊断附加项，插件可忽略。
+    status: func(stream-id: string) -> result<string, string>;
+
+    /// 枚举可用输入设备（不含输出设备）。`Err` 只表示后端不可达（宿主音频服务未起），
+    /// 「没有输入设备」是 `Ok([])`——那是事实而非故障。
+    list-devices: func() -> result<list<device-info>, string>;
+
+    /// 打开一条采集流：协商设备与格式、造帧环、登记属主；成功返回句柄 `audio-<uuid>`。
+    /// **打开不开始采集**（须再 `start`），失败只回错误且不登记任何句柄。
+    open: func(config-json: string) -> result<string, string>;
+
+    /// 开始采集（设备回调开始向帧环产出）。已在采集中 → `Err`（不重复起流）。
+    start: func(stream-id: string) -> result<_, string>;
+
+    /// 停止采集（**保留句柄与帧环历史**，可再次 `start`；与 `close` 的区别只在这条）。
+    stop: func(stream-id: string) -> result<_, string>;
+
+    /// 停止并销毁：停流 + 摘注册表 + 释放帧环（幂等失败：句柄不存在即 `Err`）。
+    close: func(stream-id: string) -> result<_, string>;
+
+    /// 按游标拉取帧环里的 PCM 字节
+    /// - `Ok`：自游标起的字节（单次不超 `max-bytes`），`next-offset` 续拉不重复
+    /// - `next-offset == from-offset` 且 `data` 空：游标已追平产出端
+    /// - `from-offset` 超前于产出端：`data` 空且 `next-offset` 回带产出端（调用方据此自纠）
+    /// - `truncated = true`：`from-offset` 落后于环驻留起点，返回的是现存最早段
+    /// - `Err`：句柄不存在 / 非属主 / 权限缺失
+    ///
+    /// **并发拉取**：游标由调用方自持、互不干扰（拉取是纯读，不消费、不推进全局偏移）；
+    /// 淘汰按产出量全局计，任一读取都不为他人保留历史，落后于驻留起点即 `truncated`。
+    /// （消费者只有属主插件自己。）
+    ring-fetch: func(stream-id: string, from-offset: u64, max-bytes: u32) -> result<ring-fetch-result, string>;
+
+    /// 取最近一个完整电平窗口；尚无完整窗口 → `Ok(None)`（不是错误，也不给假值）。
+    level: func(stream-id: string) -> result<option<level-snapshot>, string>;
+}
+
+// 本分片供能力域 crate（audio-engine）自持 bindgen；端生成物由 compose-wit.mjs
+// 收集到 `plugin-sdk-{desktop,mobile}/rust/wit/` 与共享核心同 package 拼装。
+world cap-audio {
+    import host-audio;
+}

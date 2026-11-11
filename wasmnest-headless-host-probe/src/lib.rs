@@ -5,7 +5,7 @@
 //! 能力域脱绑（P1–P5）之后，根 `packages/` 的能力域 crate 默认形态 = 纯引擎
 //! 机制 + 端口抽象（零 WIT 依赖），**任何宿主**可直接引用。本 crate 就是那个
 //! 「任何宿主」的最小实证：以非桌面宿主形态（永不开 `common-host` feature）
-//! 引用五个带桌面 WIT 绑定面的能力域 + CLI 机制 + server 地基/内核，编译通过 +
+//! 引用六个带桌面 WIT 绑定面的能力域 + CLI 机制 + server 地基/内核，编译通过 +
 //! 引擎面 smoke 断言即门禁。
 //!
 //! ## 钉住的三件事
@@ -29,9 +29,10 @@
 
 // ==================== 强制引用（rlib 进编译图的最小面） ====================
 //
-//! 五行缺一不可：少一行 = 该 crate 未被链接 = 「可引用」断言静默缩水。
+//! 强制引用缺一不可：少一行 = 该 crate 未被链接 = 「可引用」断言静默缩水。
 //! `common-host` 未开 ⇒ 这些引用不触发任何 inventory 注册（非桌面宿主
 //! 不应注册——它没有插件宿主机制，语义见各能力域 plugin_binding 模块头）。
+use wasmnest_audio_engine as _;
 use wasmnest_discovery_engine as _;
 use wasmnest_pty_engine as _;
 use wasmnest_server_http as _;
@@ -87,5 +88,25 @@ mod smoke {
             Ok(HttpEndpointAuth::Jwt)
         );
         assert!(WsEndpointAuth::parse_with(Some("JWT"), WsEndpointAuth::None).is_err());
+    }
+
+    /// 音频采集能力域的默认形态可直接消费（纯引擎：缺省目标格式 + 权限词汇）
+    ///
+    /// 这里刻意只碰**无需硬件**的面：`PcmFormat` / `TargetFormat` / 权限常量。
+    /// 一旦有人把 cpal 或其它原生依赖塞回默认树，本探针的 `cargo tree` 门禁会先红。
+    #[test]
+    fn audio_engine_default_form_is_hardware_free() {
+        use wasmnest_audio_engine::format::{PcmFormat, SampleFormat, SPEECH_16K_MONO};
+        use wasmnest_audio_engine::wire::{PERMISSION_AUDIO_CAPTURE, PERMISSION_AUDIO_IO};
+
+        assert_eq!(SPEECH_16K_MONO.sample_rate, 16_000);
+        assert_eq!(SPEECH_16K_MONO.channels, 1);
+        assert_eq!(SPEECH_16K_MONO.bytes_per_frame(), 2);
+        assert_eq!(
+            PcmFormat::new(48_000, 2, SampleFormat::F32).bytes_per_frame(),
+            8
+        );
+        assert_eq!(PERMISSION_AUDIO_CAPTURE, "audio:capture");
+        assert_eq!(PERMISSION_AUDIO_IO, "audio:io");
     }
 }

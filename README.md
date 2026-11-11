@@ -13,7 +13,7 @@
 
 ## 1. 工程形态
 
-- **无根 workspace**：20 个独立 crate（各自 `Cargo.toml` + 随仓库跟踪的 `Cargo.lock`）+ 4 个夹具 crate。命令一律在 crate 目录执行，不存在「仓级 cargo test」。
+- **无根 workspace**：21 个独立 crate（各自 `Cargo.toml` + 随仓库跟踪的 `Cargo.lock`）+ 4 个夹具 crate。命令一律在 crate 目录执行，不存在「仓级 cargo test」。
 - **版本线**：全部 crate 自 `0.0.1` 重开；契约版本 `wasmnest:plugin@0.1.0` 唯一手写真源在 `wasmnest-contract`（该 crate 同时是**零依赖共享词汇**：包名 / 版本 + 跨层护栏常量）。
 - **WIT 按包拆分**：`wasmnest:plugin@0.1.0`（core import + guest 导出面）+ 各域包独立版本（`wasmnest:{mdns,pty,peer,tunnel,http,ws,notify,clipboard}@0.0.1`）；改哪个包 bump 哪个包，平台 `release-manifest.json` 的 `contract.packages` 逐包钉版本。
 - **消费方式**：平台双端宿主与测试仓经 sibling path 直接依赖本仓工作树（本仓不复制、不发布到 registry；唯一例外是 `wasmnest-wasm-core` 的 `desktop-assembly` 对桌面 SDK `wasmnest-plugin-api` 的版本依赖，消费侧用 `[patch.crates-io]` 指回 SDK 工作树）。
@@ -55,6 +55,7 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 | `wasmnest-p2p-engine` | **libp2p 机制引擎**：节点身份桥（node_id ↔ PeerId）/ swarm 生命周期 / 入站准入闸门 / 具名流协议与链路登记（P1 起 peer-net 传输栈消费） | `default = []`；`relay` 可选 | — | `wasmnest-server-peer-net`、测试仓 |
 | `wasmnest-discovery-engine` | mDNS 能力域：共享守护 + 类型中枢 + 浏览/广播双句柄表 + 宿主自播面 | 同上 | `wit/mdns.wit` | 桌面（common-host）、移动（引擎面）、测试仓 |
 | `wasmnest-pty-engine` | PTY 能力域 + 跨平台伪终端引擎（进程生命周期 / 读取线程 / 环形缓冲） | 同上 | `wit/pty.wit` | 桌面宿主（common-host） |
+| `wasmnest-audio-engine` | 音频采集能力域 + PCM 采集引擎（设备枚举 / 会话生命周期 / 归一为交错 S16LE / 帧环游标拉取 / 电平）；`backend-cpal` 装 cpal 四端后端（默认关） | `[]+ch`；`backend-cpal`；`test-util` | `wit/audio.wit` | 桌面（common-host）、移动（引擎面）、无头探针 |
 | `wasmnest-ws-client-engine` | WS **出站客户端**能力域：句柄表 / 双任务 / 心跳 / 退避重连 / 停用回收 | 无 feature | `wit/ws.wit`（共享契约真源） | 移动宿主、测试仓 |
 | `wasmnest-cli-engine` | CLI 能力域机制骨架：内建命令目录（词汇真源）/ argv 解析 / 帮助与补全 / 本机 IPC wire 帧契约；零内部 crate 依赖 | 无 feature | —（CLI 无 guest 面） | 平台仓 CLI / 无头 bin（尚未实施）、无头探针（仅链接） |
 | `wasmnest-clipboard-engine` | 剪贴板域**契约房**：只持 WIT，零 Rust 实现 | 无 feature | `wit/clipboard.wit` | 双端 `compose.json` 组合——**无 Rust 消费者** |
@@ -75,7 +76,7 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 - **`wasmnest-host-api-core`（运行期实现层）**：host_api 中「不依赖 WIT bindgen trait / 任何一端独有类型」的机制语义；每域两层 = 实现层（本 crate）+ 各端 adapter（住 wasm-core 或宿主）。`config` / `http` 已判定**不抽**，不要顺手统一。
 - **`wasmnest-wasm-core`（运行期整核，单形态）**：插件系统微内核——`manager/`（加载 / 生命周期 / 实例调用 / 任务 / 热重载）、`manager/runtime/`（统一运行时壳 + **唯一合法 core 绑定** `core_binding.rs`）、`host_api/`（adapter）、`security/`、`db/`、`system/`。无 common/bare 之分：端差异全部经 `HostModule` 自报、`GuestEventDispatcher`、`AbiPolicy` / `HostFactsPort` 注入。`desktop-assembly`（默认开）= 桌面专属装配面；移动宿主 `default-features = false` 不开。`test-support` = 测试面。
 
-### 4.2 能力域引擎（五个带 `common-host` 的 crate）
+### 4.2 能力域引擎（六个带 `common-host` 的 crate）
 
 默认形态 = **纯引擎机制 + 端口抽象**，零 WIT / 零 SDK / 零 wasmtime / 零宿主框架；`common-host` 才装配 `bindgen!` / `HostModule` 自报 / `inventory::submit!` / `impl Host`，开 feature 后 ABI / WIT / 权限位 / 事件形状 / 注册零变化。平台边经端口 trait 注入（权限门 / 事件投递 / 后台任务 / 路径 / 系统信息等），**端口缺席 fail-visible**。
 
@@ -84,6 +85,7 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 - **`wasmnest-server-peer-net`**：对等网络**引擎域**，不是传输面——不过 actix 组合、不过过滤链、不用链路加密；mDNS 句柄以纯值经 `MdnsPort` 注入（单 listener 不变量）。产品业务（传输任务 / 策略 / 历史 / 共享根 / 浏览编排）在应用仓插件，本 crate 只留引擎原语与生命周期；底座机制（原 `wasmnest-peer-net` 拆分并入 `base/`：身份/信任/mDNS 注册/传输会话引擎原语）为 crate 自身内容，传输栈经 `wasmnest-p2p-engine`（noise/yamux 具名流）。
 - **`wasmnest-discovery-engine`**：mDNS 能力域。全进程共享守护只允许 `engine.rs` 创建一次；对同一服务类型只允许 `type_hub.rs` 调 `daemon.browse` / `stop_browse`（重复 browse 会静默杀死别人的事件流）。
 - **`wasmnest-pty-engine`**：PTY 能力域（`host-pty` 6 原语）+ 插件私有伪终端引擎面。引擎面跨平台零 wasm；只接受调用方算好的 argv，不做 shell 包装；输出走环形缓冲 + 水印通知。
+- **`wasmnest-audio-engine`**：音频采集能力域（`host-audio` 8 原语）+ PCM 采集引擎面——设备枚举 / 采集会话生命周期 / 归一（目标采样率 + 声道 → 交错 S16LE）/ 有界帧环游标拉取 / 电平。采集线程零阻塞、纯拉取无 push 回调；VAD / 分段 / 编码 / ASR 编排归应用仓。cpal 后端只经 `backend-cpal` feature 进图（默认形态零原生音频依赖），宿主也可自带 `CaptureBackend` 实现。
 
 ### 4.3 server 分层（`base` / `core` / 传输面）
 
