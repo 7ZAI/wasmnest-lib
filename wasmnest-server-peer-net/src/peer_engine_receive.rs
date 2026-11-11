@@ -127,11 +127,14 @@ fn effective_download_dir(ctx: &PeerCtx, settings: &PeerTransferSettings) -> Res
 
 // ==================== 节点装配接缝（peer_net 调用）====================
 
-/// 装配期登记：处理器句柄 + 配置快照（热更新基底）。start_locked 以缺省
-/// Ask/60s 构造；用户设置由 file-transfer 插件激活后经 set-receive-policy /
-/// set-download-dir 原语推送纠正
+/// 装配期登记：处理器句柄 + 配置快照（热更新基底）。
+///
+/// 生效设置取**已推送的内存态**（无推送才是缺省 Ask/60s）：插件允许先推送设置
+/// 再拉起节点（激活期即此顺序），若此处强取缺省，刚推的落点/策略会在装配时被
+/// 丢掉——落点回退平台默认目录，与设置页展示的目录不一致，前端按设置目录拼出
+/// 的「打开所在文件夹」路径随之不存在。
 pub(crate) async fn register_handler(ctx: &PeerCtx, handler: Arc<SharedDirHandler>, mut config: TransferConfig) {
-    let settings = default_settings(ctx);
+    let settings = assembly_settings(ctx);
     if let Ok(dir) = effective_download_dir(ctx, &settings) {
         config.download_dir = dir;
     }
@@ -141,9 +144,9 @@ pub(crate) async fn register_handler(ctx: &PeerCtx, handler: Arc<SharedDirHandle
     *state.runtime.lock().await = Some((handler, config));
 }
 
-/// 节点装配期缺省设置（无磁盘缓存——设置真源在插件，激活后推送纠正）
-fn default_settings(_ctx: &PeerCtx) -> PeerTransferSettings {
-    PeerTransferSettings::default()
+/// 节点装配用的设置快照：复用已推送的内存态（无推送时落缺省）
+fn assembly_settings(ctx: &PeerCtx) -> PeerTransferSettings {
+    current_settings(ctx)
 }
 
 /// 节点停止时摘除句柄（此后设置命令仅改内存态，下次启动重新装配）
@@ -525,6 +528,38 @@ mod tests {
             }
             other => panic!("ask must build Ask, got {other:?}"),
         }
+    }
+
+    /// 回归：插件允许「先推送设置 → 再拉起节点」。装配快照必须复用已推送的
+    /// 内存态——旧实现强取缺省，落点回退平台默认目录，而设置页仍展示用户目录，
+    /// 前端据设置目录拼出的 reveal 路径必然不存在（2026-11-10 桌面实测）。
+    #[tokio::test]
+    async fn assembly_settings_keep_pushed_state() {
+        let ctx = crate::test_ctx::headless_ctx();
+        // 未推送：缺省 Ask/60s、无落点覆盖
+        let defaults = assembly_settings(&ctx);
+        assert_eq!(defaults.policy_mode, POLICY_ASK);
+        assert_eq!(defaults.ask_timeout_secs, DEFAULT_ASK_TIMEOUT_SECS);
+        assert!(defaults.download_dir.is_none());
+
+        // 节点启动前的推送（激活期真实顺序）
+        let dir = tempfile::tempdir().expect("create temp download dir");
+        let dir_text = dir.path().to_string_lossy().to_string();
+        set_peer_download_dir(ctx.clone(), Some(dir_text.clone()))
+            .await
+            .expect("push download dir");
+        set_peer_receive_policy(ctx.clone(), POLICY_ALWAYS_ACCEPT.to_string(), 30)
+            .await
+            .expect("push receive policy");
+
+        let snapshot = assembly_settings(&ctx);
+        assert_eq!(snapshot.policy_mode, POLICY_ALWAYS_ACCEPT);
+        assert_eq!(snapshot.ask_timeout_secs, 30);
+        assert_eq!(
+            snapshot.download_dir.as_deref(),
+            Some(dir_text.as_str()),
+            "装配快照不得丢弃已推送落点"
+        );
     }
 }
 

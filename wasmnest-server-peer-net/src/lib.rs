@@ -1217,8 +1217,8 @@ async fn start_locked(
         transfer_tx,
         serve_tx,
     ));
-    // 接收侧登记句柄与配置快照（设置热更新/按批取消入口），并按持久化
-    // 设置纠正首份策略与落点；事件消费任务随后启动
+    // 接收侧登记句柄与配置快照（设置热更新/按批取消入口），并按已推送的
+    // 设置纠正首份策略与落点（插件可在拉起节点前推送）；事件消费任务随后启动
     self::peer_engine_receive::register_handler(&ctx, Arc::clone(&handler), config).await;
     wasmnest_server_base::error_boundary::spawn_with_error_boundary(
         "peer_net_transfer_events",
