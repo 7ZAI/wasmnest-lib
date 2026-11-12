@@ -60,6 +60,7 @@ pub mod peer_engine_transfer;
 /// peer 适配器迁入，并把其对宿主组装面的 20 处反向耦合换成端口）
 pub mod plugin_binding;
 /// 本机 relay 预留的共享协调器：host-tunnel 与 host-peer 按 owner 取并集下发。
+mod relay_rendezvous;
 mod relay_reservation;
 /// `net.peer-node` 应用作用域服务（节点生命周期的租约适配）
 pub mod service;
@@ -178,6 +179,8 @@ struct PeerNetRuntime {
     node_id: String,
     /// 生效的设备名（node-info 展示；空配置由宿主默认值补齐后才落这里）
     device_name: String,
+    /// 中继会合任务（跨 NAT 设备发现；随节点生命周期启停）
+    rendezvous_task: tokio::task::JoinHandle<()>,
 }
 
 impl PeerNetRuntime {
@@ -254,6 +257,12 @@ pub struct PeerNetState {
     lifecycle_gate: tokio::sync::Semaphore,
     /// relay 预留 owner 表（tunnel / peer 插件共用同一引擎预留）
     relay: crate::relay_reservation::RelayReservations,
+    /// 中继会合任务的唤醒信号（配置变更 / 手动刷新时立即重查，不用等心跳）
+    pub(crate) rendezvous_wakeup: tokio::sync::Notify,
+    /// 中继会合房间键（默认 `nest`；插件空间码经 `peer:relay-room` 改为派生哈希）
+    pub(crate) rendezvous_room: std::sync::Mutex<String>,
+    /// 会合是否启用（插件激活时置位，停用时清零）
+    pub(crate) rendezvous_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl Default for PeerNetState {
@@ -268,6 +277,9 @@ impl Default for PeerNetState {
             inbound_conns: std::sync::Mutex::new(HashMap::new()),
             lifecycle_gate: tokio::sync::Semaphore::new(1),
             relay: crate::relay_reservation::RelayReservations::default(),
+            rendezvous_wakeup: tokio::sync::Notify::new(),
+            rendezvous_room: std::sync::Mutex::new(crate::relay_rendezvous::DEFAULT_ROOM.to_string()),
+            rendezvous_enabled: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -1303,6 +1315,9 @@ async fn start_locked(
         .map_err(|e| AppError::Plugin(format!("mdns host service registration failed: {e}")))?;
 
     let node_id = node.node_id().to_string();
+    // 中继会合任务先于 runtime 落槽启动：它每轮都会重新读取 runtime，首轮看到
+    // 未就绪只会发空快照，不会漏掉后续配置变更（配置点会 notify 唤醒）。
+    let rendezvous_task = crate::relay_rendezvous::spawn(ctx.clone());
     *ctx.state.runtime.lock().await = Some(PeerNetRuntime {
         node,
         running,
@@ -1311,6 +1326,7 @@ async fn start_locked(
         cache,
         node_id,
         device_name,
+        rendezvous_task,
     });
     // 节点重启前登记的 relay owner（tunnel / peer 插件）在这一刻重建预留：
     // 引擎预留随旧 runtime 一起消失，owners 表仍保留期望——重新下发并集。
@@ -1336,6 +1352,7 @@ async fn start_locked(
         crate::base::SERVICE_TYPE
     );
     spawn_discovery_refresh_subscriber(ctx.clone());
+    crate::relay_rendezvous::spawn_room_subscriber(ctx.clone());
     Ok(PeerNodeStatus {
         started: true,
         node_id: ctx
@@ -1426,6 +1443,7 @@ async fn stop_locked(ctx: Arc<PeerCtx>) -> Result<()> {
             // 远端拉取队列同步中止（issue 11）
             self::peer_engine_receive::clear_handler(&ctx).await;
             self::peer_engine_remote::clear_state(&ctx).await;
+            runtime.rendezvous_task.abort();
             // 引擎 daemon 停：退订浏览 + 注销自身广播（共享守护不 shutdown）
             runtime.daemon.stop().await.map_err(map_peer_net_error)?;
             // 注销宿主身份广播登记（owner=host，MdnsService ADVERTISERS）
@@ -1746,6 +1764,8 @@ impl wasmnest_server_base::ports::BusMessageHandler for DiscoveryRefreshHandler 
 /// 订阅（如移动端——其订阅就绪判据是自身插件管理器而非 `ServerPorts`），
 /// 收到刷新请求后就是调本函数；订阅注册与就绪等待属宿主装配面。
 pub async fn request_discovery_refresh(ctx: Arc<PeerCtx>) {
+    // 中继会合是「即时发现」的一半：手动刷新不应等 25s 心跳
+    ctx.state.rendezvous_wakeup.notify_one();
     let state = &ctx.state;
     let guard = state.runtime.lock().await;
     let Some(runtime) = guard.as_ref() else {

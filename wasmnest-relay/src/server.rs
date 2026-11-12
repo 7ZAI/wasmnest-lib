@@ -35,6 +35,7 @@ use crate::{
     metrics::{Metrics, RejectReason},
     metrics_server::{self, HealthInfo},
     quota::{IpConnTracker, QuotaPolicy},
+    rendezvous::Rendezvous,
     wire::CONTROL_PROTOCOL,
     RELAY_VERSION,
 };
@@ -189,6 +190,7 @@ pub async fn start(
         tokens: Mutex::new(tokens),
         relay_version: RELAY_VERSION,
         peer_id,
+        rendezvous: Arc::new(Rendezvous::new()),
     });
     tasks.push(tokio::spawn(
         ControlService::new(incoming, control_context).run(),
@@ -882,6 +884,133 @@ mod tests {
         let snapshot = runtime.metrics.snapshot();
         assert_eq!(snapshot.reservations_closed, 1, "{snapshot:?}");
         assert_eq!(snapshot.reservations_active, 0, "{snapshot:?}");
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn 控制面会合_announce_与_query_经真实_stream_往返() {
+        use crate::wire::{
+            ControlRequest, ControlResponse, CONTROL_PROTOCOL, CONTROL_PROTOCOL_VERSION,
+        };
+
+        async fn control_call(
+            client: &mut ClientHandle,
+            relay_peer: PeerId,
+            request: ControlRequest,
+        ) -> ControlResponse {
+            let mut stream = tokio::time::timeout(
+                Duration::from_secs(15),
+                client
+                    .control
+                    .open_stream(relay_peer, StreamProtocol::new(CONTROL_PROTOCOL)),
+            )
+            .await
+            .expect("开控制流不超时")
+            .expect("开控制流");
+            let body = serde_json::to_vec(&request).expect("序列化");
+            let frame = crate::wire::encode_frame(&body).expect("编码");
+            stream.write_all(&frame).await.expect("写请求");
+            stream.flush().await.expect("flush");
+            let mut header = [0u8; 4];
+            stream.read_exact(&mut header).await.expect("读头");
+            let len = crate::wire::decode_frame_len(header).expect("帧长");
+            let mut body = vec![0u8; len];
+            stream.read_exact(&mut body).await.expect("读体");
+            serde_json::from_slice(&body).expect("解析响应")
+        }
+
+        let (runtime, _dir) = start_relay(loopback_config()).await;
+        let relay_addr = runtime.advertise_addrs()[0].clone();
+
+        let mut a = spawn_client(build_test_client(), |swarm| {
+            swarm
+                .dial(DialOpts::from(relay_addr.clone()))
+                .expect("拨 relay");
+        });
+        wait_for(&mut a, Duration::from_secs(15), |event| {
+            matches!(event, ClientEvent::Established { relayed: false, .. })
+        })
+        .await
+        .expect("A 应连上 relay");
+
+        let node_a = "a".repeat(64);
+        let first = control_call(
+            &mut a,
+            runtime.peer_id,
+            ControlRequest::Announce {
+                v: CONTROL_PROTOCOL_VERSION,
+                room: "nest".into(),
+                node_id: node_a.clone(),
+                name: "desktop".into(),
+            },
+        )
+        .await;
+        assert!(first.ok, "{first:?}");
+        assert_eq!(
+            first.peers.as_deref(),
+            Some(&[][..]),
+            "首位登记者看不到别人"
+        );
+
+        let mut b = spawn_client(build_test_client(), |swarm| {
+            swarm
+                .dial(DialOpts::from(relay_addr.clone()))
+                .expect("拨 relay");
+        });
+        wait_for(&mut b, Duration::from_secs(15), |event| {
+            matches!(event, ClientEvent::Established { relayed: false, .. })
+        })
+        .await
+        .expect("B 应连上 relay");
+
+        let second = control_call(
+            &mut b,
+            runtime.peer_id,
+            ControlRequest::Announce {
+                v: CONTROL_PROTOCOL_VERSION,
+                room: "nest".into(),
+                node_id: "b".repeat(64),
+                name: "phone".into(),
+            },
+        )
+        .await;
+        assert!(second.ok, "{second:?}");
+        let peers = second.peers.expect("回带 peers");
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].peer_id, a.peer_id.to_base58());
+        assert_eq!(peers[0].node_id, node_a);
+
+        let query = control_call(
+            &mut a,
+            runtime.peer_id,
+            ControlRequest::Query {
+                v: CONTROL_PROTOCOL_VERSION,
+                room: "nest".into(),
+            },
+        )
+        .await;
+        let peers = query.peers.expect("query peers");
+        // query 是只读全量（含调用者自己）；宿主实际用 announce（已排除自己）
+        assert_eq!(peers.len(), 2, "{peers:?}");
+        assert!(
+            peers.iter().any(|p| p.peer_id == b.peer_id.to_base58()),
+            "query 应包含另一台设备"
+        );
+
+        let other_room = control_call(
+            &mut a,
+            runtime.peer_id,
+            ControlRequest::Query {
+                v: CONTROL_PROTOCOL_VERSION,
+                room: "other".into(),
+            },
+        )
+        .await;
+        assert_eq!(
+            other_room.peers.as_deref(),
+            Some(&[][..]),
+            "不同房间必须隔离"
+        );
         runtime.shutdown().await;
     }
 

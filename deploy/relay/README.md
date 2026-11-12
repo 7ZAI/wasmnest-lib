@@ -97,6 +97,24 @@ wasmnest-relay token create --config /etc/wasmnest-relay/config.toml --label pho
 
 **relay 不是授权点**：白名单只决定「谁能蹭你的带宽」，不决定「谁能访问哪台设备」。
 
+## 4.1 设备自动发现（会合表）
+
+中继的控制协议还承担**跨 NAT 设备会合**：设备在 `reservation` 生效后周期发送
+`announce`（房间键 + 自报 nodeId + 展示名），中继回带同房间的其它设备；客户端据此
+拼出 `<relay>/p2p-circuit/p2p/<peer>` 直接拨号。没有这一步，两台设备即使都连上同一台
+中继也互相不知道对方是谁。
+
+- **房间边界**：应用可以填一个「空间码」，客户端只把
+  `sha256("wasmnest-relay-room\0" + code)` 发给中继；中继看到的是 64 位 hex，不是
+  空间码明文。不填 = 默认房间 `nest`（同一台中继上的设备互相可见）。
+- **不是授权点**：会合表只负责「谁在线」；真正的访问控制仍在目标宿主（信任表 +
+  首连确认）。中继不保存文件 / 路径 / 票据，只保存 PeerId、自报 nodeId、展示名与
+  最近登记时间（TTL 90s，每房间 64 台、总房间 256 个，超出淘汰最旧）。
+- **版本**：`announce` / `query` 是 `/wasmnest/relay-control/1` 的加法扩展；旧中继会
+  回 `invalid-request`。升级中继二进制后，应用侧无需改配置即可使用。
+- **推荐部署**：自建 / 私有中继 + 应用侧空间码。`allowlist` 模式仍可用，但设备需要
+  先经 `token create` 兑换（应用内暂未提供 enrollment 输入）。
+
 ## 5. 配额
 
 默认值按「跨 NAT 传 1GB 文件」验收口径设定；libp2p 自带的 `max_circuit_bytes`

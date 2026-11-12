@@ -722,6 +722,8 @@ pub(crate) fn peer_configure_relay(
         } else {
             ctx.state.relay.clear(&owner, &relay_engine).await?;
         }
+        // 预留变更后立即触发会合重查（新配置的 relay 不必等 25s 心跳）
+        ctx.state.rendezvous_wakeup.notify_one();
         crate::node_info::snapshot(&ctx).await
     })
 }

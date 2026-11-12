@@ -21,10 +21,11 @@ use libp2p_stream::IncomingStreams;
 use crate::{
     access::{AccessMode, AllowedPeers},
     identity::short_peer,
+    rendezvous::Rendezvous,
     tokens::TokenStore,
     wire::{
         decode_frame_len, encode_frame, ControlRequest, ControlResponse, FrameError,
-        CONTROL_PROTOCOL_VERSION, MAX_FRAME_BYTES,
+        RendezvousPeer as WirePeer, CONTROL_PROTOCOL_VERSION, MAX_FRAME_BYTES,
     },
 };
 
@@ -38,6 +39,8 @@ pub struct ControlContext {
     pub relay_version: &'static str,
     /// 本节点 PeerId（`hello` 回带，客户端可据此校验导入地址）
     pub peer_id: PeerId,
+    /// 跨网设备会合表（`announce` / `query`）
+    pub rendezvous: Arc<Rendezvous>,
 }
 
 /// 控制面错误
@@ -147,6 +150,29 @@ pub fn handle_request(
             response.allowed = Some(context.allowed.admits(&peer));
             response
         }
+        ControlRequest::Announce {
+            room,
+            node_id,
+            name,
+            ..
+        } => {
+            if !context.allowed.admits(&peer) {
+                return ControlResponse::error("not-allowed");
+            }
+            match context.rendezvous.announce(&room, peer, &node_id, &name) {
+                Ok(peers) => ControlResponse::with_peers(to_wire_peers(peers)),
+                Err(err) => ControlResponse::error(err.as_str()),
+            }
+        }
+        ControlRequest::Query { room, .. } => {
+            if !context.allowed.admits(&peer) {
+                return ControlResponse::error("not-allowed");
+            }
+            match context.rendezvous.query(&room) {
+                Ok(peers) => ControlResponse::with_peers(to_wire_peers(peers)),
+                Err(err) => ControlResponse::error(err.as_str()),
+            }
+        }
         ControlRequest::Enroll { token, .. } => {
             if context.allowed.mode() == AccessMode::Open {
                 // 开放模式本来就能预留：不消耗 token，如实回报「已可用」而不是假装兑换成功
@@ -194,6 +220,11 @@ pub fn handle_request(
             }
         }
     }
+}
+
+/// 会合表记录 → 线协议形状
+fn to_wire_peers(peers: Vec<crate::rendezvous::RendezvousPeer>) -> Vec<WirePeer> {
+    peers.into_iter().map(|peer| peer.to_wire()).collect()
 }
 
 /// 读一帧请求
@@ -319,6 +350,7 @@ mod tests {
                 tokens: Mutex::new(store),
                 relay_version: crate::RELAY_VERSION,
                 peer_id: peer(),
+                rendezvous: Arc::new(Rendezvous::new()),
             });
             (
                 Self {
@@ -492,5 +524,115 @@ mod tests {
         let len = decode_frame_len([written[0], written[1], written[2], written[3]]).expect("帧长");
         let response: ControlResponse = serde_json::from_slice(&written[4..4 + len]).expect("解析");
         assert_eq!(response.error.as_deref(), Some("invalid-request"));
+    }
+
+    fn announce_request(room: &str, node_id: &str, name: &str) -> ControlRequest {
+        ControlRequest::Announce {
+            v: CONTROL_PROTOCOL_VERSION,
+            room: room.to_string(),
+            node_id: node_id.to_string(),
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn 会合_announce_登记并返回同房间其它设备() {
+        let (fixture, _token) = Fixture::new(AccessMode::Open, 1);
+        let desktop = peer();
+        let phone = peer();
+        let node_a = "a".repeat(64);
+
+        let first = handle_request(
+            &fixture.context,
+            desktop,
+            announce_request("nest", &node_a, "desktop"),
+        );
+        assert!(first.ok);
+        assert_eq!(first.peers.as_deref(), Some(&[][..]), "首台设备看不到别人");
+
+        let node_b = "b".repeat(64);
+        let second = handle_request(
+            &fixture.context,
+            phone,
+            announce_request("nest", &node_b, "phone"),
+        );
+        assert!(second.ok);
+        let peers = second.peers.expect("回带 peers");
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].peer_id, desktop.to_base58());
+        assert_eq!(peers[0].node_id, node_a);
+        assert_eq!(peers[0].name, "desktop");
+    }
+
+    #[test]
+    fn 会合_query_只读且分房间隔离() {
+        let (fixture, _token) = Fixture::new(AccessMode::Open, 1);
+        let a = peer();
+        let b = peer();
+        handle_request(
+            &fixture.context,
+            a,
+            announce_request("nest", &"a".repeat(64), "a"),
+        );
+        handle_request(
+            &fixture.context,
+            b,
+            announce_request("other", &"b".repeat(64), "b"),
+        );
+
+        let nest = handle_request(
+            &fixture.context,
+            peer(),
+            ControlRequest::Query {
+                v: CONTROL_PROTOCOL_VERSION,
+                room: "nest".to_string(),
+            },
+        );
+        assert!(nest.ok);
+        let peers = nest.peers.expect("回带 peers");
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "a".repeat(64));
+
+        let other = handle_request(
+            &fixture.context,
+            peer(),
+            ControlRequest::Query {
+                v: CONTROL_PROTOCOL_VERSION,
+                room: "other".to_string(),
+            },
+        );
+        assert_eq!(other.peers.expect("peers").len(), 1);
+    }
+
+    #[test]
+    fn 会合_room_与_node_id_非法时显性拒绝() {
+        let (fixture, _token) = Fixture::new(AccessMode::Open, 1);
+        let invalid_room = handle_request(
+            &fixture.context,
+            peer(),
+            announce_request("bad room", &"a".repeat(64), "a"),
+        );
+        assert!(!invalid_room.ok);
+        assert_eq!(invalid_room.error.as_deref(), Some("invalid-room"));
+
+        let invalid_node = handle_request(
+            &fixture.context,
+            peer(),
+            announce_request("nest", "short", "a"),
+        );
+        assert!(!invalid_node.ok);
+        assert_eq!(invalid_node.error.as_deref(), Some("invalid-node-id"));
+    }
+
+    #[test]
+    fn 白名单模式未登记_peer_不能会合() {
+        let (fixture, _token) = Fixture::new(AccessMode::Allowlist, 1);
+        let response = handle_request(
+            &fixture.context,
+            peer(),
+            announce_request("nest", &"a".repeat(64), "a"),
+        );
+        assert!(!response.ok);
+        assert_eq!(response.error.as_deref(), Some("not-allowed"));
     }
 }
