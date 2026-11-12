@@ -1,0 +1,14 @@
+# ==================== 能力 crate 共享 target 目录 ====================
+# 与 `wasmnest-host-kit` 共用**本仓根** `target/host-kits`：两者是
+# 「机制内核 + 能力域」同一族，依赖图（wasmtime + wasmtime-wasi + mdns-sd）
+# 高度重叠，分开落点会把这份巨型依赖图编两遍。
+#
+# 路径以**本 `.cargo` 目录的父目录**（= crate 根 `wasmnest-discovery-engine/`，
+# 与机制内核 `wasmnest-host-kit/` 同级）为准解析，故 `../target/host-kits` 落在
+# 本仓根（与 kit 的 `../target/host-kits` 同一目录）。相邻 crate 的路径深度必须
+# 一致——平台仓切 sibling 布局后 crate 深度少一层，旧的 `../../` 会静默落到
+# 三仓共同父目录 `<WASMNEST>/target/`。改这一行后必须核验：
+#   cd wasmnest-discovery-engine && cargo metadata --no-deps --format-version 1
+# 其 `target_directory` 应为 `<wasmnest-lib>/target/host-kits`。
+[build]
+target-dir = "../target/host-kits"

@@ -1,0 +1,23 @@
+[package]
+name = "wasmnest-plugin-wasi-test"
+version = "0.0.1"
+license = "MIT"
+description = "WASI preopen 测试插件（能力仓自持夹具） — 经 wasm32-wasip2 + std::fs 直写预打开目录（仅供 wasm-core 测试套件使用；preopen 仅 worker 类别可用，ADR 0034）"
+authors = ["binblink"]
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# 绑定 wasm-core 契约真源 `wit/core.wit` 的 `world core`（零 SDK 依赖）：本夹具是
+# 运行时壳机制（WASI 装配 / preopen）的测试载体，不需要任何端 cap——绑定能力仓
+# 自己的 WIT 即可自足（三仓拆分票 08 批次三：夹具自持）。
+wit-bindgen = { version = "=0.60.0", features = ["macros"] }
+serde_json = "1"
+
+[profile.release]
+# 与其它夹具对齐：wasm 产物尺寸优先（宿主测试加载）
+opt-level = "s"
+lto = true

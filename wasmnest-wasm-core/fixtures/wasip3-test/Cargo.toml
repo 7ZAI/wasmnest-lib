@@ -1,0 +1,26 @@
+[package]
+name = "wasmnest-plugin-wasip3-test"
+version = "0.0.1"
+license = "MIT"
+description = "wasip3 async 机制测试插件（能力仓自持夹具） — A0-3 前置探针（P1 燃料 / P2 资源限制 / async store）的 guest 载体"
+authors = ["binblink"]
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# 绑定 wasm-core 契约真源 `wit/core.wit` 的 `world core`（零 SDK 依赖）——夹具只验
+# 运行时壳的 async store / 燃料 / 资源限制机制，不需要端 cap 与端 SDK。
+wit-bindgen = { version = "=0.60.0", features = ["macros"] }
+serde_json = "1"
+anyhow = "1"
+# getrandom 0.4 支持 target_env = "p3"（走 wasi:random/random 的 async
+# get-random-bytes）——`a03.get-random` 探针「async 随机字节返回熵」用
+getrandom = "0.4"
+
+[profile.release]
+# 与其它夹具对齐：wasm 产物尺寸优先（宿主测试加载）
+opt-level = "s"
+lto = true

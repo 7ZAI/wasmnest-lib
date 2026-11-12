@@ -1,0 +1,17 @@
+# Rust 代码格式化配置（rustfmt）
+# 由 `cargo fmt` / `rustfmt` 读取，统一桌面端 Rust 后端代码风格。
+# 注意：构建产物与依赖配置（toolchain / [profile.*]）属于 Cargo.toml，不在此文件。
+
+edition = "2021"
+
+# 单行最大宽度。项目既有代码存在较多长行（部分 >150 字符），
+# 取 120 在可读性与不引发大规模重排之间折中。
+max_width = 120
+
+# 缩进宽度与换行风格（stable 支持项）
+use_small_heuristics = "Default"
+reorder_imports = true
+reorder_modules = true
+
+# 本 crate 的文件由宿主 `桌面宿主 src-tauri/src/server/` 搬来（server-lib-split 票 02-05），
+# 配置与宿主保持一致：max_width=120，避免搬移变成整片重排。

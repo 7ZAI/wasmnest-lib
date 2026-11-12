@@ -1,0 +1,183 @@
+//! `WasmNest` 插件契约包名与版本——**全仓唯一手写真源**（ADR 0051 D3/D4）
+//!
+//! 为什么是 Rust 常量而不是 JSON（票 03 实施期修正）：能力域 crate 的导出名清单走
+//! `inventory` 静态自报（`wasmnest-discovery-engine/src/routing.rs` 的
+//! `static ROUTE` + `const EXPORTS`），`inventory::submit!` 要求编译期常量 ⇒ 版本必须
+//! 在 **const 上下文**可用。JSON 真源只能运行期解析，与该约束结构性冲突。
+//!
+//! 三条使用路径（唯一真源 + 漂移锁兜底，与 WIT 生成物同款范式）：
+//!
+//! 1. **运行期派生**：`wasmnest-wasm-core` 以普通 crate 依赖 `use` 本 crate，
+//!    `contract::export_item(iface, func)` 拼出 `ns:pkg/iface.func@version`
+//!    （wasmtime `ItemName` 路径语法，**版本在末尾**——wit-parser 在 `ns:pkg` 后
+//!    强制要求 `/`，版本写中间会解析失败）；
+//! 2. **编译期常量**：能力域 crate 在 `const` / `static` 位置写导出名字面量，由
+//!    桌面宿主的 `wit_package_version_lock.rs` 断言与本 crate 一致。能力域**不**
+//!    `include!` 本文件：`inventory` 自报要求编译期常量，而版本嵌在串中段的组合
+//!    名**没有 const 插值机制**（`concat!` 只收字面量、`format!` 非 const）——
+//!    跨 crate 纯拷贝可行（`const X: &str = wasmnest_contract::PACKAGE_NAME;`），
+//!    锁钉住的恰是那些组合串，锁的价值不变、理由换准；
+//! 3. **构建期解析**：平台仓 `scripts/compose-wit.mjs` 正则读本文件，把版本注入
+//!    生成的 `wasmnest.wit`（端清单 `compose.json` 只声明包名，不持版本）。
+//!
+//! **文本形状是跨语言契约**：常量必须保持 `pub const <NAME>: &str = "<值>";` 的
+//! 精确形态（含 `: &str` 类型注解，无 macro、无 `env!` / `concat!`）——平台仓的
+//! WIT 拼装脚本与发布清单锁都按此形状做正则解析。改形状 = 同时打穿两处解析器，
+//! 必须同批修改并重跑 `pnpm run check:wit` / `check:manifest`。
+//!
+//! **bump 政策**（ADR 0051 D4）：任何 WIT 变更（**含函数级追加**）→ patch
+//! （`0.1.0` → `0.1.1`）；interface 增删 / 签名变 → minor（`0.1.x` → `0.2.0`）。
+//! bump 后须重跑 `node scripts/compose-wit.mjs --all` 并重建插件产物——版本进入
+//! import 名，宿主与 guest 版本不等即实例化失败。
+//!
+//! 版本线（2026-10-18 三仓拆分）：新仓内所有内部构建视为**全新**，版本自 0.0.1
+//! 重开——契约版本与旧单仓的 0.3.0 无继承关系（旧仓转为文档真源与回退点，代码冻结）。
+//! 旧线历次版本（0.1.x / 0.2.0 / 0.3.0，含 wasmnest-end-rename 的包名改名窗口）
+//! 见旧仓 git 历史与 ADR 0051 / 0056。
+//!
+//! **crate 自身 `version` 与 [`PACKAGE_VERSION`] 不强制相等**：前者是打包事实，
+//! 后者是协议事实；强行绑定会让「只改打包元数据」也构成契约 bump。两者的一致性
+//! 只要求 [`PACKAGE`] 是本 crate 内 `PACKAGE_NAME@PACKAGE_VERSION` 的自洽派生。
+//!
+//! **不登记 `SPLIT_CRATES`**：该表管辖的是「宿主 bin 拆分产物」的回归面，登记会
+//! 要求宿主清单直接声明本 crate——而契约只允许经 `wasmnest-wasm-core` 的 re-export
+//! 消费（宿主直连 = 版本面出现第二个消费入口）。本 crate 的结构管辖落在平台仓的
+//! crate 结构锁与能力 crate 语义锁，不在拼接产物登记表。
+//!
+//! **定位（2026-11-08 扩容）**：本 crate 不只是「包名 / 版本常量」，而是**零依赖
+//! 共享词汇**——契约包名 / 版本（`PACKAGE_*`，唯一手写真源，地位不变）+ 跨层护栏
+//! 常量（`PLUGIN_DB_*` / `DEFAULT_ERROR_CODE`）。判据：不含机制实现、不含平台判断、
+//! 不引入任何依赖；需要「一个数值 / 一个码」的叶子层与中性 crate 可直接依赖本 crate，
+//! 不必反向依赖实现层。`[dependencies]` 必须恒为空（有常驻断言）。
+
+/// 契约包名（`namespace:name`，不含版本）
+pub const PACKAGE_NAME: &str = "wasmnest:plugin";
+
+/// 契约包版本（三段 semver）
+pub const PACKAGE_VERSION: &str = "0.1.0";
+
+/// 契约包全名（`namespace:name@version`）——组件**导出实例**的键形态
+pub const PACKAGE: &str = "wasmnest:plugin@0.1.0";
+
+/// worker 接口名（worker 组件的唯一导出接口，`wasmnest:plugin/worker@<version>`）
+///
+/// worker 与主插件不同 world（零宿主 import，仅 WASI 内建；world 本体在
+/// `wasmnest-wasm-core/wit/worker.wit`，双端同源）。消费方经
+/// `wasmnest-wasm-core::contract::export_item(WORKER_INTERFACE, func)` /
+/// `interface_path(WORKER_INTERFACE)` 拼导出键——版本由派生机制注入，本常量只持接口名。
+pub const WORKER_INTERFACE: &str = "worker";
+
+// ==================== 跨层共享词汇（零依赖护栏常量） ====================
+//
+// 这些常量原本住在能力域实现 crate（`host-api-core::database` / `server-base::error`），
+// 迫使「只想要一个护栏数值」的叶子地基与中性 crate 反向依赖实现层。它们既不含机制
+// 实现也不含平台判断，只是**跨层共享词汇**，故真源归位本 crate（零依赖，任何层可
+// 直接依赖）；旧路径以 `pub use` 保留，下游零改动。
+
+/// 插件 SQL 语句执行超时（秒）
+///
+/// 覆盖**插件私有库**（`host-plugin-database`）的单条语句执行：每插件独立连接，
+/// SQLite progress handler 硬中断超时语句。护栏不可由插件参数调整（安全边界）。
+pub const PLUGIN_DB_STATEMENT_TIMEOUT_SECS: u64 = 120;
+
+/// 插件 SQL 查询结果集行数上限
+///
+/// 取行循环内计数，超限立即截断报错（引导插件加 LIMIT 或分批）；无上限结果集
+/// 可能耗尽单次调用 fuel 预算触发 trap 污染 Store。
+pub const PLUGIN_DB_QUERY_MAX_ROWS: usize = 10_000;
+
+/// 插件 SQL 查询结果集序列化字节上限（对齐 HTTP 响应体上限 32MB 的既有模式）
+pub const PLUGIN_DB_QUERY_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+/// 插件 execute-batch 单次调用语句数上限
+pub const PLUGIN_DB_EXECUTE_BATCH_MAX_STATEMENTS: usize = 64;
+
+/// 未显式映射的错误统一兜底到的语义码（ADR 0030 §3：默认兜底 + 显式覆盖）
+///
+/// code 即前端 i18n key 的后半段（`errors.host.internal`），零映射层；改码 = 破坏性变更。
+/// 消费方：`server-base` 错误信封（re-export）与 CLI wire 的兜底码。
+pub const DEFAULT_ERROR_CODE: &str = "host.internal";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 三个常量的内部自洽（真源改了一处而忘了另一处即红）
+    #[test]
+    fn package_constants_are_self_consistent() {
+        assert_eq!(PACKAGE, format!("{PACKAGE_NAME}@{PACKAGE_VERSION}"));
+        let parts: Vec<&str> = PACKAGE_VERSION.split('.').collect();
+        assert_eq!(parts.len(), 3, "版本须三段 semver：{PACKAGE_VERSION}");
+        assert!(
+            parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+            "版本段必须是纯数字：{PACKAGE_VERSION}"
+        );
+        assert!(
+            PACKAGE_NAME.contains(':'),
+            "包名应为 `wasmnest:<ns>` 形态：{PACKAGE_NAME}"
+        );
+    }
+
+    /// 零依赖锁：本 crate 的定位是「任何层可直接依赖的零依赖共享词汇」。一旦
+    /// `[dependencies]` 出现任何条目，叶子层（`server-base` / `host-api-core`）的
+    /// 反向依赖就会从「一个数值」变成一整棵依赖树——扩容即静默失效。
+    ///
+    /// 判据扫 `Cargo.toml` 的依赖段（`[dependencies.*]` 也算），不是源码 needle。
+    #[test]
+    fn manifest_has_no_dependencies() {
+        let manifest = include_str!("../Cargo.toml");
+        let offenders: Vec<&str> = manifest
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                line.starts_with("[dependencies")
+                    || line.starts_with("[build-dependencies")
+                    || line.starts_with("[dev-dependencies")
+                    // target 专属段也是依赖面（`[target.'cfg(unix)'.dependencies]`
+                    // 以 `[target` 开头，旧判据对它全程失明）；用 contains 收窄，
+                    // 避免把 linker / rustflags 配置误伤成依赖
+                    || (line.starts_with("[target") && line.contains("dependencies"))
+            })
+            .collect();
+        // 允许存在空的 `[dependencies]` 段（保持「零依赖」可见），但不允许任何
+        // `[dependencies.*]` 子表 / build-dependencies / dev-dependencies。
+        assert!(
+            offenders.len() <= 1 && offenders.iter().all(|s| *s == "[dependencies]"),
+            "契约仓必须保持零依赖（定位：零依赖共享词汇）：{offenders:?}"
+        );
+        let mut in_deps = false;
+        for line in manifest.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_deps = trimmed == "[dependencies]";
+                continue;
+            }
+            assert!(
+                !in_deps || trimmed.is_empty() || trimmed.starts_with('#'),
+                "契约仓 `[dependencies]` 段出现依赖条目：{trimmed}"
+            );
+        }
+    }
+
+    /// 文本形状锁：平台仓两处 node 解析器按 `pub const <NAME>: &str = "<值>";`
+    /// 正则取值，改成 macro / `env!` / 省类型注解都会静默打穿解析链
+    ///
+    /// 判据用「从常量现算 needle」而不是写死值：值可以合法 bump，形状不能变。
+    #[test]
+    fn constants_keep_the_plain_literal_shape() {
+        let source = include_str!("lib.rs");
+        for (name, value) in [
+            ("PACKAGE_NAME", PACKAGE_NAME),
+            ("PACKAGE_VERSION", PACKAGE_VERSION),
+            ("PACKAGE", PACKAGE),
+        ] {
+            let needle = format!("pub const {name}: &str = \"{value}\";");
+            assert!(
+                source.contains(&needle),
+                "契约常量的文本形状漂移，平台仓脚本的正则解析会失败：{needle}"
+            );
+        }
+    }
+}

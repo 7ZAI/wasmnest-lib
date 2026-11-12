@@ -1,0 +1,17 @@
+[package]
+name = "wasmnest-plugin-p3-async-host-import-test"
+version = "0.0.1"
+license = "MIT"
+description = "P3 async host import mechanism probe fixture"
+authors = ["binblink"]
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "=0.60.0", features = ["macros"] }
+
+[profile.release]
+opt-level = "s"
+lto = true

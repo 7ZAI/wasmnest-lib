@@ -1,0 +1,33 @@
+[package]
+name = "wasmnest-crypto-engine"
+version = "0.0.1"
+license = "MIT"
+description = "WasmNest 加密引擎：算法实现（x25519/aes_gcm/chacha/hkdf/rsa/hybrid）+ 名称寻址注册表（provider/registry）+ 自带 CryptoError。零内部 crate 依赖（中性算法原语，不碰宿主错误信封）——server-lib-split 票 02（D5）/ P0 错误类型归域"
+authors = ["binblink"]
+edition = "2021"
+
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
+[dependencies]
+# 对称 AEAD（AES-256-GCM）
+aes-gcm = "0.10"
+# 备选对称 AEAD（性能不依赖 AES-NI）
+chacha20poly1305 = "0.10"
+# 椭圆曲线 Diffie-Hellman（ECDH）
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+# 密钥派生（HKDF-SHA256）
+hkdf = "0.12"
+sha2 = "0.10"
+# 常规非对称加密（RSA-OAEP / PSS 签名）
+rsa = { version = "0.9", features = ["sha2", "pem"] }
+# 随机数（密钥生成）
+rand = "0.8"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 错误类型（CryptoError derive；2026-11-08 起本 crate 自带，零内部 crate 依赖）
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"

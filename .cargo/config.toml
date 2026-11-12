@@ -1,0 +1,87 @@
+# ==================== 编译资源限制（防 CPU 满载 / 防 OOM） ====================
+# 依据：开发机 16 核 / 13GiB 内存 / 23GiB swap（swap 抖动同样拖慢构建，见下方自适应指引）。cargo 默认 build.jobs = 逻辑核心数（16），
+# 而本项目依赖图含 wasmtime / cranelift / actix 等巨型 crate，单个 rustc 进程峰值约 1~2GiB，
+# 16 路并发需要 20GiB+ —— 无 swap 时内核直接 OOM kill rustc（历史事故：桌面 dev 构建
+# 0xc0000409「页面文件被禁用」崩溃、移动端 Android 全量构建 `memory allocation ... failed`
+# 后级联 2300+ 个 `can't find crate` 假错误，极易误判为依赖不兼容）。
+#
+# 取值经验公式：jobs = min(核心数, floor(可用内存GiB / 1.5))
+#   本机（16 核 / 可用 ~6GiB）：min(16, floor(6/1.5)=4) = 4
+#     → 并发降到 1/4，CPU 占用压到 ~25%，不再打满；同时总内存需求降到 ~6GiB
+#   CI（ubuntu-latest / windows-latest = 4 核 / 16GiB）：jobs 恰好等于核数，零性能损失
+#
+# 覆盖方式（Cargo 配置优先级：环境变量 > 本机 ~/.cargo/config.toml > 本文件）：
+#   移动端 Android 全量构建 / 同时开着模拟器（最重，历史 OOM 点）：
+#     CARGO_BUILD_JOBS=3 pnpm run tauri:android:dev
+#   内存 >= 32GiB 的机器想提速（本机永久生效，无需改本文件）：
+#     在 ~/.cargo/config.toml 写 [build] jobs = 8
+#
+# 动态自适应（推荐）：构建/测试前自动采样系统资源并注入 CARGO_BUILD_JOBS（跨平台，
+#   含档位阈值与逃生阀 WASMNEST_BUILD_PROFILE / WASMNEST_ADAPTIVE=0），
+#   脚本由平台仓 `scripts/adaptive-run.mjs` 提供（能力仓不重复携带）；本文件 jobs=4
+#   是静态兜底，被 env 覆盖时自动让位。
+#
+
+#
+# 与 profile 级内存措施互补（profile 段只能写在 src-tauri/Cargo.toml，cargo config 不支持）：
+#   release: lto = "thin" + codegen-units = 16  —— 弃用 fat LTO + 单 codegen unit，峰值 8GiB+ → 数 GiB
+#   dev:     debug = "line-tables-only"          —— 弃用全量 DWARF，避免 wasmtime 编译期 OOM
+[build]
+jobs = 4
+
+# ==================== sccache 编译缓存（2026-10-05 引入，全仓统一前置） ====================
+# 本仓库无根 workspace（30+ 独立 Cargo.toml）且 target 分 8 个落点治理（AGENTS §3 /
+# docs/knowledge/build-process.md「Target 目录管理」），同一份依赖图会被多桶重复编译；
+# 宿主 target 还有 15G 阈值自动 cargo clean，clean 后依赖全量重编（分钟~小时级）。
+# sccache 按 rustc 调用内容哈希缓存编译产物，独立于 target 目录，因此：
+#   1. cargo clean / 删 target 后依赖不再重编（缓存命中 → 只需链接）；
+#   2. 跨 8 个落点（server-libs / host-kits / fixtures / wasm-apps / 两端宿主 / cross-end）
+#      的重复依赖图只编译一次；
+#   3. ⚠ **与增量编译的关系（2026-10-13 实测重定；2026-10-06 的「覆盖率 21%」结论已推翻）**：
+#      sccache 只在**命令行确实带 `-C incremental`** 时跳过该次编译（判据
+#      `cannot_cache!("incremental")`，src/compiler/rust.rs），而 cargo 只对**工作区成员**
+#      （本地 path crate：wasmnest-* / link-crypto / peer-net …）传该参数，registry 依赖
+#      （wasmtime / tauri / actix / serde…，也就是最贵的那批）不带——所以默认配置下依赖图
+#      **本来就全进缓存**。实测（2026-10-13，桌面宿主 target 刚被 15G 阈值 cargo clean 后
+#      跑 `cargo check --lib`）：865 请求 / 760 executed / 758 hits（99.74%）/ 2 misses，
+#      3m53s 完成；非缓存原因 `incremental` 仅 15 次且全是本地 crate。独立探针工程同结论
+#      （serde 系列依赖走缓存并命中，debug/incremental 目录里只出现探针自身）。
+#      ⇒ 「clean 后依赖不重编」**不需要** CARGO_INCREMENTAL=0；加上它只会额外把本地 crate
+#      纳入缓存，代价是失去 cargo 增量编译（改一个文件重编整个 crate）——属全局取舍，
+#      2026-10-13 决定保持默认（本地 crate 走增量、依赖走缓存）。如确要全量缓存，在 [env]
+#      加 `CARGO_INCREMENTAL = { value = "0", force = false }` 即可。
+#      ⚠ **绝不要设 `CARGO_INCREMENTAL=1`**：sccache 0.18 检测到该变量会直接拒绝执行
+#      （`sccache: incremental compilation is prohibited: Unset CARGO_INCREMENTAL to
+#      continue.`，连 `rustc -vV` 探针都退出 1）——一切 cargo 命令成批失败，而不是跳过缓存。
+#
+# 安装（显性失败设计：未安装时 cargo 报「找不到 sccache」，不会静默降级）：
+#   Linux/macOS: 从 mozilla/sccache GitHub release 下载二进制放 ~/.cargo/bin/sccache
+#   Windows:     scoop install sccache 或下载 sccache.exe 放入 PATH
+#   CI:          test.yml / release.yml / sdk-publish.yml 的 rust job 均用
+#                mozilla/sccache-action（根 config 强制 rustc-wrapper，CI 必须安装）。
+#
+# bare 名经 PATH 解析（rustup shim 的 ~/.cargo/bin 已在 PATH）；不写相对路径，
+# 避免 cargo 对 config 相对路径解析基准（config 目录 vs cwd）的歧义。
+# 缓存位置/大小见下方 [env]（SCCACHE_DIR 默认 ~/.cache/sccache）。
+rustc-wrapper = "sccache"
+
+# ==================== sccache 缓存上限 ====================
+# 2026-10-13 由 20GiB 上调 30GiB：实测单次桌面宿主 `cargo check` 就有 760 个编译单元，
+# 而缓存长期停在 16~20GiB（满位附近），LRU 淘汰会把稀有的 build（codegen）产物挤出去
+# ——淘汰一个 = 下次重编一个（实测平均单次编译 17.8s）。30GiB 覆盖全仓主要工作集
+# （8 个落点 × dev/test/release 多 profile 的压缩产物，约 target 的 1/3）。
+# 磁盘紧张时降回 8~10GiB（命中率下降、clean 后重编增多）。
+# 清缓存：sccache --stop-server && rm -rf ~/.cache/sccache。
+[env]
+# force=false：CI（test/release/sdk-publish）在 job 级显式设小缓存（2GiB，CI 磁盘仅 ~14G
+# 且跨 run 缓存由 Swatinem/rust-cache 负责）时保留外部值；本地无外部变量时用 30GiB。
+# ⚠ sccache 0.18 的 SCCACHE_CACHE_SIZE 只认**纯字节数字**（带 GiB 后缀会解析失败并静默
+# 回退 10GiB 默认——2026-10-05 实测踩坑），故写 30GiB = 32212254720 字节。
+SCCACHE_CACHE_SIZE = { value = "32212254720", force = false }
+
+# ==================== 链接加速（仅 Windows MSVC 目标） ====================
+# 默认 MSVC link.exe 链接 Tauri 全量依赖（wasmtime/actix 等上千 crate）非常慢，
+# LLD 通常快 2~5 倍。优先使用 rustup 自带 rust-lld（零外部依赖，所有机器/CI 可用）。
+# 若本机装有独立 LLVM 并已把 <LLVM>\bin 加入 PATH，可把 linker 改为 "lld-link" 使用最新版。
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"

@@ -1,0 +1,47 @@
+name: Bug 报告
+description: 提交缺陷。必填：现象 / 复现 / 期望 vs 实际 / 涉及 crate 与契约版本。
+title: "[bug] "
+labels: ["kind:bug"]
+body:
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: 实际发生了什么，含报错 / 日志关键行
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 最小复现；附可跑命令（含工作目录）
+      value: |
+        1.
+        2.
+        3.
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望 vs 实际
+      value: |
+        - 期望：
+        - 实际：
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: 涉及 crate 与契约版本
+      description: 哪个 crate（真源在 Cargo.toml description）；契约版本（@wasmnest:plugin@x.y.z）、WIT tag
+    validations:
+      required: true
+  - type: input
+    id: locks
+    attributes:
+      label: 相关锁 / 命令
+      description: 涉及的跨仓锁（wire_drift / permission_vocabulary / 平台治理锁…）、可复现命令
+  - type: textarea
+    id: context
+    attributes:
+      label: 已知线索
+      description: 排查到哪一步、相关 issue / 提交（owner/repo#n 或 hash）；暂缺写「待补」

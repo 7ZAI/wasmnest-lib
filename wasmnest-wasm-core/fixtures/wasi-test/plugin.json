@@ -1,0 +1,23 @@
+{
+  "id": "com.wasmnest.wasi-test",
+  "name": "WASI Test",
+  "version": "0.0.1",
+  "platform": "desktop",
+  "description": "WASI preopen 测试插件（仅 worker 类别可用，ADR 0034；仅供能力仓测试套件使用）",
+  "author": "WasmNest",
+  "main": "index.js",
+  "sandbox": "inline",
+  "pluginType": "wasm",
+  "rustLibrary": "wasmnest_plugin_wasi_test",
+  "icon": "icon.svg",
+  "permissions": [
+    "storage"
+  ],
+  "contributes": {
+    "commands": [
+      { "id": "wasi-test.write-file", "title": "Write File" },
+      { "id": "wasi-test.read-file", "title": "Read File" },
+      { "id": "wasi-test.list", "title": "List" }
+    ]
+  }
+}

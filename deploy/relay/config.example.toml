@@ -1,0 +1,58 @@
+# ==================== 示例配置（v1） ====================
+# 复制到 /data/config.toml（Docker）或 /etc/wasmnest-relay/config.toml（systemd）
+# 后按需修改；`wasmnest-relay doctor` 会逐项校验本文件。
+#
+# 本文件同时是 `src/boundary_lock.rs` 的判据：示例必须始终能被当前版本解析通过，
+# 否则运维照抄就起不来。
+
+config_version = 1
+
+[identity]
+# 相对路径以本文件所在目录为基准；绝对路径原样使用。
+# 丢失该文件 = PeerId 变化 = 所有客户端必须重新导入中继地址。
+key_file = "identity.key"
+
+[listen]
+# v1 只启 TCP + Noise + Yamux（不启 UDP/QUIC；无需 TLS 证书）。
+# 监听 0.0.0.0 时必须配置下面的 advertise，否则客户端拿到的是不可拨地址。
+addrs = ["/ip4/0.0.0.0/tcp/4001"]
+
+[advertise]
+# 客户端据此拼 /p2p-circuit；写成公网域名或公网 IP 字面量。
+# 不要手写 /p2p：`print-addrs` 会按本机 PeerId 追加。
+addrs = ["/dns4/relay.example.com/tcp/4001"]
+
+[quota]
+# 并发上限
+max_reservations = 1024
+max_reservations_per_peer = 4
+max_circuits = 512
+max_circuits_per_peer = 64
+# 有效期（秒）
+reservation_ttl_secs = 3600
+max_circuit_duration_secs = 3600
+# 单 circuit 字节上限：默认 1 GiB，对齐「跨 NAT 传 1GB」验收；0 = 不限。
+# 注意 libp2p 的默认值是 128 KiB，会把大文件传输中途掐断。
+max_circuit_bytes = 1073741824
+# 单 IP 入站连接上限（一个 NAT 后的家庭网络可能有多台设备，32 足够）
+max_connections_per_ip = 32
+
+[access]
+# open      = 任何人可预留，靠配额防滥用（自建默认，上手最省事）
+# allowlist = 只认下面的白名单 + 已兑换 enrollment token 的 PeerId
+mode = "open"
+# 静态白名单（PeerId base58）。用 `wasmnest-relay token create` 走 enrollment
+# 更省事；两者可叠加。
+allowlist = []
+
+[metrics]
+# 健康/指标端点默认只绑回环：`GET /healthz`、`GET /metrics`。
+# 需要公网抓取时改成 0.0.0.0:9090 并显式置 expose_public = true，
+# 同时自行加反代 TLS 或额外 token（否则等于把你家的 PeerId 与用量公开）。
+#
+# Docker：容器内改成 0.0.0.0:9090 **不**等于对公网开放（只是容器内所有网卡就够
+# 被端口映射命中）；宿主抓取时 compose 里仍只发布到 127.0.0.1。
+# 默认的 127.0.0.1:9090 在容器里只能 `docker compose exec relay wget …/metrics` 取，
+# 端口映射（包括 127.0.0.1:9090:9090）打不通——DNAT 指向容器 eth0，不是回环。
+listen = "127.0.0.1:9090"
+expose_public = false
