@@ -275,6 +275,12 @@ impl PluginLoader {
                     let manifest = manifest;
                     let _ = &manifest;
 
+                    // ==================== 全局入口权限一致性（票 04 / spec §4.3） ====================
+                    // contributes.globalEntries 是 ui:globalEntry 门控的纯 manifest 贡献面；
+                    // 声明入口却未持权 = 清单配置缺口。warn 不阻断：壳前端按权限过滤渲染，
+                    // 这里让缺口在日志里点名（fail-visible，不静默返回空）。
+                    manifest.check_global_entry_permission();
+
                     // 非核心能力域的装载期回调（票 02 批次 02 / 批次 03）：manifest
                     // **原文**下发，解析权与**声明仲裁权**都在能力域——内核不解释
                     // manifest 字段（AGENTS §5.1 B6）。`Err` = 该域拒绝此 manifest ⇒

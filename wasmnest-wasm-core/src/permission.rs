@@ -185,6 +185,21 @@ pub const PERMISSION_TUNNEL_CONNECT: &str = "tunnel:connect";
 /// 个诊断按钮，不应获得端口映射能力。本位不蕴含任何写面：不建 reservation、
 /// 不登记 expose 规则、不写信任、不改配置。
 pub const PERMISSION_TUNNEL_PROBE: &str = "tunnel:probe";
+/// 通用应用调用桥（前端贡献面，无 WASM 宿主函数对应）：`AppControlAPI`
+///
+/// 允许插件前端调用**其他应用已声明**的应用命令（列应用 / 调声明工具 / 打开
+/// 应用），宿主做白名单与审计。**强权限**：持有者可代表用户触发目标应用的
+/// 已声明命令，审批文案必须写明这一点，不能弱化成「读取应用信息」。
+///
+/// 门禁落点：宿主桥实现（桌面 `AppControlAPI` 注入前的权限校验、移动插件
+/// 上下文注入处）；未声明本位的插件前端拿不到 `apps` 桥。
+pub const PERMISSION_APPS_CONTROL: &str = "apps:control";
+/// 全局入口贡献（纯前端贡献面，无 WASM 宿主函数对应）：manifest
+/// `contributes.globalEntries` 在壳的全局入口区登记入口
+///
+/// 入口只对「已安装、已启用、激活成功」的应用渲染；停用即消失。
+/// 门禁落点：宿主聚合 `globalEntries` 时按本位过滤。
+pub const PERMISSION_UI_GLOBAL_ENTRY: &str = "ui:globalEntry";
 
 /// 权限词汇反射表：`(常量标识符, 权限串)`
 ///
@@ -258,6 +273,11 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
         PERMISSION_TUNNEL_CONNECT,
     ),
     (stringify!(PERMISSION_TUNNEL_PROBE), PERMISSION_TUNNEL_PROBE),
+    (stringify!(PERMISSION_APPS_CONTROL), PERMISSION_APPS_CONTROL),
+    (
+        stringify!(PERMISSION_UI_GLOBAL_ENTRY),
+        PERMISSION_UI_GLOBAL_ENTRY,
+    ),
 ];
 
 /// 合法权限集合 — 桌面端权限词汇的**唯一真源**（由 [`PERMISSION_VOCABULARY`] 派生）
@@ -477,6 +497,14 @@ pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
     // T19：只读连通性探测。与 serve / connect 都不共享——探测不持有任何隧道
     // 资源，也不映射端口（门禁在 `tunnel/plugin_binding.rs::tunnel_probe_relay`）。
     (PERMISSION_TUNNEL_PROBE, &["tunnel.probeRelay"]),
+    // 通用应用调用桥（前端贡献面）：`AppControlAPI` 的三个方法都是前端注入面，
+    // 无 WASM 宿主函数；门禁落点 = 宿主桥实现（注入前校验本位 + 白名单 + 审计）。
+    (
+        PERMISSION_APPS_CONTROL,
+        &["apps.list", "apps.invoke", "apps.open"],
+    ),
+    // `ui:globalEntry` 是纯 manifest 贡献面（contributes.globalEntries），无前端
+    // API 方法，按「无 API 方法的权限省略映射条目」约定不登记（同 `broadcast`）。
 ];
 
 /// 权限管理器
