@@ -439,9 +439,12 @@ impl LinkIdentity {
     /// - 文件存在且损坏/版本不符 → 报错拒绝重建：静默换钥会让移动端 pin 全部
     ///   失效，宁可本次启动禁用加密并由用户显式处理。
     ///
-    /// 生成路径先写同目录唯一 tmp，再 `hard_link` 发布到正式名（目标已存在即失败）：
-    /// 并发的两个首启不会各写一份不同密钥（后到者回退加载既有身份，内存指纹与磁盘
-    /// 密钥始终一致），读者也永远看不到半截 JSON（进程中途被杀只留下 tmp）。
+    /// 生成路径先写同目录唯一 tmp，再发布到正式名（目标已存在即失败）：并发的两个
+    /// 首启不会各写一份不同密钥（后到者回退加载既有身份，内存指纹与磁盘密钥始终
+    /// 一致），读者也永远看不到半截 JSON。发布步由
+    /// [`wasmnest_server_base::private_file::create_private_file_exclusive`] 承担——
+    /// Android 上 `hard_link` 被 SELinux 拒绝，那里必须走 `create_new` 回退（2026-11-11
+    /// 移动端首启崩溃的根因）。
     pub fn load_or_create(dir: &Path) -> Result<Self> {
         let path = dir.join(IDENTITY_FILE);
         if path.exists() {
@@ -456,44 +459,10 @@ impl LinkIdentity {
         let json = serde_json::to_string_pretty(&file)
             .map_err(|e| AppError::Internal(format!("serialize link identity failed: {e}")))?;
 
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        let tmp = path.with_extension(format!("{}.{nanos}.tmp", std::process::id()));
-
-        use std::io::Write;
-        let mut opened = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|e| AppError::Internal(format!("create {}: {e}", tmp.display())))?;
-        // 私钥文件限属主可读（与 peer-net 身份文件同模式）
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            opened
-                .set_permissions(std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| AppError::Internal(format!("chmod {}: {e}", tmp.display())))?;
-        }
-        let written = opened
-            .write_all(json.as_bytes())
-            .and_then(|_| opened.sync_all())
-            .map_err(|e| AppError::Internal(format!("write {}: {e}", tmp.display())));
-        drop(opened);
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e);
-        }
-
-        let published = match std::fs::hard_link(&tmp, &path) {
-            Ok(()) => Ok(true),
-            // 并发初始化已有人写盘：加载既有身份，丢弃本次生成
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(e) => Err(AppError::Internal(format!("publish {}: {e}", path.display()))),
-        };
-        let _ = std::fs::remove_file(&tmp);
-        if !published? {
+        let outcome = wasmnest_server_base::private_file::create_private_file_exclusive(&path, json.as_bytes())
+            .map_err(|e| AppError::Internal(format!("create {}: {e}", path.display())))?;
+        if outcome == wasmnest_server_base::private_file::CreateOutcome::AlreadyExisted {
+            // 并发首启已有人写盘：加载既有身份，丢弃本次生成
             return Self::load(&path);
         }
         tracing::info!(file = %path.display(), "link crypto identity generated");

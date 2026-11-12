@@ -37,6 +37,8 @@ pub mod face;
 pub mod identity;
 pub mod info;
 pub mod ports;
+/// 私钥 / 身份文件的「只在不存在时发布」落盘原语（模板见模块文档）
+pub mod private_file;
 pub mod process;
 /// 应用作用域共享服务的租约模板（依赖服务按插件引用记账启停）
 pub mod service;

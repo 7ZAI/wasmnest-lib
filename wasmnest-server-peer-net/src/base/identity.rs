@@ -212,14 +212,11 @@ impl NodeIdentity {
 
     /// 原子抢占创建身份文件：返回 `false` = 已存在（并发首启）
     ///
-    /// 两个约束同时成立：
-    /// - **不覆盖既有文件**：`rename` 会无条件覆盖，两个并发首启各生成不同密钥时
-    ///   后者覆盖盘、前者留在内存，重启后指纹即变（pin 全失效）；
-    /// - **读者永远看不到半截 JSON**：先写同目录唯一 tmp，再 `hard_link` 到正式名
-    ///   （`hard_link` 在目标已存在时失败，天然是「只在不存在时可见」的原子发布）。
-    ///
-    /// 进程中途被杀只留下 tmp（下次首启不影响加载）；正式文件要么不存在，要么完整。
-    fn create_new_file(&self, path: &PathBuf) -> Result<bool> {
+    /// 「不覆盖既有文件」与「读者看不到半截 JSON」两个约束由
+    /// [`wasmnest_server_base::private_file::create_private_file_exclusive`] 承担：
+    /// 写同目录 tmp 再发布，目标已存在即让位；发布步在 Android 上避开被 SELinux
+    /// 拒绝的 `hard_link`（详见该原语的模块文档，2026-11-11 移动端首启崩溃的根因）。
+    fn create_new_file(&self, path: &Path) -> Result<bool> {
         let file = IdentityFile {
             version: IDENTITY_FORMAT_VERSION,
             secret_seed_hex: hex::encode(self.seed_bytes()),
@@ -227,58 +224,12 @@ impl NodeIdentity {
         };
         let content = serde_json::to_string_pretty(&file).map_err(|e| PeerNetError::IdentitySerialize { source: e })?;
 
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        let tmp = path.with_extension(format!("{}.{nanos}.tmp", std::process::id()));
-
-        use std::io::Write;
-        let mut opened = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|e| PeerNetError::IdentityCreate {
-                path: tmp.clone(),
-                source: e,
+        let outcome = wasmnest_server_base::private_file::create_private_file_exclusive(path, content.as_bytes())
+            .map_err(|source| PeerNetError::IdentityCreate {
+                path: path.to_path_buf(),
+                source,
             })?;
-
-        // unix 下收紧权限：私钥材料不应被同机其他用户读取（Windows ACL 由用户
-        // 目录隔离兜底，无需等价处理）
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            opened
-                .set_permissions(std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| PeerNetError::IdentityPermissions {
-                    path: tmp.clone(),
-                    source: e,
-                })?;
-        }
-
-        let written = opened
-            .write_all(content.as_bytes())
-            .and_then(|_| opened.sync_all())
-            .map_err(|e| PeerNetError::IdentityWrite {
-                path: tmp.clone(),
-                source: e,
-            });
-        drop(opened);
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e);
-        }
-
-        let created = match std::fs::hard_link(&tmp, path) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(e) => Err(PeerNetError::IdentityCreate {
-                path: path.clone(),
-                source: e,
-            }),
-        };
-        let _ = std::fs::remove_file(&tmp);
-        let created = created?;
+        let created = outcome == wasmnest_server_base::private_file::CreateOutcome::Created;
         if created {
             tracing::debug!("saved peer-net node identity to {}", path.display());
         }
