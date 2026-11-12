@@ -509,6 +509,36 @@ impl RunningNode {
         }
     }
 
+    /// 向**任意已连接 PeerId** 开一条具名流，不经过链路准入闸门。
+    ///
+    /// 只给宿主基础设施协议用（当前 = 中继控制面 `/wasmnest/relay-control/1`）：
+    /// 中继是 libp2p 传输层节点，不走 peer-net 的 trust-status 准入，因此
+    /// [`Self::open_stream`] 会以 `NotConnected` 拒绝。业务数据面**不得**调用本
+    /// 方法绕过准入——协议名与调用方由边界锁约束。
+    ///
+    /// # Errors
+    /// 对端未连接 / 协议协商失败 / 超时；不自动拨号（调用方应先建立 relay 预留）。
+    pub async fn open_stream_to_peer(
+        &self,
+        peer_id: PeerId,
+        protocol: &'static str,
+    ) -> Result<libp2p::swarm::Stream, P2pError> {
+        let mut control = self.inner.control.lock().await;
+        match tokio::time::timeout(
+            STREAM_OPEN_TIMEOUT,
+            control.open_stream(peer_id, StreamProtocol::new(protocol)),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => Ok(stream),
+            Ok(Err(e)) => Err(P2pError::Stream {
+                protocol: protocol.to_string(),
+                detail: e.to_string(),
+            }),
+            Err(_) => Err(P2pError::StreamTimeout(protocol.to_string())),
+        }
+    }
+
     /// 注册并接收某个协议名的入站流
     ///
     /// `require_admitted = true`（业务协议）只放行已准入对端；信任状态协议传

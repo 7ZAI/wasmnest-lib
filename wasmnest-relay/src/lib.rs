@@ -21,6 +21,7 @@
 //! - [`config`]：TOML 配置与校验（未知字段即报错，防止手改配置被静默忽略）
 //! - [`identity`]：ed25519 身份密钥（落盘即 PeerId；丢失 = 所有客户端需重新导入）
 //! - [`quota`]：配额解析、`libp2p::relay::Config` 映射、每 IP 连接计数
+//! - [`rendezvous`]：跨 NAT 设备会合表（`announce` / `query`；只做发现，不做授权）
 //! - [`access`]：开放 / 白名单两种准入模式 + enrollment 后的持久白名单
 //! - [`tokens`]：一次性 enrollment token（只落 SHA-256 摘要）
 //! - [`control`] / [`wire`]：`/wasmnest/relay-control/1` 控制协议（版本 / 模式 / 兑换）
@@ -49,6 +50,7 @@ pub mod logging;
 pub mod metrics;
 pub mod metrics_server;
 pub mod quota;
+pub mod rendezvous;
 pub mod server;
 pub mod tokens;
 pub mod wire;
