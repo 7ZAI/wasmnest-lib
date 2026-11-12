@@ -1601,19 +1601,30 @@ impl TunnelEngine for PeerCtxEngine {
 
     async fn reserve_relay(&self, addrs: &[Multiaddr]) -> Result<()> {
         let running = self.running().await?;
-        running
-            .reserve_relay(addrs.to_vec())
+        // 与 host-peer `configure-relay` 共用 owner 表：两边取并集后下发，避免
+        // 各自全量替换把对方预留抹掉（见 `relay_reservation`）
+        self.ctx
+            .state
+            .relay
+            .set(
+                crate::relay_reservation::TUNNEL_OWNER,
+                addrs.to_vec(),
+                &crate::relay_reservation::NodeRelay(&running),
+            )
             .await
-            .map(|_| ())
             .map_err(|e| TunnelError::new(crate::tunnel::CODE_WAN_DISABLED, format!("relay 预留失败：{e}")))
     }
 
     async fn release_relay(&self) -> Result<()> {
         let running = self.running().await?;
-        running
-            .release_relay()
+        self.ctx
+            .state
+            .relay
+            .clear(
+                crate::relay_reservation::TUNNEL_OWNER,
+                &crate::relay_reservation::NodeRelay(&running),
+            )
             .await
-            .map(|_| ())
             .map_err(|e| TunnelError::new(CODE_PEER_OFFLINE, format!("relay 释放失败：{e}")))
     }
 
@@ -1666,7 +1677,7 @@ impl TunnelEngine for PeerCtxEngine {
 ///
 /// `relay_status().relay_addr` 在 `Connecting` / `Lost` 也会保留最近端点；
 /// 直接外发会让 QR / 连接串带上拨不通的候选（T08 要求 `peer.addrs` 可拨）。
-fn advertised_relay_addr(state: RelayState, addr: Option<&Multiaddr>) -> Option<String> {
+pub(crate) fn advertised_relay_addr(state: RelayState, addr: Option<&Multiaddr>) -> Option<String> {
     (state == RelayState::Reserved)
         .then(|| addr.map(|a| a.to_string()))
         .flatten()

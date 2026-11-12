@@ -1,4 +1,4 @@
-//! host-peer 能力域 —— 对等网络基础能力（ADR 0022 v2 终态 19 原语）
+//! host-peer 能力域 —— 对等网络基础能力（ADR 0022 v2 终态 21 原语）
 //!
 //! spec：`.scratch/2026-10-04-wasm-core-lib-split/spec.md` §3.1；票 05（自宿主
 //! host_api 域的 peer 适配器整体迁入本 crate，并解除其对宿主组装面的 20 处
@@ -12,7 +12,7 @@
 //! ## 分层
 //!
 //! ```text
-//!   本文件        机制 + WIT 接线（19 条原语的宿主实现 + 能力模块自报）
+//!   本文件        机制 + WIT 接线（21 条原语的宿主实现 + 能力模块自报）
 //!   ports.rs      边界：宿主能力端口（权限门 / 引擎上下文 / 异步桥）
 //! ```
 //!
@@ -370,7 +370,7 @@ pub fn peer_set_receive_policy(
 /// 显式暂停进行中的发送批：会话数据面门控（wire Pause 帧 + 供方停推流），
 /// 任务保留（含已传字节）不落历史。本端发起的活跃会话查句柄表、serve 供流
 /// 批查 handler 注册表。**发送批未命中回落接收方向**（拉取会话 / push 接收批
-/// 的 Pause 帧下发）——两端同集 19 原语下「单一原语管双向」的统一语义
+/// 的 Pause 帧下发）——两端同集 21 原语下「单一原语管双向」的统一语义
 /// （移动端历史组合语义由 crate 单点承载）；两向都未命中返回错误。
 pub fn peer_pause_transfer(ports: &Arc<dyn PeerPorts>, plugin_id: &str, batch_id: &str) -> Result<(), String> {
     if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_pause_transfer") {
@@ -427,7 +427,7 @@ pub fn peer_set_shared_roots(ports: &Arc<dyn PeerPorts>, plugin_id: &str, dirs_j
     }
     // 双形态条目（WIT 注释承诺的形状）：桌面 `{ id, name, path }`（本地文件系统
     // 路径 → Fs 根）；移动 `{ id, name, safTreeUri }`（SAF 树 URI → Saf 根）。
-    // 两端同集 19 原语下由本域单点解析；两条目形态互斥，`path` 缺席时才认
+    // 两端同集 21 原语下由本域单点解析；两条目形态互斥，`path` 缺席时才认
     // `safTreeUri`（首见非空者胜）。
     #[derive(serde::Deserialize)]
     struct SharedRootSeed {
@@ -667,6 +667,65 @@ pub fn peer_collect_outgoing(ports: &Arc<dyn PeerPorts>, plugin_id: &str, paths_
     sync_result(block_on(ports, crate::collect_outgoing_for_plugin(paths)))
 }
 
+/// 本机节点投影（T21）：`nodeId` / 设备名 / 可拨地址 / relay 控制面状态。
+///
+/// 与隧道 `status.node` 同口径：只有预留 `Reserved` 时 `addrs` 才含 circuit。
+/// 未启动节点报错（fail-visible）。
+pub(crate) fn peer_node_info(
+    ports: &Arc<dyn PeerPorts>,
+    plugin_id: &str,
+) -> Result<crate::node_info::NodeInfo, String> {
+    if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_node_info") {
+        return Err(denied());
+    }
+    let ctx = ports.peer_ctx()?;
+    block_on(ports, async move { crate::node_info::snapshot(&ctx).await })
+}
+
+/// 建立 / 释放本插件份额的 relay 预留（T21；按插件 owner 记账）。
+///
+/// `enable = true` 时 `relay-addrs-json` 必非空且必须是 relay 端点（钉住
+/// `/p2p/<relay>`，不得含 `/p2p-circuit`）；`enable = false` 忽略地址。
+/// 返回下发后的 node-info（预留可能仍在 `relay-connecting`，`addrs` 不含 circuit）。
+pub(crate) fn peer_configure_relay(
+    ports: &Arc<dyn PeerPorts>,
+    plugin_id: &str,
+    relay_addrs_json: &str,
+    enable: bool,
+) -> Result<crate::node_info::NodeInfo, String> {
+    if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_configure_relay") {
+        return Err(denied());
+    }
+    // 入参先于引擎上下文校验：空地址 / 坏 JSON 是调用方错误，不该先撞「无头 / 未启动」
+    let raw: Vec<String> = if enable {
+        let parsed: Vec<String> = serde_json::from_str(relay_addrs_json)
+            .map_err(|e| format!("configure relay: invalid relay addrs json: {e}"))?;
+        if parsed.is_empty() {
+            return Err("configure relay: relay addrs must not be empty when enabling".to_string());
+        }
+        parsed
+    } else {
+        Vec::new()
+    };
+    let ctx = ports.peer_ctx()?;
+    let owner = format!("peer:{plugin_id}");
+    block_on(ports, async move {
+        let resolved = crate::node_info::resolve_relay_endpoints(&raw).await?;
+        let engine = {
+            let runtime = ctx.state.runtime.lock().await;
+            runtime.as_ref().map(|r| r.running.p2p_handle())
+        }
+        .ok_or_else(|| "peer node not running".to_string())?;
+        let relay_engine = crate::relay_reservation::NodeRelay(&engine);
+        if enable {
+            ctx.state.relay.set(&owner, resolved, &relay_engine).await?;
+        } else {
+            ctx.state.relay.clear(&owner, &relay_engine).await?;
+        }
+        crate::node_info::snapshot(&ctx).await
+    })
+}
+
 // ==================== 能力模块自报（WIT 绑定层，`common-host` feature） ====================
 
 // WIT 绑定层依赖（host-kit / wasmtime）只随 `common-host` feature 编译：
@@ -701,7 +760,7 @@ const DESC: HostModuleDesc = HostModuleDesc {
     abi_min: 31,
 };
 
-/// 对等网络能力域模块（`host-peer`，19 条原语）
+/// 对等网络能力域模块（`host-peer`，21 条原语）
 #[cfg(feature = "common-host")]
 pub struct PeerNetModule;
 
@@ -885,6 +944,30 @@ impl wasmnest::peer::host_peer::Host for WasmPluginState {
 
     fn collect_outgoing(&mut self, paths_json: String) -> Result<String, String> {
         peer_collect_outgoing(&ports_for(self), &self.plugin_id, &paths_json)
+    }
+
+    fn node_info(&mut self) -> Result<wasmnest::peer::host_peer::PeerNodeInfo, String> {
+        let info = peer_node_info(&ports_for(self), &self.plugin_id)?;
+        Ok(to_wit_node_info(info))
+    }
+
+    fn configure_relay(
+        &mut self,
+        relay_addrs_json: String,
+        enable: bool,
+    ) -> Result<wasmnest::peer::host_peer::PeerNodeInfo, String> {
+        let info = peer_configure_relay(&ports_for(self), &self.plugin_id, &relay_addrs_json, enable)?;
+        Ok(to_wit_node_info(info))
+    }
+}
+
+#[cfg(feature = "common-host")]
+fn to_wit_node_info(info: crate::node_info::NodeInfo) -> wasmnest::peer::host_peer::PeerNodeInfo {
+    wasmnest::peer::host_peer::PeerNodeInfo {
+        node_id: info.node_id,
+        device_name: info.device_name,
+        addrs: info.addrs,
+        relay_state: info.relay_state,
     }
 }
 

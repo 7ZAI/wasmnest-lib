@@ -28,7 +28,7 @@
 //!   `host-peer.start-node` 按引用记账，首个引用拉起、最后一个释放关停；宿主
 //!   命令面不再直接起停节点。见 [`service::PeerNodeService`]。
 //! - **插件绑定层**：`plugin_binding`（wasm-core-lib-split 票 05）是 `host-peer`
-//!   19 条原语的宿主实现（句柄表 / 属主仲裁 / 自动重拨 / 载荷校验），经
+//!   21 条原语的宿主实现（句柄表 / 属主仲裁 / 自动重拨 / 载荷校验），经
 //!   [`plugin_binding::ports::PeerPorts`] 向宿主要权限门、引擎上下文、异步桥与
 //!   服务注册表；本 crate 对宿主组装面（`AppHandle` 与 managed state）的引用为 **0**。
 //! - **引擎接入**：`peer_engine_transfer` / `peer_engine_receive` /
@@ -52,12 +52,15 @@ pub mod base;
 /// 引擎端口面（窄聚合）：引擎实际消费的五个宿主端口（bus / event_sink /
 /// paths / system_info / mdns）——宿主按端装配；trait 词汇复用 server-base
 pub mod engine_ports;
+mod node_info;
 pub mod peer_engine_receive;
 pub mod peer_engine_remote;
 pub mod peer_engine_transfer;
 /// host-peer 能力域的插件绑定层（wasm-core-lib-split 票 05：自宿主 host_api 域的
 /// peer 适配器迁入，并把其对宿主组装面的 20 处反向耦合换成端口）
 pub mod plugin_binding;
+/// 本机 relay 预留的共享协调器：host-tunnel 与 host-peer 按 owner 取并集下发。
+mod relay_reservation;
 /// `net.peer-node` 应用作用域服务（节点生命周期的租约适配）
 pub mod service;
 pub mod source_collect;
@@ -173,6 +176,8 @@ struct PeerNetRuntime {
     cache: Arc<DiscoveryCache>,
     /// 本节点 ID（状态摘要展示用）
     node_id: String,
+    /// 生效的设备名（node-info 展示；空配置由宿主默认值补齐后才落这里）
+    device_name: String,
 }
 
 impl PeerNetRuntime {
@@ -247,6 +252,8 @@ pub struct PeerNetState {
     /// 首个 runtime 泄漏。不持 runtime 锁跨 await（与全仓短持锁风格一致），
     /// 闸门只串行化装配本身
     lifecycle_gate: tokio::sync::Semaphore,
+    /// relay 预留 owner 表（tunnel / peer 插件共用同一引擎预留）
+    relay: crate::relay_reservation::RelayReservations,
 }
 
 impl Default for PeerNetState {
@@ -260,6 +267,7 @@ impl Default for PeerNetState {
             inbound_peers: std::sync::Mutex::new(HashMap::new()),
             inbound_conns: std::sync::Mutex::new(HashMap::new()),
             lifecycle_gate: tokio::sync::Semaphore::new(1),
+            relay: crate::relay_reservation::RelayReservations::default(),
         }
     }
 }
@@ -1280,7 +1288,7 @@ async fn start_locked(
         &node,
         &running,
         DiscoveryConfig {
-            device_name,
+            device_name: device_name.clone(),
             capabilities: CAP_FILE_TRANSFER,
         },
         mdns_daemon,
@@ -1302,7 +1310,27 @@ async fn start_locked(
         host_adv,
         cache,
         node_id,
+        device_name,
     });
+    // 节点重启前登记的 relay owner（tunnel / peer 插件）在这一刻重建预留：
+    // 引擎预留随旧 runtime 一起消失，owners 表仍保留期望——重新下发并集。
+    // 失败只记日志：节点已可用，预留会在下一次 set/clear 或下次重启时再收敛。
+    {
+        let engine = {
+            let runtime = ctx.state.runtime.lock().await;
+            runtime.as_ref().map(|r| r.running.p2p_handle())
+        };
+        if let Some(engine) = engine {
+            if let Err(e) = ctx
+                .state
+                .relay
+                .reapply(&crate::relay_reservation::NodeRelay(&engine))
+                .await
+            {
+                tracing::warn!(error = %e, "relay reservation reapply after node start failed");
+            }
+        }
+    }
     tracing::info!(
         "peer-net node started: addr={listen_addr}, discovery service={}",
         crate::base::SERVICE_TYPE
@@ -1403,6 +1431,8 @@ async fn stop_locked(ctx: Arc<PeerCtx>) -> Result<()> {
             // 注销宿主身份广播登记（owner=host，MdnsService ADVERTISERS）
             let _ = ctx.ports.mdns.stop_host_service(&runtime.host_adv);
             runtime.running.shutdown().await;
+            // 引擎预留随节点关停消失；owners 保留，下次 start 的 reapply 重建
+            ctx.state.relay.reset_applied();
             tracing::info!("peer-net node stopped");
             Ok(())
         }

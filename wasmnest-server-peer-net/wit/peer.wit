@@ -36,6 +36,21 @@ interface host-peer {
         /// TCP 监听端口（0 = OS 自动分配）
         listen-port: u16,
     }
+    /// 本机 peer 节点只读投影（T21 / issue #27）。
+    ///
+    /// 不含任何票据 / 长期密钥；`addrs` 是给对端拨号用的多地址候选。
+    record peer-node-info {
+        /// 本机节点 id（64 位小写 hex；宿主身份指纹）
+        node-id: string,
+        /// 人类可读设备名（空 = 宿主未命名）
+        device-name: string,
+        /// 可拨 multiaddr：LAN 直连在前；仅本机共享节点的 relay 预留处于
+        /// `relay-reserved` 时追加 `<relay>/p2p-circuit/p2p/<本机>`
+        /// （预留是宿主级事实；任一 owner 生效即代表本节点可经该中继被拨到）
+        addrs: list<string>,
+        /// relay-idle / relay-connecting / relay-reserved / relay-lost
+        relay-state: string,
+    }
     /// 按 endpoint 拨号连接（ADR 0022 v2 终态，原 dial-peer-endpoint 转正）：
     /// endpoint = `{ nodeId, addr, port }`（camelCase JSON，插件从自身设备缓存/
     /// mdns 事件解析后显式传入；宿主不内藏 node-id → 地址解析表）。握手期
@@ -143,6 +158,21 @@ interface host-peer {
     /// → `[{ path, size }]` JSON（path 为相对落位形状，size 为字节）。
     /// 仅读元数据不读内容；路径应来自 host-platform pick-* 用户选择（选择即授权）
     collect-outgoing: func(paths-json: string) -> result<string, string>;
+    /// 只读：本机身份 + 当前可拨地址 + relay 控制面状态（T21 / issue #27）。
+    ///
+    /// 需要 `peer` 权限。节点未启动时报错（fail-visible，不返回空身份冒充
+    /// 「未命名设备」）。不返回任何票据 / 长期密钥。
+    node-info: func() -> result<peer-node-info, string>;
+    /// 建立 / 释放本插件在本机共享节点上的 relay 预留（幂等，按插件引用计数）。
+    ///
+    /// - `enable = true` + 空 `relay-addrs-json` → 显性错误（不静默当 LAN-only）
+    /// - 同一插件重复调用 = 全量替换（地址变化时重建；相同地址为 no-op）
+    /// - `enable = false` → 释放本插件份额（其他插件 / 隧道的预留不受影响）
+    /// - 返回当前 node-info（`addrs` 只在预留真正生效时含 circuit）
+    ///
+    /// 权限复用 `peer`（预留 = 公网可达 + 中继带宽，与本域既有信任面同级；
+    /// 独立 `peer:relay` 位待权限细分票，见 issue #27 的风险记录）。
+    configure-relay: func(relay-addrs-json: string, enable: bool) -> result<peer-node-info, string>;
 }
 world cap-peer {
     import host-peer;
