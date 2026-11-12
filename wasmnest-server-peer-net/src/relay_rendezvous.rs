@@ -24,8 +24,12 @@
 //! ## 事件形状
 //!
 //! `peer:relay-devices`（host 发布；插件订阅后转 `plugin:<id>:relay-devices`）：
-//! `{ devices: [{ nodeId, peerId, deviceName, addrs, lastSeenMs }] }`。全量快照，
-//! 前端按 nodeId 与 mDNS 缓存归并；空数组 = 当前没有中继可见设备。
+//! `{ devices: [...], status, error, relay, updatedAtMs }`。全量快照，前端按
+//! nodeId 与 mDNS 缓存归并；空数组 = 当前没有中继可见设备。
+//!
+//! `status` 词表：`ok | disabled | relay-unavailable | unsupported | denied | error`。
+//! 失败时保留上一份 `devices`（查不到 ≠ 没设备），只更新 status / error；
+//! `updatedAtMs` 是宿主发布时刻（前端据此判断「状态可能过期」）。
 
 use std::time::Duration;
 
@@ -78,6 +82,90 @@ pub(crate) struct RelayDevice {
 #[serde(rename_all = "camelCase")]
 struct RelaySnapshot {
     devices: Vec<RelayDevice>,
+    /// 发现状态词表（ok = 本轮查询成功；其余见模块文档）
+    status: &'static str,
+    /// 失败分类 token 或截断后的错误原文（成功时 null）
+    error: Option<String>,
+    /// 当前使用的中继端点（未配置时 null）
+    relay: Option<String>,
+    /// 发布时刻（Unix 毫秒）；前端据此判断状态是否过期
+    updated_at_ms: u64,
+}
+
+/// 发布去重键：devices + status + error + relay。
+///
+/// 刻意**不含** `updated_at_ms`：心跳每 25s 刷新时间戳会让前端每轮重渲染，
+/// 而「状态没变」时前端的时间戳仍会停在上一次变化点——超过 60s 显示
+/// 「状态可能过期」是预期行为（提示用户刷新，而不是假装实时）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct SnapshotKey {
+    devices: Vec<RelayDevice>,
+    status: &'static str,
+    error: Option<String>,
+    relay: Option<String>,
+}
+
+impl SnapshotKey {
+    fn new(devices: Vec<RelayDevice>, status: &'static str, error: Option<String>, relay: Option<String>) -> Self {
+        Self {
+            devices,
+            status,
+            error,
+            relay,
+        }
+    }
+
+    /// 失败 / 未就绪：保留上一份设备列表，只更新状态与错误
+    fn keep_devices(
+        last: Option<&SnapshotKey>,
+        status: &'static str,
+        error: Option<String>,
+        relay: Option<String>,
+    ) -> Self {
+        Self::new(
+            last.map(|key| key.devices.clone()).unwrap_or_default(),
+            status,
+            error,
+            relay,
+        )
+    }
+}
+
+/// 是否发布：force（唤醒 / 首帧）或键变化才发
+fn should_publish(last: Option<&SnapshotKey>, next: &SnapshotKey, force: bool) -> bool {
+    force || last != Some(next)
+}
+
+/// 失败分类：旧中继 / allowlist / 其它原文。
+///
+/// 错误文本来自 [`announce`] 的 `relay rejected announce: <code>`；只认两个
+/// 稳定 token，其余保留截断原文（不猜成因）。
+fn classify_failure(error: &str) -> (&'static str, String) {
+    if error.contains("invalid-request") {
+        ("unsupported", "invalid-request".to_string())
+    } else if error.contains("not-allowed") {
+        ("denied", "not-allowed".to_string())
+    } else {
+        ("error", truncate_detail(error, 240))
+    }
+}
+
+/// 错误摘要截断（字符边界安全；前端另有 120 字符展示上限）
+fn truncate_detail(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max_chars).collect();
+    out.push('…');
+    out
+}
+
+/// 发布时刻（Unix 毫秒）
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// 中继回执里的单条记录（本地最小镜像；不引 relay crate）
@@ -116,7 +204,7 @@ pub(crate) fn spawn(ctx: std::sync::Arc<PeerCtx>) -> tokio::task::JoinHandle<()>
 }
 
 async fn run(ctx: std::sync::Arc<PeerCtx>) {
-    let mut last = Vec::<RelayDevice>::new();
+    let mut last: Option<SnapshotKey> = None;
     let mut timer = tokio::time::interval(ANNOUNCE_INTERVAL);
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // 首 tick 立即执行：节点启动 / 配置变更后不必等满一个心跳
@@ -139,20 +227,30 @@ async fn run(ctx: std::sync::Arc<PeerCtx>) {
             }
         };
 
+        let relay_hint = current_relay(&ctx);
+
         if !current_enabled(&ctx) {
-            publish(&ctx, &mut last, Vec::new(), force);
+            let key = SnapshotKey::new(Vec::new(), "disabled", None, relay_hint);
+            publish(&ctx, &mut last, key, force);
             continue;
         }
 
         let Some((engine, node_id, device_name)) = current_runtime(&ctx).await else {
             // 节点未启动：清空上一份快照（重启后由新节点重新登记）
-            publish(&ctx, &mut last, Vec::new(), force);
+            let key = SnapshotKey::new(
+                Vec::new(),
+                "relay-unavailable",
+                Some("node not running".to_string()),
+                relay_hint,
+            );
+            publish(&ctx, &mut last, key, force);
             continue;
         };
 
         let relays = ctx.state.relay.desired();
         if relays.is_empty() || engine.relay_status().state.as_str() != "relay-reserved" {
-            publish(&ctx, &mut last, Vec::new(), force);
+            let key = SnapshotKey::new(Vec::new(), "relay-unavailable", None, relay_hint);
+            publish(&ctx, &mut last, key, force);
             // 有中继但还没 reserved：2s 后再看；没有中继就等正常心跳
             retry_soon = !relays.is_empty();
             continue;
@@ -160,6 +258,8 @@ async fn run(ctx: std::sync::Arc<PeerCtx>) {
 
         let mut devices = Vec::<RelayDevice>::new();
         let mut succeeded = 0usize;
+        let mut ok_relay = None::<String>;
+        let mut failures = Vec::<String>::new();
         for relay in relays {
             let endpoint = match RelayEndpoint::parse(&relay, None) {
                 Ok(endpoint) => endpoint,
@@ -172,6 +272,9 @@ async fn run(ctx: std::sync::Arc<PeerCtx>) {
             match announce(&engine, &endpoint, &node_id, &device_name, &room).await {
                 Ok(peers) => {
                     succeeded += 1;
+                    if ok_relay.is_none() {
+                        ok_relay = Some(endpoint.base().to_string());
+                    }
                     merge_peers(&mut devices, &endpoint, peers);
                 }
                 Err(e) => {
@@ -181,19 +284,34 @@ async fn run(ctx: std::sync::Arc<PeerCtx>) {
                         error = %e,
                         "relay rendezvous announce failed"
                     );
+                    failures.push(e);
                 }
             }
         }
-        // 全部中继都查询失败：保留上一份快照（fail-visible 的「查不到 ≠ 没设备」；
-        // 中继真正不可达时 relay_status 会转 Lost，走上面的清空分支）
+        // 全部中继都查询失败：保留上一份 devices，只更新 status / error
+        // （fail-visible 的「查不到 ≠ 没设备」；中继真正不可达时 relay_status
+        // 会转 Lost，走上面的清空分支）
         if succeeded == 0 {
+            let (status, error) = classify_failure(&failures.join("; "));
+            let key = SnapshotKey::keep_devices(last.as_ref(), status, Some(error), relay_hint);
+            publish(&ctx, &mut last, key, force);
             continue;
         }
         // 顺序稳定，避免 HashMap / 中继返回顺序造成无意义的重发
         devices.sort_by(|a, b| a.node_id.cmp(&b.node_id));
         devices.dedup_by(|a, b| a.node_id == b.node_id);
-        publish(&ctx, &mut last, devices, force);
+        publish(&ctx, &mut last, SnapshotKey::new(devices, "ok", None, ok_relay), force);
     }
+}
+
+/// 当前配置的第一台中继端点（状态卡展示用；未配置返回 None）
+fn current_relay(ctx: &PeerCtx) -> Option<String> {
+    ctx.state
+        .relay
+        .desired()
+        .into_iter()
+        .next()
+        .map(|addr| addr.to_string())
 }
 
 /// 当前运行节点投影（节点未启动返回 None；锁只在取值期间持有）
@@ -301,16 +419,34 @@ fn circuit_addr(base: &Multiaddr, peer: PeerId) -> Multiaddr {
         .expect("relay base + fixed segments is always a valid multiaddr")
 }
 
-/// 发布快照：`force` 或内容变化才发（避免 25s 心跳刷前端）
-fn publish(ctx: &PeerCtx, last: &mut Vec<RelayDevice>, next: Vec<RelayDevice>, force: bool) {
-    if !force && *last == next {
+/// 发布快照：`force` 或键变化才发（避免 25s 心跳刷前端）
+fn publish(ctx: &PeerCtx, last: &mut Option<SnapshotKey>, next: SnapshotKey, force: bool) {
+    if !should_publish(last.as_ref(), &next, force) {
         return;
     }
-    let payload = serde_json::to_value(RelaySnapshot { devices: next.clone() })
-        .unwrap_or_else(|_| serde_json::json!({ "devices": [] }));
+    let snapshot = RelaySnapshot {
+        devices: next.devices.clone(),
+        status: next.status,
+        error: next.error.clone(),
+        relay: next.relay.clone(),
+        updated_at_ms: now_ms(),
+    };
+    let payload = serde_json::to_value(snapshot).unwrap_or_else(|_| {
+        serde_json::json!({
+            "devices": [],
+            "status": "error",
+            "error": "snapshot encode failed",
+            "relay": null,
+            "updatedAtMs": now_ms(),
+        })
+    });
     ctx.ports.bus.publish(RELAY_DEVICES_TOPIC, "host", payload);
-    tracing::info!(count = next.len(), "relay rendezvous snapshot published");
-    *last = next;
+    tracing::info!(
+        count = next.devices.len(),
+        status = next.status,
+        "relay rendezvous snapshot published"
+    );
+    *last = Some(next);
 }
 
 /// 会合是否由活跃插件启用（插件停用即关，避免「应用已关仍被中继发现」）
@@ -473,6 +609,84 @@ mod tests {
         assert_ne!(a, c, "不同码必须隔离");
         assert_eq!(a.len(), 64, "房间键是 64 位 hex，兼容中继房间语法");
         assert!(a.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn classify_failure_只认旧中继与_allowlist_两个稳定_token() {
+        assert_eq!(
+            classify_failure("relay rejected announce: invalid-request"),
+            ("unsupported", "invalid-request".to_string())
+        );
+        assert_eq!(
+            classify_failure("relay rejected announce: not-allowed"),
+            ("denied", "not-allowed".to_string())
+        );
+        let (status, detail) = classify_failure("relay announce timed out after 8s");
+        assert_eq!(status, "error");
+        assert!(detail.contains("timed out"));
+    }
+
+    #[test]
+    fn truncate_detail_保留字符边界() {
+        assert_eq!(truncate_detail("short", 10), "short");
+        let long = "中".repeat(300);
+        let cut = truncate_detail(&long, 240);
+        assert_eq!(cut.chars().count(), 241, "240 字符 + 省略号");
+        assert!(cut.ends_with('…'));
+    }
+
+    #[test]
+    fn should_publish_忽略时间戳且_force_总是发布() {
+        let a = SnapshotKey::new(vec![], "ok", None, None);
+        let b = SnapshotKey::new(vec![], "ok", None, None);
+        assert!(!should_publish(Some(&a), &b, false), "内容相同不重发");
+        assert!(should_publish(None, &b, false), "首帧必须发布");
+        assert!(should_publish(Some(&a), &b, true), "唤醒强制发布");
+        let c = SnapshotKey::new(vec![], "error", Some("x".into()), None);
+        assert!(should_publish(Some(&a), &c, false), "status 变化必须发布");
+    }
+
+    #[test]
+    fn 失败状态保留上一份设备() {
+        let mut devices = Vec::new();
+        merge_peers(
+            &mut devices,
+            &relay(),
+            vec![WirePeer {
+                peer_id: peer().to_base58(),
+                node_id: "c".repeat(64),
+                name: "phone".into(),
+                last_seen_ms: 1,
+            }],
+        );
+        let last = SnapshotKey::new(devices.clone(), "ok", None, None);
+        let failed = SnapshotKey::keep_devices(
+            Some(&last),
+            "error",
+            Some("timeout".into()),
+            Some(relay().base().to_string()),
+        );
+        assert_eq!(failed.devices, devices, "查询失败不得清空设备列表");
+        assert_eq!(failed.status, "error");
+        assert!(failed.relay.is_some());
+    }
+
+    #[test]
+    fn 快照序列化包含_status_error_relay_与时间戳() {
+        let key = SnapshotKey::new(vec![], "unsupported", Some("invalid-request".into()), None);
+        let snapshot = RelaySnapshot {
+            devices: key.devices.clone(),
+            status: key.status,
+            error: key.error.clone(),
+            relay: key.relay.clone(),
+            updated_at_ms: 1_730_000_000_000,
+        };
+        let value = serde_json::to_value(snapshot).expect("serialize");
+        assert_eq!(value["status"], "unsupported");
+        assert_eq!(value["error"], "invalid-request");
+        assert!(value["relay"].is_null());
+        assert_eq!(value["updatedAtMs"], 1_730_000_000_000u64);
+        assert_eq!(value["devices"], serde_json::json!([]));
     }
 
     #[test]
