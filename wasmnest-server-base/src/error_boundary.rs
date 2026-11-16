@@ -152,7 +152,7 @@ mod tests {
         scenario()
     }
 
-    /// 核心契约：panic 被捕获、任务不终止进程、错误日志输出（票据 27）
+    /// 核心契约：panic 被捕获、任务不终止进程、错误日志输出
     #[test]
     fn panic_is_caught_and_logged() {
         let out = run_captured(|| {

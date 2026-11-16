@@ -4,11 +4,10 @@
 //! 按 plugin_id 隔离，插件只能读写自己的空间
 //! 同时存储系统级数据（如插件激活状态）
 //!
-//! **位置纪律（票 03：wasm_core 依赖单向化）**：原定义在
+//! **位置纪律（wasm_core 依赖单向化）**：原定义在
 //! `crate::manager::storage`，使 `security` / `host_api` 只为用它就
 //! 反向依赖 manager（见 `.scratch/2026-09-24-wasm-core-decouple/spec.md` C6）。
-//! 归位到本中立层后只依赖 `crate::db`（SQLite 引擎，同在宿主内——ADR 0036 撤销
-//! 票 07/08 的 crate 化），可被 `manager` / `host_api` / `security` 任意引用，
+//! 归位到本中立层后只依赖 `crate::db`（SQLite 引擎，同在宿主内——此前的 crate 化已撤销），可被 `manager` / `host_api` / `security` 任意引用，
 //! 自身不依赖任何 wasm_core 兄弟模块。
 
 use crate::db::Database;
@@ -16,7 +15,7 @@ use crate::error::DbResultExt;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
-// db 锁形态统一为 std Mutex（单形态票 02 M1）：方法体内锁获取后只有**同步**
+// db 锁形态统一为 std Mutex（单形态）：方法体内锁获取后只有**同步**
 // rusqlite 操作、无跨锁 await（guard 非 Send，编译器强制），std 锁免
 // block_on 绕行（移动同步 host fn 直锁；桌面 async fn 内同步持锁同样安全）。
 // 与 auth_policy.rs / context.rs / sqlite_ports 同款裁决（锁收敛为同步锁 +
@@ -26,8 +25,8 @@ use std::sync::Mutex;
 /// 系统级 plugin_id，用于存储非插件私有的全局数据
 ///
 /// **真源随 host-storage 实现层上移共享核**（`wasmnest-host-api-core::storage`，
-/// 票 18 起双端单点，fail-closed 消费方 `ensure_not_system_space` 同侧）；本模块仍是
-/// 系统级数据的写入方（激活状态等），经再导出保既有路径（ADR 0037 垫片先例）。
+/// 双端单点，fail-closed 消费方 `ensure_not_system_space` 同侧）；本模块仍是
+/// 系统级数据的写入方（激活状态等），经再导出保既有路径（垫片先例）。
 pub(crate) use wasmnest_host_api_core::storage::SYSTEM_PLUGIN_ID;
 /// 插件激活状态持久化 key
 const ACTIVATION_STATE_KEY: &str = "activation_state";
@@ -45,7 +44,7 @@ impl PluginStorage {
     /// 测试构造（内存库 + 生产 schema 初始化）——跨模块测试共用夹具
     /// （迁移自宿主 plugin/storage.rs 同名函数；底库 = crate Database）。
     /// 可见性 = crate 测试 + 宿主 test-support feature（下游 dev-dependencies）。
-    /// 常编译（单形态票 02）：共享测试夹具——`bare-host` / `common-host` 形态
+    /// 常编译（单形态）：共享测试夹具——`bare-host` / `common-host` 形态
     /// feature 已于 2026-10-13 收口退休，本夹具双端共用，不再有任何门控。
     pub fn test_storage() -> Arc<PluginStorage> {
         let db = Arc::new(Mutex::new({
@@ -254,9 +253,9 @@ impl PluginStorage {
             None => Ok(HashMap::new()),
         }
     }
-    // ==================== 旧 JSON 文件存储迁移（移动装配面，fork 迁入，票 06 批次 03） ====================
+    // ==================== 旧 JSON 文件存储迁移（移动装配面，fork 迁入，批次 03） ====================
     //
-    // 常编译（单形态票 02 M1）：移动宿主 lib.rs 启动迁移仍在消费（旧 JSON 文件存储
+    // 常编译（单形态）：移动宿主 lib.rs 启动迁移仍在消费（旧 JSON 文件存储
     // 存量数据 → 主库）；桌面宿主永不调用。绑定归位（T-05）时随移动宿主收口或退役。
 
     /// 旧版 JSON 文件存储 → 主库一次性迁移（批次 2b 自宿主 plugin/storage.rs 迁入；

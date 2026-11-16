@@ -3,7 +3,7 @@
 //! `config_get`（白名单校验 + 读取）供 core 绑定层
 //! （`runtime/core_binding.rs` 的 `host-config` `Host` impl）调用。
 //!
-//! ## 白名单词汇为何是「内核并集」而非某端 SDK 枚举（票 03）
+//! ## 白名单词汇为何是「内核并集」而非某端 SDK 枚举
 //!
 //! `host-config` 是 core.wit 的双端全等 interface，其 `Host` impl 收进单份 core 绑定
 //! 后，实现体不能再引某端 SDK 类型——两端 `ConfigKey` 枚举**实质不同**（桌面含
@@ -112,7 +112,7 @@ pub(crate) fn config_get(
             // （std::env::consts::OS：windows / linux / macos / …）
             std::env::consts::OS.to_string()
         }
-        // 票 14：认证域两项有效期的**读侧**（写侧走 host-auth `auth-setting-set`，
+        // 认证域两项有效期的**读侧**（写侧走 host-auth `auth-setting-set`，
         // 键白名单同这两键）。真源是宿主 `settings` 表；缺失 / 非法 / 不可读时
         // 回退默认值而非报错——与宿主命令面（`get_pairing_code_ttl` /
         // `get_qr_token_ttl`）同口径，保证设置分组回显与宿主行为一致。
@@ -277,7 +277,7 @@ mod tests {
         );
     }
 
-    /// 票 14：认证域两项有效期的读侧契约——
+    /// 认证域两项有效期的读侧契约——
     /// ① 键缺失 → 与宿主命令面同默认值；② 落库后读回新值（写侧走 host-auth
     /// `auth-setting-set`，两处共用 `settings` 表同一键）；③ 非法值回默认不报错
     #[test]

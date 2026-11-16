@@ -1,6 +1,6 @@
-//! 共享目录注册表：两端对称的「本机暴露面」登记与持久化（issue 07）。
+//! 共享目录注册表：两端对称的「本机暴露面」登记与持久化。
 //!
-//! ## 形状（spec Decision 8）
+//! ## 形状
 //!
 //! 条目只有两种根形态，与平台解耦：
 //! - [`SharedDirRoot::Fs`]：真实文件系统目录——桌面端用户选择的文件夹、移动端
@@ -236,7 +236,7 @@ impl SharedDirStore {
         Ok(entry)
     }
 
-    /// 全量幂等替换用户条目（ADR 0022 v2：host-peer `set-shared-roots` 原语）
+    /// 全量幂等替换用户条目（v2：host-peer `set-shared-roots` 原语）
     ///
     /// 注册表 CRUD 真源在插件侧（host-plugin-database），引擎侧注册表退化为
     /// 广播/浏览服务面的镜像：插件每次变更后推送全量列表，本方法整体替换

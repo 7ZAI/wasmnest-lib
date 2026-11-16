@@ -9,8 +9,8 @@
 //!
 //! | 方法 | 为什么需要它 |
 //! | --- | --- |
-//! | [`DiscoveryPorts::check_permission`] | 权限门（`network:mdns`）是**宿主安全闸门**（AGENTS §5.1.3 四类薄壳之二），不该可插拔 ⇒ 留宿主，本 crate 只问结果 |
-//! | [`DiscoveryPorts::forward_mdns_browse`] / `_stop_browse` / `_advertise` / `_stop_advertise` / `_is_advertising` | 能力路由（core-plugin-manager）：`host-mdns` 能力由系统组件提供时按**调用方**转发到它的同形导出，否则 `None` ⇒ 走本域引擎。**返回 `Option`** 是契约的一部分（`None` = 无提供者，不是错误）。与 `plugin_binding::ports` 的 `forward_storage_*` 同形（票 08 先例） |
+//! | [`DiscoveryPorts::check_permission`] | 权限门（`network:mdns`）是**宿主安全闸门**，不该可插拔 ⇒ 留宿主，本 crate 只问结果 |
+//! | [`DiscoveryPorts::forward_mdns_browse`] / `_stop_browse` / `_advertise` / `_stop_advertise` / `_is_advertising` | 能力路由（core-plugin-manager）：`host-mdns` 能力由系统组件提供时按**调用方**转发到它的同形导出，否则 `None` ⇒ 走本域引擎。**返回 `Option`** 是契约的一部分（`None` = 无提供者，不是错误）。与 `plugin_binding::ports` 的 `forward_storage_*` 同形 |
 //! | [`DiscoveryPorts::local_node_id`] / [`DiscoveryPorts::advertised_node_ids`] | 自播回显过滤需要「本机广播身份」；无宿主句柄时返回 `None` / 空集合 ⇒ **不拦截**（与原实现同口径：无法比对即不拦）。集合版带默认实现（退化为 `local_node_id()` 单元素）以保证旧实现仍可编译；per-app 多身份后必须覆盖为「本进程全部登记身份」 |
 //! | [`DiscoveryPorts::publish`] | 向已拼好的完整 topic 投递发现事件；总线订阅方隔离在宿主侧 |
 //! | [`DiscoveryPorts::spawn`] | 浏览事件循环 / re-announce 续期都是后台任务，**必须挂在宿主运行时上**（本 crate 不假设 tokio runtime 上下文，见下） |
@@ -46,7 +46,7 @@ pub trait DiscoveryTask: Send + Sync + 'static {
 pub trait DiscoveryPorts: Send + Sync + 'static {
     /// 权限判定：`network:mdns`
     ///
-    /// 返回 `false` 时**宿主侧**必须已按 AGENTS §8 落 `warn`（结构化字段
+    /// 返回 `false` 时**宿主侧**必须已落 `warn`（结构化字段
     /// `plugin_id` / `permission` / `api`）；本 crate 不重复落日志。
     fn check_permission(&self, plugin_id: &str, api: &str) -> bool;
 

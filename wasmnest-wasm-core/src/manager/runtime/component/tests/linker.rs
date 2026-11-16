@@ -3,7 +3,7 @@
 //! 自 `common/component.rs` 的 `mod tests` 拆出（共享脚手架在父 `mod tests`，
 //! 经 `use super::*` 可见）；fixture 互斥与产物构建语义不变。
 //!
-//! **票 04 迁移记录**：原第三条用例 `test_loaded_plugin_component_roundtrip`
+//! **迁移记录**：原第三条用例 `test_loaded_plugin_component_roundtrip`
 //! （组件完整往返 + activate 燃料消耗）随「wasm-core 不再持全 world 绑定」删除，
 //! 覆盖等价迁移到桌面宿主：
 //! - 往返本体（activate/deactivate/manifest/invoke_command + 跨边界 storage 往返）
@@ -18,7 +18,7 @@ use super::*;
 use crate::config::WasiConfig;
 
 /// 内核本地表里逐行列举的 import 接口全部注册成功（add_to_linker 是纯接线代码，
-/// 任何一组接口名冲突/接线参数错误都会在此失败）。含 ADR 0036 归位的
+/// 任何一组接口名冲突/接线参数错误都会在此失败）。含归位的
 /// `host-storage` / `host-database` / `host-plugin-database` 三组。
 #[test]
 fn test_add_to_linker_registers_all_interfaces() {

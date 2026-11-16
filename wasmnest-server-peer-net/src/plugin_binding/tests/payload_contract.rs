@@ -1,4 +1,4 @@
-//! 载荷契约与 fail-visible（票 05 新增组：随实现迁入而把「不触引擎即可判定」的
+//! 载荷契约与 fail-visible（新增组：随实现迁入而把「不触引擎即可判定」的
 //! 契约钉在本域内）
 //!
 //! 这一组的用例都刻意停在**引擎之前**：句柄寻址 / 属主判定 / JSON 载荷校验 / 退役
@@ -151,7 +151,7 @@ fn set_shared_roots_rejects_entry_without_root_field() {
     assert!(err.contains("missing 'path' or 'safTreeUri'"), "got: {err}");
 }
 
-// ==================== T11 多地址拨号（dial-peer-addrs） ====================
+// ==================== 多地址拨号（dial-peer-addrs） ====================
 
 /// 新原语同样过权限门（无授权的探测不触候选表/引擎）
 #[test]
@@ -209,7 +209,7 @@ fn dial_peer_addrs_accepts_ordered_candidates_past_validation() {
     assert_eq!(err, ports::HEADLESS_UNAVAILABLE, "合法候选应过校验: {err}");
 }
 
-// ==================== T07/T08 信任写入（trust-node） ====================
+// ==================== 信任写入（trust-node） ====================
 
 /// 与 `revoke-trusted` 同档的权限门：无 `peer` 授权不触信任表
 #[test]

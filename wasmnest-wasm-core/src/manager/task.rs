@@ -5,9 +5,9 @@
 //! DTO；入口权限 `task:run` 由宿主侧 task 域实现仲裁，执行时另过 kind 对应
 //! 域权限门）。本模块只管**执行与事件管道**，不接触 WASM / Store——单元执行体
 //! 为普通 std 阻塞函数（内部走 `block_on_async` 的 ambient 分支，F3），从机制
-//! 上杜绝重入（spec §8.1：池线程永不回调进插件，回调只经消费派发任务）。
+//! 上杜绝重入（既定口径：池线程永不回调进插件，回调只经消费派发任务）。
 //!
-//! 并发模型（spec §5.2/§5.4）：
+//! 并发模型：
 //! - 全局队列 + 每任务「并发窗口」：`maxConcurrency` 显式时，完成一个单元把
 //!   下一个未开始单元入队（每任务同时在跑 ≤ maxConcurrency，不饿死其他任务）；
 //!   缺省 = 全部单元直接入队，全局池（[`PLUGIN_TASK_POOL_THREADS`] 条线程）
@@ -15,18 +15,18 @@
 //! - 协作式取消 / 墙钟超时：phase 翻转后未开始单元不再入队（快照补 skipped
 //!   条目），运行中单元跑完（结果照记）；终态通知经 condvar（`execute-batch`
 //!   同步等待用）。
-//! - **不提供单元级抢占**（审计票 09 裁决 B）：单元执行体是同步阻塞直调
+//! - **不提供单元级抢占**（审计裁决 B）：单元执行体是同步阻塞直调
 //!   （`fs` / `http` / `process`），池线程内没有中断点 ⇒ v20 不承诺单元超时，兜底
 //!   只有任务墙钟 `PLUGIN_TASK_JOB_TIMEOUT_MS`；阻塞型单元（如 `process.run-sync`）
 //!   的超时由被调用方自带参数负责。原 `PLUGIN_TASK_UNIT_TIMEOUT_MS` 常量因不可
 //!   兑现已退役（不再留下「常量与实现脱钩」的漂移）。
 //! - 生命周期：`purge_for_plugin`（宿主停用回收）cancel 全部在册任务 + 清回调
-//!   队列。**没有「应用 shutdown 时 cancel 全任务并等池排空」这一步**（审计票 09
+//!   队列。**没有「应用 shutdown 时 cancel 全任务并等池排空」这一步**（审计裁决
 //!   核实后删除该承诺，避免注释漂移）：池是进程级 std OS 线程，应用退出即随进程
 //!   回收，且退出后已无结果消费方；生命周期入口只有 `purge_for_plugin`（按插件）
 //!   与 `cancel`（按任务）两处。
 //!
-//! 回调管道（spec §5.3）：每插件一条**有界** tokio channel（深度
+//! 回调管道：每插件一条**有界** tokio channel（深度
 //! [`PLUGIN_TASK_CALLBACK_QUEUE_DEPTH`]）+ 单消费派发任务（tokio，串行 = 实例锁
 //! 天然要求）——经 `PluginServices::dispatch_task_event` 投递 `events-task` 可选
 //! 导出。溢出策略：progress 可丢 + `warn!` + `droppedEvents` 计数；terminal 优先
@@ -191,7 +191,7 @@ struct TaskRegistry {
 }
 
 /// host-task 进程级指标（core-monitor 的 `task` 段数据源；纯原子，热路径零锁，
-/// 零日志——AGENTS.md §8 红线）。`jobs_active` 不单独记账：实时读注册表长度，
+/// 零日志——红线）。`jobs_active` 不单独记账：实时读注册表长度，
 /// 避免「插入/移除埋点漂移」风险。
 pub(crate) struct TaskMetrics {
     /// 累计提交计划数（submit + execute-batch）
@@ -237,7 +237,7 @@ pub(crate) fn task_metrics_snapshot() -> serde_json::Value {
     })
 }
 
-/// host-task 维度快照源（monitor 注册制，spec 票 02）：把 [`task_metrics_snapshot`]
+/// host-task 维度快照源（monitor 注册制）：把 [`task_metrics_snapshot`]
 /// 包装为 [`MetricsSource`] trait 对象。core-monitor 不再内联 import manager::task
 /// （隐藏环 host_api/fs → monitor → manager → host_api 破除），全量快照经
 /// 注册回调取得 `task` 段
@@ -362,7 +362,7 @@ pub(crate) fn register_unit_executor(executor: Arc<dyn UnitExecutor>) {
 }
 
 /// kind → 执行器分发（域权限门 + fs_auth 已授权校验在各执行器内部，绝不从池线程
-/// 触发用户弹窗——spec §6；fs 单元的授权预判按管线顺序预检，判据同源）。
+/// 触发用户弹窗——既定口径；fs 单元的授权预判按管线顺序预检，判据同源）。
 /// 未注册的 kind 显性报 unknown（fail-visible，不静默）。
 /// 返回 `value` 的 JSON 编码：字符串返回型（read-dir / stat / run-sync）直接透传
 /// 原 JSON 文本；其他类型按原生值 JSON 编码；`value.len()` 超上限截断 + truncated。
@@ -419,7 +419,7 @@ fn truncate_json(v: String) -> (String, bool) {
 ///
 /// host_api/task.rs 做权限门（本质是门禁不是引擎），执行走本引擎；两者经两阶段注入
 /// （PluginHost 构造时 [`WasmHostContext::set_task_engine`]，PluginServices 先例）解耦——
-/// host_api 不再 import `manager::task`（spec C3「消费方定义接口」）。
+/// host_api 不再 import `manager::task`（既定口径「消费方定义接口」）。
 pub(crate) struct CoreTaskEngine {
     /// 自持的宿主上下文句柄（见 [`TaskEngine::execute_batch`] 的「注入时捕获」说明）
     host_ctx: Arc<WasmHostContext>,
@@ -773,7 +773,7 @@ fn run_unit(item: &QueuedUnit, job: &Arc<JobHandle>) {
         .fetch_sub(1, Ordering::Relaxed);
 
     let mut inner = job.inner.lock().unwrap_or_else(|e| e.into_inner());
-    // cancel 竞态下结果照记（spec：运行中单元跑完）
+    // cancel 竞态下结果照记（既定口径：运行中单元跑完）
     inner.results[item.index] = Some(done);
     inner.remaining = inner.remaining.saturating_sub(1);
     let ok = inner.results[item.index]
@@ -975,7 +975,7 @@ fn unix_ms() -> u64 {
 
 impl JobInner {
     /// progress 事件节流：完成数达到 every_units 的倍数 **且** 距上次事件
-    /// 超过 every_ms 才放行（spec §4.3 progress 节流；溢出时事件可丢有计数）
+    /// 超过 every_ms 才放行（progress 节流；溢出时事件可丢有计数）
     fn should_emit_progress(&mut self) -> bool {
         if !self.done.is_multiple_of(self.progress_every_units as usize) {
             return false;
@@ -999,7 +999,7 @@ impl TaskRegistry {
 
 // ==================== 回调管道（每插件有界 channel + 消费派发任务） ====================
 
-/// 是否允许为该属主新建回调 channel（审计票 09）
+/// 是否允许为该属主新建回调 channel（审计结论）
 ///
 /// 只有「注册表里还有该属主的在册任务」才允许新建：purge（插件停用回收）之后到期的
 /// 在飞单元会走到 `enqueue_event`，若此时重建 channel + 消费派发任务，二者会永久残留
@@ -1027,7 +1027,7 @@ fn enqueue_event(
     event: serde_json::Value,
     terminal: bool,
 ) {
-    // purge 后到达的事件不得重建回调 channel（审计票 09）：插件已停用、其任务已从注册表
+    // purge 后到达的事件不得重建回调 channel（审计结论）：插件已停用、其任务已从注册表
     // 摘除，此处若新建 channel + consumer 会永久残留（停用后不会再有人 purge 它）并把
     // 事件派发给已停用的插件。快路径判据 = 注册表里已无该属主的在册任务；真正创建前的
     // 复查在下方锁内（M-04）。
@@ -1047,7 +1047,7 @@ fn enqueue_event(
     let tx = {
         // 原子 check-and-create（M-04）：属主在册任务检查与回调通道创建同一临界区，
         // 与 purge（jobs→queues 同锁序）不插缝——purge 摘任务与清队列之间不会
-        // 再插入一条新建通道 + 永久 consumer（审计票 09 注释警告的孤儿通道）。
+        // 再插入一条新建通道 + 永久 consumer（审计结论注释警告的孤儿通道）。
         let jobs = REGISTRY.jobs.lock().unwrap_or_else(|e| e.into_inner());
         if !jobs.values().any(|h| h.owner() == owner) {
             tracing::debug!(
@@ -1085,7 +1085,7 @@ fn enqueue_event(
                     "[host-task] progress event dropped (callback queue full)"
                 );
             }
-            // droppedEvents 计数（status 可见，spec §5.3）——按事件自身的 jobId
+            // droppedEvents 计数（status 可见）——按事件自身的 jobId
             // 归账（M-21）：旧实现按 HashMap 迭代序给「第一个匹配属主」的作业计数，
             // 多作业在途时自愈 status 错报。
             if let Some(job) = job_for_drop_counting(owner, &failed_entry.event) {
@@ -1133,7 +1133,7 @@ async fn consumer_loop(mut rx: tmpsc::Receiver<EventEntry>) {
 mod tests {
     use super::*;
 
-    /// 票 07：fs.* 单元的预检按管线顺序判两件事，且**不弹窗**
+    /// fs.* 单元的预检按管线顺序判两件事，且**不弹窗**
     ///
     #[test]
     fn truncate_json_marks_truncated() {
@@ -1158,7 +1158,7 @@ mod tests {
         assert!(e.contains("no units"));
     }
 
-    /// purge 之后到期的在飞单元不得重建回调 channel（审计票 09）：重建出来的 channel 与
+    /// purge 之后到期的在飞单元不得重建回调 channel（审计结论）：重建出来的 channel 与
     /// 消费派发任务无人再回收，且事件会派发给已停用的插件。
     #[test]
     fn may_open_callback_channel_requires_registered_job() {

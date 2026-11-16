@@ -9,7 +9,7 @@
 //!
 //! | 方法 | 为什么需要它 |
 //! | --- | --- |
-//! | [`WsClientPorts::check_permission`] | 权限门（`ws:client`）是**宿主安全闸门**（AGENTS §5.1.3 四类薄壳之二），不该可插拔 ⇒ 留宿主，本 crate 只问结果（出站是 SSRF 面，fail-closed） |
+//! | [`WsClientPorts::check_permission`] | 权限门（`ws:client`）是**宿主安全闸门**，不该可插拔 ⇒ 留宿主，本 crate 只问结果（出站是 SSRF 面，fail-closed） |
 //! | [`WsClientPorts::publish`] / `publish_binary` | 事件（JSON）与入站帧（二进制信封）都走**已拼好的完整 topic**；总线订阅方隔离在宿主侧。帧必须走二进制通道：零 JSON 编解码是性能红线（大块终端输出禁止经 JSON 搬运） |
 //! | [`WsClientPorts::spawn`] | reader / writer / 重连都是后台任务，**必须挂在宿主运行时上**（宿主调用栈不保证处于 runtime 上下文：wasmtime 的 fiber 内直接 `tokio::spawn` 会 panic） |
 //! | [`WsClientPorts::global_token`] | `jwt-auth` 首帧代发要宿主认证状态里的 token（凭据不落插件，C4）；宿主只交出「代发时那一刻的 token 值」 |
@@ -72,7 +72,7 @@ pub trait WsFrameCryptoFactory: Send + Sync {
     ) -> Result<Option<Arc<dyn WsFrameCrypto>>, String>;
 }
 
-/// WS 自动重连的退避策略面（票 12 R1）
+/// WS 自动重连的退避策略面
 ///
 /// 策略对象由宿主实现（真源 = 宿主全局退避：指数退避 + 抖动 + 下限钳制）；
 /// 本 crate 只按「排期 → 等延迟 → 重建连接 → 成功回报」推进循环。
@@ -95,13 +95,13 @@ pub trait WsClientPorts: Send + Sync + 'static {
     /// 权限判定：出站连接是 SSRF 面（插件可代宿主访问任意 `ws://` 地址），
     /// 权限位独立且 **fail-closed**（未在 manifest 声明即拒）。
     ///
-    /// 返回 `false` 时**宿主侧**应已按 AGENTS §8 落 `warn`（结构化字段
+    /// 返回 `false` 时**宿主侧**应已落结构化 `warn`（字段
     /// `plugin_id` / `permission` / `api`）；本 crate 只负责把拒绝转成统一错误文案。
     fn check_permission(&self, plugin_id: &str) -> bool;
 
     /// 全局 JWT token（`jwt-auth` 首帧代发用）；未认证时空串。
     ///
-    /// 只记长度不落明文（AGENTS §8 凭据红线），本 crate 侧也不打印其值。
+    /// 凭据只记长度不落明文，本 crate 侧也不打印其值。
     fn global_token(&self) -> String;
 
     /// 重连退避钳制边界 `(min_delay_ms, max_delay_ms)`（宿主全局常量的投影；

@@ -87,7 +87,7 @@ where
 
         let chain = TrafficFilterChain::global();
 
-        // 链路加密协商头（issue 02）：原样透传给过滤器，解析归 link_crypto。
+        // 链路加密协商头：原样透传给过滤器，解析归 link_crypto。
         // 提到快速路径之前——下面那条 fail-visible 裁决要先看它。
         let negotiation = req
             .headers()
@@ -97,16 +97,16 @@ where
             .to_string();
 
         // ==================== fail-visible：协商头在，本端却不参与 ====================
-        // 背景：spec §6 决策模型第 3 条「响应绑定」要求——请求一旦带协商头，对端就必须
-        // 按信号参与（解密 + 用 k_resp 回加密），不取决于本端子开关当前值；而同一份
-        // spec 的实现语义段又写「主开关关闭 ⇒ 过滤器不注册」，§7 兼容矩阵更把
-        // 「任一侧默认关」直接等同于明文。三处互相矛盾，实现落在「不注册」这一支。
+        // 背景：「响应绑定」要求——请求一旦带协商头，对端就必须
+        // 按信号参与（解密 + 用 k_resp 回加密），不取决于本端子开关当前值；而实现语义
+        // 又把「主开关关闭」定为「过滤器不注册」⇒ 本端此时根本不在链上。
+        // 两边要求冲突，实现落在「不注册」这一支。
         //
         // 后果（跨端实测）：移动端开启加密、桌面端未开启时，过滤器不在链上 ⇒ 协商头
         // **根本没人读** ⇒ 密文原样透给插件 ⇒ 插件把密文当 JSON 解析，回出
         // `{"code":1002,"message":"configId required"}` 之类**误导性业务码**。
         //
-        // 本分支按「静默错误必须显性化」（AGENTS §8）处理：显性 4xx + 点名开关，
+        // 本分支按「静默错误必须显性化」处理：显性 4xx + 点名开关，
         // 而不是继续往下游丢密文。GET 同样拒——否则「GET 静默明文通、POST 神秘报
         // 业务错」的不一致更难排查。
         //
@@ -190,7 +190,7 @@ or turn off encryption on the client.",
         }
 
         let path = req.path().to_string();
-        // 端点身份只从注册表取（spec §3）：不解析 URL 猜属主，也不接受对端自报
+        // 端点身份只从注册表取：不解析 URL 猜属主，也不接受对端自报
         let (owner, endpoint) = resolve_route_identity(req.path(), req.method().as_str());
         let service = self.service.clone();
 
@@ -346,7 +346,7 @@ where
 
         // 重建响应：替换体后 Content-Length 已失配，剔除原值由 builder 按新体重算；
         // 其余头（含 CORS / Set-Cookie / Content-Type）原样保留，并入过滤器
-        // 注入的出站附加头（如链路加密响应标记 `X-WasmNest-Crypto: v1`，spec §4）
+        // 注入的出站附加头（如链路加密响应标记 `X-WasmNest-Crypto: v1`）
         let mut builder = HttpResponse::build(res_head.status());
         for (name, value) in res_head.headers() {
             if name == CONTENT_LENGTH {
@@ -536,12 +536,12 @@ mod tests {
 
     /// 协商头在、本端不参与 → 显性 4xx（fail-visible 裁决）
     ///
-    /// 背景：spec §6 决策模型第 3 条「响应绑定」要求「请求一旦带协商头，对端就按信号
-    /// 参与，不取决于本端子开关当前值」；同一份 spec 的实现语义段又写「主开关关闭 ⇒
-    /// 过滤器不注册」，§7 兼容矩阵更把「任一侧默认关」等同于明文——三处互相矛盾。
-    /// 实现落在「不注册」这一支，后果是密文原样透给插件，插件把密文当 JSON 解析，
-    /// 回出 `1002 configId required` 这类**误导性业务码**（跨端实测）。本分支按
-    /// AGENTS §8「静默错误必须显性化」收口。
+    /// 背景：「响应绑定」要求「请求一旦带协商头，对端就按信号
+    /// 参与，不取决于本端子开关当前值」；实现语义又把「主开关关闭」定为
+    /// 「过滤器不注册」——两边要求冲突，实现落在「不注册」这一支。
+    /// 后果是密文原样透给插件，插件把密文当 JSON 解析，
+    /// 回出 `1002 configId required` 这类**误导性业务码**（跨端实测）。本分支因此按
+    /// 「静默错误必须显性化」收口为 4xx。
     #[actix_web::test]
     async fn negotiated_request_is_rejected_when_link_crypto_not_registered() {
         let _guard = GLOBAL_CHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -607,7 +607,7 @@ mod tests {
         chain.clear();
     }
 
-    /// 内网穿透 T07 端到端锁：旧客户端（不协商）在 `required` 端点上的 400 必须
+    /// 内网穿透端到端锁：旧客户端（不协商）在 `required` 端点上的 400 必须
     /// 带 `X-WasmNest-Crypto-Error: encryption-unsupported`，且**不落到 handler**
     ///
     /// 与 server-core 的过滤器单测互补：那条锁「裁决与码」，这条锁「码真的走到了
@@ -889,7 +889,7 @@ mod tests {
         assert!(!String::from_utf8_lossy(&body).contains("ENCRYPTED"));
     }
 
-    /// 出站拒绝分支（票据 12 盲区）：run_outbound 返回 Err → 500 响应，
+    /// 出站拒绝分支（盲区覆盖）：run_outbound 返回 Err → 500 响应，
     /// 且不泄露下游 handler 的实际 body（加密链路静默降级防护）
     #[actix_web::test]
     async fn outbound_rejection_returns_500_and_hides_handler_body() {
@@ -923,7 +923,7 @@ mod tests {
         chain.clear();
     }
 
-    /// /ws 前缀快速路径（票据 12 盲区）：不缓冲、不走过滤器链，直通下游
+    /// /ws 前缀快速路径（盲区覆盖）：不缓冲、不走过滤器链，直通下游
     #[actix_web::test]
     async fn ws_prefix_fast_path_skips_filtering() {
         let _guard = GLOBAL_CHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -946,7 +946,7 @@ mod tests {
         chain.clear();
     }
 
-    /// HEAD 方法快速路径（票据 12）：不缓冲无 body 响应
+    /// HEAD 方法快速路径：不缓冲无 body 响应
     #[actix_web::test]
     async fn head_method_skips_filtering() {
         let _guard = GLOBAL_CHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());

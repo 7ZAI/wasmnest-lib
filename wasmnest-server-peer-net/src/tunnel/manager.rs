@@ -1,10 +1,10 @@
-//! 宿主隧道管理器（T06）：**单一引用计数**、客户端句柄表、对等面生命周期与状态投影。
+//! 宿主隧道管理器：**单一引用计数**、客户端句柄表、对等面生命周期与状态投影。
 //!
 //! ## 单一所有权
 //!
 //! `expose` / `unexpose` / `configure`（`allowWan` 开关）/ 服务租约都**只改计数**；
 //! 真正的 relay reservation 只在本模块的 [`TunnelManager::recount`] 里 0→1 建立、
-//! 1→0 释放。计数来源（设计 §4.8，两条缺一不可）：
+//! 1→0 释放。计数来源（两条缺一不可）：
 //!
 //! 1. 生效 expose 规则（且该插件的 `allowWan=true` 且配置了 relay 地址）；
 //! 2. 客户端在飞 WAN 通道（`connect` 的地址里含 `/p2p-circuit`，`close` 时归还）。
@@ -20,9 +20,9 @@
 //! 不提供，`expose` / `issue-pairing-ticket` 显性 `tunnel-unavailable`，`connect`
 //! 不受影响）。1→0 时停 listener、中止接收器、释放 reservation、清空全部状态。
 //!
-//! ## 与 T05 机制的分工
+//! ## 与线协议机制的分工
 //!
-//! 首帧裁决 / 票据 / 准入 / 本地代理 / 面登记的**判定**全在 T05 模块；本模块只做
+//! 首帧裁决 / 票据 / 准入 / 本地代理 / 面登记的**判定**全在线协议模块；本模块只做
 //! 装配与记账，不重复实现安全判据，也不把失败降级成「没有对端就返回空」。
 
 use std::collections::{BTreeSet, HashMap};
@@ -58,10 +58,10 @@ use crate::tunnel::{
     CODE_PROXY_BIND_FAILED, CODE_RELAY_UNREACHABLE, CODE_TUNNEL_CLOSED, CODE_WAN_DISABLED,
 };
 
-/// 单次拨号候选的短超时（LAN 2~3s 口径，设计 §4.9）；relay 候选由引擎按同一窗口结算。
+/// 单次拨号候选的短超时（LAN 2~3s 口径）；relay 候选由引擎按同一窗口结算。
 const DIAL_PER_ADDR_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// `wan-active` 期间 LAN 回切探测周期（设计 §4.9 建议 30s；测试可覆盖）。
+/// `wan-active` 期间 LAN 回切探测周期（建议 30s；测试可覆盖）。
 const LAN_PROBE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// 单次探活的短超时：探活只判「LAN 又通了吗」，不承担握手/准入（比拨号更短）。
@@ -79,7 +79,7 @@ pub trait TunnelEngine: Send + Sync {
     async fn ensure_node(&self) -> Result<()>;
     /// 按 multiaddr 候选顺序拨号（经 relay 的候选由引擎先做形状校验）
     async fn dial(&self, node_id: &NodeId, addrs: &[Multiaddr]) -> Result<()>;
-    /// 拨号一组候选并**分类失败成因**（设计 §4.9 判据表需要区分
+    /// 拨号一组候选并**分类失败成因**（判据表需要区分
     /// timeout / ECONNREFUSED / EHOSTUNREACH / 认证失败）。
     ///
     /// 默认实现把失败一律归为 [`LanFailure::Other`]——保守语义：判据不明确
@@ -90,7 +90,7 @@ pub trait TunnelEngine: Send + Sync {
             .await
             .map_err(|e| DialFailure::new(LanFailure::Other, e.detail))
     }
-    /// §4.9 宿主侧网络事实（蜂窝 / 接口子网 / mDNS 发现态）。
+    /// 宿主侧网络事实（蜂窝 / 接口子网 / mDNS 发现态）。
     ///
     /// 默认未知 = 判据不明确 → 先试 LAN、不自动切 wan（不猜、不静默降级）。
     async fn network_facts(&self) -> NetworkFacts {
@@ -213,7 +213,7 @@ impl TunnelConfig {
     }
 
     /// 解析 + **域名解析**：`/dns4|dns6|dns` 组件经宿主层 `lookup_host` 展开成
-    /// `/ip4|ip6` 候选（引擎不启用 dns feature，T02 明确要求宿主层解析）。
+    /// `/ip4|ip6` 候选（引擎不启用 dns feature，域名解析明确要求宿主层做）。
     ///
     /// 解析失败点名原始地址（fail-visible）：不把配置错误拖到 reserve 时才暴露。
     pub async fn resolved_relay_addrs(&self) -> Result<Vec<Multiaddr>> {
@@ -254,7 +254,7 @@ pub struct TunnelStatus {
     pub relay: RelaySnapshot,
     pub expose_rules: usize,
     pub connects: usize,
-    /// 每对端传输模式（设计 §4.9；`lan-active` / `wan-active` / `lan-unreachable` …）
+    /// 每对端传输模式（`lan-active` / `wan-active` / `lan-unreachable` …）
     pub modes: Vec<PeerModeView>,
 }
 
@@ -287,7 +287,7 @@ struct ManagerState {
     ///
     /// 只在候选非空时更新：`tryWan` 这类只带 relay 的拨号不得把已知 LAN 候选冲掉。
     lan_candidates: HashMap<String, Vec<Multiaddr>>,
-    /// 每对端模式表（§4.9；模式是每对端的，不是全局开关）
+    /// 每对端模式表（模式是每对端的，不是全局开关）
     modes: ModeMachine,
 }
 
@@ -424,7 +424,7 @@ impl TunnelManager {
     /// 写入（全量替换）某插件的通道配置；只改计数，不直接管理 reservation
     pub async fn configure(&self, plugin_id: &str, config: TunnelConfig) -> Result<()> {
         // 语法先判（空项 / 非法 multiaddr），再对域名做宿主层解析：域名 relay 不得
-        // 拖到 reserve 时才失败（T02 的 `resolve_relay_addr` 在宿主侧消费）。
+        // 拖到 reserve 时才失败（`resolve_relay_addr` 在宿主侧消费）。
         let addrs = config.parse_relay_addrs()?;
         if config.allow_wan {
             if addrs.is_empty() {
@@ -529,7 +529,7 @@ impl TunnelManager {
 
     /// 建立本地回环代理并返回句柄（每条本地连接开一条隧道流）
     ///
-    /// 拨号顺序按设计 §4.9：**先 LAN**，只有判据表明确「不在内网」才进 wan；
+    /// 拨号顺序：**先 LAN**，只有判据表明确「不在内网」才进 wan；
     /// 同网段 timeout / `ECONNREFUSED` / 认证失败**保持 LAN** 并显性
     /// `lan-unreachable`（给手动「尝试外网」出路，不自动烧中继流量）。
     pub async fn connect(
@@ -577,7 +577,7 @@ impl TunnelManager {
         self.ensure_running().await?;
 
         // 配对窗口（未匹配 + 一次性票据）单独一态：配对期间不展示 lan / wan 模式，
-        // 配对成功后应用写信任并重建隧道，那时才回到正常模式判定（设计 §4.9 状态机）。
+        // 配对成功后应用写信任并重建隧道，那时才回到正常模式判定。
         let pairing = pairing_ticket.as_deref().is_some_and(|t| !t.trim().is_empty())
             && !self.engine.trust_contains(&node_id).await;
         // 记住 LAN 候选：wan-active 回切探测只拨这里记过的地址，不重新猜。
@@ -777,7 +777,7 @@ impl TunnelManager {
         })
     }
 
-    /// §4.9 决策：先看用户手动「尝试外网」，再按判据表决定 LAN / WAN
+    /// 模式决策：先看用户手动「尝试外网」，再按判据表决定 LAN / WAN
     async fn plan_mode(
         &self,
         plugin_id: &str,
@@ -810,7 +810,7 @@ impl TunnelManager {
         }
     }
 
-    /// 用户手动「尝试外网」（设计 §4.9 判据表最后一行）：本次网络会话内保持，
+    /// 用户手动「尝试外网」（判据表最后一行）：本次网络会话内保持，
     /// 换网由宿主调 [`Self::on_network_changed`] 回到自动策略。
     pub fn set_manual_wan(&self, node_id: &str, enabled: bool) -> Option<PeerModeView> {
         self.mode_transition(|modes| modes.set_manual_wan(node_id, enabled))
@@ -858,7 +858,7 @@ impl TunnelManager {
 
     /// 一轮 `wan-active` LAN 探活（周期循环与测试共用）
     ///
-    /// 顺序严格按设计 §4.9：**先非破坏性探活（TCP 可达）→ 连续两次成功 → 真实拨号
+    /// 顺序严格：**先非破坏性探活（TCP 可达）→ 连续两次成功 → 真实拨号
     /// → 成功才改 `lan-active`**。探测通了但真实拨号失败时保持 `wan-active` 并清零
     /// 计数（绝不提前宣告「已回内网」，因为数据还在 relay 上走）。
     ///
@@ -1178,7 +1178,7 @@ impl TunnelManager {
     /// WAN 通道（同样只在 `allowWan=true` 时计入——关闭外网立即停止 WAN 入口，
     /// 不保留 reservation）；地址取所有相关插件配置的并集（去重，保持声明顺序）。
     ///
-    /// 地址变化且 `desired>0` 时以新地址重建 reservation（T02 的 reserve 幂等替换）；
+    /// 地址变化且 `desired>0` 时以新地址重建 reservation（reserve 幂等替换）；
     /// 重建失败保留旧 reservation 并显性告警，不把已生效的入口打死。
     async fn recount(&self) -> Result<()> {
         let _gate = self.recount_gate.lock().await;
@@ -1295,13 +1295,13 @@ async fn run_inbound_loop(
             tokio::time::sleep(Duration::from_millis(500)).await;
             continue;
         };
-        // `matched` 的当前口径（spec §9.2#2 默认 = A：宿主全局传输信任）：
+        // `matched` 的当前口径（默认 = A：宿主全局传输信任）：
         // 「应用配对 + 传输信任两层」在信任表层面已合并——auth-center 配对成功、
         // file-transfer 首连确认都写同一张 peer 信任表；因此这里只查传输信任。
         // 若将来改 per-app 隔离口径（B），必须在此注入应用配对端口，不要在前端补判。
         let matched = engine.trust_contains(&node_id).await;
         let key = node_id.as_str().to_string();
-        // 配对态投影：未匹配对端只可能凭一次性票据进来（准入在 T05 模块）；状态栏
+        // 配对态投影：未匹配对端只可能凭一次性票据进来（准入在线协议模块）；状态栏
         // 要如实显示 `pairing`，不能拿上一个会话的 lan / wan 模式充数。
         if !matched {
             let view = {
@@ -1482,7 +1482,7 @@ impl TunnelEngine for PeerCtxEngine {
             .map_err(|e| TunnelError::new(CODE_PEER_OFFLINE, format!("隧道拨号失败：{e}")))
     }
 
-    /// §4.9：把引擎的拨号错误分类成判据层能消费的成因（认不出 = 保守 `Other`）
+    /// 把引擎的拨号错误分类成判据层能消费的成因（认不出 = 保守 `Other`）
     async fn dial_classified(&self, node_id: &NodeId, addrs: &[Multiaddr]) -> std::result::Result<(), DialFailure> {
         let running = self
             .running()
@@ -1502,12 +1502,12 @@ impl TunnelEngine for PeerCtxEngine {
             .map_err(|e| classify_p2p_dial(&e))
     }
 
-    /// §4.9：宿主侧网络事实（接口子网 + 蜂窝判定；应用 JS 不可见）
+    /// 宿主侧网络事实（接口子网 + 蜂窝判定；应用 JS 不可见）
     async fn network_facts(&self) -> NetworkFacts {
         crate::tunnel::netinfo::system_network_facts()
     }
 
-    /// §4.9：非破坏性 LAN 探活——只做 TCP 握手，**不进 swarm、不动现役链路**
+    /// 非破坏性 LAN 探活——只做 TCP 握手，**不进 swarm、不动现役链路**
     ///
     /// 只探非 relay 候选（`/p2p-circuit` 是外网路径，不是回切依据）。
     async fn probe_lan(&self, addrs: &[Multiaddr], timeout: Duration) -> std::result::Result<(), DialFailure> {
@@ -1654,7 +1654,7 @@ impl TunnelEngine for PeerCtxEngine {
                 let running = runtime.running.p2p_handle();
                 // 只有预留生效（`Reserved`）时 circuit 地址对本节点才可达；
                 // `Connecting` / `Lost` 的 endpoint 只是「最近一次尝试的地址」，
-                // 写进 QR 会让对端拨一个不可用地址（T08 `peer.addrs` 必须可拨）。
+                // 写进 QR 会让对端拨一个不可用地址（`peer.addrs` 必须可拨）。
                 let status = running.relay_status();
                 let relay_addr = advertised_relay_addr(status.state, status.relay_addr.as_ref());
                 NodeSnapshot {
@@ -1676,7 +1676,7 @@ impl TunnelEngine for PeerCtxEngine {
 /// 可对外宣告的 relay circuit 地址：只有预留已建立时才有值。
 ///
 /// `relay_status().relay_addr` 在 `Connecting` / `Lost` 也会保留最近端点；
-/// 直接外发会让 QR / 连接串带上拨不通的候选（T08 要求 `peer.addrs` 可拨）。
+/// 直接外发会让 QR / 连接串带上拨不通的候选（要求 `peer.addrs` 可拨）。
 pub(crate) fn advertised_relay_addr(state: RelayState, addr: Option<&Multiaddr>) -> Option<String> {
     (state == RelayState::Reserved)
         .then(|| addr.map(|a| a.to_string()))
@@ -1714,7 +1714,7 @@ impl BackendConnector for TcpBackendConnector {
     }
 }
 
-// ==================== §4.9 拨号计划小工具 ====================
+// ==================== 拨号计划小工具 ====================
 
 /// 本次 `connect` 的计划路径（拨号前确定）
 enum Plan {
@@ -1763,7 +1763,7 @@ fn failure_word(kind: LanFailure) -> &'static str {
     }
 }
 
-/// 引擎拨号错误 → §4.9 失败成因（逐候选结构化；**不解析聚合文本**）。
+/// 引擎拨号错误 → 判据层失败成因（逐候选结构化；**不解析聚合文本**）。
 ///
 /// 保守口径：认不出的成因归 [`LanFailure::Other`]（= 判据不明确 → 保持 LAN），
 /// 绝不因为「没分类」把流量推给中继；混合候选由 [`DialFailure::from_causes`]

@@ -5,7 +5,7 @@
 
 use super::*;
 impl PluginHost {
-    /// 插件 WASM 实例化的**唯一实现**（票 11 第 2 项）
+    /// 插件 WASM 实例化的**唯一实现**
     ///
     /// 启动扫描路径（`host.rs::new` → [`Self::instantiate_scanned_wasm_plugins`]）
     /// 与 zip 安装路径（`install.rs::install_from_zip`）此前各持一份近乎复制的
@@ -125,7 +125,7 @@ impl PluginHost {
     /// （模型取配置快照）；测试用本方法按模型直接装配——两模型对照用例因此不必
     /// 改全局配置，可并行跑。
     ///
-    /// **常编译 pub（wasm-core 纯净性收口票 05b）**：lib 集成测试（system_component_test
+    /// **常编译 pub（纯净性收口）**：lib 集成测试（system_component_test
     /// / 后续 05c 迁移文件）经 `PluginHost::new` 真实装配后注入实例；原 `#[cfg(test)]`
     /// 门控使 lib 依赖链（非 test 构建）不可见。
     pub async fn install_instance(
@@ -277,7 +277,7 @@ impl PluginHost {
         // 2. 重新编译并实例化 WASM 模块（替换 wasm_plugins map 条目）
         self.rebuild_wasm_instance(plugin_id).await?;
 
-        // 3. 重新注册 manifest contributes（委派单条注册唯一实现，票 11 第 3 项）
+        // 3. 重新注册 manifest contributes（委派单条注册唯一实现）
         self.register_plugin_contributions(plugin_id).await;
 
         // 4. 重新激活

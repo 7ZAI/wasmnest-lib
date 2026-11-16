@@ -1,4 +1,4 @@
-//! 传输面标记（内网穿透 T03/T04 共用底座）
+//! 传输面标记（内网穿透共用底座）
 //!
 //! 隧道流量在两端都呈现为 loopback：桌面经对等 HTTP/WS 面入站、移动经本地
 //! 回环代理出站。任何按「源 IP / 目标环回」下信任判决的逻辑都会把远端误判
@@ -49,6 +49,6 @@ impl RequestFace {
 
 /// 对等面按连接四元组解析面上下文的注入点。
 ///
-/// 配对连接注册表、已验证 node id 由宿主实现（T05 接线）；无解析器时退化为
+/// 配对连接注册表、已验证 node id 由宿主实现；无解析器时退化为
 /// 「peer 面但无 node id」，绝不因缺上下文而把请求升级为本机身份。
 pub type PeerFaceResolver = Arc<dyn Fn(&SocketAddr) -> RequestFace + Send + Sync>;

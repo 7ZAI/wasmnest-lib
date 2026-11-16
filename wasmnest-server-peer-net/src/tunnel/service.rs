@@ -1,4 +1,4 @@
-//! `net.tunnel` 应用作用域服务（T06 / service-leases §3.4 同款模板）。
+//! `net.tunnel` 应用作用域服务（与 `net.transport` 同款模板）。
 //!
 //! 把隧道管理器的生命周期映射到 [`ScopedService`]：0→1 启动对等网络节点与入站流
 //! 接收器，1→0 停对等面 / 中止接收器 / 释放 reservation / 清空状态。

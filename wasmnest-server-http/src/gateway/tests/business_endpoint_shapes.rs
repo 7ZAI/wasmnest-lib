@@ -1,4 +1,4 @@
-//! 形状契约锁（对外响应逐字节一致） — crate 内单元测试（自 packages/wasmnest-server-http/src/gateway.rs 迁出）
+//! 形状契约锁（对外响应逐字节一致） — crate 内单元测试
 
 use super::scaffold::*;
 use super::*;
@@ -6,7 +6,7 @@ use super::*;
 /// 业务端点响应形状 golden：宿主侧当前输出即契约，插件面必须逐字段复刻。
 ///
 /// 锁的是「JSON 形状」而不是「实现在哪」：DTO 的 serde 表示就是移动端看到的字节。
-/// 票 02/03/04 的插件端点回包必须与本用例逐字段相同（含可选字段的缺席形态）。
+/// 插件端点的回包必须与本用例逐字段相同（含可选字段的缺席形态）。
 #[test]
 fn business_endpoint_shapes_are_locked() {
     use crate::dtos::config_dto::{ConfigItem, ConfigListResponseData, QuickActionItem, QuickActionListResponseData};

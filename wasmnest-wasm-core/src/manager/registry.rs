@@ -3,7 +3,7 @@
 //! 扩展点注册表 — 管理 commands/views/terminal/http/file_handlers 的注册与查询
 //! 前端 PluginContext 的注册调用通过 Tauri invoke 到达此注册表
 
-// 中性词汇（票 02 M4）：贡献类型统一取自 crate::manifest（超集——含移动
+// 中性词汇（M4）：贡献类型统一取自 crate::manifest（超集——含移动
 // 无的 fileHandlers 声明面，机制保留，移动宿主不消费）
 use crate::manifest::{CommandContribution, FileHandlerContribution, ViewContribution};
 use serde::{Deserialize, Serialize};

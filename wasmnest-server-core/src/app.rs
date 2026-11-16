@@ -1,4 +1,4 @@
-//! Actix Web 服务器组合装配（server-lib-split 票 03：D3 组合 API trait 化）
+//! Actix Web 服务器组合装配（D3 组合 API trait 化）
 //!
 //! HTTP 与 WS 共用一个端口、一个 `HttpServer`，组合物必然同时认识两面。
 //! 拆 lib 后本 crate 无法再 import 两个传输面 crate（I1/I3），
@@ -124,7 +124,7 @@ pub async fn serve(
 /// 与普通面完全共用，仅注入 [`RequestFace`] 面标记。
 ///
 /// `resolver` 是宿主按连接四元组给出「已验证 nodeId / 配对态」的接线点
-/// （T05 配对连接注册表）；为 `None` 时退化为无 nodeId 的 peer 面，
+/// （配对连接注册表）；为 `None` 时退化为无 nodeId 的 peer 面，
 /// **不会**因为读不到上下文就把请求升级为本机身份。
 /// 生命周期由宿主 `tunnel:serve` 规则驱动（T06），本函数只管装配。
 pub async fn serve_peer_face(

@@ -1,6 +1,6 @@
 //! WS 会话加密：方向密码派生 + 双端握手 + 客户端会话编解码
 //!
-//! 双 ECDH 握手（spec §3）：
+//! 双 ECDH 握手（两端各出临时密钥，IKM 把长期密钥也算进来，故只抓包拿不到会话密钥）：
 //! - 客户端生成临时 m_eph，auth 首消息携 m_ek_b64 提案
 //! - 服务端生成新鲜 s_eph，IKM = ECDH(s_eph,m_eph) ‖ ECDH(Kd,m_eph)
 //! - 客户端复算 IKM = ECDH(m_eph,s_eph) ‖ ECDH(m_eph,Kd_pub)

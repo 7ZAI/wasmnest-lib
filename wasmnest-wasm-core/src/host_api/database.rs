@@ -1,4 +1,4 @@
-//! `host-plugin-database` 能力域 **adapter**（实现层在共享核，票 18 批次 3）
+//! `host-plugin-database` 能力域 **adapter**（实现层在共享核，批次 3）
 //!
 //! **2026-10-09 双端机制决策（用户指令）**：主库由 wasm-core 管理，**不给任何
 //! wasm-app / 插件直接调用的方法**——`host-database`（主库）接口自双端 WIT 面

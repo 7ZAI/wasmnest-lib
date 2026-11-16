@@ -1,4 +1,4 @@
-//! host-platform 逻辑层 —— 通用平台能力域（ADR 0022 v2，issue 13 Phase 2）
+//! host-platform 逻辑层 —— 通用平台能力域（Phase 2 收口）
 //!
 //! 系统对话框等与领域无关的平台交互。
 //!
@@ -13,7 +13,7 @@
 //!    目录**落账，拒绝 / 超时 / 无弹窗通道 → `Err` 且**不回传路径**（fail-visible：
 //!    不得降级成空数组）。
 //!
-//! ## 选择器本体 = 宿主装配的端口（ADR 0052 D1，2026-10-13）
+//! ## 选择器本体 = 宿主装配的端口（2026-10-13）
 //!
 //! 选择器机制本身是**端差异**（桌面原生对话框 Windows IFileDialog / Linux
 //! xdg-desktop-portal；移动 SAF 目录树/文件选择器），落在
@@ -29,7 +29,7 @@
 //!
 //! 历史（host-business-decarriage 收尾）：选源器曾挂在 `peer_engine_transfer`
 //! （对等传输域）下经 `peer_net` 转发——那是「peer 命令面复用」时期的错放
-//! （ADR 0022 v2 已把 pick-* 判归 host-platform）。单形态收口（2026-10-13）
+//! （pick-* 已判归 host-platform）。单形态收口（2026-10-13）
 //! 合并 common（桌面对话框实现）/ bare（移动 SAF 端口）时只保留下桌面版，
 //! 移动构建因此编不过（`pick_folders` 在 tauri-plugin-dialog 中是 desktop-only
 //! API，Android 无此方法）——端口化后两端各自成立。
@@ -64,7 +64,7 @@ fn require_pick_permission(
 /// 端值**不由内核判定**：各端宿主实现 [`crate::host_api::ports::HostFactsPort`] 并
 /// 装配期注入（桌面 `plugin/host_facts.rs` → `"desktop"`，移动
 /// `plugin/host_ports.rs` → `"mobile"`），内核只透传端口取值——单形态收口
-/// （2026-10-13，ADR 0049 D1「桌面这样写、移动那样写就不是机制」）前这里是
+/// （2026-10-13，「桌面这样写、移动那样写就不是机制」收口）前这里是
 /// `#[cfg(feature = "desktop-assembly")]` 编译期二选一。
 /// 消费方是双端共享 wasm 产物（file-transfer 单产物）：它在**激活期**经此探测端值
 /// 并在同一 trait 的双实现间分支；guest 侧对空/未知取值 fail-visible（显性报错
@@ -91,7 +91,7 @@ pub(crate) fn platform_pick_files(
 
 /// 系统文件夹选择器（多选）→ string[] JSON；用户取消为空数组
 ///
-/// 2026-10-13 功能级统一（ADR 0052 D3）：原 `pick-folder`（单目录字符串）与桌面
+/// 2026-10-13 功能级统一：原 `pick-folder`（单目录字符串）与桌面
 /// `host-platform-desktop.pick-folders`（多目录 JSON）是同一功能的两种形状 →
 /// 统一为本函数。移动端 SAF 目录树选择器为单选语义，返回 0/1 项。
 /// 选择器本体同 [`platform_pick_files`]（端口注入，两端各自实现）。
@@ -141,11 +141,11 @@ fn sync_result<T>(r: crate::Result<T>) -> Result<T, String> {
     r.map_err(|e| e.to_string())
 }
 
-// 票 02 批次 06（v36 交集切片）：platform 桌面扩展三函数（wsl-distros /
+// 批次 06（v36 交集切片）：platform 桌面扩展三函数（wsl-distros /
 // local-ipv4-addresses / reveal-in-dir）已拆入 `host-platform-desktop` 并迁宿主
 // `src-tauri/src/plugin/platform.rs`（路径 B：域函数 + 单测随域走宿主；内核不再
 // 持有桌面平台依赖 `local_ip_address` / `system::wsl`）。桌面原
-// `host-platform-desktop.pick-folders` 已随 2026-10-13 功能级统一（ADR 0052 D3）
+// `host-platform-desktop.pick-folders` 已随 2026-10-13 功能级统一
 // 并入本文件 [`platform_pick_folders`]。**桌面对话框本体**同日起改由宿主
 // `src-tauri/src/plugin/platform_picker.rs` 经 [`PlatformPickerPort`] 注入
 // （内核不再持 `tauri-plugin-dialog` 用法）。
@@ -253,7 +253,7 @@ mod tests {
         );
     }
 
-    // 权限位进 CLI 生成物的断言已随漂移锁迁测试仓（票 08）：
+    // 权限位进 CLI 生成物的断言已随漂移锁迁测试仓：
     // `wasmnest-test/cross-end-tests/tests/permission_vocabulary_lock.rs` 的「真源 ↔ 生成物
     // 集合相等」整体覆盖；本文件不再读平台 SDK 生成物。
 
@@ -369,6 +369,6 @@ mod tests {
     //
     // 桌面扩展原有用例（wsl_distro_names / wsl_distros_fail_loudly /
     // filter_ipv4 / collect_local_ipv4 一族）已随域函数迁宿主
-    // `src-tauri/src/plugin/platform.rs`（票 02 批次 06：域函数 + 单测随域走），
+    // `src-tauri/src/plugin/platform.rs`（批次 06：域函数 + 单测随域走），
     // 选择器本体用例同批随宿主实现走。本文件只留交集 pick-* 的机制用例（见上）。
 }

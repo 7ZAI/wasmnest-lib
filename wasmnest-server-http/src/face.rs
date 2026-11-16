@@ -1,7 +1,7 @@
-//! HTTP 面的组合装配实现（server-lib-split 票 03 的 `TransportFace` 契约，票 04 随面下沉）
+//! HTTP 面的组合装配实现（`TransportFace` 契约）
 //!
-//! 票 03 时 face 适配器住在宿主组合根 `server/composition.rs` 里（http 面当时还是宿主
-//! 模块）；本票把实现收进本 crate，宿主壳此后只做「把 faces 交给 `core::app::serve`」，
+//! 实现收进本 crate 之前，face 适配器住在宿主组合根 `server/composition.rs` 里
+//! （http 面当时还是宿主模块）；此后宿主壳只做「把 faces 交给 `core::app::serve`」，
 //! 不再认识面内类型（`TrafficFilter` 等）。
 
 use actix_service::boxed::BoxService;

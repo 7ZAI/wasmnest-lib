@@ -3,7 +3,7 @@
 //! 桌面端插件类型 — 仅保留桌面端特有的内部模型
 //! 共享类型（PluginManifest, PluginContributes, PluginState 等）迁移到 wasmnest-plugin-api
 
-// 中性词汇（票 02 M4）：机制层不再按形态引用 SDK——清单/状态/类型词汇
+// 中性词汇（M4）：机制层不再按形态引用 SDK——清单/状态/类型词汇
 // 统一取自 crate::manifest（超集；双端绑定层转换）
 use crate::manifest::{PluginContributes, PluginKind, PluginManifest, PluginState, PluginType};
 use chrono::{DateTime, Utc};
@@ -176,13 +176,13 @@ fn manifest_installed_at(extension_path: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // 中性词汇（票 02 M4）：测试段同机制层口径
+    // 中性词汇（M4）：测试段同机制层口径
     use crate::manifest::{PluginKind, PluginManifest, PluginState, PluginType};
 
     /// 构造带完整字段的测试 manifest
     ///
     /// 只列本用例真正断言的字段，其余走 `Default`——SDK 追加可选字段时不必回来补格子
-    /// （会话引擎下沉票 14：`pty_quota` 追加时六处字面量漏了一处，宿主 `--lib` 红 6 项）。
+    /// （会话引擎下沉时 `pty_quota` 追加时六处字面量漏了一处，宿主 `--lib` 红 6 项）。
     fn sample_manifest() -> PluginManifest {
         PluginManifest {
             id: "com.wasmnest.test".to_string(),
@@ -361,9 +361,9 @@ mod tests {
     }
 }
 
-// ==================== 移动装配面事件（fork 迁入，票 06 批次 03） ====================
+// ==================== 移动装配面事件（fork 迁入，批次 03） ====================
 
-/// 插件生命周期事件（票 02 M4 常编译：中性纯枚举——移动装配面
+/// 插件生命周期事件（M4 常编译：中性纯枚举——移动装配面
 /// `dispatch_lifecycle_event` 消费；桌面无消费方但保持编译，不留形态分叉）
 ///
 /// 统一的事件枚举，供 PluginManager::dispatch_lifecycle_event() 使用。

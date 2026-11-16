@@ -1,4 +1,4 @@
-//! `plugin_binding` 的用例分组（票 05：自宿主 host_api 域的 peer 适配器迁入）
+//! `plugin_binding` 的用例分组（自宿主 host_api 域的 peer 适配器迁入）
 //!
 //! 分组对应四类被锁行为：权限门与判定顺序（`gates`）、句柄表与属主仲裁
 //! （`handle_table`）、载荷契约与 fail-visible（`payload_contract`）、暂停/恢复

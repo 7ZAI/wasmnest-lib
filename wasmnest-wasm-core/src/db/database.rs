@@ -93,7 +93,7 @@ impl Database {
         Ok(Self { conn })
     }
 
-    /// 从既有连接构造（常编译，票 02 M9 单形态化）：宿主主库连接由宿主侧打开
+    /// 从既有连接构造（常编译，单形态化）：宿主主库连接由宿主侧打开
     /// （路径与锁归宿主），**建表与迁移真源在本 crate**——调用方开库后必须调
     /// [`Database::init_schema`]。宿主持有独立 DDL 副本会与 `db/schema.sql` 漂移：
     /// 2026-10-14 实证：宿主自持副本建出的旧 `plugin_auth_records` 缺 `id`，
@@ -222,13 +222,13 @@ impl Database {
         // （auth_records / quick_actions / session_db / task_data）整体退役，
         // 旧库滞留表不读不迁不清理（无残留迁移代码）。
         //
-        // 2026-09-27 授权策略增强（票 01）：`plugin_auth_policies` /
+        // 2026-09-27 授权策略增强：`plugin_auth_policies` /
         // `plugin_auth_records` 两表 + `idx_auth_records_lookup` 索引全由
-        // `schema.sql` 的 `IF NOT EXISTS` 建出（单一事实源，见 AGENTS §9），
+        // `schema.sql` 的 `IF NOT EXISTS` 建出（单一事实源），
         // 无需列级迁移；幂等性由 `auth_tables_migration_is_idempotent` 与
         // `auth_tables_are_created_on_legacy_db` 两条锁覆盖。
         //
-        // v33（2026-09-29 ADR 0033）：入场签发密钥的真源迁到认证中心，宿主不再
+        // v33（2026-09-29）：入场签发密钥的真源迁到认证中心，宿主不再
         // 读写入场密钥。`plugin_secrets` 里属主为 `host` 的那把 `jwt.key` 因此成为
         // 不可达的旧密钥材料——**清掉它**（幂等：不存在也视为成功）。
         //
@@ -246,7 +246,7 @@ impl Database {
         if purged > 0 {
             tracing::info!(
                 purged_rows = purged,
-                "db migration v33: purged retired host-owned entry-token signing key (ADR 0033)"
+                "db migration v33: purged retired host-owned entry-token signing key"
             );
         }
 
@@ -289,7 +289,7 @@ impl Database {
 mod tests {
     use super::*;
 
-    /// 打开内存库并跑生产初始化（票据 21 修复：不再复制迁移逻辑，
+    /// 打开内存库并跑生产初始化（修复：不再复制迁移逻辑，
     /// 直接调用 `init_schema`，使迁移被破坏时测试真实变红）
     fn open_in_memory_and_init() -> Database {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
@@ -328,7 +328,7 @@ mod tests {
             .expect("sqlite_master count query")
     }
 
-    /// 授权两表 + 索引的建表语句幂等（spec §5.1 / C13 正例）：
+    /// 授权两表 + 索引的建表语句幂等（正例）：
     /// 同一库连跑两次生产初始化，结果一致，且已播种的授权数据不被清掉
     #[test]
     fn auth_tables_migration_is_idempotent() {
@@ -380,7 +380,7 @@ mod tests {
     }
 
     /// C13 反例：旧库（有 `fs_granted_paths`、无授权两表）跑一次生产初始化
-    /// 即建表成功；旧记录原样保留（存量用户零感知，spec §5.2）
+    /// 即建表成功；旧记录原样保留（存量用户零感知）
     ///
     /// 旧库形态用「生产初始化后删掉新表」构造：既得到真实的历史库形状
     /// （settings / plugin_storage / plugin_secrets + 旧 fs 授权数据），
@@ -673,7 +673,7 @@ CREATE TABLE plugin_auth_records (\n    plugin_id   TEXT NOT NULL,\n    target  
         }
     }
 
-    /// v33（ADR 0033）+ v34（B-downsink）：宿主属主的入场签发密钥行与宿主托管
+    /// v33 + v34：宿主属主的入场签发密钥行与宿主托管
     /// 的生物公钥行被清掉，**且只清这两类**
     ///
     /// 判据：

@@ -199,9 +199,9 @@ impl PeerNetNode {
         .await
     }
 
-    /// 多地址拨号并打开指定业务流（T11 方案 B）
+    /// 多地址拨号并打开指定业务流
     ///
-    /// 候选顺序 = 调用方给定顺序（设计 §4.6：先 LAN、明确不在内网才 relay 的
+    /// 候选顺序 = 调用方给定顺序（先 LAN、明确不在内网才 relay 的
     /// 策略归应用层）；每个候选按 `per_addr_timeout` 结算，首个成功即用。
     pub async fn dial_addrs_with(
         &self,
@@ -289,7 +289,7 @@ mod dial_addrs_tests {
         addr
     }
 
-    /// T11 核心判据：候选按调用方顺序逐个尝试，首条不可达时**继续下一条**，
+    /// 核心判据：候选按调用方顺序逐个尝试，首条不可达时**继续下一条**，
     /// 命中后 `Connection.transport` 记录传输形态（lan-direct）
     #[tokio::test]
     async fn dial_addrs_falls_through_to_next_candidate_in_caller_order() {
@@ -317,7 +317,7 @@ mod dial_addrs_tests {
         assert_eq!(
             conn.transport(),
             Some(Transport::LanDirect),
-            "LAN 候选命中必须记录 lan-direct（T12 的 UI 判据）"
+            "LAN 候选命中必须记录 lan-direct（状态栏 UI 判据）"
         );
     }
 

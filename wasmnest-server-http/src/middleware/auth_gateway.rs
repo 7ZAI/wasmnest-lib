@@ -3,21 +3,21 @@
 //! 挂载在 /api scope 上，统一拦截认证：
 //! - /api/health 等宿主自持公开端点 — 放行
 //! - /api/plugin/* — 有凭证就问认证中心；无凭证一律**放行到 handler**，
-//!   由 handler 按**端点声明的档位**决定要不要真的到达插件（票 08）：manifest
+//!   由 handler 按**端点声明的档位**决定要不要真的到达插件：manifest
 //!   `contributes.httpEndpoints` 未声明 `auth` 即最严档 `jwt`（无凭证 → 401），
 //!   免凭证必须逐条显式声明 `auth: "none"`（环回 hook 脚本无法持有凭证，正是这一格）。
 //!   本中间件不做端点级判定，因为它还不知道属主插件是谁（旧前缀兜底在 handler 里解）。
 //! - 其余 /api/* — 必须通过认证中心裁决
 //!
-//! 信任边界：服务监听 BIND_ADDRESS（0.0.0.0）。票 08 前「局域网内任意设备可无凭证
-//! 调用已激活插件的 HTTP 端点（含写操作）」；现在这一面由插件的逐端点声明承担——
+//! 信任边界：服务监听 BIND_ADDRESS（0.0.0.0）。若由前缀放行，局域网内任意设备可无
+//! 凭证调用已激活插件的 HTTP 端点（含写操作）；现在这一面由插件的逐端点声明承担——
 //! 未显式声明 `auth: "none"` 的端点要求验签，且插件拿得到宿主判定的调用方身份
 //! （`caller` = device / localhost / anonymous）用于自行收紧。
 //!
-//! **验签执行点 = 认证中心**（v33 / ADR 0033）：宿主不再持有任何设备 JWT 密码学
+//! **验签执行点 = 认证中心**：宿主不再持有任何设备 JWT 密码学
 //! （`utils/auth/jwt.rs` 已退役），本中间件**只问中心一次**——中心内部先验签再
 //! 逐条做策略，成功时交回连接身份注入 request extensions，handler 经
-//! [`get_authenticated_identity`] 提取。裁决 **fail-closed**（ADR 0031 v32）：
+//! [`get_authenticated_identity`] 提取。裁决 **fail-closed**：
 //! 无中心在册 / 中心调用失败 / 中心拒绝 → 一律拒绝（`deny_kind` 分
 //! no_center / unavailable / policy）。唯一例外是端口注册表未注入（无头 /
 //! 单测上下文）时整段跳过——生产运行期由宿主 bootstrap 注入，恒在，这不构成部署降级路径。
@@ -48,7 +48,7 @@ fn bearer_credential(req: &actix_web::dev::ServiceRequest) -> Option<&str> {
 
 /// 从 Authorization header 取凭证并问认证中心裁决一次
 ///
-/// 名字里的「认证」指**问中心**而不是本地验签：v33（ADR 0033）后宿主没有验签面，
+/// 名字里的「认证」指**问中心**而不是本地验签：问中心之后宿主没有验签面，
 /// 本函数只做「提取 Bearer 凭证 → 交给中心」两件事（凭证形状对宿主不透明）。
 /// 返回 `Some(identity)` = 中心放行（身份注入 extensions）；`None` = 无凭证 /
 /// 中心拒绝（原因已由 [`enforce_connection_policy`] 打点，结构化字段 `deny_kind`）。
@@ -58,7 +58,7 @@ pub fn authenticate_with_center(req: &actix_web::dev::ServiceRequest) -> Option<
 
 /// 问认证中心裁决一次（无中心 / 调用失败 / 拒绝 / 身份不可用 → `None`）
 ///
-/// 验签 + 策略都在中心内部（ADR 0033），故这里是**唯一**的认证入口，不再有
+/// 验签 + 策略都在中心内部，故这里是**唯一**的认证入口，不再有
 /// 「先本地验签、再问策略」两步。仅当端口注册表未注入（无头 / 单测）才放行——生产
 /// 运行期不存在「查不到中心就放行」的分支。
 fn authenticate(token: &str) -> Option<AuthenticatedIdentity> {
@@ -98,7 +98,7 @@ pub fn is_plugin_path(path: &str) -> bool {
 ///
 /// 从 `crate::routes`（本 crate 路由装配）里提出来成为具名中间件，目的是让「协议网关挂在认证之后」
 /// 这一顺序约束可被真实 actix 栈测到（见本 crate `gateway.rs` 的中间件用例），而不是靠注释
-/// 约定。认证判定本身**下沉到认证中心**（ADR 0033），本层只做「问中心 + 注入 / 放行」。
+/// 约定。认证判定本身**下沉到认证中心**，本层只做「问中心 + 注入 / 放行」。
 pub(crate) async fn auth_gateway<B>(req: ServiceRequest, next: Next<B>) -> Result<ServiceResponse, Error>
 where
     B: MessageBody + 'static,
@@ -127,7 +127,7 @@ where
         return next.call(req).await.map(|res| res.map_into_boxed_body());
     }
 
-    // 插件端点：无 JWT 时放行到 handler（票 08）——真正的「这个端点要不要凭证」由
+    // 插件端点：无 JWT 时放行到 handler——真正的「这个端点要不要凭证」由
     // handler 按属主插件登记的档位判定，环回 hook 才能免 JWT 命中显式登记
     // `auth: "none"` 的那几条
     if is_plugin_path(&path) {
@@ -241,7 +241,7 @@ mod tests {
 
         crate::registry::purge_for_plugin(owner);
     }
-    // ==================== ADR 0033：认证问中心（中间件单测） ====================
+    // ==================== 认证问中心（中间件单测） ====================
     //
     // v33 起宿主**没有签发面也没有验签面**（`utils/auth/jwt.rs` 已退役），故本层
     // 单测不再造 token。可单测的部分收成两半：

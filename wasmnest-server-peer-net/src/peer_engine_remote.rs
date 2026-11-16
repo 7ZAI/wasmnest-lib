@@ -1,10 +1,10 @@
-//! 对等网络远端浏览/拉取（issue 11）：浏览可信对端共享目录 + 多文件拉取。
+//! 对等网络远端浏览/拉取：浏览可信对端共享目录 + 多文件拉取。
 //!
 //! 浏览为单请求会话——每次操作对对端新拨号（线协议「单连接单请求」契约），
 //! 返回引擎排好序的条目与「可能被权限过滤」提示位；拉取按文件逐条独立会话
-//! （免协商、断点续传复用 issue 05/06 数据面）。
+//! （免协商、断点续传复用既有数据面）。
 //!
-//! **口径（传输编排下沉票 3 修正）**：拉取的并发信号量（读设置并发上限）与
+//! **口径（传输编排下沉后）**：拉取的并发信号量（读设置并发上限）与
 //! 任务行预登记（register_remote_pull / fail_task）属产品编排，已随编排整体
 //! 下沉 `file-transfer` 插件——`pull-files` 收窄为「逐文件会话立即发起，
 //! 并发节流归调用方分批调用自控」；每个拉取会话发起时直推 `pull-started`
@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::base::{
-    browse_shared_dir, list_shared_roots, pull_shared_file, CancelToken, NodeId, PauseCmd, PauseSlot, PeerNetError,
-    TransferEvent,
+    browse_shared_dir, fetch_shared_config, list_shared_roots, pull_shared_file, CancelToken, NodeId, PauseCmd,
+    PauseSlot, PeerNetError, TransferEvent,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -73,7 +73,7 @@ struct SessionCtx {
 }
 
 /// 拉取会话句柄条目：取消令牌 + 暂停句柄（wire Pause/Resume 门控数据供方）
-/// ——纯引擎控制面（票 3：并发编排归插件）
+/// ——纯引擎控制面（并发编排归插件）
 struct PullSession {
     /// 按批取消令牌（cancel_pull / 节点停止共用）
     token: CancelToken,
@@ -271,6 +271,28 @@ pub async fn list_peer_shared_roots(
         .collect())
 }
 
+/// 拉取可信对端的穿透配置快照（单请求会话；每操作新拨号）
+///
+/// 与共享根同一寻址口径：服务句柄记忆的有序候选地址，不查 mDNS 缓存。
+/// 对端未设置快照返回 `None`（不是错误）。
+pub async fn fetch_peer_config(
+    ctx: Arc<PeerCtx>,
+    node_id: String,
+    addrs: Vec<Multiaddr>,
+) -> Result<Option<String>> {
+    let parsed = parse_node_id(&node_id)?;
+    let conn = dial_peer(&ctx, &parsed, &addrs, "config").await?;
+    let snapshot = fetch_shared_config(conn)
+        .await
+        .map_err(|e| AppError::Internal(format!("peer-net fetch config failed: {e}")))?;
+    tracing::info!(
+        node_id = %parsed,
+        present = snapshot.is_some(),
+        "peer config snapshot fetched"
+    );
+    Ok(snapshot)
+}
+
 /// 浏览可信对端的共享目录（单请求会话；每操作新拨号）
 pub async fn browse_peer_directory(
     ctx: Arc<PeerCtx>,
@@ -308,7 +330,7 @@ pub async fn browse_peer_directory(
 
 /// 从可信对端拉取多个文件到本机下载目录（逐文件独立会话）
 ///
-/// 免协商直取（用户主动获取即放行）。**票 3 收窄**：所有文件会话立即发起、
+/// 免协商直取（用户主动获取即放行）。**传输编排下沉后收窄**：所有文件会话立即发起、
 /// 无宿主并发信号量——并发节流由调用方分批调用自控（「多选下载逐条呈现」
 /// 等编排语义归插件，经 `pull-started` 引擎事件自建任务行）；中断后重试
 /// 同一文件自动断点续传。返回入队文件数。
@@ -418,7 +440,7 @@ async fn run_pull_queue(
             },
         );
 
-        // pull-started 引擎事实事件直推（票 3）：任务行由插件归约自建
+        // pull-started 引擎事实事件直推：任务行由插件归约自建
         super::publish_engine_event(
             &ctx,
             super::TOPIC_RECEIVE_EVENT,

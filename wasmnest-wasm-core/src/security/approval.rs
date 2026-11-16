@@ -251,7 +251,7 @@ pub fn compute_dir_hash(dir: &Path) -> crate::Result<String> {
 /// `trusted=true`（内置插件）时直接全量返回请求权限。
 ///
 /// **没有任何恒授予的特例**：`storage` 曾在旧形态下被无条件塞进结果集，
-/// 使「manifest 声明即信任」退化为「不声明也有」（票 02 已在
+/// 使「manifest 声明即信任」退化为「不声明也有」（已在
 /// `PermissionManager::grant_permissions` 取消默认位，本处是同一决策的收尾）。
 pub fn effective_permissions(
     requested: &[String],
@@ -326,7 +326,7 @@ pub fn verify_approval(
 }
 
 // 权限词汇漂移锁测试的样本词汇 = 桌面 SDK 词表（process:run 等）——移动形态
-// 词表为 SDK 子集（fork 测试样本用 bus/mdns），测试面按形态分叉（票 06 批次 03；
+// 词表为 SDK 子集（fork 测试样本用 bus/mdns），测试面按形态分叉（批次 03；
 // 移动测试面等价形态见 fork security/approval.rs tests，随批次 03 收口对齐）
 #[cfg(all(test, feature = "desktop-assembly"))]
 mod tests {

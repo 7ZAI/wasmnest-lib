@@ -8,7 +8,7 @@
 //! ② **配额表**（`QUOTAS`：属主 → 生效条数）：真源是 manifest 的 `ptyQuota` 声明，
 //! 登记点在插件加载漏斗（域侧 `plugin_binding::on_manifest_load`，宿主的
 //! `manager::loader` 只下发 manifest 原文）；区间合法性由**同一处**仲裁（越界即拒绝
-//! 装载，票 02 批次 03 从内核 `validate_pty_quota` 迁来），故本模块只取不判。
+//! 装载，判据随真源一起搬离内核），故本模块只取不判。
 //! 表内无记录 = 未声明（既有插件、无头测试上下文）→ 取默认档
 //! [`PLUGIN_PTY_MAX_SESSIONS_PER_PLUGIN`]（真源 `wasmnest-server-base::constants`），
 //! 与引入声明字段之前的行为逐字一致。
@@ -16,7 +16,7 @@
 //! ③ **回收面**（停用回收 / 引擎层全量回收 / 在册计数）：宿主生命周期动作，**不经
 //! 权限门、不取参数**——停用时插件已不可调用任何原语。
 //!
-//! ## 零业务代码红线（ADR 0022 / spec D1）
+//! ## 零业务代码红线
 //!
 //! 句柄表是**属主隔离的通用寻址表**，不含任何产品概念：键是本域铸造的
 //! `pty-<uuid>` 句柄，值是引擎会话与环。「用户可同时开多少个终端」是插件自己的
@@ -135,10 +135,10 @@ pub(crate) fn session_of(plugin_id: &str, pty_id: &str) -> Result<PtySession, St
 
 // ==================== 退出事件发布 ====================
 
-/// 退出原因映射（spec D4）：`killed` 以宿主侧 kill 请求位为准
+/// 退出原因映射：`killed` 以宿主侧 kill 请求位为准
 ///
 /// portable-pty 的 `ExitStatus` 不带 signal（信号终止也报 `code=1`），无法从退出码
-/// 区分「被杀」与 `exit 1`——判据只在 [`PtyTerminated::killed`] 上（票 01 定案）。
+/// 区分「被杀」与 `exit 1`——判据只在 [`PtyTerminated::killed`] 上。
 pub(crate) fn exit_reason_of(terminated: &PtyTerminated) -> &'static str {
     if terminated.killed {
         "killed"
@@ -190,7 +190,7 @@ fn registered_handles(owner: Option<&str>) -> Vec<String> {
 
 /// 回收一批在册句柄：摘除 → kill → 按属主补发 `pty:exit`（reason=killed）
 ///
-/// **只有从注册表成功摘除的那一方发布事件**（票 04 单一发布者不变量的半段）：与退出
+/// **只有从注册表成功摘除的那一方发布事件**（单一发布者不变量的半段）：与退出
 /// 监听竞争时，监听任务若先摘除则本函数跳过该句柄（事件已由其发布），不多发也不漏发。
 /// 事件按 `entry.owner` 投递，故本函数不必知道调用来源（按属主回收 / 全量回收同路）。
 fn reclaim_handles(ports: &Arc<dyn PtyPorts>, handles: Vec<String>) -> usize {

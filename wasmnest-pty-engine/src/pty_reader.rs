@@ -5,7 +5,7 @@
 //! **投递目标可注入**（`PtyOutputSink`）：读取线程不感知字节最终落在业务会话环
 //! 还是插件自备缓冲——业务链路与插件私有 PTY 共用同一条读线程语义。
 //!
-//! **源零等待（spec §4.1/§4.6 背压下移）**：读取路径不含任何暂停/水位判定，
+//! **源零等待（背压下移）**：读取路径不含任何暂停/水位判定，
 //! 也不感知任何订阅者。数据量超出会话环容量时由环淘汰最旧（订阅者各自按
 //! 游标拉取），慢订阅者的节流只发生在它自己的订阅者执行体里——单个慢消费者
 //! 不再能冻结源产出（历史教训：会话级共享水位 + 源侧暂停 = 多订阅者场景下
@@ -175,7 +175,7 @@ mod tests {
 
     /// 轮询**引擎环**直至累计字节达到期望值（读线程是独立 OS 线程，投递异步）
     ///
-    /// 票 11：参数从业务会话环改为引擎 `PtyRing`（`PtyRingSink::paired` 的另一半）。
+    /// 参数是引擎 `PtyRing`（`PtyRingSink::paired` 的另一半）。
     async fn drain_engine_ring_until(
         ring: &Arc<std::sync::Mutex<crate::PtyRing>>,
         want: usize,
@@ -295,14 +295,13 @@ mod tests {
         assert_eq!(terminated.exit_code, None, "无退出码时事件仍须发出且缺省");
     }
 
-    /// 引擎环投递（票据 04 + 拉取模型）：产出字节必须完整按序落入**引擎环**
+    /// 引擎环投递（拉取模型）：产出字节必须完整按序落入**引擎环**
     /// （订阅者随后按游标从环上拉取）。
     ///
     /// 零订阅者场景同时是「源不依赖消费者」的回归护栏：没有任何订阅者时
     /// 产出照常全量入环（引擎环是纯缓冲，没有推送面）。
     ///
-    /// 票 11：读源从业务会话环改为引擎 `PtyRingSink::paired`——引擎环现在是
-    /// 唯一输出环。
+    /// 读源是引擎 `PtyRingSink::paired`——引擎环现在是唯一输出环。
     #[test]
     fn output_bytes_reach_engine_ring_complete_and_in_order() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -326,12 +325,12 @@ mod tests {
             let collected = drain_engine_ring_until(&ring, payload.len()).await;
             assert_eq!(
                 collected, payload,
-                "PTY 输出必须完整按序落入引擎环（票据 04）"
+                "PTY 输出必须完整按序落入引擎环"
             );
         });
     }
 
-    /// 自备 sink 投递（票据 01 输出汇可注入）：同一条读线程把字节投递到引擎环
+    /// 自备 sink 投递（输出汇可注入）：同一条读线程把字节投递到引擎环
     /// 之外的目标——内容、分块与顺序均不得变化
     #[test]
     fn output_bytes_reach_private_sink_in_order() {
@@ -363,7 +362,7 @@ mod tests {
         });
     }
 
-    /// Err 分支（票据 04）：假 Reader 返回 Err → 生命周期事件为 Error
+    /// Err 分支：假 Reader 返回 Err → 生命周期事件为 Error
     #[test]
     fn reader_error_reports_error_lifecycle() {
         struct ErrReader;

@@ -1,8 +1,7 @@
-//! host-peer 能力域 —— 对等网络基础能力（ADR 0022 v2 终态 21 原语）
+//! host-peer 能力域 —— 对等网络基础能力（v2 终态，21 原语）
 //!
-//! spec：`.scratch/2026-10-04-wasm-core-lib-split/spec.md` §3.1；票 05（自宿主
-//! host_api 域的 peer 适配器整体迁入本 crate，并解除其对宿主组装面的 20 处
-//! 反向耦合）。
+//! 本模块原本住宿主 host_api 域的 peer 适配器，整体迁入本 crate，并解除其对宿主组装面的
+//! 20 处反向耦合。
 //!
 //! **零业务代码红线**：本模块只做引擎原语——句柄铸造与属主仲裁、数据面自动
 //! 重拨、权限门位置、载荷校验；传输任务 / 策略 / 历史 / 展示名等**产品业务真源
@@ -12,13 +11,13 @@
 //! ## 分层
 //!
 //! ```text
-//!   本文件        机制 + WIT 接线（21 条原语的宿主实现 + 能力模块自报）
+//!   本文件        机制 + WIT 接线（23 条原语的宿主实现 + 能力模块自报）
 //!   ports.rs      边界：宿主能力端口（权限门 / 引擎上下文 / 异步桥）
 //! ```
 //!
 //! 宿主侧只剩一个 adapter（宿主 host_api 域的 peer 适配器）与一次开机装配调用。
 //!
-//! ## 本票解除的反向耦合（票 05 的第二交付）
+//! ## 反向耦合的解除
 //!
 //! 迁移前本域有 20 处「从宿主组装面取引擎状态」的调用（宿主 peer 命令壳里那个
 //! 「由 AppHandle 装配引擎上下文」的函数）——它要求本 crate 反向认识宿主的
@@ -35,17 +34,17 @@ use crate::wire::PERMISSION_PEER;
 /// 宿主能力端口（边界层；见 [`ports`] 模块文档）
 pub mod ports;
 
-// ==================== v2 句柄路由（ADR 0022）====================
+// ==================== v2 句柄路由 ====================
 
 /// session 句柄路由表条目：拨号时铸造 `sess-<uuid>` 并记忆**全部**候选地址
-/// （T11：旧形态只记一个 endpoint，多地址拨号后数据面重拨会退化成单点）。
+/// （旧形态只记一个 endpoint，多地址拨号后数据面重拨会退化成单点）。
 /// 数据面断线重拨按同一顺序复用该列表，不再查 mDNS 发现缓存。
 #[derive(Debug, Clone)]
 pub struct SessionEntry {
     pub node_id: String,
     /// 有序候选 multiaddr（调用方拨号策略顺序：先 LAN，明确不在内网才 relay）
     pub addrs: Vec<String>,
-    /// 拨号方插件 id（票 04）：句柄只有属主可继续操作
+    /// 拨号方插件 id：句柄只有属主可继续操作
     ///
     /// 此前句柄表没有 owner 列——`sess-<uuid>` 虽是随机不可猜，但一旦泄露给另一插件
     /// （日志、事件、互调参数），持有者即可断开他人连接、以他人身份读写传输。
@@ -94,7 +93,7 @@ fn with_handles<T>(f: impl FnOnce(&mut PeerHandleTable) -> T) -> T {
     f(&mut guard)
 }
 
-/// 属主判定（票 04）：非属主统一拒绝，文案与 pty / mdns 同形
+/// 属主判定：非属主统一拒绝，文案与 pty / mdns 同形
 const NOT_OWNER: &str = "not owner of peer handle";
 
 fn ensure_handle_owner(entry: &SessionEntry, plugin_id: &str, handle: &str) -> Result<(), String> {
@@ -157,7 +156,7 @@ pub fn peer_dial(ports: &Arc<dyn PeerPorts>, plugin_id: &str, endpoint_json: &st
     }
 }
 
-/// 多地址拨号（host-peer `dial-peer-addrs` 原语，T11 方案 B）：
+/// 多地址拨号（host-peer `dial-peer-addrs` 原语）：
 /// `{ nodeId, addrs: [multiaddr...] }`。addrs 顺序 = 调用方策略顺序；成功后会话
 /// 句柄记忆**全部**候选地址，数据面断线重拨按同一顺序复用（不查发现缓存）。
 pub fn peer_dial_addrs(ports: &Arc<dyn PeerPorts>, plugin_id: &str, endpoint_json: &str) -> Result<String, String> {
@@ -277,7 +276,7 @@ pub fn peer_send_files(
     }
     // 属主 + 句柄候选表先于载荷解析（与 browse/pull 同口径：越权探测不因载荷错而变脸）
     let (node_id, addrs) = session_target(plugin_id, session)?;
-    // 载荷双形态（issue 13 Phase 3 步骤 5）：纯 string 兼容保留；对象元素
+    // 载荷双形态（兼容保留：纯 string 形态 + 对象元素
     // `{ path, encrypt? }` 携带逐文件加密意图，任一 true → 批量强制加密
     #[derive(serde::Deserialize)]
     #[serde(untagged)]
@@ -285,7 +284,7 @@ pub fn peer_send_files(
         Plain(String),
         Detailed { path: String, encrypt: Option<bool> },
     }
-    // v31 fail-visible（传输编排下沉票 3）：旧产物载荷携带的 `concurrency`
+    // v31 fail-visible（传输编排下沉后）：旧产物载荷携带的 `concurrency`
     // 并发脉冲字段已随宿主并发闸门退役——serde 未知字段默认忽略，必须
     // 显式检测并显性报错（点名 v31 重建），否则旧产物静默超并发
     let raw: serde_json::Value =
@@ -463,6 +462,36 @@ pub fn peer_set_shared_roots(ports: &Arc<dyn PeerPorts>, plugin_id: &str, dirs_j
     }
     let ctx = ports.peer_ctx()?;
     sync_result(block_on(ports, crate::set_shared_roots(ctx, entries)))
+}
+
+/// 写入本机穿透配置快照（对端 `fetch-config` 只读返回；不透明 JSON 对象）
+pub fn peer_set_config_snapshot(
+    ports: &Arc<dyn PeerPorts>,
+    plugin_id: &str,
+    config_json: &str,
+) -> Result<(), String> {
+    if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_set_config_snapshot") {
+        return Err(denied());
+    }
+    let ctx = ports.peer_ctx()?;
+    crate::set_config_snapshot(&ctx, config_json).map_err(|e| e.to_string())
+}
+
+/// 拉取可信对端的穿透配置快照（session 句柄寻址；`None` = 对端未设置）
+pub fn peer_fetch_config(
+    ports: &Arc<dyn PeerPorts>,
+    plugin_id: &str,
+    session: &str,
+) -> Result<Option<String>, String> {
+    if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_fetch_config") {
+        return Err(denied());
+    }
+    let (node_id, addrs) = session_target(plugin_id, session)?;
+    let ctx = ports.peer_ctx()?;
+    sync_result(block_on(
+        ports,
+        crate::fetch_remote_config_for_plugin(ctx, node_id, addrs),
+    ))
 }
 
 pub fn peer_list_shared_roots(ports: &Arc<dyn PeerPorts>, plugin_id: &str, session: &str) -> Result<String, String> {
@@ -644,7 +673,7 @@ pub fn peer_stop_node(ports: &Arc<dyn PeerPorts>, plugin_id: &str) -> Result<boo
     sync_result(block_on(ports, crate::stop_peer_node(ctx))).map(|_| true)
 }
 
-/// 活跃传输批清单（传输编排下沉票 1）：宿主会话表投影（仅引擎会话事实），
+/// 活跃传输批清单（传输编排下沉后）：宿主会话表投影（仅引擎会话事实），
 /// 供插件事件归约状态机首屏重建。依赖节点运行时状态表——无头上下文报错
 /// （与既有 peer 原语同口径，不静默降级为空列表假象）
 pub fn peer_active_transfers(ports: &Arc<dyn PeerPorts>, plugin_id: &str) -> Result<String, String> {
@@ -655,7 +684,7 @@ pub fn peer_active_transfers(ports: &Arc<dyn PeerPorts>, plugin_id: &str) -> Res
     sync_result(block_on(ports, crate::active_transfers_for_plugin(ctx)))
 }
 
-/// 发送源收集（传输编排下沉票 1）：目录递归 + 批内同名去重（仅元数据）。
+/// 发送源收集（传输编排下沉后）：目录递归 + 批内同名去重（仅元数据）。
 /// 纯文件系统枚举，不依赖节点运行时——无头上下文亦可用（`peer_ctx` 口径
 /// 差异见 WIT 注释：不存在「看似成功实则空」的假成功风险面）
 pub fn peer_collect_outgoing(ports: &Arc<dyn PeerPorts>, plugin_id: &str, paths_json: &str) -> Result<String, String> {
@@ -739,7 +768,7 @@ use wasmtime::component::{bindgen, Linker};
 
 /// 能力模块名（宿主白名单键 = 装载期日志与错误文案里的模块名）
 ///
-/// **常编译 pub**（票 02 批次 03）：内核不再点名本域（`host_api/peer.rs` 迁宿主
+/// **常编译 pub**：内核不再点名本域（`host_api/peer.rs` 迁宿主
 /// `src-tauri/src/plugin/peer.rs`），白名单条目（`expect_host_module!`）与装载期
 /// 一致性核对改在宿主侧引用本常量。
 pub const MODULE_NAME: &str = "peer-net";
@@ -750,7 +779,7 @@ pub const MODULE_INTERFACES: &[&str] = &["wasmnest:peer@0.0.1/host-peer"];
 /// 本域的权限位（必须与 `wasmnest.wit` / SDK 权限表逐字一致）
 pub const MODULE_PERMISSIONS: &[&str] = &["peer"];
 
-/// 能力模块描述符（机制面：接口路径 / 权限位 / ABI 下界；**禁带产品名词**，spec D4）
+/// 能力模块描述符（机制面：接口路径 / 权限位 / ABI 下界；**禁带产品名词**）
 ///
 /// 三个字符串字段取自上面三常量：描述符是机制面唯一真源，宿主白名单与一致性核对
 /// 引用同一组常量 ⇒ 两处不可能漂移。
@@ -762,7 +791,7 @@ const DESC: HostModuleDesc = HostModuleDesc {
     abi_min: 31,
 };
 
-/// 对等网络能力域模块（`host-peer`，21 条原语）
+/// 对等网络能力域模块（`host-peer`，23 条原语）
 #[cfg(feature = "common-host")]
 pub struct PeerNetModule;
 
@@ -842,13 +871,13 @@ bindgen!({
     // `wasmnest::peer::host_peer::Host` 是**同名但不同类型**的 trait。宿主必须
     // 同时删掉自己的 peer `Host` impl 与 `add_to_linker` 行，否则同一个 interface
     // 被注册两次 → 装配期 `defined twice`。
-    // 票 05 / ADR 0052 D2：契约面脱端——本文件是 `host-peer` 的**共享契约真源**
+    // 契约面脱端：本文件是 `host-peer` 的**共享契约真源**
     // （`world cap-peer`，双端 compose 直接消费），不再读桌面 SDK 生成物目录，
     // 也不再是「core.wit 的副本」。
     path: "wit/peer.wit",
     world: "cap-peer",
     // 与宿主同款：全部导出绑定生成 async 变体（wasmtime async store 要求）。
-    // cap-peer 无 export 成员，此配置无生效对象（实测编译绿，票 05 实施记录）
+    // cap-peer 无 export 成员，此配置无生效对象（实测编译绿）
     exports: { default: async },
 });
 
@@ -909,6 +938,14 @@ impl wasmnest::peer::host_peer::Host for WasmPluginState {
 
     fn set_shared_roots(&mut self, dirs_json: String) -> Result<(), String> {
         peer_set_shared_roots(&ports_for(self), &self.plugin_id, &dirs_json)
+    }
+
+    fn set_config_snapshot(&mut self, config_json: String) -> Result<(), String> {
+        peer_set_config_snapshot(&ports_for(self), &self.plugin_id, &config_json)
+    }
+
+    fn fetch_config(&mut self, session: String) -> Result<Option<String>, String> {
+        peer_fetch_config(&ports_for(self), &self.plugin_id, &session)
     }
 
     fn list_shared_roots(&mut self, session: String) -> Result<String, String> {

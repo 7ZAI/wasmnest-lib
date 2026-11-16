@@ -13,7 +13,7 @@
 //! （`plugin.db` 家族）。所有安全门禁（manifest/身份/路径/摘要/platform）在升级
 //! 路径同样生效——升级只放宽「同 id 覆盖」这一条，其余裁决与首装完全一致。
 //!
-//! 归位说明（票 11 第 5 项）：本模块是 core-plugin-manager 的**安装**职责，
+//! 归位说明：本模块是 core-plugin-manager 的**安装**职责，
 //! 已自 `plugin/downloader.rs` 迁到 `plugin/manager/`，引用路径同步为
 //! `crate::manager::downloader`。
 
@@ -216,9 +216,9 @@ impl PluginDownloader {
             })?
             .read_to_string(&mut manifest_str)
             .map_err(|e| crate::AppError::Plugin(format!("Failed to read plugin.json: {}", e)))?;
-        // 解析与必填字段校验走唯一真源（票 11 第 6 项）
+        // 解析与必填字段校验走唯一真源
         //
-        // 注意：**域侧声明仲裁不在本入口**（票 02 批次 03 起，如 host-pty 的
+        // 注意：**域侧声明仲裁不在本入口**（批次 03 起，如 host-pty 的
         // `ptyQuota` 区间）——它挂在装载漏斗的 `DomainHooks::on_manifest_load` 上，
         // 故越界声明在安装期可通过、**装载期被该域拒绝**（fail-visible：插件不装载，
         // 错误日志点名越界值与字段名）。安装期只保证结构性必填字段成立。
@@ -284,7 +284,7 @@ impl PluginDownloader {
         }
 
         // 4b. worker 产物摘要：`workers[].wasmHash` 与主 `wasmHash` **同语义**——
-        // 声明即校验、缺省跳过（spec §3.7「wasmHash 语义与主 wasm 一致」）。
+        // 声明即校验、缺省跳过（「wasmHash 语义与主 wasm 一致」）。
         // 只校验声明了摘要的条目：未声明时按「安装期只保结构性必填、文件存在性
         // 交装载入口」的分层**不查**（与 ptyQuota 同款，见 install_zip 头注）；
         // 声明了就无法跳过——读不到文件等于摘要无从比对，直接拒绝并点名。
@@ -671,7 +671,7 @@ mod tests {
         zip_path
     }
 
-    /// worker 产物摘要与主 `wasmHash` 同入口校验（worker 机制 spec §3.7）
+    /// worker 产物摘要与主 `wasmHash` 同入口校验（worker 机制）
     ///
     /// 变异判据：摘掉 `install_zip` 的 4b 段，摘要不符的包会静默安装成功——声明了
     /// 摘要却不校验，等于把完整性声明当装饰。三条覆盖：不符拒绝 / 相符放行 /
@@ -1136,7 +1136,7 @@ mod tests {
         assert_eq!(installed, id);
     }
 
-    /// 跨语言真源锁（票 14）：生产者 `packages/plugin-sdk-desktop/bin/wasm-hash.js` 与宿主
+    /// 跨语言真源锁：生产者 `packages/plugin-sdk-desktop/bin/wasm-hash.js` 与宿主
     /// 必须算出同一个串。这里的向量与 SDK 用例 `__tests__/wasm-hash.test.ts` 的
     /// `WASM_BYTES_SHA256` 是同一条（外部独立实现算出后双向钉死）——换算法、换大小写、
     /// 换取文件规则，两侧任一偏离都在此转红。

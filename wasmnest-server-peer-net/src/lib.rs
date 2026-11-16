@@ -1,15 +1,15 @@
-//! `wasmnest-server-peer-net`：对等网络引擎域（server-lib-split 票 06）
+//! `wasmnest-server-peer-net`：对等网络引擎域
 //!
-//! 节点身份初始化 + 节点/发现守护装配 + host-peer 原语（ADR 0022 v2）的引擎
-//! 转发唇口。**依赖方向**（spec D2）：本 crate 只**向下**依赖 `wasmnest-server-base`
+//! 节点身份初始化 + 节点/发现守护装配 + host-peer 原语（v2）的引擎
+//! 转发唇口。**依赖方向**：本 crate 只**向下**依赖 `wasmnest-server-base`
 //! （错误 / 端口 traits）；底座机制（原 `wasmnest-peer-net` crate，2026-10-22
 //! peer-net-dissolve 拆分并入本 crate 的 `base/` 子模块：身份 / libp2p 传输 /
 //! 信任 / mDNS 注册 / 传输会话引擎原语）为 crate 自身内容，与 `wasmnest-server-core` /
 //! `-http` / `-websocket` 三个传输面及宿主 crate **零依赖**
-//! ——它是「引擎域」不是「传输面」，不参与 I1/I2 传输面依赖链（由
+//! ——它是「引擎域」不是「传输面」，不参与传输面依赖链（由
 //! `dependency_direction_lock` 以依赖清单钉死）。
 //!
-//! **不依赖宿主类型**：票 01 的端口化已把 `AppHandle` / `AppContext` / `wasm_core`
+//! **不依赖宿主类型**：端口化已把 `AppHandle` / `AppContext` / `wasm_core`
 //! 全部换成 [`wasmnest_server_base::ports`] 的注入端口——`BusPort`（引擎事件只推
 //! 插件总线）、`EventSink`（三条连接态前端事件）、`PathsPort`（身份 / 可信列表目录）、
 //! `SystemInfoPort`（节点广播设备名）、`MdnsPort`（发现守护接入宿主共享守护）。
@@ -22,13 +22,13 @@
 //! （`peer-connected` / `peer-disconnected` / `peer-consent-requested`）的前端桥。
 //!
 //! - **节点身份**：NodeIdentity 与设备身份（auth 域 DeviceIdentity）刻意分离——
-//!   首启纯随机生成、重装即新身份，不做设备标识派生（决策 D2）；由 crate 持久
-//!   化，宿主只注入数据目录（决策 D3），目录与 DB 同源解析自 app_data_dir。
+//!   首启纯随机生成、重装即新身份，不做设备标识派生；由 crate 持久
+//!   化，宿主只注入数据目录，目录与 DB 同源解析自 app_data_dir。
 //! - **生命周期**：节点是应用作用域共享服务（`net.peer-node`）——由插件经
 //!   `host-peer.start-node` 按引用记账，首个引用拉起、最后一个释放关停；宿主
 //!   命令面不再直接起停节点。见 [`service::PeerNodeService`]。
-//! - **插件绑定层**：`plugin_binding`（wasm-core-lib-split 票 05）是 `host-peer`
-//!   21 条原语的宿主实现（句柄表 / 属主仲裁 / 自动重拨 / 载荷校验），经
+//! - **插件绑定层**：`plugin_binding` 是 `host-peer`
+//!   23 条原语的宿主实现（句柄表 / 属主仲裁 / 自动重拨 / 载荷校验），经
 //!   [`plugin_binding::ports::PeerPorts`] 向宿主要权限门、引擎上下文、异步桥与
 //!   服务注册表；本 crate 对宿主组装面（`AppHandle` 与 managed state）的引用为 **0**。
 //! - **引擎接入**：`peer_engine_transfer` / `peer_engine_receive` /
@@ -56,7 +56,7 @@ mod node_info;
 pub mod peer_engine_receive;
 pub mod peer_engine_remote;
 pub mod peer_engine_transfer;
-/// host-peer 能力域的插件绑定层（wasm-core-lib-split 票 05：自宿主 host_api 域的
+/// host-peer 能力域的插件绑定层（自宿主 host_api 域的
 /// peer 适配器迁入，并把其对宿主组装面的 20 处反向耦合换成端口）
 pub mod plugin_binding;
 /// 本机 relay 预留的共享协调器：host-tunnel 与 host-peer 按 owner 取并集下发。
@@ -86,7 +86,7 @@ use crate::engine_ports::PeerEnginePorts;
 
 /// peer-net 操作上下文（宿主壳注入的全部依赖的聚合）
 ///
-/// server-lib-split 票 01：peer-net 不再持有 `AppHandle`——本结构把端口
+/// peer-net 不再持有 `AppHandle`——本结构把端口
 /// （总线/事件/路径/系统信息/mdns）与四个引擎状态句柄打包，宿主命令壳
 /// （`peer_net_cmds::peer_ctx`）从 `AppHandle` 装配一次，
 /// 派生任务 clone `Arc` 即可跨 await 存活。四个状态仍由宿主 `app.manage`
@@ -118,7 +118,8 @@ use serde::Serialize;
 // `base::Result`（PeerNetError 别名）刻意不在此 re-export：lib 顶层 Result 是
 // server-base AppError 别名，两义共存时冲突；消费方需要底座错误时用全限定 `base::Result`。
 pub use crate::base::{
-    browse_shared_dir, list_shared_roots, pull_shared_file, resolve_rel_path, saf_not_found, send_batch, sort_entries,
+    browse_shared_dir, fetch_shared_config, list_shared_roots, pull_shared_file, resolve_rel_path, saf_not_found,
+    send_batch, sort_entries,
     spawn_peer_mdns_daemon, BrowseListing, CancelOrigin, CancelToken, Connection, ConnectionHandler, DirEntry,
     DiscoveredPeerRecord, DiscoveryCache, DiscoveryConfig, DiscoveryDaemon, FileLanding, FileMeta, HandlerFuture,
     IncomingFrame, NodeId, NodeIdentity, OutgoingFile, PauseCmd, PauseSlot, PeerMdnsBrowse, PeerNetError, PeerNetNode,
@@ -132,7 +133,7 @@ pub use crate::base::{
 // 形态 → `wasmnest_server_peer_net::transfer`（测试仓集成场景沿用该路径）
 pub use crate::base::{shared, transfer};
 
-// ==================== 身份初始化（issue 01）====================
+// ==================== 身份初始化 ====================
 
 /// 加载或创建节点身份，并把节点 ID（全长 + 短指纹）写入运行日志
 ///
@@ -230,9 +231,9 @@ fn admit_consent_slot(pending: &mut HashMap<String, PendingConsent>, now: std::t
 /// - `trust`：可信列表句柄独立于运行时存活（节点停止后设置面仍可查看/撤销），
 ///   数据与磁盘文件同源，重复加载无一致性风险；
 /// - `shared`：共享目录注册表句柄，与 trust 同款「独立于运行时存活」语义
-///   （issue 07）；
+///   （多地址拨号与数据面重拨）；
 /// - `consents`：std Mutex 即可——临界区只有 map 增删，无跨 await 持有；
-/// - `connections`：本机主动拨号建立的存活连接（issue 08），句柄存活即连接
+/// - `connections`：本机主动拨号建立的存活连接，句柄存活即连接
 ///   存活、drop 即断开；std Mutex 与 consents 同款瞬时临界区。键为节点 ID hex。
 pub struct PeerNetState {
     runtime: tokio::sync::Mutex<Option<PeerNetRuntime>>,
@@ -263,6 +264,8 @@ pub struct PeerNetState {
     pub(crate) rendezvous_room: std::sync::Mutex<String>,
     /// 会合是否启用（插件激活时置位，停用时清零）
     pub(crate) rendezvous_enabled: std::sync::atomic::AtomicBool,
+    /// 插件写入的配置快照（对端 ConfigRequest 只读返回；独立于运行时存活）
+    pub(crate) config_snapshot: crate::base::shared::SharedConfigSnapshot,
 }
 
 impl Default for PeerNetState {
@@ -280,6 +283,7 @@ impl Default for PeerNetState {
             rendezvous_wakeup: tokio::sync::Notify::new(),
             rendezvous_room: std::sync::Mutex::new(crate::relay_rendezvous::DEFAULT_ROOM.to_string()),
             rendezvous_enabled: std::sync::atomic::AtomicBool::new(false),
+            config_snapshot: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -316,7 +320,7 @@ pub struct TrustedPeerDto {
     pub added_at: String,
 }
 
-/// 拨号结果（issue 08）：denied/unreachable 属正常业务终态而非错误——
+/// 拨号结果：denied/unreachable 属正常业务终态而非错误——
 /// 前端按状态渲染文案，避免把对端拒绝误报成异常
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -326,7 +330,7 @@ pub struct DialPeerResultDto {
     /// 对端设备名（缓存解析；离线缺失为 null）
     pub device_name: Option<String>,
     /// 成功命中的传输形态（`lan-direct` / `wan-relay`；denied/unreachable 为 null）。
-    /// T12 据此显示「内网直连 / 外网中继」——宿主侧 `PeerLink.transport` 的同源事实。
+    /// 据此显示「内网直连 / 外网中继」——宿主侧 `PeerLink.transport` 的同源事实。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
 }
@@ -391,11 +395,11 @@ pub async fn stop_peer_node(ctx: Arc<PeerCtx>) -> Result<()> {
     stop_locked(ctx).await
 }
 
-// ==================== endpoint 拨号（ADR 0022 v2）====================
+// ==================== endpoint 拨号（v2）====================
 
 /// endpoint 拨号入参：插件从自身设备缓存（mdns:found 事件派生）解析后显式传入
 ///
-/// 宿主不再内藏 node-id → 地址解析表（ADR 0022 v2 裁决）：寻址来源由调用方持有，
+/// 宿主不再内藏 node-id → 地址解析表（v2 裁决）：寻址来源由调用方持有，
 /// 握手期「证书指纹 ↔ nodeId 绑定 + 信任检查」语义与旧发现缓存路径 dial_peer 完全一致。
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -408,10 +412,10 @@ pub struct DialEndpoint {
     pub port: u16,
 }
 
-/// 多地址拨号入参（T11 方案 B）：`{ nodeId, addrs: [multiaddr...] }`
+/// 多地址拨号入参：`{ nodeId, addrs: [multiaddr...] }`
 ///
-/// `addrs` 顺序即调用方拨号策略顺序（设计 §4.6：先 LAN，只有 §4.9 判定明确
-/// 不在内网才把 relay 候选放进列表）；宿主按顺序逐个尝试，**不排序、不自动
+/// `addrs` 顺序即调用方拨号策略顺序（先 LAN，只有明确判定不在内网才把 relay
+/// 候选放进列表）；宿主按顺序逐个尝试，**不排序、不自动
 /// 切换**——策略真源在应用层。
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -422,14 +426,14 @@ pub struct DialAddrsEndpoint {
     pub addrs: Vec<String>,
 }
 
-/// 多地址拨号的单候选短超时（设计 §4.9 的 LAN 2~3s 口径）
+/// 多地址拨号的单候选短超时（LAN 2~3s 口径）
 ///
 /// 逐候选结算：LAN 候选超时即换下一个；relay 候选同一窗口——中继客户端握手
 /// 在窗口内未完成按失败显性上报，不无限挂起。
 pub(crate) const DIAL_PER_ADDR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// relay 候选的单次拨号窗口（M5）：先连中继再开 circuit，跨公网 / 移动网络
-/// 3s 常不够，按设计 §4.9 给更长窗口（LAN 仍用 [`DIAL_PER_ADDR_TIMEOUT`]）。
+/// relay 候选的单次拨号窗口：先连中继再开 circuit，跨公网 / 移动网络
+/// 3s 常不够，给更长窗口（LAN 仍用 [`DIAL_PER_ADDR_TIMEOUT`]）。
 pub(crate) const RELAY_DIAL_PER_ADDR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// 候选地址字符串 → multiaddr 列表（多地址拨号入口与数据面重拨共用）
@@ -497,7 +501,7 @@ pub async fn dial_peer_endpoint(ctx: Arc<PeerCtx>, endpoint: DialEndpoint) -> Re
         Ok(connection) => {
             let transport = connection.transport().map(|t| t.as_str().to_string());
             // 过渡期桥接：缓存未命中时补一条回退记录，让按 node-id 寻址的
-            // UI 面可用（数据面自 T11 起按句柄候选表寻址，不再依赖该记录）
+            // UI 面可用（数据面后按句柄候选表寻址，不再依赖该记录）
             if cache_miss {
                 if let Some((_, cache)) = runtime_snapshot(&ctx).await {
                     cache.observe(DiscoveredPeerRecord {
@@ -541,10 +545,10 @@ pub async fn dial_peer_endpoint(ctx: Arc<PeerCtx>, endpoint: DialEndpoint) -> Re
     }
 }
 
-/// 多地址拨号（host-peer `dial-peer-addrs` 原语的引擎入口，T11 方案 B）
+/// 多地址拨号（host-peer `dial-peer-addrs` 原语的引擎入口）
 ///
 /// 保留旧 [`dial_peer_endpoint`] 不动，本函数是**新增**多地址路径：候选顺序、
-/// 逐候选短超时由本层保证，§4.9 的「何时把 relay 排进候选表」由调用方决定。
+/// 逐候选短超时由本层保证，「何时把 relay 排进候选表」由调用方决定。
 /// 会话句柄由绑定层铸造并记忆**全部**候选地址，数据面断线重拨按同一顺序复用
 /// （不再依赖 mDNS 发现缓存）。
 pub async fn dial_peer_addrs(
@@ -621,7 +625,7 @@ pub async fn dial_peer_addrs(
 /// 出站会话登记：连接移交常驻活性泵（对端断开泵感知，本机断开经泵信号落地；
 /// 同节点重复拨号以最新会话为准）并发 `peer-connected`。
 ///
-/// 两条拨号路径（单地址 / 多地址）共用——事件载荷里的 `transport` 是 T12 的
+/// 两条拨号路径（单地址 / 多地址）共用——事件载荷里的 `transport` 是
 /// UI 判据（内网直连 / 外网中继），漏带会让状态栏退化成「未知」。
 fn register_outbound_session(
     ctx: &Arc<PeerCtx>,
@@ -776,7 +780,7 @@ pub fn current_node_id(ctx: &PeerCtx) -> Option<String> {
     guard.as_ref().map(|r| r.node_id.clone())
 }
 
-/// 应答首连确认弹窗（issue 04 命令面）
+/// 应答首连确认弹窗（命令面）
 ///
 /// 接受路径先带展示名落库再回执：transport 随后的 `add` 变 no-op，保证连接
 /// 建立时可信条目已带元数据（设置面立即可见名称）。返回是否成功送达回执——
@@ -887,10 +891,10 @@ pub async fn revoke_trusted_peer(ctx: Arc<PeerCtx>, node_id: String) -> Result<b
     Ok(removed)
 }
 
-// ==================== 共享目录（issue 07）====================
+// ==================== 共享目录 ====================
 
 /// 全量幂等替换引擎广播源（host-peer `set-shared-roots` 原语的引擎入口，
-/// ADR 0022 v2）：注册表 CRUD 真源已移插件侧，本函数只同步暴露面镜像；
+/// v2）：注册表 CRUD 真源已移插件侧，本函数只同步暴露面镜像；
 /// 条目 id/name/root 由调用方构造（桌面 Fs / 移动 Saf 根形态均支持）。
 pub async fn set_shared_roots(ctx: Arc<PeerCtx>, entries: Vec<SharedDirEntry>) -> Result<()> {
     let store = shared_handle(&ctx).await?;
@@ -904,11 +908,24 @@ pub async fn set_shared_roots(ctx: Arc<PeerCtx>, entries: Vec<SharedDirEntry>) -
     Ok(())
 }
 
+/// 写入本机穿透配置快照（host-peer `set-config-snapshot` 原语的引擎入口）
+///
+/// 快照是插件定义的不透明 JSON，能力域只做两道防御：必须是 JSON 对象、且不超过
+/// [`crate::base::shared::MAX_CONFIG_SNAPSHOT_LEN`]。覆盖写（幂等），节点重启不清空。
+pub fn set_config_snapshot(ctx: &PeerCtx, snapshot_json: &str) -> Result<()> {
+    crate::base::shared::validate_config_snapshot(snapshot_json).map_err(|e| AppError::InvalidInput(e.to_string()))?;
+    *ctx.state
+        .config_snapshot
+        .lock()
+        .expect("shared config snapshot lock poisoned") = Some(snapshot_json.to_string());
+    Ok(())
+}
+
 // ==================== File-transfer engine bridge ====================
 //
 // These adapters keep the host-peer boundary in the peer-net module. Product
 // state remains owned by the file-transfer plugin; the engine adapters only
-// expose the existing peer-net session controls (传输编排下沉票 3：宿主残面
+// expose the existing peer-net session controls (传输编排下沉后：宿主残面
 // 已收敛为句柄表 + 引擎事件桥).
 pub use self::peer_engine_remote::{PeerSharedRootDto, RemoteBrowseDto, RemotePullFileDto};
 
@@ -956,6 +973,17 @@ pub async fn list_remote_roots_for_plugin(
     self::peer_engine_remote::list_peer_shared_roots(ctx, node_id, addrs).await
 }
 
+/// 拉取可信对端的穿透配置快照（host-peer `fetch-config` 原语的引擎入口）
+///
+/// `None` = 对端未设置 / 不提供；协议失败显性上抛（不把读不到当空配置）。
+pub async fn fetch_remote_config_for_plugin(
+    ctx: Arc<PeerCtx>,
+    node_id: String,
+    addrs: Vec<wasmnest_p2p_engine::Multiaddr>,
+) -> Result<Option<String>> {
+    self::peer_engine_remote::fetch_peer_config(ctx, node_id, addrs).await
+}
+
 pub async fn browse_remote_for_plugin(
     ctx: Arc<PeerCtx>,
     node_id: String,
@@ -980,8 +1008,8 @@ pub async fn set_download_dir_for_plugin(ctx: Arc<PeerCtx>, path: Option<String>
     self::peer_engine_receive::set_peer_download_dir(ctx, path).await
 }
 
-/// 活跃传输批清单（host-peer `active-transfers` 原语的引擎入口，票 1 引入 /
-/// 票 3 改句柄表投影——接口形状锁定不变）：send 会话句柄表 + receive pending
+/// 活跃传输批清单（host-peer `active-transfers` 原语的引擎入口，
+/// 后改句柄表投影——接口形状锁定不变）：send 会话句柄表 + receive pending
 /// 询问表 + pull 会话表三处引擎控制面的聚合投影（仅引擎会话事实，无业务字段）
 pub async fn active_transfers_for_plugin(ctx: Arc<PeerCtx>) -> Result<String> {
     let mut rows = self::peer_engine_transfer::active_send_transfer_rows(&ctx);
@@ -990,7 +1018,7 @@ pub async fn active_transfers_for_plugin(ctx: Arc<PeerCtx>) -> Result<String> {
     serde_json::to_string(&rows).map_err(|e| AppError::Internal(format!("serialize active transfers failed: {e}")))
 }
 
-/// 发送源收集（host-peer `collect-outgoing` 原语的引擎入口，票 1）：转发引擎适配层
+/// 发送源收集（host-peer `collect-outgoing` 原语的引擎入口）：转发引擎适配层
 pub async fn collect_outgoing_for_plugin(paths: Vec<String>) -> Result<String> {
     self::peer_engine_transfer::collect_outgoing_for_plugin(paths).await
 }
@@ -1194,14 +1222,14 @@ async fn start_locked(
     }));
     let cache = node.discovery().expect("discovery cache just attached");
 
-    // 首连确认桥接：闸门事件 → 前端应用内确认弹窗（issue 04）
+    // 首连确认桥接：闸门事件 → 前端应用内确认弹窗
     let (events_tx, events_rx) = tokio::sync::mpsc::channel::<TrustEvent>(16);
     wasmnest_server_base::error_boundary::spawn_with_error_boundary(
         "peer_net_gate",
         drive_gate(events_rx, Arc::clone(&cache), ctx.clone()),
     );
 
-    // 共享目录注册表 + 接收落点（issue 07）：落点根目录由端口给（各端自定）；
+    // 共享目录注册表 + 接收落点：落点根目录由端口给（各端自定）；
     // 平台默认共享目录（移动 = app 私有下载目录）经平台缝注册为普通条目
     let shared = shared_handle_at(&data_dir).await?;
     crate::engine_ports::decorate_shared_store(&shared, ctx.ports.platform.as_ref());
@@ -1213,7 +1241,7 @@ async fn start_locked(
     }
 
     // 受信连接统一走共享目录复合处理器：push 接收管线 + 浏览/拉取服务
-    // （首帧分流在 crate 内完成）；引擎事件由接收侧模块消费（issue 10：
+    // （首帧分流在 crate 内完成）；引擎事件由接收侧模块消费
     // 询问弹窗/任务登记/进度推送）。服务侧拉取会话走独立通道（双端记账：
     // 供流方要在自己的传输列表展示 send 任务，与 push 接收通道分流）
     let (transfer_tx, transfer_rx) = tokio::sync::mpsc::channel::<TransferEvent>(256);
@@ -1236,6 +1264,7 @@ async fn start_locked(
         config.clone(),
         transfer_tx,
         serve_tx,
+        Arc::clone(&ctx.state.config_snapshot),
     ));
     // 接收侧登记句柄与配置快照（设置热更新/按批取消入口），并按持久化
     // 设置纠正首份策略与落点；事件消费任务随后启动
@@ -1251,7 +1280,7 @@ async fn start_locked(
         "peer_net_serve_events",
         self::peer_engine_transfer::drive_serve_events(ctx.clone(), serve_rx),
     );
-    // 远端浏览/拉取会话上下文（issue 11）：事件通道发送端快照供拉取入账任务表
+    // 远端浏览/拉取会话上下文：事件通道发送端快照供拉取入账任务表
     self::peer_engine_remote::register_session(&ctx, handler.event_sender()).await;
 
     let running = node
@@ -1267,14 +1296,14 @@ async fn start_locked(
         .map_err(map_peer_net_error)?;
     let listen_addr = running.local_addr();
 
-    // ===== mDNS 基础能力服务收敛（spec v2 / ticket 04）=====
+    // ===== mDNS 基础能力服务收敛 =====
     // 节点发现接入 MdnsService 全局共享守护：不再自建 daemon（消灭双 daemon
     // 同绑 5353 互抢多播包的历史病灶）。节点身份广播（owner=host）在基础服务
-    // 登记——TXT/ServiceInfo 仍由引擎构造（D3），本处只做句柄登记；全局
-    // `mdns:found` / `mdns:lost` 桥接与缓存重发通道已退役（D1）——插件发现
-    // 改经 host-mdns 自建 browse 收定向事件（file-transfer 一期同迁，D2）
+    // 登记——TXT/ServiceInfo 仍由引擎构造，本处只做句柄登记；全局
+    // `mdns:found` / `mdns:lost` 桥接与缓存重发通道已退役——插件发现
+    // 改经 host-mdns 自建 browse 收定向事件（file-transfer 一期同迁）。
     let mdns_daemon = ctx.ports.mdns.shared_daemon();
-    // 浏览面经**类型中枢**（ADR 0054）：全进程对该服务类型只允许一条
+    // 浏览面经**类型中枢**：全进程对该服务类型只允许一条
     // `daemon.browse`，由中枢代持；本处只挂 fan-out 订阅，侦察面零直调 browse
     // （旧实现每 30s 重查就再 browse 一次，按 mdns-sd 单 listener 槽语义静默
     // 覆盖插件 browse 的信道——本票修的就是这条链路）。
@@ -1440,7 +1469,7 @@ async fn stop_locked(ctx: Arc<PeerCtx>) -> Result<()> {
     match runtime {
         Some(runtime) => {
             // 接收侧句柄随节点下线摘除（设置命令此后仅改持久化，下次启动生效）；
-            // 远端拉取队列同步中止（issue 11）
+            // 远端拉取队列同步中止
             self::peer_engine_receive::clear_handler(&ctx).await;
             self::peer_engine_remote::clear_state(&ctx).await;
             runtime.rendezvous_task.abort();
@@ -1458,7 +1487,7 @@ async fn stop_locked(ctx: Arc<PeerCtx>) -> Result<()> {
     }
 }
 
-/// 首连确认事件消费：桥接到前端应用内确认弹窗（issue 04）
+/// 首连确认事件消费：桥接到前端应用内确认弹窗
 ///
 /// 收到 `ConfirmRequested` 后：解析发现缓存中的设备名 → 登记回执通道 → 发
 /// `peer-consent-requested` 事件。应答经 `respond_peer_consent` 命令回流；
@@ -1495,7 +1524,7 @@ async fn drive_gate(
                     name = ?device_name,
                     "first-connect confirmation requested, consent dialog emitted"
                 );
-                // issue 12 迁移后插件前端是确认弹窗唯一消费者：必须经 emit_json
+                // 插件前端是确认弹窗唯一消费者：必须经 emit_json
                 // 同步桥接总线 peer:consent（裸 app.emit 只达主前端，插件永远
                 // 收不到→弹窗不出现→30s 超时自动拒，2026-08-26 双端实测实证）
                 emit_json(
@@ -1554,22 +1583,22 @@ pub(crate) fn map_peer_net_error(e: PeerNetError) -> AppError {
     AppError::Internal(format!("peer-net operation failed: {e}"))
 }
 
-/// 节点 ID hex 字符串解析（issue 08 命令面共用）：统一错误上下文
+/// 节点 ID hex 字符串解析（命令面共用）：统一错误上下文
 pub(crate) fn parse_node_id(node_id: &str) -> Result<NodeId> {
     NodeId::parse(node_id).map_err(|e| AppError::Internal(format!("peer-net invalid node id '{node_id}': {e}")))
 }
 
 /// 向前端发 JSON 载荷事件（失败只记日志不上抛：窗口缺失/前端未就绪属预期场景）。
-/// 同步桥接到插件消息总线 `peer:*` topic（issue 12 切换后 file-transfer 插件
+/// 同步桥接到插件消息总线 `peer:*` topic（file-transfer 插件
 /// 经 host-peer/总线感知对等状态），无头上下文静默跳过。
 /// 仅连接生命周期与首连确认事件走此双路面（桌面全局通知消费 Tauri 侧）；
-/// 业务快照（传输任务/接收列表）只走 [`publish_bus_only`]，票 06。
+/// 业务快照（传输任务/接收列表）只走 [`publish_bus_only`]。
 pub(crate) fn emit_json(ctx: &PeerCtx, event: &str, payload: serde_json::Value) {
     ctx.ports.event_sink.emit(event, payload.clone());
     publish_bus_only(ctx, event, payload);
 }
 
-/// 业务快照仅进插件总线（票 06 事件桥收敛）：宿主 Tauri 前端不再消费
+/// 业务快照仅进插件总线（事件桥收敛）：宿主 Tauri 前端不再消费
 /// 传输/接收列表事件，产品状态由 file-transfer 插件经 `peer:*` 快照驱动。
 /// `event` 为宿主事件名，经 [`bus_topic_for`] 映射总线 topic；无映射则丢弃。
 pub(crate) fn publish_bus_only(ctx: &PeerCtx, event: &str, payload: serde_json::Value) {
@@ -1581,8 +1610,8 @@ pub(crate) fn publish_bus_only(ctx: &PeerCtx, event: &str, payload: serde_json::
     ctx.ports.bus.publish(topic, "host", payload);
 }
 
-/// 引擎发现事件直推插件总线（`mdns:found` / `mdns:lost`）——已退役（spec v2
-/// D1：全局发现桥接整体退役，插件改经 host-mdns 自建 browse 收定向事件）。
+/// 引擎发现事件直推插件总线（`mdns:found` / `mdns:lost`）——已退役
+/// （全局发现桥接整体退役，插件改经 host-mdns 自建 browse 收定向事件）。
 /// 本函数仅保留 `peer:*` topic 的直推（拨号/传输状态，与 mDNS 无关）
 pub(crate) fn publish_mdns_bus(ctx: &PeerCtx, topic: &str, payload: serde_json::Value) {
     // 诊断插桩：与 peer 事件同口径 INFO-only
@@ -1590,17 +1619,17 @@ pub(crate) fn publish_mdns_bus(ctx: &PeerCtx, topic: &str, payload: serde_json::
     ctx.ports.bus.publish(topic, "host", payload);
 }
 
-// ==================== 引擎原始事件流（传输编排下沉票 1）====================
+// ==================== 引擎原始事件流（传输编排下沉后）====================
 
 /// 引擎原始事件 topic（双写期）：编排下沉 P3 退役快照 topic（`peer:transfer` /
 /// `peer:receive`）后成为唯一回流。topic 形态即 ACL——新增 topic 不复用旧名，
 /// 旧插件的快照订阅在过渡期不受影响
 pub(crate) const TOPIC_TRANSFER_EVENT: &str = "peer:transfer-event";
-/// 接收方向引擎原始事件 topic（票 1，见 [`TOPIC_TRANSFER_EVENT`]）
+/// 接收方向引擎原始事件 topic（见 [`TOPIC_TRANSFER_EVENT`]）
 pub(crate) const TOPIC_RECEIVE_EVENT: &str = "peer:receive-event";
 
 /// 事件到达时刻（Unix 毫秒）：插件 wasm32 无时钟，归约状态机的
-/// createdAtMs/updatedAtMs 以本字段为准（票 2）
+/// createdAtMs/updatedAtMs 以本字段为准
 pub(crate) fn event_now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1670,7 +1699,7 @@ pub(crate) fn engine_offer_payload(
 }
 
 /// 引擎供流记账事件载荷（pull-served）：本端为对端拉取供流的事实——
-/// 插件据此自建 direction=send 记账视图（编排下沉票 3 后宿主不再代记）
+/// 插件据此自建 direction=send 记账视图（编排下沉后宿主不再代记）
 pub(crate) fn engine_pull_served_payload(
     remote: &NodeId,
     batch_id: &str,
@@ -1687,7 +1716,7 @@ pub(crate) fn engine_pull_served_payload(
     })
 }
 
-/// 引擎拉取会话发起事件载荷（pull-started，票 3）：本端向对端发起的单文件
+/// 引擎拉取会话发起事件载荷（pull-started）：本端向对端发起的单文件
 /// 拉取会话事实——插件据此自建 receive 任务行（编排下沉后宿主不再预登记
 /// 任务行）。
 ///
@@ -1718,7 +1747,7 @@ pub(crate) fn engine_node_stopped_payload() -> serde_json::Value {
     serde_json::json!({ "kind": "node-stopped", "tsMs": event_now_ms() })
 }
 
-/// 引擎原始事件直推插件总线（票 1）：不经宿主状态机加工，Progress 节流由
+/// 引擎原始事件直推插件总线：不经宿主状态机加工，Progress 节流由
 /// 调用方复用快照节流窗口；事件流为高频通道，统一 debug 级（日志红线：
 /// 热路径 info 噪音禁止）。无总线上下文（测试/无头）静默跳过
 pub(crate) fn publish_engine_event(ctx: &PeerCtx, topic: &str, payload: serde_json::Value) {
@@ -1792,7 +1821,7 @@ pub async fn request_discovery_refresh(ctx: Arc<PeerCtx>) {
     );
     drop(guard);
     // 设备名映射（连接态重发携带；记录已随 requery 事件流刷入插件定向 browse）
-    // 注意：不再逐条重发 mdns:found（spec v2 D1 缓存重发通道退役）——requery 经
+    // 注意：不再逐条重发 mdns:found（缓存重发通道已退役）——requery 经
     // 类型中枢统一执行（重发该类型唯一 browse + 缓存重放），peer-net 与插件 browse
     // 两路订阅者同时收到重放（含新发现），设备列表各端自行收敛
     let device_names: std::collections::HashMap<String, String> = snapshot
@@ -1860,16 +1889,16 @@ fn spawn_discovery_refresh_subscriber(ctx: Arc<PeerCtx>) {
 fn bus_topic_for(event: &str) -> Option<&'static str> {
     match event {
         // "peer-devices-changed" → peer:devices 已随 DiscoveryCache 守护退役
-        // （issue 13 Phase 4：设备列表由插件经 host-mdns 自建）
+        // （设备列表由插件经 host-mdns 自建）
         "peer-connected" | "peer-disconnected" => Some("peer:connection"),
         "peer-consent-requested" => Some("peer:consent"),
-        // 隧道域事件（设计 §7.2）：传输路径 / 模式 / 通道生命周期 / 通道错误
+        // 隧道域事件：传输路径 / 模式 / 通道生命周期 / 通道错误
         "peer-transport" => Some("peer:transport"),
         "peer-mode" => Some("peer:mode"),
         "tunnel-state" => Some("tunnel:state"),
         "tunnel-error" => Some("tunnel:error"),
         // "peer-transfer-changed" / "peer-receive-changed" → 旧快照 topic
-        // peer:transfer / peer:receive 已随传输编排下沉票 3 退役（状态机
+        // peer:transfer / peer:receive 已随传输编排下沉退役（状态机
         // 删除后无快照可推；插件消费 peer:transfer-event / peer:receive-event）
         _ => None,
     }
@@ -1882,14 +1911,14 @@ fn bus_topic_for(event: &str) -> Option<&'static str> {
 /// 出站拨号路径曾漏发该字段（入站桥/刷新重发/断开事件均带），集中构造防再漏
 fn dial_connected_payload(node_id: &str, device_name: &str, transport: Option<&str>) -> serde_json::Value {
     let mut payload = serde_json::json!({ "nodeId": node_id, "deviceName": device_name, "connected": true });
-    // 传输形态是 T12 状态栏判据（lan-direct / wan-relay）；入站桥等未知路径不带该字段
+    // 传输形态是状态栏判据（lan-direct / wan-relay）；入站桥等未知路径不带该字段
     if let Some(transport) = transport {
         payload["transport"] = serde_json::Value::String(transport.to_string());
     }
     payload
 }
 
-/// 运行时句柄快照（issue 09 发送编排用）：节点句柄 + 发现缓存
+/// 运行时句柄快照（发送编排用）：节点句柄 + 发现缓存
 ///
 /// 锁内仅 Clone 廉价句柄，不跨 await 持锁；节点未启动返回 None。
 pub(crate) async fn runtime_snapshot(ctx: &PeerCtx) -> Option<(PeerNetNode, Arc<DiscoveryCache>)> {
@@ -1983,7 +2012,7 @@ mod dial_payload_tests {
     }
 }
 
-/// T11 多地址拨号契约：候选表解析/校验的唯一入口
+/// 多地址拨号契约：候选表解析/校验的唯一入口
 #[cfg(test)]
 mod peer_addrs_contract_tests {
     use super::*;
@@ -2089,7 +2118,7 @@ mod peer_net_tests {
     #[test]
     fn bus_topic_for_unknown_event_is_none() {
         assert_eq!(bus_topic_for("peer-devices-changed"), None, "设备列表已随缓存守护退役");
-        // 旧快照 topic（peer:transfer / peer:receive）随传输编排下沉票 3 退役：
+        // 旧快照 topic（peer:transfer / peer:receive）随传输编排下沉退役：
         // 状态机删除后无快照可推，映射必须摘除（防止误回接）
         assert_eq!(bus_topic_for("peer-transfer-changed"), None);
         assert_eq!(bus_topic_for("peer-receive-changed"), None);
@@ -2138,7 +2167,7 @@ mod peer_net_tests {
         assert!(err.to_string().contains("unexpected peer node"), "err: {err}");
     }
 
-    // ==================== 引擎原始事件载荷（传输编排下沉票 1） ====================
+    // ==================== 引擎原始事件载荷 ====================
 
     /// Progress 载荷：字段即引擎事实（camelCase 直译），无业务加工
     #[test]
@@ -2356,7 +2385,7 @@ mod peer_net_tests {
     }
 }
 
-// ==================== 契约包身份（WIT 按包拆分，ADR 0061） ====================
+// ==================== 契约包身份（WIT 按包拆分） ====================
 
 /// 本能力域 WIT 包全名（`namespace:name@version`）
 ///

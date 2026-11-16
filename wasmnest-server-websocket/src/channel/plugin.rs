@@ -1,16 +1,16 @@
-//! 插件端点通道处理器（`/ws/plugin/{plugin_id}/{path}`，spec §2.4 / 票据 05）
+//! 插件端点通道处理器（`/ws/plugin/{plugin_id}/{path}`）
 //!
 //! 通道语义：插件在宿主 WS 服务器上挂载的入站端点。宿主只做引擎级事情——
 //! 认证策略执行、帧转发给属主插件、接入/断开事件上报；**业务语义完全归插件**
-//! （消息格式、房间、协议、重连策略宿主一概不解读，spec D1）。
+//! （消息格式、房间、协议、重连策略宿主一概不解读）。
 //!
-//! ## 认证策略（spec D8）
+//! ## 认证策略
 //!
 //! - `auth:"none"`（缺省）：跳过首消息认证状态机（[`AuthMode::None`]）——连上即可
 //!   收发，认证由插件自管；
 //! - `auth:"jwt"`：骨架保证 [`AuthMode::Required`]（窗口内未认证 → close 4001），
 //!   本通道校验首消息 `{"type":"auth","token":"<jwt>"}`（**不引入 `message.rs`
-//!   类型**）。未认证期间的一切业务帧**丢弃 + warn，不缓存**（spec §4.3）。
+//!   类型**）。未认证期间的一切业务帧**丢弃 + warn，不缓存**。
 //!
 //! ## 帧与事件
 //!
@@ -38,7 +38,7 @@ use wasmnest_server_base::ports::BusPort;
 // 认证中心裁决返回的身份类型见 `wasmnest_server_base::identity`（AuthCenter 端口的
 // 返回类型，本文件不需具名引用）
 
-/// 插件端点认证失败 / 超时的关闭码（spec D8；4000 段为应用自定义码）
+/// 插件端点认证失败 / 超时的关闭码（4000 段为应用自定义码）
 const CLOSE_AUTH_FAILED: u16 = 4001;
 const CLOSE_BACKPRESSURE: u16 = 1013;
 
@@ -132,7 +132,7 @@ impl PluginChannel {
 
     /// 未认证期的帧处理（`auth:"jwt"` 专属）
     ///
-    /// 首消息必须是认证帧；其余帧丢弃 + warn（不缓存，spec §4.3）。
+    /// 首消息必须是认证帧；其余帧丢弃 + warn（不缓存）。
     /// 认证失败 → close 4001 并断开（不做重试协商，重连编排归插件）。
     fn handle_unauthenticated_frame(&mut self, conn: &mut WsConnBase, text: String, ctx: &mut ConnCtx) {
         let addr = conn.session.addr;
@@ -242,12 +242,12 @@ impl PluginChannel {
 
 /// 插件端点认证（只置会话认证态，不触达配对设备在线语义）
 ///
-/// **验签与策略都由认证中心做**（v33 / ADR 0033）：宿主不再持有任何设备 JWT
+/// **验签与策略都由认证中心做**：宿主不再持有任何设备 JWT
 /// 密码学（`utils/auth/jwt.rs` 已退役），这里只问中心一次
 /// （`enforce_connection_policy`，与 HTTP 中间件 `auth_gateway::authenticate_with_center`
 /// **同一条路径、同一个判据**），成功后把中心交回的连接身份写进连接会话。
 ///
-/// fail-closed（ADR 0031）：无中心 / 调用失败 / 中心拒绝 → 拒绝连接（随后 close
+/// fail-closed：无中心 / 调用失败 / 中心拒绝 → 拒绝连接（随后 close
 /// 4001），`deny_kind` 三态在中心桥接面分类；仅当端口注册表未注入（无头 / 单测）跳过。
 fn authenticate_endpoint_connection(conn: &mut WsConnBase, token: &str) -> Result<String, (String, String)> {
     // 宿主壳注入的 AuthCenter 端口：无端口（无头 / 单测上下文）即无中心可问
@@ -270,7 +270,7 @@ fn authenticate_endpoint_connection(conn: &mut WsConnBase, token: &str) -> Resul
     Ok(identity.device_id)
 }
 
-/// 帧投递任务：串行消费队列并投给属主插件（同连接内保序，spec §2.2 D2）
+/// 帧投递任务：串行消费队列并投给属主插件（同连接内保序）
 ///
 /// 通道随连接销毁时发送端被 drop → 队列排空后任务自然结束。
 async fn run_endpoint_delivery(
@@ -287,7 +287,7 @@ async fn run_endpoint_delivery(
 }
 
 impl ChannelHandler for PluginChannel {
-    /// 认证策略由端点注册时声明（spec D8）
+    /// 认证策略由端点注册时声明
     fn auth_mode(&self) -> AuthMode {
         match self.auth {
             EndpointAuth::None => AuthMode::None,
@@ -376,7 +376,7 @@ impl ChannelHandler for PluginChannel {
     /// 断开上报（骨架停止前回调，恰好一次）
     ///
     /// 仅在接入事件已发布时上报（认证失败 / 超时连接从未「接入」）；
-    /// 关闭码与 `wasClean` 取自骨架记录的连接终止原因（spec §4.5 / D11）：
+    /// 关闭码与 `wasClean` 取自骨架记录的连接终止原因：
     /// 对端 Close 且 code ∈ {1000,1001} → clean；宿主主动断开（踢出 4004 /
     /// 端点注销 · 属主停用 4005 / 停机 1001）→ 恒 false。
     fn on_close(&mut self, conn: &mut WsConnBase) {

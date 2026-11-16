@@ -1,14 +1,13 @@
 //! host-http 能力域的**出站**段（guest → 外部 HTTP 服务端）
 //!
-//! spec：`.scratch/2026-10-04-wasm-core-lib-split/spec.md` §7 D10（http 出站并入
-//! `wasmnest-server-http`，不建独立 crate）；票 06。
+//! 出站并入本 crate 而不建独立 crate：只有 1 条 WIT 原语，单独成 crate 过薄。
 //!
-//! **零业务代码红线（D1）**：本模块只做引擎原语——连接发起、超时/响应体上限、
+//! **零业务代码红线**：本模块只做引擎原语——连接发起、超时/响应体上限、
 //! 跳转裁决、载荷与响应打包；**不解析任何供应商协议**（`sseFormat` 只有「raw 逐
 //! chunk 透传」与「通用 SSE 按分隔符切分、透传 data 原文」两档，OpenAI/Anthropic
-//! 等格式一律由插件消费侧自管，票据 02 的语义原样保留）。
+//! 等格式一律由插件消费侧自管）。
 //!
-//! ## 为什么出站住在传输面 crate（spec §7.1 的实测结论）
+//! ## 为什么出站住在传输面 crate
 //!
 //! 「出站是 HTTP 客户端、入站是 HTTP 服务端技术栈」——两者在代码上**零依赖**，
 //! 只是同名。但入站注册表本来就在本 crate，而出站只有 1 条 WIT 原语、独立 crate
@@ -180,7 +179,7 @@ pub fn http_fetch(
     may_prompt: bool,
 ) -> Result<Option<String>, String> {
     // 权限仲裁：未声明 network:http 的插件（WASM 路径）在宿主侧直接拒绝。
-    // 前端 TS 路径已 fast-fail，此处是 Rust 端最终仲裁（安全边界，AGENTS.md §8）。
+    // 前端 TS 路径已 fast-fail，此处是 Rust 端最终仲裁（安全边界）。
     if !ports.check_permission(plugin_id, PERMISSION_NETWORK_HTTP, "host_http_fetch") {
         return Err(format!(
             "http error: permission denied: plugin '{}' does not declare network:http",
@@ -190,7 +189,7 @@ pub fn http_fetch(
     let request: serde_json::Value =
         serde_json::from_str(request_json).map_err(|e| format!("http error: invalid request JSON: {}", e))?;
 
-    // 出站授权（票 05 / spec §6.1）：位置在声明门之后、**任何网络动作之前**——
+    // 出站授权：位置在声明门之后、**任何网络动作之前**——
     // 流式与非流式两条分支都在此之前收敛，被拒的请求绝不会触达网络。
     // 缺 `url` 的请求不在此处拦（归执行层的「Missing 'url'」错误），错误分类保持不变。
     if let Some(url) = request.get("url").and_then(|v| v.as_str()) {
@@ -204,7 +203,7 @@ pub fn http_fetch(
                 );
             }
             OutboundAuth::Denied { reason, origin } => {
-                // 错误串只带归一化 origin（不带 path / query：AGENTS §8 凭据红线）
+                // 错误串只带归一化 origin（不带 path / query 里的 token）
                 return Err(format!(
                     "http error: network authorization denied ({}): plugin '{}' -> {}",
                     reason, plugin_id, origin
@@ -415,7 +414,7 @@ pub(crate) async fn execute_http_request(
 /// 宿主 spawn tokio 任务执行 HTTP 请求，逐 chunk 通过事件通道推送到前端
 /// 插件通过监听 streamEvent 事件接收流式数据
 ///
-/// `sseFormat` 不再有供应商语义（票据 02 宿主零业务语义）：空串 = raw 模式
+/// `sseFormat` 不再有供应商语义：空串 = raw 模式
 /// （逐网络 chunk 透传原始字节，消费侧自行切分）；非空 = 通用 SSE 模式（按事件
 /// 分隔符切分、透传 data 行原文）。OpenAI/Anthropic 等格式解析全部由插件消费侧自管。
 async fn execute_streaming_http(
@@ -498,7 +497,7 @@ async fn execute_streaming_http(
             }
         }
     } else {
-        // 通用 SSE 模式：按事件分隔符切分、透传 data 行原文（票据 02 宿主零业务语义）。
+        // 通用 SSE 模式：按事件分隔符切分、透传 data 行原文（宿主零业务语义）。
         // 不做任何供应商格式解析（OpenAI/Anthropic 等语义由插件消费侧自管）。
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
@@ -538,7 +537,7 @@ async fn execute_streaming_http(
     Ok(())
 }
 
-/// 通用 SSE 事件切分与 data 提取（宿主零业务语义，票据 02）
+/// 通用 SSE 事件切分与 data 提取（宿主零业务语义）
 ///
 /// SSE 规范允许 `\n\n`、`\r\n\r\n`、`\r\r` 三种事件分隔符，取缓冲区中最先出现的
 /// 切分（部分服务端使用 CRLF 行尾）；每条完整事件抽取 `data:` 行原文透传，

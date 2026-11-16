@@ -1,7 +1,7 @@
 //! 加密引擎错误类型（2026-11-08，P0 默认形态依赖边界）
 //!
 //! **为什么自带错误类型**：本 crate 是**中性算法原语**——不含业务语义、不含平台
-//! 判断、不碰宿主身份密钥（AGENTS §3.4）。此前它复用 `wasmnest-server-base` 的
+//! 判断、不碰宿主身份密钥。此前它复用 `wasmnest-server-base` 的
 //! `AppError`，只为拿一个错误信封，就把整个桌面 server 依赖面（tauri / rusqlite /
 //! mdns-sd / sysinfo / notify）钉进了自己的正常依赖树。
 //!

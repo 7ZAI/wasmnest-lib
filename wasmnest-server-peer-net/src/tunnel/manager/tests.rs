@@ -1,6 +1,6 @@
-//! T06 隧道管理器单测：单一引用计数、属主仲裁、`allowWan` 门控、生命周期清场。
+//! 隧道管理器单测：单一引用计数、属主仲裁、`allowWan` 门控、生命周期清场。
 //!
-//! 引擎与对等面都用替身（不启动网络）；首帧 / 票据 / 准入等判定属 T05 单测，
+//! 引擎与对等面都用替身（不启动网络）；首帧 / 票据 / 准入等判定另设单测，
 //! 这里只断言「谁在什么时候建立 / 释放 reservation」与「句柄 / 规则只允许属主操作」。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -677,7 +677,7 @@ async fn stop_serializes_with_in_flight_recount_and_keeps_config() {
     assert!(!manager.has_open_resources("p"));
 }
 
-/// 令牌票据：需要本端对等面（T06 的 `tunnel-unavailable` 是移动端的显性出路）
+/// 令牌票据：需要本端对等面（`tunnel-unavailable` 是移动端的显性出路）
 #[tokio::test]
 async fn ticket_issues_only_after_peer_face_is_ready() {
     let engine = FakeEngine::new();
@@ -690,7 +690,7 @@ async fn ticket_issues_only_after_peer_face_is_ready() {
         .is_err());
 }
 
-// ==================== §4.9 传输模式判定（判据表 + 状态机接线）====================
+// ==================== 传输模式判定（判据表 + 状态机接线） ====================
 
 /// 落在 [`wifi_facts`] 子网内的对端 LAN 候选
 const LAN_ADDR: &str = "192.168.1.20";
@@ -1001,7 +1001,7 @@ fn dialable_addrs_never_invents_addresses() {
     );
 }
 
-/// 全局事件名 → 插件总线 topic 的映射锁（设计 §7.2 四个事件）
+/// 全局事件名 → 插件总线 topic 的映射锁（四个事件）
 #[test]
 fn tunnel_events_map_to_bus_topics() {
     assert_eq!(crate::bus_topic_for("peer-mode"), Some("peer:mode"));
@@ -1286,7 +1286,7 @@ fn relay_lost_is_not_advertised_as_dialable() {
     assert!(advertised_relay_addr(RelayState::Idle, None).is_none());
 }
 
-/// R07（口径 A，spec §9.2#2 默认）：`matched` 只认传输层信任；
+/// `matched` 只认传输层信任（默认口径 A）；
 /// 未信任且无票据时不得走到后端。
 #[tokio::test]
 async fn matched_comes_from_transport_trust_only() {
@@ -1378,7 +1378,7 @@ fn manager_with(
     })
 }
 
-// ==================== §4.9 wan-active 回切探测（T06 第四轮）====================
+// ==================== wan-active 回切探测 ====================
 
 /// 蜂窝事实：`connect` 直切 wan（准备 wan-active 现场）
 fn cellular_facts() -> NetworkFacts {

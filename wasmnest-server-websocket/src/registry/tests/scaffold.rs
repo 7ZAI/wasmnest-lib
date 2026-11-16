@@ -233,7 +233,7 @@ pub(super) async fn endpoint_targeted_send_and_broadcast() {
     assert!(sent <= 2, "广播成功数不得超过在线客户端数，实际 {sent}");
 }
 
-// ==================== 停机下线（票据 05 四条断开路径之一：服务器停机 1001） ====================
+// ==================== 停机下线（四条断开路径之一：服务器停机 1001） ====================
 #[actix_rt::test]
 pub(super) async fn shutdown_closes_only_plugin_endpoint_clients() {
     let registry = local_registry();

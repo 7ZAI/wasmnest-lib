@@ -1,6 +1,6 @@
 //! HTTP 传输面路由装配：公开端点 + `/api` scope
 //!
-//! 从 `core/app.rs` 拆出（票 07）：两个公开 HTTP 端点（`health_check` /
+//! 从 `core/app.rs` 拆出：两个公开 HTTP 端点（`health_check` /
 //! `terminal_bg_image`）与 `/api` scope（含其 `wrap` 链）整块搬入——注册顺序与
 //! `wrap` 相对次序**一字不改**（`Scope::wrap` 后注册者先执行，网关写在验签之前
 //! 是硬约束，见 `configure_routes` 内注释）。此后 HTTP 面的路由改动只落在本文件。
@@ -9,8 +9,8 @@
 //! `WS_EVENT_PATH` 归 WS 面（`wasmnest-server-websocket` 的 `routes.rs`）——端点常量不留在
 //! 组合物里，避免「内核知道具体路由」的错觉。
 //!
-//! 依赖方向（不变量 I2 / I1）：本文件只**向下**依赖 `wasmnest-server-core` 与系统常量，
-//! 与 `websocket` 面零横向 import（I1，票 08 加锁）。
+//! 依赖方向：本文件只**向下**依赖 `wasmnest-server-core` 与系统常量，
+//! 与 `websocket` 面零横向 import（由边界锁固定）。
 
 use actix_web::{web, HttpResponse};
 use serde_json::json;
@@ -54,7 +54,7 @@ fn terminal_bg_content_type(ext: &str) -> &'static str {
 ///
 /// **ABI v29 下沉（HTTP 路由代码注册）**：URL 归属由插件注册声明（`/static/terminal-bg`，
 /// auth:none），本路由按动态注册表门控——插件未注册 / 属主未激活 → 404（URL 生命周期
-/// 归插件）。文件读取保留宿主（spec §7 待决已决）：背景图在宿主应用数据目录，而
+/// 归插件）。文件读取保留宿主：背景图在宿主应用数据目录，而
 /// host-fs 只有文本读取（`fs:read` 返回 String，图像二进制不可经插件读），故「宿主读
 /// 文件」是二进制通道缺口下的引擎残留，渲染逻辑（URL 声明 / 档位 / 生命周期）归插件。
 ///
@@ -142,7 +142,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.route("/static/terminal-bg", web::get().to(terminal_bg_image));
 
     // /api scope — 中间件顺序即请求顺序：JWT 验签 → HTTP 协议网关 → 路由
-    // 顺序是硬约束（票 01）：网关只能在验签之后介入，业务 JWT 的验签执行点不下沉；
+    // 顺序是硬约束：网关只能在验签之后介入，业务 JWT 的验签执行点不下沉；
     // 由 server/gateway.rs 的 unverified_requests_never_reach_gateway 在真实 actix 栈上钉死
     cfg.service(
         web::scope("/api")

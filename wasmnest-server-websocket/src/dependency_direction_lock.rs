@@ -1,4 +1,4 @@
-//! WS 面的依赖方向锁（server-lib-split 票 05：从宿主 `server/websocket.rs` 迁来并升级）
+//! WS 面的依赖方向锁（从宿主 `server/websocket.rs` 迁来并升级）
 //!
 //! 拆成 crate 后，原文本锁守的不变量换了执行方式，**强度只增不减**：
 //!
@@ -14,7 +14,7 @@
 //!   `crate::server::{http,websocket,core}::…` 即违规。注：`crate::server::*` 这类
 //!   宿主路径在本 crate 里本来也编译不过（没有 `server` 模块），本锁挡的是**注释/文档
 //!   与字符串形态**的回接暗示，以及清单之外的人为旁路（如 `[patch]`）。
-//! - **旧平铺路径不复发**（票 08 断言 B 的 14 个子段）。
+//! - **旧平铺路径不复发**（既有断言 B 的 14 个子段）。
 //!
 //! 锁自身文件不参与源码扫描：它的失败消息与文档必然携带这些字面量（自锁规避手法
 //! 与宿主版一致——原先是靠「锁挂在面目录之外」）。
@@ -22,7 +22,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// 本 crate 源码 `.rs` 文件数下限（票 05 实测 8：lib + conn + endpoint + registry +
+/// 本 crate 源码 `.rs` 文件数下限（实测 8：lib + conn + endpoint + registry +
 /// routes + websocket_manager + channel.rs + channel/plugin.rs，下调留余量）
 const MIN_WS_FILES: usize = 6;
 
@@ -35,7 +35,7 @@ const FORBIDDEN_DEPS: &[&str] = &["wasmnest-server-http", "wasmnest-desktop"];
 /// 必须出现在本 crate 依赖清单里的 crate（I2 向下依赖内核与基础层）
 const REQUIRED_DEPS: &[&str] = &["wasmnest-server-core", "wasmnest-server-base"];
 
-/// 断言「旧平铺路径不得复发」的子段清单（票 08 原文）
+/// 断言「旧平铺路径不得复发」的子段清单（原文）
 const LEGACY_SERVER_CHILD_SEGMENTS: &[&str] = &[
     "controllers",
     "dtos",

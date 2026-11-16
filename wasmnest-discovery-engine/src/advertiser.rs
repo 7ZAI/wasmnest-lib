@@ -103,7 +103,7 @@ impl MdnsAdvertiser {
 
     /// 启动服务广播
     pub async fn start(&self, config: AdvertiseConfig) -> AdvertiserResult<()> {
-        // 输入校验在 Rust 端（§8 红线）：空服务名 / 端口 0 / 超长实例名直接拒绝
+        // 输入校验在 Rust 端：空服务名 / 端口 0 / 超长实例名直接拒绝
         config.validate()?;
 
         let mut id_guard = self.advertise_id.write().await;

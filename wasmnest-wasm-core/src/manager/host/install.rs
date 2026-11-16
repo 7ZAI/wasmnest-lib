@@ -166,7 +166,7 @@ impl PluginHost {
             )));
         };
 
-        // 实例化收为一条路径（票 11 第 2 项）：与 `new()` 扫描路径共用同一函数，
+        // 实例化收为一条路径：与 `new()` 扫描路径共用同一函数，
         // 失败态语义也由它裁决（Error 入表、列表可见可诊断）
         let (record, instance) = self.instantiate_wasm_plugin(&loaded);
         self.plugins.write().await.insert(plugin_id.clone(), record);
@@ -211,7 +211,7 @@ impl PluginHost {
         self.storage.has_any(plugin_id).await
     }
 
-    // ==================== 权限审批（ADR 0020 / 审计票 03） ====================
+    // ==================== 权限审批 ====================
 
     /// 人工批准用户安装插件的权限清单（审批弹层的前端命令落点）
     ///
@@ -498,7 +498,7 @@ impl PluginHost {
                 "Failed to revoke plugin approval on uninstall"
             );
         }
-        // 授权策略与授权记录（spec §8.3）：**卸载清空 / 重装即全新授权**。
+        // 授权策略与授权记录：**卸载清空 / 重装即全新授权**。
         // 不跟着 `clear_all` 走 —— 那是插件私有存储，这两张表在主库。停用不清空，
         // 那是另一条语义（见 auth_policy::purge_plugin 的文档与 lifecycle 用例）
         let auth_store = crate::security::auth_policy::AuthPolicyStore::new(self.storage.db());

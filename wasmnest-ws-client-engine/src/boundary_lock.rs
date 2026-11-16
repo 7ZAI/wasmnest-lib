@@ -1,7 +1,7 @@
 //! 边界锁：生产源码零平台 / SDK / wasm-core / 机制内核 / WIT 绑定层，
 //! 生产依赖清单零内部 crate
 //!
-//! ## 这个 crate 的存在意义就是那条边界（AGENTS §0 路径基准 / §5 无业务内核）
+//! ## 这个 crate 的存在意义就是那条边界
 //!
 //! `wasmnest-ws-client-engine` 是**通用能力 crate**：默认形态 = 纯引擎 + 端口抽象。
 //! 它的可复用性不是文档承诺，而是靠本锁钉住的两条不变量：
@@ -566,7 +566,7 @@ fn production_source_is_free_of_host_and_sdk_references() {
     let hits = find_source_violations(&prod);
     assert!(
         hits.is_empty(),
-        "能力 crate 的生产源码出现宿主回接形态（AGENTS §0「默认形态 = 纯引擎 + 端口抽象」被破坏）\n{}\n\
+        "能力 crate 的生产源码出现宿主回接形态（「默认形态 = 纯引擎 + 端口抽象」被破坏）\n{}\n\
          （tauri:: / wasmnest_plugin_api* / wasmnest_wasm_core* / wasmnest_host_kit / bindgen! / \
          inventory::submit / MessageBus / WasmPluginState … ——平台差异面一律经 ports::WsClientPorts 注入）",
         format_hits(&hits)
@@ -640,7 +640,7 @@ fn crate_root_has_no_external_test_surfaces() {
             ));
         }
     }
-    // WIT **绑定层**的载体不得在场；**纯契约分片**例外（ADR 0052 D2）：双端功能级
+    // WIT **绑定层**的载体不得在场；**纯契约分片**例外：双端功能级
     // 交集的契约真源住能力域 crate 的 `wit/<domain>.wit`（本 crate 自 2026-10-13
     // 起持共享客户端域 `ws.wit`，由双端 compose 与 `server-websocket` 的 provider
     // bindgen 消费）。绑定层仍零——B-1 标记禁词与 B-3 依赖面锁（禁 wit-bindgen /
@@ -656,7 +656,7 @@ fn crate_root_has_no_external_test_surfaces() {
             .unwrap_or(false);
         if !only_contracts {
             violations.push(
-                "wit/ 含非契约文件 —— WIT 绑定层载体不得在场（只允许 `.wit` 契约分片，ADR 0052 D2）"
+                "wit/ 含非契约文件 —— WIT 绑定层载体不得在场（只允许 `.wit` 契约分片）"
                     .to_string(),
             );
         }

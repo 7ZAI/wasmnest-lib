@@ -1,4 +1,4 @@
-//! Core 机制绑定层：**双端唯一一份**（票 03 Option A 裁决；ADR 0052 D1 收窄为机制面）
+//! Core 机制绑定层：**双端唯一一份**（Option A 裁决；机制面收窄）
 //!
 //! ## 这份是什么
 //!
@@ -44,7 +44,7 @@ use wasmnest_host_kit::WasmPluginState;
 use wasmtime::component::{bindgen, Linker};
 
 bindgen!({
-    // 契约真源（票 03 Option A）：`wit/core.wit` 自包含（无 `use`、全部 interface 内联
+    // 契约真源（Option A）：`wit/core.wit` 自包含（无 `use`、全部 interface 内联
     // 定义），可直接单文件 bindgen，不经端生成物目录——生成物随各端 compose.json 增删
     // cap 分片，经它绑定会把端差异引进内核。路径基准是 `CARGO_MANIFEST_DIR`（crate 根）。
     path: "wit/core.wit",
@@ -68,7 +68,7 @@ bindgen!({
 // `wasmnest-notify-engine/wit/notify.wit`，实现按端住宿主 `plugin/notify.rs`）；
 // host-pty / host-http-endpoint / host-websocket-server（能力域 crate 的端扩展面，
 // T-03 起迁桌面宿主）；host-peer / host-mdns / host-http / host-websocket（双端功能级
-// 交集，契约真源已随 ADR 0052 D2 迁各能力域 crate 的 `wit/<domain>.wit`，由 caps
+// 交集，契约真源已迁各能力域 crate 的 `wit/<domain>.wit`，由 caps
 // 组合——不再在 core.wit）。
 
 // ==================== host-storage ====================
@@ -96,7 +96,7 @@ impl wasmnest::plugin::host_storage::Host for WasmPluginState {
 }
 
 // ==================== host-plugin-database ====================
-// ADR 0036：`host-database` / `host-plugin-database` / `host-storage` 三 interface 的
+// `host-database` / `host-plugin-database` / `host-storage` 三 interface 的
 // 机制实现留在 `host_api::{database, sqlite}`，故 `Host` impl 在本文件。期间它们被搬进
 // `wasmnest-sqlite-engine`（provider 侧自生成同名 trait，两侧同时注册会让 linker 报
 // `defined twice`），随 crate 撤销一并归位。
@@ -207,7 +207,7 @@ impl wasmnest::plugin::host_metrics::Host for WasmPluginState {
 
 // ==================== host-worker ====================
 //
-// worker 调度契约面（ADR 0059；spec `.scratch/2026-10-28-worker-mechanism/`）。
+// worker 调度契约面（调度器机制的契约真源）。
 // 机制本体（调度器 / worker 实例化 / 终态事件投递）随 worker 运行时端到端票
 // （issue #11）落地——契约面票（issue #10）先落**权限门 + fail-visible 桩**：
 // manifest 已可声明 `workers` 块与 `worker:run` 权限，submit / cancel 走到的是
@@ -276,7 +276,7 @@ impl wasmnest::plugin::host_events::Host for WasmPluginState {
     }
 }
 
-// 2026-10-13 功能级统一（ADR 0052 D3）：`notify` 本体迁共享域契约
+// 2026-10-13 功能级统一：`notify` 本体迁共享域契约
 // `wasmnest-notify-engine/wit/notify.wit`（双端 caps 消费），桌面
 // `host-events-desktop` 整 interface 退役；实现按端住宿主
 // （桌面 / 移动各自 `src-tauri/src/plugin/notify.rs`），内核不再持有通知实现。
@@ -355,13 +355,13 @@ impl wasmnest::plugin::host_bus::Host for WasmPluginState {
     }
 }
 
-// host-api-call（互调，ADR-0017）的 **WIT impl** 在桌面宿主
+// host-api-call（互调）的 **WIT impl** 在桌面宿主
 // `src-tauri/src/plugin/api_call.rs` 路径 B 薄转发：无权限门，互调门禁在注册表。
 // 回复道编排（`api_call` + `ReplyHandler` + 属主校验）留内核 `host_api/api.rs`。
 
-// ==================== host-platform（ADR 0022 v2）====================
+// ==================== host-platform ====================
 //
-// host-peer / host-mdns / host-websocket / host-http 已随 ADR 0052 D2 移出 core.wit
+// host-peer / host-mdns / host-websocket / host-http 已移出 core.wit
 // （契约真源在各能力域 crate 的 `wit/<domain>.wit`，由双端 caps 组合；实现按端不同
 // ——桌面在宿主 adapter、移动在移动宿主），故本文件不实现它们——core 绑定层只覆盖
 // 内核自己实现、双端同源的那 8 个机制 interface。
@@ -369,7 +369,7 @@ impl wasmnest::plugin::host_bus::Host for WasmPluginState {
 impl wasmnest::plugin::host_platform::Host for WasmPluginState {
     // `pick-*` 需两件 scope：权限门（`fs:pick`）+ fs_auth（选择结果授权校验）。
     // 选择器本体不在内核：经宿主装配的 `PlatformPickerPort` 注入（桌面原生对话框
-    // / 移动 SAF，端差异实现住各端宿主，ADR 0052 D1；见 `host_api::ports`）。
+    // / 移动 SAF，端差异实现住各端宿主；见 `host_api::ports`）。
     fn pick_files(&mut self) -> Result<String, String> {
         let picker = self.host_ctx().platform_picker();
         platform::platform_pick_files(
@@ -380,7 +380,7 @@ impl wasmnest::plugin::host_platform::Host for WasmPluginState {
         )
     }
 
-    /// `pick-folders`（2026-10-13 功能级统一，ADR 0052 D3：原
+    /// `pick-folders`（2026-10-13 功能级统一：原
     /// `pick-folder` 单值形与桌面扩展多选形合并）：返回 string[] JSON，
     /// 空数组 = 用户取消 / 未选任何目录。
     fn pick_folders(&mut self) -> Result<String, String> {
@@ -405,7 +405,7 @@ impl wasmnest::plugin::host_platform::Host for WasmPluginState {
     }
 }
 
-// 2026-10-13 功能级统一（ADR 0052 D3）：桌面扩展 `host-platform-desktop.pick-folders`
+// 2026-10-13 功能级统一：桌面扩展 `host-platform-desktop.pick-folders`
 // 已并入 core `host-platform.pick-folders`（本文件上方 impl），桌面扩展只剩
 // wsl-distros / local-ipv4-addresses / reveal-in-dir 三函数，WIT impl 在桌面宿主
 // `src-tauri/src/plugin/platform.rs`。
@@ -431,7 +431,7 @@ pub(crate) fn exports(
 /// ABI 形态探测（`wasmnest:plugin@<version>/abi-form.form` → `u32`，桌面独有 cap 导出）
 ///
 /// 原生探测（无绑定的 `TypedFunc` 直取，`abi-form` 不在 `world core` 表内）：`() -> u32` **无 `result` 返回**，因此能
-/// 用 `TypedFunc` 表达（带 `result` 的导出如 `events.*` 不能，见 ticket-03 §9.6）。
+/// 用 `TypedFunc` 表达（带 `result` 的导出如 `events.*` 不能）。
 /// 语义上 `form` 只判「component 形态 vs core 形态」这一跨端一致的事实，具体
 /// 期望值是端策略（桌面 `FORM_COMPONENT = 1`），由调用方比对。
 pub(crate) fn abi_form(

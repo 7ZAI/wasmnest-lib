@@ -111,8 +111,8 @@ impl PluginHost {
 
         // 1.5 并入 manifest wasiPreopenDirs 声明目录(展开不过滤授权,未授权
         // 项正需在此弹窗)。只读档同样要弹窗授权——档位收紧 guest 写能力，
-        // 不构成免授权通道（票 07 裁决 3）。
-        // **仅 worker 类别可达**（ADR 0034）：非 worker 声明 preopen 在加载期被
+        // 不构成免授权通道。
+        // **仅 worker 类别可达**：非 worker 声明 preopen 在加载期被
         // 显性拒绝，主 wasm-app 文件访问走 host-fs + preauth_paths——本分支是
         // worker 预留能力的授权前置，当前对一切可加载 manifest 不可达。
         // 短读锁克隆后立即释放:check_batch 会发事件、可能
@@ -160,7 +160,7 @@ impl PluginHost {
 
         // 3. 合并未授权路径为单次弹窗(check_batch 内部已实现事件 emit + 30s 超时)
         //
-        // 操作集 = 读 + 写（票 02）：这里授权的是**插件自报的数据目录**（preauth_paths，
+        // 操作集 = 读 + 写：这里授权的是**插件自报的数据目录**（preauth_paths，
         // 由插件自己写、WASI 预打开目录同源），插件显然要在里面读写；按只读落账会让
         // 插件的第一次写触发新弹窗——与改造前「无操作维度 = 读写等价」相比是行为回归
         let allowed = self

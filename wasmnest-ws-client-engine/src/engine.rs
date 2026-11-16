@@ -5,7 +5,7 @@
 //! 语义、停用回收。宿主只剩薄适配器：装配 [`crate::ports::WsClientPorts`] 并把 5 条
 //! 原语转成自己的 WIT/ABI 命令面。
 //!
-//! ## 纯引擎纪律（AGENTS §5.1）
+//! ## 纯引擎纪律
 //!
 //! **本模块不解释字节**：url / headers / subprotocols 与帧内容都是纯透传。产品语义
 //! （订阅协议 / ack-resync / 重订阅编排）归各 wasm 应用；本 crate 不含任何产品名词。

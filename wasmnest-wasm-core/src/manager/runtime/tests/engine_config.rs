@@ -14,7 +14,7 @@
 //!
 //! 纯逻辑（默认值 / 推导规则 / 枚举解析 / 校验规则）在 `crate::config` 的单测里。
 //!
-//! **票 04 拆分**：`customizer_overrides_unlocked_knobs_end_to_end`（第 3 层
+//! **拆分**：`customizer_overrides_unlocked_knobs_end_to_end`（第 3 层
 //! 「真实 trap」端到端，需实例化 SDK 夹具）随「wasm-core 不再持全 world 绑定」
 //! 迁桌面宿主 `src-tauri/tests/engine_e2e.rs` 同名用例；留本文件的用例全部只建
 //! Engine / 运行时、不实例化组件。

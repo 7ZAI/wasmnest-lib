@@ -1,7 +1,7 @@
 //! `host-plugin-database`（插件私有库 5 原语）实现层
 //!
-//! 自桌面 `packages/wasmnest-wasm-core/src/host_api/database.rs` 上移（票 18 批次 3），
-//! **2026-10-09 双端机制决策（用户指令）收缩**：主库由 wasm-core 管理，**不给任何
+//! 自桌面 `packages/wasmnest-wasm-core/src/host_api/database.rs` 上移。
+//! **双端机制决策收缩**：主库由 wasm-core 管理，**不给任何
 //! wasm-app / 插件直接调用的方法**——`host-database`（主库）接口自双端 WIT 面移除，
 //! 本层随之删除主库机制（authorizer 引擎层纵深 / 主库前缀校验 / 主库超时包裹），
 //! 只保留**插件私有库面**（每插件属主分区的独立 SQLite 库）：

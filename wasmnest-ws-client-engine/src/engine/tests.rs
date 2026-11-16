@@ -438,7 +438,7 @@ fn close_code_semantics() {
 
 // ==================== 5. 队列满 fail（不阻塞实例） ====================
 
-/// writer 通道满 → `send_text` / `send_binary` 立即报错而非阻塞（ADR 0029 硬要求）
+/// writer 通道满 → `send_text` / `send_binary` 立即报错而非阻塞
 #[tokio::test]
 async fn send_fails_fast_when_queue_full() {
     let owner = plugin_id("queue");

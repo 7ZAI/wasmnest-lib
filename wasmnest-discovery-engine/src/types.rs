@@ -44,7 +44,7 @@ pub struct AdvertiseConfig {
 }
 
 impl AdvertiseConfig {
-    /// 输入校验（§8 输入校验在 Rust 端）：空服务名 / 端口 0 / 实例名超长均拒绝
+    /// 输入校验：空服务名 / 端口 0 / 实例名超长均拒绝
     pub fn validate(&self) -> AdvertiserResult<()> {
         if self.service_name.trim().is_empty() {
             return Err(AdvertiserError::InvalidInput(

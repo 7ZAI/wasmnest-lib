@@ -1,11 +1,11 @@
 //! WASM 插件运行时（**单形态**，2026-10-13 起无 common/bare 之分 · 用户裁决）
 //!
-//! 用户裁决（.scratch/2026-10-13-runtime-single-form/spec.md）：wasm-core 提供
+    // ==================== 用户裁决（单形态收口的既定口径）：wasm-core 提供
 //! **统一的基础 ABI**（core.wit），真正 ABI = 宿主组装各自 SDK WIT 后的产物；
 //! Linker 装配**机制一份**，端差异（cap 域实现 / 权限门 / 事件词汇）由各端宿主
 //! `HostModule` 自报组装实现差异——全部按桌面形态统一，移动端宿主改造适配。
 //!
-//! 票 04（桌面）与票 05（移动）把两个壳里的 WIT 绑定全部迁到各端宿主后，本模块
+//! 桌面与移动两份壳里的 WIT 绑定全部迁到各端宿主后，本模块
 //! 只剩**一份机制接线**：
 //!
 //! - Engine/Linker/Store 生命周期 + WASI 装配（[`wasi`]，p2/p3，默认全开）+
@@ -13,7 +13,7 @@
 //!   `src-tauri/src/plugin/*.rs`）
 //! - **组件形态检查参数化**（[`AbiPolicy`]，只管 `abi-form`）：wasm-core 零端知识，
 //!   形态要求（桌面 `form = Some(1)` / 移动 `None`）由宿主装配时注入；整数 ABI 与
-//!   版本协商已随 wit 包版本化退役（ADR 0051 D2）——版本一致性由 linker 按含版本
+//!   版本协商已随 wit 包版本化退役——版本一致性由 linker 按含版本
 //!   import 名精确匹配保证
 //! - 端差异宿主侧表达：cap 域 `Host` impl 经 `HostModule` 自报汇入同一个 Linker；
 //!   `events` 导出契约由宿主注入 [`guest_events::GuestEventDispatcher`]；
@@ -28,10 +28,10 @@
 // Engine 构建纯函数、trap 判定——全部双端一份，见 [`engine`]。
 // **`bindgen!` / `impl … Host` / linker 装配 / `verify_abi` / `Loaded*Plugin` 导出
 // 调用面不在这里**：core 交集在 [`core_binding`]（唯一一份），cap 与端差异在
-// 各端宿主（ADR 0049 + 单形态裁决）。
+// 各端宿主（既定裁决）。
 pub(crate) mod engine;
 
-// ==================== Core 交集绑定层（唯一一份，票 03 Option A） ====================
+// ==================== Core 交集绑定层（唯一一份） ====================
 //
 // 绑契约真源 `wit/core.wit` 的 `world core`（双端全等的交集），cap 组合面由各端宿主
 // 自有绑定 + `HostModule` 自报汇入同一个 Linker。形态差异（cap / WASI / 端 SDK 类型）
@@ -47,7 +47,7 @@ pub(crate) mod core_binding;
 // 本模块（[`component`] 壳）提供。
 pub(crate) mod wasi;
 
-// ==================== Guest 事件派发契约面（票 03 / ADR 0022） ====================
+// ==================== Guest 事件派发契约面 ====================
 //
 // 事件循环机制留内核，`events` 导出的调用契约由各端宿主实现本 trait 并注入
 // （双端 `events` 词汇完全不同，且带 `result` 返回无法原生探测，见模块文档）。
@@ -70,16 +70,16 @@ pub(crate) mod fixture_target;
 // 重导出（glob 过壳：component 分支的全部 pub 符号保持
 // `crate::manager::runtime::X` 路径不变——宿主与 crate 内引用零改动）
 pub use component::LoadedWasmPlugin;
-// 票 02 批次 02：生效能力模块白名单（内建在册 ∪ 宿主自报）——宿主侧集成锁
+// 批次 02 的生效能力模块白名单（内建在册 ∪ 宿主自报）——宿主侧集成锁
 // （`src-tauri/tests/pty_wiring.rs` 的双向比对）必须用同一份合并结果，不得各拼一份。
 pub use component::host_module_whitelist;
-// 票 06：实例元数据与可选导出句柄快照（调用模型两侧共用的只读投影）
+// 实例元数据与可选导出句柄快照（调用模型两侧共用的只读投影）
 // 消费方在桌面装配面（`manager/host.rs` / 属主路径）：移动形态经宿主侧装配，
 // 不消费本 re-export——单形态共享故保留 + 按形态豁免 unused
 #[cfg_attr(not(feature = "desktop-assembly"), allow(unused_imports))]
 pub(crate) use component::{InstanceMeta, OptionalExports};
 
-// ==================== 宿主上下文（票 04 迁移 host_api::context） ====================
+// ==================== 宿主上下文 ====================
 // 定义已迁 `crate::host_api::context`（host_api 消费方家园）；以下 re-export
 // 保持历史路径 `manager::runtime::WasmHostContext` 等编译绿——manager→host_api 合法
 // 方向，后续迭代按需清理。
@@ -87,7 +87,7 @@ pub use crate::host_api::context::{
     CapabilityProvider, PluginServices, ProcessRegistry, WasmHostContext,
 };
 // `WasmPluginState` / `StoreSpec` 连同 `WasiView` 与 `ResourceLimiter` 实现整体搬入
-// `wasmnest-host-kit`（wasm-core-lib-split 票 03）：它们是**插件实例状态的机制面**，
+// `wasmnest-host-kit`（wasm-core 拆 lib 时）：它们是**插件实例状态的机制面**，
 // 且必须与「能力 crate 能命名状态类型」这一硬约束同 crate。可见性以 `pub use`
 // 原样转发，既有 `runtime::WasmPluginState` 等引用路径逐字不变。
 pub use wasmnest_host_kit::state::{StoreSpec, WasmPluginState};
@@ -118,7 +118,8 @@ use engine::{
     build_engine_config, wasmtime_backtrace_details, wasmtime_opt_level, wasmtime_profiling,
 };
 // 异步桥（`block_on_async`）已中立化到 core-runtime-util：本模块与它的消费者
-// （host_api / security / task 等）同为其使用方，不再由本模块定义（票 01）；
+// （host_api / security / task 等）同为其使用方，不再由本模块定义（机制中立化
+// 的既定方向）；
 // 本模块仅测试代码使用它，故 cfg(test) 门控（非 test 构建零 unused import）
 use crate::config::ResourceOverrides;
 use crate::manifest::WasiPreopenDir;
@@ -135,7 +136,7 @@ use wasmtime::Engine;
 
 /// 宿主要求的组件**形态**规格（**端事实**，宿主装配时注入；wasm-core 零端知识）
 ///
-/// **只管形态，不再管版本**（ADR 0051 D2）：整数 `ABI_VERSION` 与 WIT `interface abi`
+/// **只管形态，不再管版本**：整数 `ABI_VERSION` 与 WIT `interface abi`
 /// 已退役——契约版本搬上 wire（`package wasmnest:plugin@<version>`，见
 /// [`crate::contract`]），宿主与 guest 版本不等由 wasmtime linker 按含版本的完整
 /// import 名**精确匹配**直接拒绝，失败诊断自带包名 + 版本（并命中
@@ -172,7 +173,7 @@ impl Default for AbiPolicy {
 
 /// `abi-form.form()` 的组件形态判别值（WIT `abi-form` 接口导出值）
 ///
-/// **只管形态，不管版本**（ADR 0051 D2）：迁移阶段 C 后组件是唯一形态，
+/// **只管形态，不管版本**：迁移阶段 C 后组件是唯一形态，
 /// `FORM_CORE = 0` 已随该阶段删除；保留常量 1 是为了挡住未来误引入 0 值导致
 /// 加载路径回退。移动 WIT 无 `abi-form` 导出（`form = None` 不比较），本值对
 /// 移动装配无意义。
@@ -190,7 +191,7 @@ pub fn panic_payload_to_string(panic: &Box<dyn std::any::Any + Send>) -> String 
         .unwrap_or_else(|| "unknown panic".to_string())
 }
 
-/// 票 03：桌面插件与测试 fixture 统一 wasm32-wasip3 构建参数
+/// 桌面插件与测试 fixture 统一 wasm32-wasip3 构建参数
 ///
 /// 单一事实来源 = `scripts/wasip3-toolchain.sh`（WASIP3_NIGHTLY）；stable 1.99
 /// （预计 2026-10 中）发布后随工具链迁移移除 nightly pin，见
@@ -229,7 +230,7 @@ pub struct WasmRuntime {
     monitor: Arc<MetricsRegistry>,
     /// ABI 规格（端事实，宿主装配时注入；见 [`AbiPolicy`]）
     abi_policy: AbiPolicy,
-    /// 端专属 guest 事件派发器（票 03 / ADR 0022）
+    /// 端专属 guest 事件派发器（机制留内核、契约面上移）
     ///
     /// 缺省 `UnwiredGuestEvents`（派发即 fail-visible）；生产由 `PluginHost::new`
     /// 与移动宿主 `PluginManager::init_wasm_runtime_with` 同构地注入各端实现
@@ -251,7 +252,7 @@ pub struct WasmRuntime {
 /// [`engine::reassert_locked_knobs`] 重申，钩子改不动；要改走 [`CoreConfig`]（有跨字段校验）。
 ///
 /// 钩子类型需命名 `&mut wasmtime::Config`——写钩子的宿主**不必自己加 wasmtime 依赖**，
-/// 经 `wasmnest_wasm_core::wasmtime` 再导出即可（ADR 0019 双端锁版，宿主侧不重复锁版本）。
+/// 经 `wasmnest_wasm_core::wasmtime` 再导出即可（双端锁版，宿主侧不重复锁版本）。
 pub type EngineCustomizer = Arc<dyn Fn(&mut wasmtime::Config) -> crate::Result<()> + Send + Sync>;
 
 /// 引擎装配输入（[`WasmRuntime::with_setup`] 的配置包）
@@ -263,7 +264,7 @@ pub type EngineCustomizer = Arc<dyn Fn(&mut wasmtime::Config) -> crate::Result<(
 pub struct EngineSetup {
     /// 内核配置（Engine 参数在构建期固化；`store` 部分仍可运行时覆盖）
     pub config: CoreConfig,
-    /// 第一方免弹窗归属清单（票 08/P0-2；空表 = 无免弹窗项）
+    /// 第一方免弹窗归属清单（空表 = 无免弹窗项）
     pub first_party_dirs: Vec<(&'static str, Vec<crate::security::fs_auth::TrustedDir>)>,
     /// 引擎定制钩子（可选，见 [`EngineCustomizer`]）
     pub customizer: Option<EngineCustomizer>,
@@ -316,7 +317,7 @@ impl WasmRuntime {
     /// 而是通过 [`WasmHostContext`] 注入到每个插件实例的 Store state 中。
     /// `app_handle` 为 None 时（无头/测试上下文）依赖前端事件的宿主能力降级。
     ///
-    /// `first_party_dirs`：第一方免弹窗归属清单（票 08/P0-2，宿主装配时注入；空表
+    /// `first_party_dirs`：第一方免弹窗归属清单（宿主装配时注入；空表
     /// = 无免弹窗项）——经本构造函数直通 `FsAuthChecker`。
     ///
     /// **形态规格**（[`AbiPolicy`]）：生产桌面宿主必须显式注入；测试/无头
@@ -424,7 +425,7 @@ impl WasmRuntime {
         ));
 
         let monitor = Arc::new(MetricsRegistry::new());
-        // task 段快照源注册（spec 票 02 去环）：monitor 经注册回调取 host-task
+        // task 段快照源注册（去环）：monitor 经注册回调取 host-task
         // 指标，monitor.rs 不再内联引用 manager::task。注册幂等；monitor 仅经本
         // runtime 暴露，快照必在注册之后——生产路径无「未注册段降级」窗口
         // （降级仅裸 registry 单测可观测，见 monitor.rs tests）。
@@ -646,43 +647,43 @@ impl WasmRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // 测试基建上提（wasm-core 纯净性收口票 05b）：无头运行时装配 / 插件私有库根 /
+    // 测试基建上提（wasm-core 纯净性收口后）：无头运行时装配 / 插件私有库根 /
     // 会话中心串行锁 / 认证中心注册表闸门迁至 `crate::test_support`（常编译 pub，
     // lib 集成测试同源消费）。本 mod 及各域测试文件（`use super::*` 继承）经此 glob
     // 继续可见同名符号。
     use crate::test_support::*;
 
     // A0-3 前置探针（P1/P2/P5）：async store 兼容性 + 资源限制 async 语义 + 性能基线。
-    // 文档：.scratch/2026-09-21-a0-3-host-async/spec.md + report.md（只读探针，不碰生产路径）
+    // （只读探针，不碰生产路径）
     mod a03_probe;
-    // 终端输出消费插件化性能前置验证（terminal_output_perf，P1-P3）随票 02 批次 02
-    // 迁宿主 `src-tauri/tests/terminal_output_perf.rs`（跨 crate 集成测试一律住宿主；
+    // 终端输出消费插件化性能前置验证（P1-P3）已迁宿主
+    // `src-tauri/tests/terminal_output_perf.rs`（跨 crate 集成测试一律住宿主；
     // 本 crate 已不依赖 wasmnest-pty-engine）。
-    // WS 终端输出路径吞吐探针（票 09 性能门禁 §9.3：插件 ring-fetch + WIT binary + WS send）
-    // 认证中心热路径性能探针（ADR 0031 v32 fail-closed 裁决的每请求成本：
+    // WS 终端输出路径吞吐探针（性能门禁：插件 ring-fetch + WIT binary + WS send）
+    // 认证中心热路径性能探针（fail-closed 裁决的每请求成本：
     // 宿主原生验签 vs 认证中心往返），只读探针
     // 域拆分（P0）：测试函数自本文件拆至 tests/（各域测试文件仍在
     // 本 mod 声明内），共享脚手架留在下方；各域文件 `use super::*` 复用，
     // fixture 互斥与产物构建语义不变
     // component_e2e / sdk_e2e / http_e2e 与 engine_{config,limits} 的夹具功能态用例
-    // 随票 04 迁桌面宿主 `src-tauri/tests/{component_e2e,sdk_e2e,http_e2e,engine_e2e}.rs`
+    // 已迁桌面宿主 `src-tauri/tests/{component_e2e,sdk_e2e,http_e2e,engine_e2e}.rs`
     // （wasm-core 不再持有全 world 绑定后，本测试二进制无法实例化 SDK 夹具）；
     // 留本文件的 engine_{config,limits} 只含形态无关纯机制用例。
     //
-    // 票 08 批次三（夹具自持）：SDK 夹具的 keeper 与构建器随夹具 crate 全部归位
+    // 夹具自持：SDK 夹具的 keeper 与构建器随夹具 crate 全部归位
     // 桌面宿主 `src-tauri/tests/`（宿主 e2e 只读产物、keeper 负责构建）；本 crate
     // 只保留两份**自持夹具**（`fixtures/wasi-test` wasip2 preopen /
     // `fixtures/wasip3-test` async store 探针），绑定能力仓自己的 `wit/core.wit`，
     // 不读平台仓任何目录。
     mod engine_config;
     mod engine_limits;
-    // 票 06 P1 的属主任务用例（owner_e2e）随票 04 迁桌面宿主 `src-tauri/tests/
+    // P1 的属主任务用例（owner_e2e）随迁桌面宿主 `src-tauri/tests/
     // owner_e2e.rs`——经 test_support 的属主转发面（spawn_test_owner 一族）直接
     // 驱动属主，内核侧不再持有该测试。
     mod p3_async_host_import;
-    // host-pty 端到端矩阵（pty_e2e）随票 02 批次 02 迁宿主
+    // host-pty 端到端矩阵（pty_e2e）已迁宿主
     // `src-tauri/tests/pty_e2e.rs`（本 crate 已不依赖 wasmnest-pty-engine）。
-    // host-task 闭环（task_e2e）随票 02 批次 05 迁宿主 `src-tauri/tests/task_e2e.rs`
+    // host-task 闭环（task_e2e）已迁宿主 `src-tauri/tests/task_e2e.rs`
     // ——WIT impl 迁出后内核测试二进制不再注册 host-task import，task 夹具无法
     // 在内核实例化（产物由桌面宿主 keeper 用例构建供给宿主，见该文件）。
     mod preopen_e2e;
@@ -694,15 +695,15 @@ mod tests {
 
     // SDK 夹具的构建与断言助手（`build_test_component` / `build_sdk_test_component` /
     // `build_ws_test_component` / `build_http_test_component` + ws 串行锁 / 兜底超时 /
-    // 快照轮询）随票 04 全部迁桌面宿主 `src-tauri/tests/`：宿主侧 support 有同形副本
+    // 快照轮询）已全部迁桌面宿主 `src-tauri/tests/`：宿主侧 support 有同形副本
     // （宿主测试只读夹具、不承担构建，构建由桌面宿主 `src-tauri/tests/fixture_keeper.rs` 负责）。
 
     // host-pty 一族测试助手（串行锁 `lock_pty_fixture_e2e` / 构建器
     // `build_pty_test_component` / 断言助手 `pty_command_error` 等）随 wasm-core
-    // 纯净性收口票 02 批次 02 迁宿主 `src-tauri/tests/{pty_e2e,terminal_output_perf}.rs`
+    // 已迁宿主 `src-tauri/tests/{pty_e2e,terminal_output_perf}.rs`
     // ——本 crate 已不依赖 `wasmnest-pty-engine`，也不链接 pty fixture。
 
-    // host-task fixture 闭环（task_e2e，6 用例）随票 02 批次 05 迁宿主
+    // host-task fixture 闭环（task_e2e，6 用例）已迁宿主
     // `src-tauri/tests/task_e2e.rs`：host-task 的 WIT impl 迁宿主后内核测试二进制
     // 不再注册该 interface，携带其 import 的 task 夹具无法在内核实例化
     // （与批次 04 crypto 探针同判据）。产物由桌面宿主 keeper 用例构建
@@ -711,13 +712,13 @@ mod tests {
     // 同批随用例迁宿主。
     //
     // 原 `build_sdk_test_component`（与 `build_test_component` 同产物同语义）随其
-    // 消费者（sdk/engine_limits 等夹具用例）票 04 迁宿主一并删除——宿主经只读
+    // 消费者（sdk/engine_limits 等夹具用例）迁宿主一并删除——宿主经只读
     // 夹具产物读取面（桌面 `tests/support/` 的 `sdk_fixture_artifact_bytes`）取产物。
 
     /// 构建 wasm32-wasip2 测试组件（WASI preopen E2E / 配置开关用例）
     ///
-    /// 夹具 = 能力仓自持 `fixtures/wasi-test`（绑定本 crate `wit/core.wit`，票 08
-    /// 批次三）：目标为 WASI preview2（std::fs 直连预打开目录），依赖宿主当前机器
+    /// 夹具 = 能力仓自持 `fixtures/wasi-test`（绑定本 crate `wit/core.wit`），
+    /// 目标为 WASI preview2（std::fs 直连预打开目录），依赖宿主当前机器
     /// 已安装 wasm32-wasip2 target（rustup target add）。产物直接是组件
     /// （wasm-component-ld 内嵌），无需再编码。
     fn build_wasi_test_component() -> Vec<u8> {
@@ -772,9 +773,9 @@ mod tests {
         // target 着想），但实测两个 preopen E2E 均 trap 于
         // `filesystem_method_descriptor_open_at`——p3 linker 虽接上，预打开目录
         // 的能力没建到 p3 filesystem 接口上。故本夹具固定 wasip2。
-        // **preopen 仅 worker 类别可用**（ADR 0034）：本夹具是 worker 预留能力的
+        // **preopen 仅 worker 类别可用**：本夹具是 worker 预留能力的
         // 机制守门测试（在策略闸门之下，不走 manifest 校验路径）；worker 启用
-        // 专项需一并解决 wasip3 的 preopen 装配问题（见 ADR 0034 §worker 启用时需补）。
+        // 专项需一并解决 wasip3 的 preopen 装配问题（见 worker 启用时的补充说明）。
         std::fs::read(&module_path).expect("Failed to read WASI test component after build")
     }
 
@@ -809,10 +810,10 @@ mod tests {
         }
     }
 
-    /// 构建 wasm32-wasip3 测试组件（票 02 A1 async 闭环 / A0-3 探针用）
+    /// 构建 wasm32-wasip3 测试组件（async 闭环 / A0-3 探针用）
     ///
-    /// 夹具 = 能力仓自持 `fixtures/wasip3-test`（绑定本 crate `wit/core.wit`，
-    /// 票 08 批次三）；target 产物 cdylib 直接是 Component（magic \0asm 0d，免
+    /// 夹具 = 能力仓自持 `fixtures/wasip3-test`（绑定本 crate `wit/core.wit`），
+    /// target 产物 cdylib 直接是 Component（magic \0asm 0d，免
     /// componentize）；pinned nightly 经 RUSTUP_TOOLCHAIN 注入（与
     /// scripts/wasip3-toolchain.sh health 子命令同构）。产物缺失（本地未装工具链）
     /// 时返回 None，测试跳过。
@@ -870,12 +871,12 @@ mod tests {
 
     // ==================== WASI preopen E2E ====================
 
-    // ==================== host-task 闭环（ABI v20，spec `.scratch/2026-09-21-host-task-concurrency/`） ====================
+    // ==================== host-task 闭环（ABI v20） ====================
     //
-    // task_e2e（含 MockTaskServices / task_fixture_plugin_id 脚手架）已随票 02 批次 05
+    // task_e2e（含 MockTaskServices / task_fixture_plugin_id 脚手架）已随迁移
     // 迁宿主 `src-tauri/tests/task_e2e.rs`（本文件 task 段的指路注释）。
 
-    // ==================== 无头 harness 的认证边界（ADR 0033） ====================
+    // ==================== 无头 harness 的认证边界 ====================
     //
     // 「为什么 harness 里没有正向认证用例 / 正向认证去哪儿跑」的记录与
     // `positive_auth_needs_dedicated_binary` 跳过助手随 WS / HTTP 用例迁桌面宿主

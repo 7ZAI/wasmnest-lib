@@ -1,10 +1,10 @@
-//! 传输模式判定（设计 §4.9）：内网默认，**明确不在内网**才切外网。
+//! 传输模式判定：内网默认，**明确不在内网**才切外网。
 //!
 //! 本模块是**纯判据层**：不做 I/O、不建连接、不读时钟以外的环境；输入 = 宿主侧
 //! 网络事实 + LAN 尝试结果 + 用户手动指令，输出 = 模式与下一步动作。拨号顺序、
 //! reservation 计数、事件投递都在 [`super::manager`] 里按这里的结论执行。
 //!
-//! ## 安全口径（不变量 9）
+//! ## 安全口径
 //!
 //! - 只有判据表里标「是」的情形允许自动切 wan；表外情形一律保持 lan；
 //! - 同网段 timeout / `ECONNREFUSED` / 服务未启动 / 认证失败 / 未匹配 /
@@ -21,7 +21,7 @@ use serde::Serialize;
 
 // ==================== 状态与原因词表 ====================
 
-/// 传输模式（8 态，设计 §4.9 状态机）
+/// 传输模式（8 态状态机）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TransferMode {
@@ -273,7 +273,7 @@ impl DialFailure {
 
     /// 按逐候选成因归并整体类别：
     ///
-    /// - **全部** `Unreachable` → `Unreachable`（§4.9 唯一允许自动切 wan 的明确判据）；
+    /// - **全部** `Unreachable` → `Unreachable`（唯一允许自动切 wan 的明确判据）；
     /// - 任一 `Auth` → `Auth`（安全错误优先，绝不为了绕过失败切 relay）；
     /// - 单候选 → 原样；
     /// - 其余混合（timeout/refused/unreachable 等）→ `Other`（保守保持 LAN）。
@@ -315,7 +315,7 @@ pub enum LanVerdict {
     Blocked(ModeReason),
 }
 
-/// 拨号前判据（设计 §4.9 判据表前三行 + 「mDNS 尚未发现」行）
+/// 拨号前判据（判据表前三行 + 「mDNS 尚未发现」行）
 pub fn judge_before_lan(
     facts: &NetworkFacts,
     candidates: &[IpAddr],
@@ -385,7 +385,7 @@ pub fn judge_after_lan_failure(failure: LanFailure) -> LanFailureVerdict {
 
 // ==================== 每对端状态机 ====================
 
-/// `wan-active` 回切 `lan-active` 需要的连续 LAN 探测成功次数（设计 §4.9 防抖）
+/// `wan-active` 回切 `lan-active` 需要的连续 LAN 探测成功次数（防抖）
 pub const LAN_RESTORE_PROBES: u8 = 2;
 
 #[derive(Debug, Clone)]
@@ -613,7 +613,7 @@ mod tests {
         LanCandidateSource::Explicit
     }
 
-    // ==================== 判据表（设计 §4.9）====================
+    // ==================== 判据表 ====================
 
     #[test]
     fn cellular_switches_to_wan_without_probing_lan() {

@@ -76,7 +76,7 @@ pub enum TransferFrame {
     },
     /// 接收端 → 发送端：指示从某文件某偏移开始推流
     ///
-    /// `offset` 即「接收端已写字节」（断点真源，issue 06 续传在此生效）：
+    /// `offset` 即「接收端已写字节」（断点真源，续传在此生效）：
     /// 首次为 0，中断重试时为 .part 已落盘字节数。发送端必须从该偏移起读，
     /// 不允许自行从头开始。
     StartFile {
@@ -95,12 +95,12 @@ pub enum TransferFrame {
     /// 任一方向 → 对端：取消进行中的传输
     ///
     /// 收到方据此把任务落 Cancelled{by_peer} 终态并停止读写；发送方保留
-    /// 接收端已写偏移供后续续传（issue 06），故接收端不删除 .part。
+    /// 接收端已写偏移供后续续传，故接收端不删除 .part。
     Cancel {
         /// 取消发起方（sender / receiver，kebab 由 rename_all 保证）
         by: CancelOrigin,
     },
-    /// 浏览方 → 暴露方：列共享目录（issue 07；单连接单请求，响应后即收尾）
+    /// 浏览方 → 暴露方：列共享目录（单连接单请求，响应后即收尾）
     ///
     /// `rel_path` 为目录内相对路径（空串 = 目录根）；暴露端校验信任（结构性
     /// 由连接闸门保证）、路径安全与条目存在性，失败以 [`TransferFrame::Decision`]
@@ -118,12 +118,12 @@ pub enum TransferFrame {
         /// 子条目列表
         entries: Vec<DirEntry>,
         /// 列表可能不全的提示位：暴露端为 Android 且可能因存储权限过滤了条目
-        /// （issue 11，沿用既有 notice 语义）。旧对端不携带此字段时反序列化
+        /// （沿用既有 notice 语义）。旧对端不携带此字段时反序列化
         /// 取缺省 false，前后版本兼容。
         #[serde(default)]
         filtered: bool,
     },
-    /// 浏览方 → 暴露方：拉取共享目录内单个文件（issue 07）
+    /// 浏览方 → 暴露方：拉取共享目录内单个文件
     ///
     /// 应答成功即进入标准推送数据面：暴露端以本请求的文件发 [`TransferFrame::Offer`]，
     /// 随后 StartFile/Data/FileDone/BatchDone 与 push 完全同构（浏览端为接收角色，
@@ -136,7 +136,7 @@ pub enum TransferFrame {
         /// 文件相对路径（`/` 分隔，必须指向文件而非目录）
         rel_path: String,
     },
-    /// 浏览方 → 暴露方：列共享根清单（issue 11）
+    /// 浏览方 → 暴露方：列共享根清单
     ///
     /// 浏览方无从得知对端注册了哪些 dir_id，先取根清单再逐根 BrowseRequest。
     /// 单请求会话（响应后即收尾），信任门禁与 Browse 相同（结构性由连接闸门保证）。
@@ -144,10 +144,24 @@ pub enum TransferFrame {
         /// 协议版本（语义同 Offer）
         protocol_version: u32,
     },
-    /// 暴露方 → 浏览方：共享根清单应答（issue 11；按注册序，含内置免授权条目）
+    /// 暴露方 → 浏览方：共享根清单应答（按注册序，含内置免授权条目）
     RootsResponse {
         /// 暴露中的共享根（id 供后续 Browse/Pull 寻址，name 为展示名）
         dirs: Vec<crate::base::shared::SharedRootMeta>,
+    },
+    /// 对端 → 暴露方：拉取本机穿透配置快照（同步获取，单请求会话）
+    ///
+    /// 快照是**不透明 JSON 字符串**（内容由插件定义，能力域不解析）；只读、
+    /// 不含文件/路径/长期密钥。信任门禁与 Browse/Roots 相同（连接闸门保证）。
+    ConfigRequest {
+        /// 协议版本（语义同 Offer）
+        protocol_version: u32,
+    },
+    /// 暴露方 → 对端：配置快照应答（`None` = 本机尚未设置 / 不提供）
+    ConfigResponse {
+        /// 不透明 JSON 字符串；缺省 / null 表示没有可同步的配置
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<String>,
     },
     /// 任一侧 → 对端：暂停本批数据面（pause 门控，不关连接、不弃断点）
     ///
@@ -472,7 +486,7 @@ mod tests {
         let cancel = serde_json::to_string(&CancelOrigin::Sender).expect("serde");
         assert_eq!(cancel, r#""sender""#);
 
-        // issue 07 浏览/拉取帧的线上形状
+        // 浏览/拉取帧的线上形状
         let browse = serde_json::to_string(&TransferFrame::BrowseRequest {
             protocol_version: 1,
             dir_id: "d".to_string(),
@@ -585,6 +599,34 @@ mod tests {
                 assert_eq!(*boxed, ack_enc);
                 assert!(reader.is_empty());
             }
+            other => panic!("expected control frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_frames_roundtrip_and_omit_absent_snapshot() {
+        // 请求帧：版本随帧
+        let request = TransferFrame::ConfigRequest {
+            protocol_version: TRANSFER_PROTOCOL_VERSION,
+        };
+        let json = serde_json::to_string(&request).expect("serde");
+        assert!(json.contains(r#""type":"config_request""#), "{json}");
+
+        // 应答帧：缺省快照必须省略字段（旧对端零感知 / 空配置不占帧）
+        let empty = serde_json::to_string(&TransferFrame::ConfigResponse { snapshot: None }).expect("serde");
+        assert!(empty.contains(r#""type":"config_response""#), "{empty}");
+        assert!(!empty.contains("snapshot"), "{empty}");
+
+        // 有快照：原样往返（不透明 JSON 字符串不被能力域改写）
+        let snapshot = r#"{"v":1,"relayAddrs":["/ip4/203.0.113.9/tcp/4001/p2p/12D3KooWRelay"]}"#;
+        let reply = TransferFrame::ConfigResponse {
+            snapshot: Some(snapshot.to_string()),
+        };
+        let mut buf = Vec::new();
+        futures_block_on(write_control(&mut buf, &reply)).expect("encode");
+        let mut reader: &[u8] = &buf;
+        match futures_block_on(read_frame(&mut reader)).expect("decode") {
+            IncomingFrame::Control(boxed) => assert_eq!(*boxed, reply),
             other => panic!("expected control frame, got {other:?}"),
         }
     }

@@ -1,17 +1,17 @@
 //! 服务器端口 traits（依赖倒置：server 各面需要的宿主能力，由宿主壳注入实现）
 //!
-//! server-lib-split spec §2 端口表：所有 server lib 不得引用 `wasm_core` /
+//! 所有 server lib 不得引用 `wasm_core` /
 //! `tauri` / `AppContext` 类型；本模块定义它们反向需要的全部端口。宿主壳
 //! （`crate::server::ports_impl` + bootstrap）构造实现并注入
 //! [`ServerPorts`]，拆分后本文件随 `wasmnest-server-base` 迁移。
 //!
-//! 对 spec 的两处实施裁决（记录于 `.scratch/2026-09-30-server-lib-split/`）：
-//! - `BusPort` 合并了 spec 的 `FrameDeliverer`（`deliver_endpoint_frame`）——
+//! 对「端口表」的两处实施裁决：
+//! - `BusPort` 合并了原设计的 `FrameDeliverer`（`deliver_endpoint_frame`）——
 //!   宿主一个对象实现整个总线面（publish / subscribe_static / 帧投递），
 //!   拆成两个 trait 只会让每个注入点各带两个句柄，无隔离收益；
-//! - 端口 traits 全落 server-base（而非 spec 表内记的 server-core），
-//!   让不依赖 core 传输机制的 peer-net 也能取用共享端口（spec 端口表与
-//!   D2「peer-net 不依赖 core」在 4-crate 形状内自相矛盾，5-crate 形状消解）。
+//! - 端口 traits 全落 server-base（而非放在 server-core）——
+//!   让不依赖 core 传输机制的 peer-net 也能取用共享端口（否则「peer-net 不依赖 core」
+//!   与传输内核的职责边界自相矛盾）。
 
 use crate::config::NetworkConfig;
 use crate::error::Result;
@@ -44,7 +44,7 @@ pub trait PluginInvoker: Send + Sync {
 
 // ==================== AuthCenter（认证中心裁决） ====================
 
-/// 认证中心裁决（v33 / ADR 0033：宿主不再持有任何设备 JWT 密码学）
+/// 认证中心裁决（宿主不再持有任何设备 JWT 密码学）
 ///
 /// 宿主壳实现包装 `utils::auth::auth_center::enforce_connection_policy`；
 /// fail-closed 语义不变：无中心 / 调用失败 / 中心拒绝 → `Err`。
@@ -67,7 +67,7 @@ pub trait BusMessageHandler: Send + Sync {
 ///
 /// 宿主壳实现包装 `wasm_core::bus::MessageBus` 与
 /// `wasmnest_server_websocket::plugin_binding::deliver_endpoint_frame`；无头/单测可用假实现。
-/// `deliver_endpoint_frame` 是 spec 端口表的 `FrameDeliverer`（裁决见模块头）。
+/// `deliver_endpoint_frame` 是总线端口的一部分（裁决见模块头）。
 #[async_trait]
 pub trait BusPort: Send + Sync {
     /// 发布 JSON 消息（`MessageBus::publish` 语义：异步入队、不投给发送者）
@@ -151,7 +151,7 @@ pub trait PowerPort: Send + Sync {
 /// `wasmnest_discovery_engine::types::AdvertiseConfig`——自播面真源在
 /// wasmnest-discovery-engine，宿主侧零 mDNS 代码）
 ///
-/// **async 是确定性要求**（service-leases §4.5）：`start` 返回时广播必须已登记、
+/// **async 是确定性要求**：`start` 返回时广播必须已登记、
 /// `stop` 返回时广播必须已注销；实现不得 fire-and-forget。
 #[async_trait]
 pub trait MdnsAdvertiserPort: Send + Sync {
@@ -211,28 +211,27 @@ pub trait ConfigPort: Send + Sync {
 
 // ==================== MdnsPort（peer-net 发现守护接入） ====================
 
-/// 类型中枢订阅句柄（值形态；spec §2.3 / ADR 0054）：`receiver` 收中枢
+/// 类型中枢订阅句柄（值形态）：`receiver` 收中枢
 /// fan-out 的浏览事件，`guard` 是**退订守卫**——Drop 即通知类型中枢移除该
 /// 订阅（守卫类型由中枢自定，宿主侧只持不解释、透传给 peer-net 的
 /// `PeerMdnsBrowse`）。
 ///
-/// **生命周期不可脱钩（硬性要求，spec §2.3）**：字段私有、不实现 `Clone`，
+/// **生命周期不可脱钩（硬性要求）**：字段私有、不实现 `Clone`，
 /// 且只提供两个携带双方的出口：
 /// - [`new`](Self::new)：同时接管 receiver + 守卫（构造即绑定，drop 句柄 =
 ///   守卫释放 = 退订；`new` 提前释放守卫即「创建即退订」回归）；
-/// - [`into_parts`](Self::into_parts)：把双方**同时**移交宿主 glue（票 04 的
-///   `PeerMdnsBrowse` 转换用），调用方必须继续成对持有——只留 receiver 而
+/// - [`into_parts`](Self::into_parts)：把双方**同时**移交宿主 glue（宿主
+///   把句柄转成 `PeerMdnsBrowse` 值形态用），调用方必须继续成对持有——只留 receiver 而
 ///   丢弃守卫会造成退订泄漏。
 ///
 /// 本类型不提供「只取 receiver / 只取守卫」的构造或访问器，杜绝脱钩形态。
 ///
-/// **feature 边界（2026-11-08，P0 默认形态依赖边界）**：本类型的具体类型来自
+/// **feature 边界（默认形态依赖边界）**：本类型的具体类型来自
 /// `mdns-sd` / `flume`，随 `mdns` feature 门控——不消费 mDNS 的 crate
 /// （`crypto-engine` / `cli-engine` / `pty-engine` 等）默认树里不再出现这两个依赖。
 #[cfg(feature = "mdns")]
 pub struct MdnsTypeSubscription {
-    /// 类型中枢 fan-out 的事件通道接收端（通道容量由中枢建档时设定，
-    /// spec §2.3-D2 = 64）
+    /// 类型中枢 fan-out 的事件通道接收端（通道容量由中枢建档时设定 = 64）
     receiver: flume::Receiver<mdns_sd::ServiceEvent>,
     /// 退订守卫：Drop ⇒ 中枢移除该订阅（宿主侧零解释，纯生命周期托管）
     guard: Box<dyn std::any::Any + Send + Sync>,
@@ -264,7 +263,7 @@ impl MdnsTypeSubscription {
 /// `ServiceDaemon` 为 mdns-sd 类型，宿主壳实现与对等网络引擎同源——底座机制
 /// 拆分并入 `wasmnest-server-peer-net` 后 mdns-sd 依赖在该 crate 与 discovery-engine）
 ///
-/// 浏览面自「mDNS 类型中枢」（spec §2.3 / ADR 0054）起新增两方法：全进程对同一
+/// 浏览面自「mDNS 类型中枢」起新增两方法：全进程对同一
 /// 服务类型的 `daemon.browse` / `stop_browse` 只由中枢代持，消费者经
 /// [`subscribe_type`](Self::subscribe_type) 挂 fan-out、经
 /// [`request_type_requery`](Self::request_type_requery) 请求统一重查，
@@ -370,7 +369,7 @@ mod tests {
         mdns_sd::ServiceEvent::SearchStarted(tag.to_string())
     }
 
-    /// 契约（spec §2.3 硬性要求）：句柄独占 receiver + 守卫——drop 句柄必须
+    /// 契约：句柄独占 receiver + 守卫——drop 句柄必须
     /// 恰好触发一次退订守卫，且 receiver 随句柄一起关闭；守卫不得在 `new`
     /// 中提前释放，receiver 也不得脱离守卫独立存活（否则退订泄漏）。
     #[cfg(feature = "mdns")]
@@ -399,7 +398,7 @@ mod tests {
         );
     }
 
-    /// 契约：`into_parts` 原样移交 receiver 与守卫（宿主 glue 转换面，票 04 消费）——
+    /// 契约：`into_parts` 原样移交 receiver 与守卫（宿主 glue 转换面）——
     /// 移交本身不得释放 / 替换守卫；移交后的 receiver 仍与配对发送端连通；
     /// 守卫由其新持有者释放且恰好一次。
     #[cfg(feature = "mdns")]

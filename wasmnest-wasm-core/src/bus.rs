@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::RwLock;
-// 总线消息载荷统一取共享层 `wasmnest-server-base::wire::BusMessage`（票 02 M4）：
+// 总线消息载荷统一取共享层 `wasmnest-server-base::wire::BusMessage`（M4）：
 // server-base 是双端无条件依赖的共享基础层，wire 形状自持副本由测试仓漂移锁
 // （`wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs`）钉住桌面 SDK 原版逐字一致
 // （移动 SDK 同名副本同形）；机制面不再按形态引用
@@ -37,7 +37,7 @@ const SUBSCRIBER_QUEUE_CAPACITY: usize = 64;
 /// WS 帧投递请求（ABI v14 `events-ws` 可选导出域）
 ///
 /// 与总线消息平行：WS 帧天然文本/二进制双形态且需保序，经 JSON 总线必然
-/// base64 膨胀，故走独立导出回调（spec §2.2 D2）；状态事件仍走总线 topic。
+/// base64 膨胀，故走独立导出回调；状态事件仍走总线 topic。
 #[derive(Debug, Clone)]
 pub enum WsFrameDispatch {
     /// 客户端域：连接句柄 + 帧类型（"text" / "binary"）+ 载荷
@@ -60,9 +60,9 @@ pub enum WsFrameDispatch {
 ///
 /// 由 PluginHost 实现，避免 MessageBus 与 PluginHost 循环引用。
 ///
-/// **单形态同步 trait（票 02 M3 收敛）**：投递形态统一为同步调用——
+/// **单形态同步 trait**：投递形态统一为同步调用——
 /// 桌面宿主的投递器本来就是同步直驱（PluginHost 实例调用）；移动装配面
-/// （fork 票 17 曾 async 化）的异步依赖经宿主侧 block_on 桥进入
+/// （fork 曾 async 化）的异步依赖经宿主侧 block_on 桥进入
 /// （runtime_util::block_on_async / block_on_ambient），trait 自身不再分叉。
 /// 生产移动投递器在移动宿主（移动宿主 `src-tauri` 自持 message_bus），
 /// wasm-core 内只剩 noop / 测试替身。
@@ -75,7 +75,7 @@ pub trait MessageDispatcher: Send + Sync + 'static {
     /// 投递 WS 帧给插件的 `events-ws` 可选导出（ABI v14）
     ///
     /// 返回 `Ok(true)` = 已投递；`Ok(false)` = 插件未导出该接口
-    /// （调用方按 spec §2.2 降级：丢弃 + 首次 warn + 计数，宿主不缓存）；
+    /// （调用方降级处理：丢弃 + 首次 warn + 计数，宿主不缓存）；
     /// `Err` = 投递失败（trap / 实例不可用）。
     ///
     /// 默认实现返回 `Ok(false)`：非生产投递器（测试替身）未接 WS 通道时
@@ -458,7 +458,7 @@ impl MessageBus {
                     tracing::warn!(plugin_id = %pid, "MessageBus: dispatcher not set, WASM message skipped");
                     continue;
                 };
-                // 投递统一为同步调用（票 02 M3：单形态 trait；异步依赖经宿主桥）
+                // 投递统一为同步调用（单形态 trait；异步依赖经宿主桥）
                 if !dispatcher.is_activated(&pid) {
                     tracing::warn!(plugin_id = %pid, "MessageBus: subscriber not activated, skipping");
                     continue;
@@ -575,7 +575,7 @@ enum BusBinding {
         /// 帧投递用的能力域端口视图（**构造一次**、不逐帧分配）：能力域的帧投递函数
         /// 收 `&Arc<dyn WsPorts>`，故此处持一份绑定到本总线的窄端口（无权限管理器）。
         ///
-        /// **由构造方喂入**（票 02 批次 03）：内核不再自建该端口——它是能力域 adapter
+        /// **由构造方喂入**（批次 03）：内核不再自建该端口——它是能力域 adapter
         /// 的产物（`WsPorts` 的宿主实现），本模块只接收。
         ws_ports: Arc<dyn wasmnest_server_websocket::plugin_binding::ports::WsPorts>,
     },
@@ -599,8 +599,8 @@ enum BusBinding {
 impl HostBusPort {
     /// 钉死构造：`ws_ports` 由**构造方**给出（绑定到 `bus` 的窄端口）
     ///
-    /// 为什么必须由构造方给：该端口是能力域 adapter 的产物，内核不构造它（票 02
-    /// 批次 03）；且它必须绑定到**本实例的**那条总线——多上下文场景下端口错绑会把
+    /// 为什么必须由构造方给：该端口是能力域 adapter 的产物，内核不构造它
+    /// （批次 03）；且它必须绑定到**本实例的**那条总线——多上下文场景下端口错绑会把
     /// 帧投进别的实例。
     pub fn new(
         bus: Arc<MessageBus>,
@@ -658,7 +658,7 @@ impl HostBusPort {
 
 /// 绑定到某条总线的帧投递窄端口（**总线侧 plumbing，不是能力域适配器**）
 ///
-/// ## 为什么住在总线侧（票 02 批次 03 的裁决 ①）
+/// ## 为什么住在总线侧（批次 03 的裁决 ①）
 ///
 /// 它要的两件事都由**总线**提供：往这条总线投 `events-ws` 帧、以及造一个 `BusPort`
 /// 给端点登记。它不需要宿主上下文，也**不做权限判定**（`check_permission` 恒 `false`
@@ -755,7 +755,7 @@ impl wasmnest_server_websocket::plugin_binding::ports::WsPorts for BusBoundWsPor
 /// base 侧 `BusMessageHandler` → 本 crate 侧 `BusMessageHandler` 适配
 ///
 /// P5 常量下沉后 base trait 载荷形状收 `wasmnest_server_base::wire::BusMessage`
-/// （本 crate 总线内部流转保持 SDK `BusMessage`——机制层类型选择，spec §8）；
+/// （本 crate 总线内部流转保持 SDK `BusMessage`——机制层类型选择）；
 /// 两形状逐字一致由 base 侧 wire 漂移锁钉死（测试仓
 /// `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs`），此处做值转换（字段逐个
 /// 克隆，零语义变化）。
@@ -809,7 +809,7 @@ impl wasmnest_server_base::ports::BusPort for HostBusPort {
         kind: &str,
         payload: Vec<u8>,
     ) {
-        // 能力域已迁入 `wasmnest_server_websocket::plugin_binding`（wasm-core-lib-split 票 04）
+        // 能力域已迁入 `wasmnest_server_websocket::plugin_binding`（lib-split 时迁出）
         wasmnest_server_websocket::plugin_binding::deliver_endpoint_frame(
             &self.ws_ports(),
             owner,
@@ -831,9 +831,9 @@ mod tests {
 
     /// 测试用帧投递端口工厂：真实能力域窄端口（绑定传入的总线、无权限管理器）
     ///
-    /// 生产路径这份由宿主 adapter 喂入（票 02 批次 03）；内核测试二进制里
+    /// 生产路径这份由宿主 adapter 喂入（批次 03）；内核测试二进制里
     /// 直接以 [`BusBoundWsPorts::new`] 构造。统一总线插座词汇（单形态，双端编译）——
-    /// HostBusPort / BusBoundWsPorts 属桌面总线插座词汇（票 02 M3 语义边界：
+    /// HostBusPort / BusBoundWsPorts 属桌面总线插座词汇（M3 语义边界：
     /// 随 T-04 迁宿主）。
     fn test_ws_ports_factory() -> Arc<
         dyn Fn(
@@ -1315,7 +1315,7 @@ mod tests {
     ///
     /// 杀死「构造期捕获总线」的写法（那条写法下第二次仍投 A，本用例红）
     #[tokio::test(flavor = "multi_thread")]
-    // 统一总线插座词汇（单形态，双端编译）：HostBusPort（票 02 M3，随 T-04 迁宿主）
+    // 统一总线插座词汇（单形态，双端编译）：HostBusPort（随宿主迁移）
     async fn late_bound_bus_port_publishes_to_current_bus_each_call() {
         use wasmnest_server_base::ports::BusPort as _;
 
@@ -1352,7 +1352,7 @@ mod tests {
 
     /// late-bound 反例：静态订阅注册在**调用当时**的总线上，切目标后旧总线收不到订阅
     #[tokio::test(flavor = "multi_thread")]
-    // 统一总线插座词汇（单形态，双端编译）：HostBusPort（票 02 M3，随 T-04 迁宿主）
+    // 统一总线插座词汇（单形态，双端编译）：HostBusPort（随宿主迁移）
     async fn late_bound_bus_port_registers_static_subscriber_on_current_bus() {
         use wasmnest_server_base::ports::BusPort as _;
 
@@ -1400,7 +1400,7 @@ mod tests {
 
     /// late-bound 二进制面：`publish_binary` 同样走当前解析目标
     #[tokio::test(flavor = "multi_thread")]
-    // 统一总线插座词汇（单形态，双端编译）：HostBusPort（票 02 M3，随 T-04 迁宿主）
+    // 统一总线插座词汇（单形态，双端编译）：HostBusPort（随宿主迁移）
     async fn late_bound_bus_port_publish_binary_to_current_bus() {
         use wasmnest_server_base::ports::BusPort as _;
 
@@ -1439,7 +1439,7 @@ mod tests {
 
     /// 钉死形态回归：`new()` 仍只投给构造时给定的那条总线（无头 harness / 单测装配面）
     #[tokio::test(flavor = "multi_thread")]
-    // 统一总线插座词汇（单形态，双端编译）：HostBusPort（票 02 M3，随 T-04 迁宿主）
+    // 统一总线插座词汇（单形态，双端编译）：HostBusPort（随宿主迁移）
     async fn fixed_bus_port_publishes_only_to_its_own_bus() {
         use wasmnest_server_base::ports::BusPort as _;
 

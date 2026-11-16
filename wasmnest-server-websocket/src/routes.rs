@@ -1,16 +1,16 @@
 //! WebSocket 传输面路由装配：通用插件端点 + 帧上限
 //!
-//! 从 `core/app.rs` 拆出（票 07）：WS 握手 handler（`plugin_endpoint_ws`）、
+//! 从 `core/app.rs` 拆出：WS 握手 handler（`plugin_endpoint_ws`）、
 //! 属主激活闸门（`endpoint_owner_activated`）与帧上限（`ws_frame_limit`）都是
 //! 纯 WS 面语义，寄居单端口组合物是历史错位——此后 WS 面的路由改动只落在本文件。
 //!
-//! **终态（websocket 业务下沉票 08）**：业务路由 `/ws/event` 与
+//! **终态**：业务路由 `/ws/event` 与
 //! `/ws/terminal/session/{id}` 已删除，宿主只留 `/ws/plugin/{plugin_id}/{path}`
 //! 一个握手端点；旧路径请求得到宿主通用 404，不提供 alias 或 fallback
-//! （spec §2.1 / §8.2 结构锁：路由字符串只允许出现在迁移说明/测试反例）。
+//! （结构锁：路由字符串只允许出现在迁移说明/测试反例）。
 //!
-//! 依赖方向（不变量 I2 / I1）：本文件只**向下**依赖 `wasmnest-server-core` 与系统常量，
-//! 与 `http` 面零横向 import（I1，票 08 加锁）。
+//! 依赖方向：本文件只**向下**依赖 `wasmnest-server-core` 与系统常量，
+//! 与 `http` 面零横向 import（由边界锁固定）。
 
 use actix_web::{web, Error, HttpMessage, HttpRequest, HttpResponse};
 use actix_web_actors::ws as actix_ws;
@@ -22,7 +22,7 @@ use wasmnest_server_base::constants::PLACEHOLDER_PEER_ADDR;
 use wasmnest_server_base::face::RequestFace;
 
 /// 配对窗口不放行任何 WS 升级：配对端点只有 HTTP 的 `/api/auth/*`
-/// （设计 §4.1）。peer 面标记由 listener 注入，终端端点仍按端点档位要求 JWT。
+/// 这一面。peer 面标记由 listener 注入，终端端点仍按端点档位要求 JWT。
 fn pairing_ws_upgrade_allowed(face: &RequestFace) -> bool {
     !face.is_pairing()
 }
@@ -48,7 +48,6 @@ fn reject_crypto(code: &'static str, detail: String) -> HttpResponse {
 ///
 /// max_size 同时限制 frame 和 message 大小，取两者中较大的值；
 /// host-websocket（ABI v14）客户端域/服务端域的帧上限与插件端点共用同一计算
-/// （spec §4.4）
 ///
 /// `pub`：宿主 `host-websocket` 原语（`wasm_core/host_api/ws.rs`）按同一上限做
 /// 插件域/客户端域裁剪——上限只有一个真源，跨 crate 供读是刻意的。
@@ -65,11 +64,11 @@ pub fn ws_frame_limit() -> usize {
     )
 }
 
-/// 插件端点 WS 握手端点 — `/ws/plugin/{plugin_id}/{path}`（spec D5）
+/// 插件端点 WS 握手端点 — `/ws/plugin/{plugin_id}/{path}`
 ///
 /// 通配单点分发（不依赖 actix 动态加路由）：路径 → 端点表反查 → 未注册端点 /
 /// 属主未激活 → 404；入站客户端数超上限 → 503（**协议升级前**拒绝，不产生
-/// 连接事件，spec §4.4）。认证策略由端点声明（`auth: none | jwt`，spec D8）。
+/// 连接事件）。认证策略由端点声明（`auth: none | jwt`）。
 async fn plugin_endpoint_ws(
     path: web::Path<(String, String)>,
     req: HttpRequest,
@@ -422,14 +421,14 @@ async fn endpoint_owner_activated(plugin_id: &str) -> bool {
 
 /// 构建 WS 路由配置
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
-    // 插件端点通配路由（spec D5）：命名空间段 `{plugin_id}` 由宿主注入，
+    // 插件端点通配路由：命名空间段 `{plugin_id}` 由宿主注入，
     // 插件只给后缀；未注册 / 属主未激活 → 404，连接数超限 → 503。
-    // 旧 `/ws/event` 与 `/ws/terminal/session/{id}` 已随 websocket 业务下沉
-    // 票 08 删除——旧客户端不在兼容范围（spec §0.4）。
+    // 旧 `/ws/event` 与 `/ws/terminal/session/{id}` 已随业务硬切删除，
+    // 旧客户端不在兼容范围。
     cfg.route("/ws/plugin/{plugin_id}/{path:.*}", web::get().to(plugin_endpoint_ws));
 }
 
-// ==================== 内网穿透 T03 测试锁 ====================
+// ==================== 内网穿透测试锁 ====================
 
 #[cfg(test)]
 mod tunnel_face_tests {

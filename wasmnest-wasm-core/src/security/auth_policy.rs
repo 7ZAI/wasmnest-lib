@@ -1,33 +1,33 @@
-//! 授权策略与授权记录的宿主真源（2026-09-27 授权策略增强，票 01）
+//! 授权策略与授权记录的宿主真源（授权策略增强后）
 //!
 //! 两张宿主主库表（`plugin_auth_policies` / `plugin_auth_records`，DDL 见
-//! `src-tauri/src/db/schema.sql`——ADR 0036 撤销 SQLite 能力域 crate 后引擎面与
+//! `src-tauri/src/db/schema.sql`——SQLite 能力域 crate 撤销后引擎面与
 //! 本模块同在宿主内）承载两件不同的事：
 //!
 //! - **授权策略**：每个 (wasm 应用, 受管资源) 至多一条，回答「遇到授权记录未覆盖的
 //!   目标时，要不要问用户」——三档 `always_ask` / `default` / `always_allow`；
 //!   缺行 = `default`。策略只决定**是否询问**：不放宽 manifest 声明门、SSRF 防护、
-//!   路径规范化、配额与属主隔离这些硬闸门（spec §4.2）。
+//!   路径规范化、配额与属主隔离这些硬闸门。
 //! - **授权记录**：每个 (应用, 资源, 目标) 至多一条，落账「某目标被允许 / 被拒绝」
 //!   的运行期事实。文件侧 target = 规范路径前缀 + 生效操作集（`ops`），网络侧
-//!   target = 归一化 origin（query / fragment 绝不入库，AGENTS §8 凭据红线）。
+//!   target = 归一化 origin（query / fragment 绝不入库，凭据红线）。
 //!
-//! ## 归属（ADR 0022 §5.1.3）
+//! ## 归属
 //!
 //! 授权策略与记录是**安全闸门的配给账**，不是产品事实：任意第三方插件可按同一
 //! 形状复用（「某事要不要问用户」+「问过的结果」），宿主在此只做引擎簿记与读模型
-//! 投影，不含业务编排、不解释产品事件、不替插件决定业务策略（spec §11 红线自检）。
+//! 投影，不含业务编排、不解释产品事件、不替插件决定业务策略。
 //!
-//! ## 本票范围
+//! ## 范围
 //!
-//! 票 01 提供真源读面与读模型装配（`plugin_auth_overview` 命令的数据源）；
-//! 判定管线接入（策略求值 / 记录匹配 / 落账）由 02–06 票在 `fs_auth` /
+//! 本模块提供真源读面与读模型装配（`plugin_auth_overview` 命令的数据源）；
+//! 判定管线接入（策略求值 / 记录匹配 / 落账）在 `fs_auth` /
 //! host-http 侧完成（出站闸门的宿主 adapter 在 `src-tauri/src/plugin/http.rs`）。
 //! 写入面（[`AuthPolicyStore::grant`] /
 //! [`AuthPolicyStore::deny`] / [`AuthPolicyStore::revoke`] /
-//! [`AuthPolicyStore::remove_deny`]）自 02 票起与判定面同处一个模块——落账与判定
+//! [`AuthPolicyStore::remove_deny`]）与判定面同处一个模块——落账与判定
 //! 共用同一组库值常量（[`AUTH_EFFECT_ALLOW`] / [`AUTH_EFFECT_DENY`] /
-//! [`AuthRecordSource`]），两边各拼一套字符串必然漂移。票 03 起档位也有写入面
+//! [`AuthRecordSource`]），两边各拼一套字符串必然漂移。此后档位也有写入面
 //! （[`AuthPolicyStore::set_strategy`]，设置页策略控件的数据源）；档位到动作的
 //! 求值不在这里，在 `super::strategy`（fs / network 共用同一处顺序裁决）。
 
@@ -36,12 +36,12 @@ use crate::error::DbResultExt;
 use crate::monitor::MetricsRegistry;
 use crate::security::fs_auth::FirstPartyDirEntry;
 use std::sync::{Arc, RwLock};
-// db 锁形态统一为 std Mutex（单形态票 02 M2，与 storage.rs 同款裁决）：
+// db 锁形态统一为 std Mutex（单形态收口，与 storage.rs 同款裁决）：
 // 锁获取行统一为同步锁 + 短临界区（auth_policy 内无跨 await 持有的锁——
 // guard 非 Send，编译器强制）；`.await` 形态随 tokio 锁一并退役。
 use std::sync::Mutex;
 
-/// 每 (应用, 资源) 的授权记录条数上限（spec §8.2）
+/// 每 (应用, 资源) 的授权记录条数上限
 ///
 /// 文件侧若无封顶，遍历型插件会把碰过的每个目标累积成无界增长的表（网络侧 origin
 /// 数量天然有限，但共用同一条上限）。超出即**丢弃新记录**并在 core-monitor 计数——
@@ -63,7 +63,7 @@ pub enum GrantOutcome {
 pub enum AuthResource {
     /// 文件系统访问（fs:read / fs:write 判定链）
     Fs,
-    /// 网络出站请求（host-http `fetch`；入站方向不在范围，spec §6.4）
+    /// 网络出站请求（host-http `fetch`；入站方向不在范围）
     Network,
 }
 
@@ -92,10 +92,10 @@ impl AuthResource {
     }
 }
 
-/// 授权策略档位（spec §4.1）
+/// 授权策略档位
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthStrategy {
-    /// 总是询问：跳过全部 allow 记录，每次判定都问（deny 记录仍优先，spec §6.1）
+    /// 总是询问：跳过全部 allow 记录，每次判定都问（deny 记录仍优先）
     AlwaysAsk,
     /// 默认：记录命中即放行，未命中才问
     Default,
@@ -138,7 +138,7 @@ impl AuthStrategy {
 
 /// 授权记录来源（写入口径的单点：来源取值只在这里拼）
 ///
-/// 与库值一一对应（`plugin_auth_records.source`），语义见 spec §8.4：
+/// 与库值一一对应（`plugin_auth_records.source`），语义见
 /// - [`User`](Self::User)：用户在弹窗里确认并「记住」；
 /// - [`AlwaysAllow`](Self::AlwaysAllow)：`always_allow` 档免询问自动放行（界面标「未经确认」）；
 /// - [`Service`](Self::Service)：**随包服务型插件**的声明路径免询问放行（issue #6 D4；
@@ -168,7 +168,7 @@ impl AuthRecordSource {
 
 /// 记录效果取值（库值单点）
 pub const AUTH_EFFECT_ALLOW: &str = "allow";
-/// 记录效果：硬拒绝（deny 优先于一切放行路径，spec §6.1 第 1 步）
+/// 记录效果：硬拒绝（deny 优先于一切放行路径）
 pub const AUTH_EFFECT_DENY: &str = "deny";
 
 /// 判定用的轻量记录行：只含匹配所需字段
@@ -186,7 +186,7 @@ pub struct AuthRecordMatch {
     /// network: target 是否按 path 前缀匹配（fs 恒 false）
     ///
     /// 必须带进判定面：网络侧「整站放行」与「只放行 `/v1` 前缀」是两种授权，
-    /// 判定时不看这个标记就会把收紧的授权当整站放行（票 05）。
+    /// 判定时不看这个标记就会把收紧的授权当整站放行。
     pub prefix_match: bool,
 }
 
@@ -220,7 +220,7 @@ pub struct ResourceStrategy {
     pub strategy: String,
 }
 
-/// 单个应用的授权读模型（spec §9.3）
+/// 单个应用的授权读模型
 ///
 /// 设置页「应用授权」总览与应用详情页「授权记录」区块共用同一份数据，
 /// 各写一套查询会立刻漂移（两页对同一目标给出不同策略/记录）。
@@ -268,12 +268,12 @@ impl AuthPolicyStore {
             .expect("auth policy monitor lock poisoned") = Some(monitor);
     }
 
-    /// 装配单应用读模型（spec §9.3）
+    /// 装配单应用读模型
     ///
     /// `plugin_id` 未知（无策略、无记录）不是错误：返回空记录 + 全 `default` 策略，
     /// 使设置页总览在「刚装完还没发生过任何授权」的应用上照常渲染。
     ///
-    /// `first_party_dirs`：第一方免弹窗项只读投影（**票 08/P0-2**：产品清单出厂 lib，
+    /// `first_party_dirs`：第一方免弹窗项只读投影（**产品清单出厂 lib，
     /// 读模型数据经 `FsAuthChecker::first_party_trusted_dirs()` 取——本存储不持有
     /// 清单）；空投影 = 无免弹窗可见项。
     pub async fn overview(
@@ -298,9 +298,9 @@ impl AuthPolicyStore {
         })
     }
 
-    /// 判定期读策略档位（spec §6.1 第 3 步的输入）
+    /// 判定期读策略档位（档位求值的输入）
     ///
-    /// **实时读取**、不缓存、不做激活期快照（spec §8.1）：否则「已改成总是询问」却仍有
+    /// **实时读取**、不缓存、不做激活期快照：否则「已改成总是询问」却仍有
     /// 缓存判定在放行，策略语义就是骗人的。缺行 / 非法值都回落默认档
     /// （fail-safe 方向见 [`AuthStrategy::parse`]）。
     pub async fn strategy(
@@ -325,8 +325,8 @@ impl AuthPolicyStore {
 
     /// 加载某应用在某资源上的全部记录（allow 与 deny 都在）
     ///
-    /// 判定链每次判定实时读取、不缓存（spec §8.1：缓存会让「已改成总是询问却仍在放行」
-    /// 这类漂移无法解释）。每 (应用, 资源) 记录数有上限（spec §8.2），单次加载是小的。
+    /// 判定链每次判定实时读取、不缓存（缓存会让「已改成总是询问却仍在放行」
+    /// 这类漂移无法解释）。每 (应用, 资源) 记录数有上限，单次加载是小的。
     pub async fn records_for_match(
         &self,
         plugin_id: &str,
@@ -366,7 +366,7 @@ impl AuthPolicyStore {
 
     // ==================== 写面（策略档位 / 落账 / 撤销） ====================
 
-    /// 写策略档位（设置页策略控件的唯一写入口；spec §4.1 三档）
+    /// 写策略档位（设置页策略控件的唯一写入口；三档）
     ///
     /// upsert：每个 (应用, 资源) 至多一行（主键即该二元组），重复设置不堆行。
     /// 档位取值由调用方用 [`AuthStrategy::parse_wire`] 解析后传入——未知值不得
@@ -390,16 +390,16 @@ impl AuthPolicyStore {
         Ok(())
     }
 
-    /// 落账一条 allow 记录（spec §5.2：新记录一律进本表，`fs_granted_paths` 不再被写入）
+    /// 落账一条 allow 记录（新记录一律进本表，`fs_granted_paths` 不再被写入）
     ///
     /// 每个 (应用, 资源, 目标) 至多一行：命中既有行时**操作集取并集**（先授权读、
     /// 后授权写 ⇒ 一行 `["read","write"]`），来源保留用户确认——`user` 是比免询问
     /// 自动放行更强的来源，界面按它决定是否标「未经确认」。
     ///
-    /// 目标上若残留 deny 行这里**不清理**：deny 优先于一切放行路径（spec §6.1 第 1 步），
-    /// 用户要恢复访问得先在界面移除该 deny 记录（spec §8.4 的另一种出口）。
+    /// 目标上若残留 deny 行这里**不清理**：deny 优先于一切放行路径，
+    /// 用户要恢复访问得先在界面移除该 deny 记录（另一种出口）。
     ///
-    /// **容量上限**（spec §8.2）：新建行前先数该 (应用, 资源) 的现有记录，达到
+    /// **容量上限**：新建行前先数该 (应用, 资源) 的现有记录，达到
     /// [`AUTH_RECORDS_CAP`] 即丢弃本次落账（返回 [`GrantOutcome::DroppedByCap`] +
     /// core-monitor 计数）。既有目标的并入**不受上限影响**：它不新增行，丢的会是
     /// 「用户已授权过的那一条」的增量信息。上限只拦新目标，正是为了拦住无界增长的那一半。
@@ -539,14 +539,14 @@ impl AuthPolicyStore {
         Ok(())
     }
 
-    /// 撤销（spec §8.4）：删除该目标的 allow 记录 + 落一条 deny 记录
+    /// 撤销：删除该目标的 allow 记录 + 落一条 deny 记录
     ///
     /// 返回被删除的 allow 行数（0 表示该目标本来就没有 allow——界面按此判断是否需要刷新）。
     ///
     /// target 支持 `~/` 前缀（仅文件资源）：第一方免询问项（home 形态）撤销时前端
     /// 拿不到 `$HOME`，传 `~/<rel>` 由这里展开成绝对路径再落账——判定链
     /// （`fs_auth::record_signals`）只认规范化绝对路径，不展开直接落账的 `~/` 目标
-    /// 永远匹配不上（静默撤销无效）；home 不可得时显性报错、不落账（§8 fail-visible）。
+    /// 永远匹配不上（静默撤销无效）；home 不可得时显性报错、不落账（fail-visible）。
     pub async fn revoke(
         &self,
         plugin_id: &str,
@@ -569,7 +569,7 @@ impl AuthPolicyStore {
         Ok(removed)
     }
 
-    /// 移除该目标的 deny 记录（界面「硬拒绝」分区自行移除，spec §8.4 的恢复出口）
+    /// 移除该目标的 deny 记录（界面「硬拒绝」分区自行移除，恢复出口）
     ///
     /// 只删 deny 行，不动同目标的 allow 行。返回删除行数（0 = 本就没有 deny）。
     pub async fn remove_deny(
@@ -590,15 +590,15 @@ impl AuthPolicyStore {
         Ok(removed)
     }
 
-    /// 清空某应用的授权策略与授权记录（**卸载**清空面，spec §8.3）
+    /// 清空某应用的授权策略与授权记录（**卸载**清空面）
     ///
-    /// 卸载清空、重装即全新授权（与 ADR 0020 的内容哈希钉扎同调：重装 = 一次新审批）。
+    /// 卸载清空、重装即全新授权（与内容哈希钉扎同调：重装 = 一次新审批）。
     /// **停用不清**（见 `deactivate_preserves_*` 的锁）：停用是运行期开关，用户停了
     /// 又开是常事，连带把他授权过的目录一起清掉等于让「停用」变成不可逆操作——
     /// 这两件事容易被后人「顺手统一」，所以各有各的落点与锁。
     ///
     /// 返回被清掉的 (记录数, 策略数)，供调用方记日志：清零无声意味着「重装后授权
-    /// 记录凭空消失」这类问题无从追查（AGENTS §8：真源侧动作要留痕）。
+    /// 记录凭空消失」这类问题无从追查（真源侧动作要留痕）。
     pub async fn purge_plugin(&self, plugin_id: &str) -> crate::Result<(usize, usize)> {
         let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
         let conn = db.conn();
@@ -618,7 +618,7 @@ impl AuthPolicyStore {
             plugin_id = %plugin_id,
             records = records,
             policies = policies,
-            "auth_policy: 卸载清空授权记录与策略（spec §8.3）"
+            "auth_policy: 卸载清空授权记录与策略"
         );
         Ok((records, policies))
     }
@@ -628,7 +628,7 @@ impl AuthPolicyStore {
 ///
 /// 前端拿不到 `$HOME`，撤销内置免询问项（如 `~/.agents`）时传 `~/<rel>`；这里展开成
 /// 绝对路径后再走落账，否则判定链（`record_signals` 的 `strip_prefix`）永远匹配不上
-/// 相对形态的 `~/` 字符串——撤销按钮点了等于没点（静默降级，§8 禁止）。
+/// 相对形态的 `~/` 字符串——撤销按钮点了等于没点（静默降级，明令禁止）。
 ///
 /// - 非文件资源：原样返回（network target 是归一化 origin，无 `~/` 语义）
 /// - 文件资源且无 `~/` 前缀：原样返回（授权记录 target 本身是规范路径）
@@ -1087,7 +1087,7 @@ mod tests {
         );
     }
 
-    /// 容量上限（spec §8.2，票 04）：第 501 个新目标丢弃 + core-monitor 计数；
+    /// 容量上限（封顶；第 501 个新目标丢弃 + core-monitor 计数；
     /// 既有目标并入与 deny 落账都不受上限影响
     ///
     /// 变异判据：去掉 `stored >= AUTH_RECORDS_CAP` 分支 ⇒ 第 501 条被落账，
@@ -1098,7 +1098,7 @@ mod tests {
         let monitor = Arc::new(MetricsRegistry::new());
         store.set_monitor(monitor.clone());
 
-        assert_eq!(AUTH_RECORDS_CAP, 500, "spec §8.2 的封顶值不得漂移");
+        assert_eq!(AUTH_RECORDS_CAP, 500, "封顶值不得漂移");
 
         for i in 0..AUTH_RECORDS_CAP {
             let outcome = store
@@ -1144,7 +1144,7 @@ mod tests {
                 .as_u64()
                 .unwrap(),
             1,
-            "丢弃必须进 core-monitor 计数（spec §8.2）"
+            "丢弃必须进 core-monitor 计数"
         );
 
         // 既有目标并入：不新增行，因此不受上限影响（丢的是「用户已授权过的那条」的增量）
@@ -1191,7 +1191,7 @@ mod tests {
         assert!(rows.iter().any(|r| r.effect == AUTH_EFFECT_DENY));
     }
 
-    /// 撤销（spec §8.4）：删 allow + 落 deny；重复撤销幂等；deny 行 ops 为空
+    /// 撤销：删 allow + 落 deny；重复撤销幂等；deny 行 ops 为空
     #[tokio::test]
     async fn revoke_deletes_allow_and_records_deny_idempotently() {
         let store = store().await;
@@ -1302,7 +1302,7 @@ mod tests {
         assert_eq!(rows[0].target, "https://api.github.com:443");
     }
 
-    /// 移除 deny 记录 = 只删 deny，不动同目标的 allow（spec §8.4 的另一种出口）
+    /// 移除 deny 记录 = 只删 deny，不动同目标的 allow（另一种出口）
     #[tokio::test]
     async fn remove_deny_only_touches_deny_rows() {
         let store = store().await;
@@ -1413,7 +1413,7 @@ mod tests {
         assert_eq!(net_rows[0].target, "https://api.x.com:443");
     }
 
-    // ==================== 策略档位写面（票 03） ====================
+    // ==================== 策略档位写面 ====================
 
     /// 档位 upsert：每个 (应用, 资源) 至多一行，重设只改值不堆行；两类资源互不串台
     ///
@@ -1520,7 +1520,7 @@ mod tests {
 
     /// C3：第一方免询问项按归属过滤导出（读模型要能回答「这个应用有哪些免询问特权」）
     ///
-    /// 票 08/P0-2：产品清单出厂 lib，机制侧用**测试投影**（中性 plugin_id 字面量）
+    /// 产品清单出厂 lib，机制侧用**测试投影**（中性 plugin_id 字面量）
     /// 验证过滤逻辑——数据源形态 = `FsAuthChecker::first_party_trusted_dirs()` 输出。
     #[tokio::test]
     async fn first_party_dirs_are_exported_per_owner() {

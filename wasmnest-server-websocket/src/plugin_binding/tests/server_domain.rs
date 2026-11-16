@@ -1,4 +1,4 @@
-//! 服务端域（票 05：注册 / 查询 / 属主仲裁 / 回收）
+//! 服务端域（注册 / 查询 / 属主仲裁 / 回收）
 
 use super::scaffold::*;
 use super::*;
@@ -56,7 +56,7 @@ async fn register_endpoint_returns_handle_and_lists_it() {
     let endpoint = register_endpoint(&ports, &plugin, "chat");
     assert!(endpoint.starts_with("wse-"), "句柄前缀 wse-，got: {endpoint}");
 
-    // 完整挂载路径由插件侧推导（宿主注入属主命名空间段，spec D5）
+    // 完整挂载路径由插件侧推导（宿主注入属主命名空间段）
     let entry = crate::endpoint::get(&endpoint).expect("endpoint exists");
     assert_eq!(entry.owner, plugin);
     assert_eq!(entry.mount_path, format!("/ws/plugin/{plugin}/chat"));

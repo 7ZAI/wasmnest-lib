@@ -93,7 +93,7 @@ pub struct DialFailed {
 
 /// 链路传输形态确定（连接可用时按所拨 / 来源地址判定）
 ///
-/// 设计 §7.2 的 `peer:transport` 事件：`lan-direct`（直连）/ `wan-relay`（经 relay）。
+/// `peer:transport` 事件：`lan-direct`（直连）/ `wan-relay`（经 relay）。
 /// **不携带数据面内容**——宿主据此点亮「内网直连 / 外网中继」状态，不下发地址细节。
 #[derive(Debug, Clone)]
 pub struct TransportChanged {

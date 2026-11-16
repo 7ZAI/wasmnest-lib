@@ -1,4 +1,4 @@
-//! `net.peer-node` 应用作用域服务（service-leases spec §3.4）
+//! `net.peer-node` 应用作用域服务
 //!
 //! 把对等网络节点的生命周期映射到
 //! [`wasmnest_server_base::service::ScopedService`]：0→1 装配节点监听 +

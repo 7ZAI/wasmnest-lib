@@ -179,7 +179,7 @@ async fn test_auto_activate_from_persisted_state() {
     assert_eq!(persisted.get(TEST_PLUGIN_ID), Some(&true));
 }
 
-/// 退出路径必须覆盖 Degraded 实例（审计票 09）：Degraded 是活实例（前端模块已加载、
+/// 退出路径必须覆盖 Degraded 实例：Degraded 是活实例（前端模块已加载、
 /// 扩展点已注册、持久化态按「启用」计，见 `get_activated_state`），只收 Activated
 /// 会让它在应用关闭时被静默跳过、收不到 `on_shutdown`。
 #[tokio::test(flavor = "multi_thread")]
@@ -220,7 +220,7 @@ async fn test_deactivate_all_covers_degraded() {
     );
 }
 
-/// 重复激活去重（审计票 09）：`Activating` 是瞬时态，此时再请求激活必须**幂等返回**
+/// 重复激活去重：`Activating` 是瞬时态，此时再请求激活必须**幂等返回**
 /// 且不推进状态机——此前它落进 `_ =>` 分支，第二次调用会把 guest `activate()` 跑第二遍
 /// （实例锁只保证串行、不保证去重）。
 #[tokio::test(flavor = "multi_thread")]
@@ -270,14 +270,14 @@ async fn declared_ws_endpoint_follows_activation_lifecycle() {
     wasmnest_server_websocket::endpoint::purge_for_plugin(plugin_id);
 }
 
-// ==================== 授权记录 / 策略的生命周期（spec §8.3 · 票 09 防回接锁） ====================
+// ==================== 授权记录 / 策略的生命周期（防回接锁） ====================
 
-/// 授权记录与策略的生命周期：**停用保留 / 卸载清空**（spec §8.3 防回接锁）
+/// 授权记录与策略的生命周期：**停用保留 / 卸载清空**（防回接锁）
 ///
 /// 两者语义不同，合并即错：
 /// - **停用**是运行期开关，用户停了又开是常事。清授权记录等于让「停用」变成不可逆
 ///   操作——重启后所有目录/地址都要重新弹一遍窗。
-/// - **卸载**清空（重装即全新授权，与 ADR 0020 内容哈希钉扎同调）。
+/// - **卸载**清空（重装即全新授权，与内容哈希钉扎同调）。
 ///
 /// 这条锁存在的理由就是「容易被后人顺手统一」：两处都是 `plugin_id` 维度的删除，
 /// 看起来像同一件事。变异判据：① 停用路径加 purge ⇒ 后半段转红；② 卸载去掉 purge
@@ -675,7 +675,7 @@ async fn test_background_transport_lease_follows_activation_not_surface() {
     wasmnest_server_websocket::endpoint::purge_for_plugin(TEST_PLUGIN_ID);
 }
 
-/// 内核生命周期只经通用服务租约释放，不再点名 peer 域（service-leases §4.2）。
+/// 内核生命周期只经通用服务租约释放，不再点名 peer 域。
 #[test]
 fn kernel_lifecycle_owns_no_peer_owner_hooks() {
     for (name, src) in [
