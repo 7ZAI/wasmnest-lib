@@ -10,7 +10,7 @@ use crate::manifest::WasiPreopenDir;
 
 /// 被测插件 id（本文件的测试夹具，不是内核常量）
 ///
-/// 审计票 12 起 `FILE_TRANSFER_PLUGIN_ID` 从 `manager/host.rs` 与 `peer_net.rs` 删除——
+/// `FILE_TRANSFER_PLUGIN_ID` 从 `manager/host.rs` 与 `peer_net.rs` 删除——
 /// 内核不再硬编码产品身份（peer-net 节点改按属主记账）。本用例测的是「共享根为空的
 /// 插件可以启用先行」这条通用 preauth 语义，用一个具名夹具插件 id 即可，
 /// 不需要内核侧留着那个常量
@@ -41,7 +41,7 @@ async fn notify_plugin_runtime_error_throttle_and_no_app_context() {
     );
 }
 
-// ==================== 运行时异常事件信封（ADR 0030 决定 7） ====================
+// ==================== 运行时异常事件信封 ====================
 //
 // 契约：事件载荷 = `{ code, request_id, params: { name } }`，code 语义稳定（= 前端
 // i18n key 后缀），**永不携带** panic 消息 / 回溯 / 错误链（那些只在宿主日志里）。
@@ -165,10 +165,10 @@ async fn preauthorize_file_transfer_empty_shared_roots_passes() {
 }
 
 /// manifest `wasiPreopenDirs` 声明目录并入预授权收集（**仅 worker 类别可达**，
-/// ADR 0034；机制保留为 worker 预留能力）。未授权 + 无头上下文（check_batch 保守
+/// 机制保留为 worker 预留能力）。未授权 + 无头上下文（check_batch 保守
 /// 拒绝）→ 返回「授权被拒」错误——若声明目录未被收集,空路径会直接放行,本用例即失去意义
 ///
-/// 声明特意用**只读档**（票 07）：档位只收紧 guest 的写能力，不构成免授权通道，
+/// 声明特意用**只读档**：档位只收紧 guest 的写能力，不构成免授权通道，
 /// 所以只读目录同样必须被收集并因未授权而拒绝
 #[tokio::test]
 async fn preauthorize_collects_manifest_preopen_dirs_ungranted_denied() {
@@ -287,7 +287,7 @@ async fn packaged_business_app_still_requires_dialog() {
 }
 
 /// 声明目录已授权(storage fs_granted_paths 前缀命中)→ check_batch 短路
-/// 通过,preauthorize 整体放行。**仅 worker 类别可达**（ADR 0034）：本用例
+/// 通过,preauthorize 整体放行。**仅 worker 类别可达**：本用例
 /// 直接设 manifest 字段测机制，在策略闸门（validation.rs）之下。
 #[tokio::test]
 async fn preauthorize_manifest_preopen_dir_granted_passes() {
@@ -349,4 +349,4 @@ async fn preauthorize_reads_paths_from_storage() {
     }
 }
 
-// ==================== 系统组件与能力装配（core-plugin-manager，票据 06） ====================
+// ==================== 系统组件与能力装配（core-plugin-manager） ====================

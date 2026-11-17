@@ -1,13 +1,13 @@
 //! `host-database` / `host-plugin-database` / `host-storage` 三域的宿主端口（测试缝）
 //!
 //! **这不是架构边界，是可测性缝**：三段能力（权限门、库句柄、同步↔异步桥、kv
-//! 存储与能力路由）全在宿主内，域代码与适配器同属 `wasm_core`——ADR 0036 明确
+//! 存储与能力路由）全在宿主内，域代码与适配器同属 `wasm_core`——明确不拆 crate
 //! 它们**不拆 crate**。留这一层只为让域逻辑能在不构造完整 `WasmHostContext` 的前提
 //! 下用假端口跑护栏 / 隔离 / 批次用例（[`super::sqlite_scaffold`]）。
 //!
 //! | 方法 | 为什么需要它 |
 //! | --- | --- |
-//! | [`SqlitePorts::check_permission`] | 权限门（`storage`——主库位 `database:main` 已随 2026-10-09 host-database 退役）是**宿主安全闸门**（AGENTS §5.1.3 四类薄壳之二），判定与拒绝 `warn` 只在宿主一处 ⇒ 域只问结果 |
+//! | [`SqlitePorts::check_permission`] | 权限门（`storage`——主库位 `database:main` 已随 2026-10-09 host-database 退役）是**宿主安全闸门**（四类薄壳之二），判定与拒绝 `warn` 只在宿主一处 ⇒ 域只问结果 |
 //! | [`SqlitePorts::plugin_db`] | 插件私有库句柄（每插件独立库 / 独立连接，**懒创建**：目录根来自 `app_data_dir()/plugins/<id>` 或无头测试注入的根）。创建是 async 且属宿主策略，故经端口要 |
 //! | [`SqlitePorts::block_on_any`] | 同步↔异步桥：guest 侧 host function 是同步的，而取句柄/加锁是 async。**桥的实现在宿主**（`runtime_util::block_on_async`，wasmtime-wasi ambient runtime 与 actix `current_thread` 自锁规避是实测产物），本域不复制第二份 |
 //! | [`SqlitePorts::forward_storage_get`] / `_set` / `_delete` | 能力路由（core-plugin-manager）：`host-storage` 能力由系统组件提供时按调用方命名空间转发到它的同形导出，否则 `None` ⇒ 走宿主原语。**返回 `Option`** 是契约的一部分（`None` = 无提供者，不是错误） |
@@ -66,7 +66,7 @@ pub type PluginDbFuture<'a> =
 pub trait SqlitePorts: Send + Sync {
     /// 权限判定（`storage`；主库位 `database:main` 已随 host-database 退役）
     ///
-    /// 返回 `false` 时**宿主侧**必须已按 AGENTS §8 落 `warn`（结构化字段
+    /// 返回 `false` 时**宿主侧**必须已落 `warn`（结构化字段
     /// `plugin_id` / `permission` / `api`）；本域不重复落日志。宿主侧也拿不到
     /// 权限管理器时（无头 / 测试）**必须返回 false**（fail-safe，与既有
     /// `host_api::check_permission` 同向）。

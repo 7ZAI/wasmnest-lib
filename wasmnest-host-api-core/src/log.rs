@@ -1,8 +1,7 @@
 //! 插件日志域实现层（转发到宿主 tracing，附加 plugin_id 前缀 + per-plugin 级别阈值）
 //!
-//! 自桌面 `packages/wasmnest-wasm-core/src/host_api/log.rs` 上移（票 18 批次 4），
-//! **以桌面机制为完整基准**（2026-10-09 用户指令「以目前 wasm-core 具有的机制为准
-//! 重构移动端」）：统一 callsite（[`PLUGIN_LOG_CALLSITE`]）+ 按调用点缓存的
+//! 自桌面 `packages/wasmnest-wasm-core/src/host_api/log.rs` 上移，
+//! **以桌面机制为完整基准**（移动端对齐桌面已有机制，不另立一套）：统一 callsite（[`PLUGIN_LOG_CALLSITE`]）+ 按调用点缓存的
 //! `'static` Metadata（[`plugin_log_metadata`]）+ per-plugin 日志级别阈值
 //! （[`emit_plugin_log`] 入口过滤，`WASMNEST_PLUGIN_LOG=id=level,…` 环境变量）。
 //! 双端 adapter（桌面 `host_api/log.rs` / 移动 `component.rs` 内联 host-log 域）

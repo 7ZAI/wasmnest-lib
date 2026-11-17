@@ -11,7 +11,7 @@ use actix_web::web;
 fn host_public_paths_are_only_health() {
     assert!(is_public_path("/api/health"));
     assert!(is_public_path("/health"));
-    // 票 07 起 /api/auth/* 编排归插件：公开性由插件注册档位声明（none），
+    // /api/auth/* 编排归插件：公开性由插件注册档位声明（none），
     // 不再由宿主前缀规则放行
     assert!(!is_public_path("/api/auth/pairing"));
     assert!(!is_public_path("/api/auth/verify"));

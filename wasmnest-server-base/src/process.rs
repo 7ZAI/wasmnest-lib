@@ -1,4 +1,4 @@
-//! 进程创建工具（wasm-core 纯净性收口票 03 / E2-D4：`create_command` 下沉）
+//! 进程创建工具（`create_command` 下沉）
 //!
 //! 原住 `wasm_core::system::process`（Windows 专用进程创建包装）。下沉到基础层
 //! 的原因：它被**两个 crate** 消费（`wasmnest-wasm-core` 的 `wsl_fs` / `wsl`

@@ -10,7 +10,7 @@ use super::scaffold::*;
 use crate::plugin_binding::egress::{execute_http_request, http_fetch};
 use crate::plugin_binding::ports::{HttpEventSink, HttpPorts, OutboundAuth};
 
-// ==================== jwtAuth 代注（2026-10-10 票 05：移动侧能力上移到本 crate） ====================
+// ==================== jwtAuth 代注（移动侧能力上移到本 crate） ====================
 
 /// 只覆写 [`HttpPorts::jwt_auth_token`] 的端口包装器（其余方法委托给内层端口）
 ///
@@ -297,7 +297,7 @@ async fn allow_record_releases_the_request() {
     );
 }
 
-/// 凭据红线（AGENTS §8）：拒绝错误串带 origin，**不带 path / query 里的 token**
+/// 凭据红线：拒绝错误串带 origin，**不带 path / query 里的 token**
 #[tokio::test]
 async fn denial_error_carries_origin_but_never_query() {
     let ports = granting();

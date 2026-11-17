@@ -1,7 +1,7 @@
 //! wasip3 async 机制测试插件（wasm32-wasip3 目标，能力仓自持夹具）
 //!
 //! A0-3 前置探针（P1 async store 兼容性 / P2 资源限制 async 语义）的 guest 载体
-//! （原平台 `plugin-sdk-fixtures` 的 `wasip3` feature 分支，三仓拆分票 08 批次三
+//! （原平台 `plugin-sdk-fixtures` 的 `wasip3` feature 分支，三仓拆分时迁入
 //! 迁入能力仓）：绑定 wasm-core 契约真源 `wit/core.wit` 的 `world core`，零 SDK
 //! 依赖——探针要验的是运行时壳机制，与端 cap 无关。
 //!

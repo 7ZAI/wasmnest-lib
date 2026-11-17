@@ -5,12 +5,12 @@
 //! 实例化时按插件配置预打开目录 `/data` 后，插件即拥有对该目录的直接读写能力
 //! （无需宿主 fs_* 转发）。
 //!
-//! **preopen 仅 worker 类别可用（ADR 0034）**：主 wasm-app 文件访问一律走宿主
+//! **preopen 仅 worker 类别可用**：主 wasm-app 文件访问一律走宿主
 //! host-fs 授权机制；本夹具是 worker 预留能力的**机制守门测试**（在策略闸门
 //! 之下，不走 manifest 校验路径），worker 启用专项需一并解决 wasip3 的 preopen
 //! 装配问题。
 //!
-//! 绑定面是能力仓契约真源 `wit/core.wit` 的 `world core`（三仓拆分票 08 批次三）：
+//! 绑定面是能力仓契约真源 `wit/core.wit` 的 `world core`（三仓拆分时迁入）：
 //! 夹具只验证运行时壳的 WASI 装配 / preopen，不需要任何端 cap 与端 SDK——绑定
 //! 能力仓自己的 WIT 即可自足。`world core` 的必选导出（command / lifecycle /
 //! manifest）由本文件全量实现；`events-binary` 是可选导出面，不在 world 内，本

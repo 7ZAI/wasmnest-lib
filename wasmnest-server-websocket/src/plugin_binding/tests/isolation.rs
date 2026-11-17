@@ -1,9 +1,9 @@
-//! 隔离契约（票据 06：跨插件 + 事件面）
+//! 隔离契约（跨插件 + 事件面）
 
 use super::scaffold::*;
 use super::*;
 
-/// 状态事件按属主私有 topic 投递：事件只落属主命名空间（spec §2.3）
+/// 状态事件按属主私有 topic 投递：事件只落属主命名空间
 ///
 /// 本用例锁「能力域只经属主 topic 投递」；「非属主订阅不到」由总线命名空间门禁
 /// 负责（见 `host_api/bus.rs` 的跨命名空间订阅拒绝用例）。
@@ -29,7 +29,7 @@ async fn status_events_are_owner_scoped() {
     );
 }
 
-/// 跨插件隔离（全函数负向，票据 06 清单）：他人句柄 / 端点 / 对端客户端标识
+/// 跨插件隔离（全函数负向清单）：他人句柄 / 端点 / 对端客户端标识
 /// 上的全部函数一律拒绝，且**零副作用**（句柄不消费、端点不注销、连接不断开）
 #[tokio::test]
 async fn cross_plugin_isolation_covers_all_handle_functions() {

@@ -1,6 +1,6 @@
-//! 插件互调回复道编排（ADR-0017）——`host-api-call` 的**机制面**
+//! 插件互调回复道编排——`host-api-call` 的**机制面**
 //!
-//! **WIT impl 已迁宿主**（票 02 批次 05，`src-tauri/src/plugin/api_call.rs` 路径 B
+//! **WIT impl 已迁宿主**（批次 05，`src-tauri/src/plugin/api_call.rs` 路径 B
 //! 薄转发：无权限门，互调门禁在注册表）。本文件**留内核**的判据与 peer/ws/http
 //! 「内核仍消费引擎面」同源：内核 `intercall`（通用互调客户端）、`auth_center`
 //! 桥接（注册表真源留内核裁决）与 `WasmHostContext::call_plugin_api_host` 消费
@@ -8,11 +8,11 @@
 //!
 //! 语义：发布 JSON-RPC 请求到 `wasmnest.api.<api>` topic（经 [`super::bus`]
 //! 的门禁校验），然后阻塞等待回复。回复 topic 为
-//! `wasmnest.api.reply.<caller-plugin-id>.<request-id>`（spec §9.3），
+//! `wasmnest.api.reply.<caller-plugin-id>.<request-id>`，
 //! 其中 caller-id 取调用方插件 ID（host function 的 Caller state），
 //! request-id 取请求载荷中的字符串 `id` 字段（SDK 生成，JSON-RPC 约定）。
 //!
-//! ## 回复道安全（审计票 05，P1-4）
+//! ## 回复道安全（P1-4）
 //!
 //! 回复道是 caller 的收件箱，但**刻意不走 `<caller>::…` 私有命名空间**：
 //! 响应者是别的插件，必须能发布进 caller 的回复道，开了「非属主可发布他人
@@ -44,7 +44,7 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 use wasmnest_plugin_api::host::bus::API_TOPIC_PREFIX;
 
-/// 宿主侧互调调用方身份（票 11 命令面桥接）：宿主不是插件，reply topic 路由
+/// 宿主侧互调调用方身份（命令面桥接）：宿主不是插件，reply topic 路由
 /// `wasmnest.api.reply.<caller>.<request-id>` 需要稳定身份；互调门禁（层 1）
 /// 只校验目标 api 声明、不校验调用方，宿主身份同样受注册表约束（未激活 → 拒绝）。
 pub const HOST_API_CALLER_ID: &str = "wasmnest-host";
@@ -55,7 +55,7 @@ pub const HOST_API_CALLER_ID: &str = "wasmnest-host";
 /// （迟到的重复回复直接丢弃），Mutex 提供 `Sync`（oneshot::Sender 非 Sync，
 /// 而 BusMessageHandler 要求 Send + Sync）
 ///
-/// **回复身份校验（票 05 / P1-4）**：只接受 `sender == expected_sender`（api 的
+/// **回复身份校验（P1-4）**：只接受 `sender == expected_sender`（api 的
 /// 声明属主）的回复。`sender` 由宿主按调用方 Caller state 落章，guest 无法自报，
 /// 因此第三方插件向该回复道伪投递（抢答）会被丢弃 + `warn`，调用方按超时收敛。
 /// 此前回复道零校验，而 SDK 的 correlation id 是进程内单调计数器（`req-1`…），
@@ -96,7 +96,7 @@ impl BusMessageHandler for ReplyHandler {
 /// `id` 与请求一致（防错配回复串台）与 `sender` 属主一致（防抢答）。
 /// 超时/门禁拒绝返回 Err。
 ///
-/// **pub（票 02 批次 05）**：WIT impl 迁宿主后，宿主薄转发层以调用方
+/// **pub（批次 05）**：WIT impl 迁宿主后，宿主薄转发层以调用方
 /// `plugin_id` 为 caller 经本公开面复用同一条编排（`call_plugin_api_host`
 /// 的宿主身份快捷入口保留不动——两者是同一编排的两个 caller）。
 pub fn api_call(

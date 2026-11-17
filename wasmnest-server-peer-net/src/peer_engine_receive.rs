@@ -1,12 +1,12 @@
-//! 对等网络接收侧引擎接入（传输编排下沉票 3 终态：回执表 + 引擎事件桥）。
+//! 对等网络接收侧引擎接入（传输编排下沉终态：回执表 + 引擎事件桥）。
 //!
-//! **口径（票 3 修正）**：本模块不再持有任何任务状态机——旧版所持的接收
+//! **口径（传输编排下沉后）**：本模块不再持有任何任务状态机——旧版所持的接收
 //! 任务表（活跃 + 会话内终态 100 封顶）、进度入账、终态结算、暂停/恢复状态
 //! 同步、peer_name 解析、pull 任务行预登记与并发信号量，已随传输编排整体
 //! 下沉 `file-transfer` 插件（事件归约状态机）。宿主只保留引擎控制面：
 //!
 //! - **询问回执表** `batch_id → PendingOffer`：OfferPending 的 oneshot 回执
-//!   通道不可序列化，必须留宿主（spec §4.5）；条目附带询问事实（nodeId/
+//!   通道不可序列化，必须留宿主；条目附带询问事实（nodeId/
 //!   totalSize/tsMs）供 active-transfers 投影；
 //! - **原语面**：`respond-transfer`（应答回流）、收发两方向的暂停/恢复会话
 //!   控制（wire Pause/Resume 帧）、`close` 接收侧分支（pending 即拒、running
@@ -44,7 +44,7 @@ pub const POLICY_ALWAYS_DENY: &str = "always_deny";
 
 /// 接收侧引擎配置（节点生命周期内的内存态；业务设置真源在 file-transfer
 /// 插件私有库，经 set-receive-policy / set-download-dir 原语推送闸门）。
-/// 发送方向并发上限字段已随编排下沉退役（票 3：插件侧闸门自控）
+/// 发送方向并发上限字段已随编排下沉退役（插件侧闸门自控）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PeerTransferSettings {
@@ -86,7 +86,7 @@ pub(crate) struct PendingOffer {
     pub ts_ms: u64,
     pub reply: tokio::sync::oneshot::Sender<bool>,
 }
-/// Tauri 托管的接收侧状态容器（票 3 终态：回执表 + 处理器句柄）
+/// Tauri 托管的接收侧状态容器（终态：回执表 + 处理器句柄）
 ///
 /// - `pending`：等待宿主应答的询问回执（batch_id → 引擎 oneshot + 询问事实）；
 /// - `runtime`：节点运行时的复合处理器句柄与其配置快照——热更新以快照为
@@ -127,23 +127,28 @@ fn effective_download_dir(ctx: &PeerCtx, settings: &PeerTransferSettings) -> Res
 
 // ==================== 节点装配接缝（peer_net 调用）====================
 
-/// 装配期登记：处理器句柄 + 配置快照（热更新基底）。start_locked 以缺省
-/// Ask/60s 构造；用户设置由 file-transfer 插件激活后经 set-receive-policy /
-/// set-download-dir 原语推送纠正
-pub(crate) async fn register_handler(ctx: &PeerCtx, handler: Arc<SharedDirHandler>, mut config: TransferConfig) {
-    let settings = default_settings(ctx);
+/// 装配期首份配置纠正：以**已推送的设置**为准，而不是内置缺省。
+///
+/// 顺序原因：file-transfer 插件在 `activate()` 里先推 `set-receive-policy` /
+/// `set-download-dir`、之后才请求节点启动。这里若回落 `PeerTransferSettings::default()`，
+/// 刚推送的策略 / 落点会被丢掉——接收落点退回宿主缺省 `Downloads\WasmNest\`，
+/// 而设置页仍显示用户选定的目录，「下载完成 → 打开所在目录」于是指向不存在的
+/// 路径（2026-11-16 实测：设置为 `~/Downloads`，文件实际落在 `~/Downloads/WasmNest`）。
+fn startup_config(ctx: &PeerCtx, mut config: TransferConfig) -> TransferConfig {
+    let settings = current_settings(ctx);
     if let Ok(dir) = effective_download_dir(ctx, &settings) {
         config.download_dir = dir;
     }
     config.policy = settings.build_policy();
+    config
+}
+
+/// 装配期登记：处理器句柄 + 配置快照（热更新基底）
+pub(crate) async fn register_handler(ctx: &PeerCtx, handler: Arc<SharedDirHandler>, config: TransferConfig) {
+    let config = startup_config(ctx, config);
     handler.update_transfer_config(config.clone());
     let state = &ctx.receive;
     *state.runtime.lock().await = Some((handler, config));
-}
-
-/// 节点装配期缺省设置（无磁盘缓存——设置真源在插件，激活后推送纠正）
-fn default_settings(_ctx: &PeerCtx) -> PeerTransferSettings {
-    PeerTransferSettings::default()
 }
 
 /// 节点停止时摘除句柄（此后设置命令仅改内存态，下次启动重新装配）
@@ -152,7 +157,7 @@ pub(crate) async fn clear_handler(ctx: &PeerCtx) {
     *state.runtime.lock().await = None;
 }
 
-/// 处理器与配置快照句柄（issue 11 远端拉取用：配置为落点/策略热更新基底）
+/// 处理器与配置快照句柄（远端拉取用：配置为落点/策略热更新基底）
 pub(crate) async fn handler_and_config(ctx: &PeerCtx) -> Option<(Arc<SharedDirHandler>, TransferConfig)> {
     let snapshot = {
         let state = &ctx.receive;
@@ -162,7 +167,7 @@ pub(crate) async fn handler_and_config(ctx: &PeerCtx) -> Option<(Arc<SharedDirHa
     snapshot
 }
 
-/// 引擎事件消费主循环（票 3 终态：纯直推）：OfferPending 登记回执表后直推、
+/// 引擎事件消费主循环（终态：纯直推）：OfferPending 登记回执表后直推、
 /// Progress 节流直推、Terminal/Paused/Resumed 直推。通道关闭（节点停止）时
 /// 弃置 pending 回执——回执 drop 即自动拒（引擎 sweeper 兜底语义）。
 pub(crate) async fn drive_receive_events(ctx: Arc<PeerCtx>, mut rx: mpsc::Receiver<TransferEvent>) {
@@ -416,7 +421,7 @@ pub(crate) fn active_receive_rows(ctx: &PeerCtx) -> Vec<serde_json::Value> {
 // ==================== 设置闸门 ====================
 
 // 设置真源在 file-transfer 插件私有库，宿主只持有本次节点生命周期内的引擎闸门
-// 内存态；查询/写入命令面与旧 `transfer_settings.json` 读写随票 06 退役，
+// 内存态；查询/写入命令面与旧 `transfer_settings.json` 读写已退役，
 // 以下入口只由 host-peer 原语（`peer_net::*_for_plugin`）调用。
 
 /// 更新接收策略与询问超时（校验后运行中节点热生效）
@@ -526,9 +531,44 @@ mod tests {
             other => panic!("ask must build Ask, got {other:?}"),
         }
     }
+
+    /// 回归（2026-11-16）：插件 `activate()` 先推策略 / 落点、后请求节点启动，
+    /// 装配期必须以已推送的设置为准——否则用户选的接收目录被丢回宿主缺省
+    /// `Downloads\WasmNest\`，历史「打开所在目录」遂指向不存在的路径。
+    #[test]
+    fn startup_config_honors_settings_pushed_before_node_start() {
+        let ctx = crate::test_ctx::headless_ctx();
+        *ctx.receive
+            .settings
+            .lock()
+            .expect("peer receive settings lock poisoned") = Some(PeerTransferSettings {
+            policy_mode: POLICY_ALWAYS_ACCEPT.to_string(),
+            ask_timeout_secs: DEFAULT_ASK_TIMEOUT_SECS,
+            download_dir: Some("/home/u/Downloads".to_string()),
+        });
+        let base = TransferConfig {
+            policy: ReceivePolicy::Ask {
+                timeout: std::time::Duration::from_secs(DEFAULT_ASK_TIMEOUT_SECS),
+            },
+            download_dir: std::path::PathBuf::from("/home/u/Downloads/WasmNest"),
+            ..TransferConfig::default()
+        };
+
+        let config = startup_config(&ctx, base);
+
+        assert_eq!(
+            config.download_dir,
+            std::path::PathBuf::from("/home/u/Downloads"),
+            "推送过的落点必须生效（不得回落宿主缺省）"
+        );
+        assert!(
+            matches!(config.policy, ReceivePolicy::AlwaysAccept),
+            "推送过的接收策略必须生效"
+        );
+    }
 }
 
-/// ③ 回归：接收侧取消链路（票 06 改名时曾断链）。
+/// ③ 回归：接收侧取消链路（改名时曾断链）。
 ///
 /// 覆盖 `dismiss_pending_offer`：pending 询问视同拒绝并回执 false；无 pending
 /// 返回 false。真实 mTLS loopback 属真实 wasm 闭环，本模块先锁 dead-code 级

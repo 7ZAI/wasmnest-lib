@@ -1,6 +1,6 @@
-//! `WasmNest` 插件契约包名与版本——**全仓唯一手写真源**（ADR 0051 D3/D4）
+//! `WasmNest` 插件契约包名与版本——**全仓唯一手写真源**
 //!
-//! 为什么是 Rust 常量而不是 JSON（票 03 实施期修正）：能力域 crate 的导出名清单走
+//! 为什么是 Rust 常量而不是 JSON：能力域 crate 的导出名清单走
 //! `inventory` 静态自报（`wasmnest-discovery-engine/src/routing.rs` 的
 //! `static ROUTE` + `const EXPORTS`），`inventory::submit!` 要求编译期常量 ⇒ 版本必须
 //! 在 **const 上下文**可用。JSON 真源只能运行期解析，与该约束结构性冲突。
@@ -25,7 +25,7 @@
 //! WIT 拼装脚本与发布清单锁都按此形状做正则解析。改形状 = 同时打穿两处解析器，
 //! 必须同批修改并重跑 `pnpm run check:wit` / `check:manifest`。
 //!
-//! **bump 政策**（ADR 0051 D4）：任何 WIT 变更（**含函数级追加**）→ patch
+//! **bump 政策**：任何 WIT 变更（**含函数级追加**）→ patch
 //! （`0.1.0` → `0.1.1`）；interface 增删 / 签名变 → minor（`0.1.x` → `0.2.0`）。
 //! bump 后须重跑 `node scripts/compose-wit.mjs --all` 并重建插件产物——版本进入
 //! import 名，宿主与 guest 版本不等即实例化失败。
@@ -33,7 +33,7 @@
 //! 版本线（2026-10-18 三仓拆分）：新仓内所有内部构建视为**全新**，版本自 0.0.1
 //! 重开——契约版本与旧单仓的 0.3.0 无继承关系（旧仓转为文档真源与回退点，代码冻结）。
 //! 旧线历次版本（0.1.x / 0.2.0 / 0.3.0，含 wasmnest-end-rename 的包名改名窗口）
-//! 见旧仓 git 历史与 ADR 0051 / 0056。
+//! 见旧仓 git 历史与旧版设计记录。
 //!
 //! **crate 自身 `version` 与 [`PACKAGE_VERSION`] 不强制相等**：前者是打包事实，
 //! 后者是协议事实；强行绑定会让「只改打包元数据」也构成契约 bump。两者的一致性
@@ -92,7 +92,7 @@ pub const PLUGIN_DB_QUERY_MAX_BYTES: usize = 32 * 1024 * 1024;
 /// 插件 execute-batch 单次调用语句数上限
 pub const PLUGIN_DB_EXECUTE_BATCH_MAX_STATEMENTS: usize = 64;
 
-/// 未显式映射的错误统一兜底到的语义码（ADR 0030 §3：默认兜底 + 显式覆盖）
+/// 未显式映射的错误统一兜底到的语义码（默认兜底 + 显式覆盖）
 ///
 /// code 即前端 i18n key 的后半段（`errors.host.internal`），零映射层；改码 = 破坏性变更。
 /// 消费方：`server-base` 错误信封（re-export）与 CLI wire 的兜底码。

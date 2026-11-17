@@ -1,4 +1,4 @@
-//! 引擎侧异步桥（wasm-core 纯净性收口票 02：移除对 tauri runtime 的依赖）
+//! 引擎侧异步桥（移除对 tauri runtime 的依赖）
 //!
 //! 原 `pty_reader.rs` 的消费任务用 `tauri::async_runtime::spawn` 启动——那是宿主
 //! runtime。引擎 crate 不依赖 tauri（否则「可复用 PTY 引擎」被迫背上整个宿主

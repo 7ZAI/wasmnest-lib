@@ -2,9 +2,9 @@
 //!
 //! 域代码（[`super::database`] / [`super::storage`]）与本适配器同属 `wasm_core`：
 //! 权限门、主库与插件私有库句柄、唯一那份同步↔异步桥、kv 存储与能力路由全部在宿主
-//! 一处。**不拆 crate**（ADR 0036，撤销 wasm-core-lib-split 票 07/08）。
+//! 一处。**不拆 crate**（此前的 crate 拆分已撤销）。
 //!
-//! ## 每一段取值为何留在宿主（AGENTS §5.1.3 四类薄壳之二/之三）
+//! ## 每一段取值为何留在宿主（四类薄壳之二/之三）
 //!
 //! | 端口方法 | 留在宿主的原因 |
 //! | --- | --- |
@@ -61,9 +61,9 @@ pub fn ports_for(ctx: &WasmHostContext) -> HostSqlitePorts<'_> {
 
 impl SqlitePorts for HostSqlitePorts<'_> {
     fn check_permission(&self, plugin_id: &str, permission: &str, api: &str) -> bool {
-        // 权限门留宿主（AGENTS §5.1.3 四类薄壳之「安全闸门」——闸门不应可插拔）。
+        // 权限门留宿主（四类薄壳之「安全闸门」——闸门不应可插拔）。
         // 复用既有 `host_api::check_permission`：同一份 PermissionManager、同一条
-        // 拒绝 warn 路径（AGENTS §8 结构化字段），不另起一套判定。
+        // 拒绝 warn 路径（结构化字段），不另起一套判定。
         super::check_permission(self.ctx, plugin_id, permission, api)
     }
 

@@ -1,18 +1,18 @@
-//! 对等网络专用 mDNS 节点发现（ticket 03）：
+//! 对等网络专用 mDNS 节点发现：
 //! 独立服务类型广播 + 浏览并存、TXT 携带设备名/协议版本/能力位图、带 TTL 的在线缓存。
 //!
 //! ## 与终端链路旧 mDNS 的关系
 //!
 //! 服务类型 `_wasmnest-peer._tcp.local.` 与旧 `_wasmnest._tcp.local.` 刻意错开：
 //! 两套发现靠**服务类型**隔离，彼此不会收到对方的 browse 结果。但它们**不是**
-//! 各自独立的守护进程——mDNS 基础能力服务收敛（spec v2 / ticket 04）后，守护句柄
+//! 各自独立的守护进程——mDNS 基础能力服务收敛后，守护句柄
 //! 由宿主壳经 `MdnsPort` 端口层**注入**本模块（[`spawn_peer_mdns_daemon`] 的
 //! `daemon` 参数），本模块不再自建 `ServiceDaemon`（端口 trait 定义见
 //! `wasmnest-server-base` 的 `MdnsPort`）。因此「多实例共存」不是本模块可依赖的
 //! 性质：新增发现服务必须走同一个共享守护，否则会出现两个守护争抢同一组播端口。
 //! 本模块不触碰旧链路与 file_service announce（冻结区）。
 //!
-//! ## 浏览面走类型中枢订阅（ADR 0054）
+//! ## 浏览面走类型中枢订阅
 //!
 //! mdns-sd 对每个服务类型只保留**一个** listener，重复 `browse` 会静默覆盖前一个
 //! （旧 listener 既不收事件也不断开），因此同进程内多方各自 `daemon.browse` 必然
@@ -30,9 +30,8 @@
 //!   `daemon`。
 //!
 //! 另：`spawn_peer_mdns_advertiser`（仅广告、无浏览）曾是本模块内**仍自建**
-//! `ServiceDaemon` 的那一个，且无生产调用方——已随双端共享 lib spec M4（2026-10-09）
-//! 删除：广告面由宿主自播（owner=host）/ 插件 `host-mdns` advertise 覆盖。
-//! ## 「同一通路」注入缝（issue 03 核心验收点）
+//! `ServiceDaemon` 的那一个，且无生产调用方——已随双端共享 lib 的后续拆分删除：
+//! ## 「同一通路」注入缝
 //!
 //! mDNS 事件（经中枢 fan-out 的浏览订阅）与单测喂入统一收敛到
 //! [`DiscoveryCache::observe`]：守护任务在
@@ -42,7 +41,7 @@
 //!
 //! ## 「在线」语义与 TTL 三层机制
 //!
-//! 「在线」= 缓存中存在记录，与是否维持连接无关（ADR 0028：未信任节点也可见）。
+//! 「在线」= 缓存中存在记录，与是否维持连接无关（未信任节点也可见）。
 //! ① 每次 `ServiceResolved` 盖章续期；② `ServiceRemoved`（goodbye）立即移除；
 //! ③ 守护任务每 [`SWEEP_INTERVAL`] 清扫一次超时项——崩溃进程没有 goodbye，
 //! 只能靠 TTL 兜底（[`PEER_DISCOVERY_TTL`]）。过期判定抽成接受显式 `now` 的
@@ -418,7 +417,7 @@ impl DiscoveryDaemon {
 
     /// 优雅关停：退订浏览订阅 → 注销广播（让对端即时移除本机）→ join
     ///
-    /// 共享守护收敛后（spec v2 / ticket 04）守护线程归 MdnsService 所有，
+    /// 共享守护收敛后守护线程归 MdnsService 所有，
     /// 本句柄**不** shutdown 共享 daemon——只退订自己的浏览订阅、注销自己的
     /// 广播，其余插件浏览/广播不受影响。
     ///
@@ -511,7 +510,7 @@ impl DiscoveryDaemon {
 ///   周期/即时重查都转调它（中枢按合并窗统一重发唯一 browse + 缓存重放 fan-out）。
 ///
 /// 本模块据此**不再** `daemon.browse` / `stop_browse`：全进程同类型 browse 唯一性
-/// 由中枢保证（ADR 0054），peer-net 的旧「重查换绑 receiver」机制随之删除。
+/// 由中枢保证，peer-net 的旧「重查换绑 receiver」机制随之删除。
 pub struct PeerMdnsBrowse {
     /// 中枢 fan-out 接收端（移交事件循环）
     pub receiver: flume::Receiver<ServiceEvent>,
@@ -556,7 +555,7 @@ pub fn spawn_peer_mdns_daemon(
         request_requery,
     } = browse;
 
-    // mDNS 基础能力服务收敛（spec v2 / ticket 04）：不再自建 ServiceDaemon，
+    // mDNS 基础能力服务收敛：不再自建 ServiceDaemon，
     // 使用宿主 MdnsService 的全局共享守护（register / re-announce 广播面不动；
     // 虚拟网卡禁用由 discovery-engine 的共享守护初始化执行一次，此处不重复）
     let properties = encode_txt_properties(
@@ -652,7 +651,7 @@ async fn run_reannounce_loop(daemon: ServiceDaemon, service_info: ServiceInfo, m
 /// 自己 browse、也没有 receiver 换绑——重查换绑与缓存重放都在中枢内部完成，事件
 /// 按订阅者 fan-out 过来（同类型其他订阅者各收一份，互不影响）。
 ///
-/// 事件只进引擎内部 DiscoveryCache（spec v2 D1：面向插件的全局发现桥接
+/// 事件只进引擎内部 DiscoveryCache（面向插件的全局发现桥接
 /// 已退役——插件改经 host-mdns 自建 browse 收定向事件）
 async fn run_discovery_loop(
     receiver: flume::Receiver<ServiceEvent>,
@@ -1020,7 +1019,7 @@ mod tests {
         }
     }
 
-    // ---- 中枢订阅形态（ADR 0054：浏览面注入 + 事件循环 / 停机语义）----
+    // ---- 中枢订阅形态（浏览面注入 + 事件循环 / 停机语义）----
 
     /// 有界轮询等待异步条件成立（无固定 sleep；超时即失败并给出定位信息）
     async fn wait_for(what: &str, cond: impl Fn() -> bool) {

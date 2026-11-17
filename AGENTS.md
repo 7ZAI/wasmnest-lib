@@ -338,6 +338,8 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 
 > 通用规范真源 `../wasmnest/docs/public/{commenting,git}.md`，不复制。
 
+- **注释禁止引用内部文档章节**（commenting.md §1，硬约束）：注释必须自解释，读者只读代码 + 注释即可理解。以下引用一律禁止，出现即不合格：`§x.y` / `§x`（spec §、ADR §、设计 §、AGENTS §）、`票 NN` / `票据 NN` / `T0X`、`ADR ####` / `ADR-0017`、`issue NN`、`spec v2` / `spec Decision N` 等内部标签。**唯一豁免**：外部标准 RFC 引用（`RFC 6762 §8.3`）与代码路径坐标。引用被禁时改写为直接描述代码逻辑 / 动机，不保留标签名。
+
 - 注释 / 文档禁止写平台仓目录名与跨仓读取路径（§0）；端词汇（桌面宿主 / 移动宿主）可用。
 - rustfmt 列宽按 crate 根 `rustfmt.toml`（120 vs 默认 100），不跨 crate 统一重排。
 - Commit scope 用 `(lib)`（`refactor(lib):` / `fix(lib):` / `chore(lib):`）；格式 / 禁 AI 标记 / `--force` 禁令 / 只提交源码等见 git.md。

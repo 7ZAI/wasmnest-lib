@@ -2,7 +2,7 @@
 
 /// 单候选拨号失败成因（结构化）：调用方按自己的判据表映射，**不得**对聚合
 /// 文本做子串匹配——「一条 unreachable + 一条 timeout」与「全部 unreachable」
-/// 的结论不同（§4.9）。
+/// 的结论不同（前者还有候选可试，后者说明不在内网）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DialCause {
     /// 超时（判据不明确）

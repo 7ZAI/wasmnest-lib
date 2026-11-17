@@ -1,4 +1,4 @@
-//! `host-tunnel.probe-relay` 域函数（T19）：relay 连通性探测。
+//! `host-tunnel.probe-relay` 域函数：relay 连通性探测。
 //!
 //! ## 分层
 //!
@@ -7,7 +7,7 @@
 //! p2p-engine::probe 一次性临时 swarm 拨号 + 握手身份校验 + ping（无宿主依赖）
 //! ```
 //!
-//! ## 零持久副作用（不变量 P1）
+//! ## 零持久副作用（探测本身不落任何持久状态）
 //!
 //! 探测**不**登记 expose 规则、**不**建立 / 释放 reservation、**不**写信任、
 //! **不** acquire `net.tunnel` 服务租约、**不**发任何事件。因此本函数不碰
@@ -229,7 +229,7 @@ fn map_probe_error(e: wasmnest_p2p_engine::probe::ProbeError) -> TunnelError {
     }
 }
 
-// ==================== report 形状（§4.2） ====================
+// ==================== report 形状 ====================
 
 /// WIT 返回的 JSON 形状（camelCase，`v` 为形状版本）
 #[derive(Debug, Serialize)]

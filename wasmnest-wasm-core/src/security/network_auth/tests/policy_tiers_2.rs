@@ -1,4 +1,4 @@
-//! 策略档位（票 06：三档在网络侧与文件侧同语义） — crate 内单元测试（自桌面宿主旧 `wasm_core/security/network_auth.rs` 面迁出）
+//! 策略档位（三档在网络侧与文件侧同语义） — crate 内单元测试（自桌面宿主旧 `wasm_core/security/network_auth.rs` 面迁出）
 
 use super::scaffold::*;
 use super::*;
@@ -66,7 +66,7 @@ async fn always_allow_keeps_allowing_when_the_record_cap_is_reached() {
             .as_u64()
             .unwrap(),
         1,
-        "容量丢弃必须进 core-monitor（spec §8.2；靠 set_monitor 接线才成立）"
+        "容量丢弃必须进 core-monitor（靠 set_monitor 接线才成立）"
     );
 }
 /// 两个判定面（弹窗 / 无询问）对**每一档**必须给出同一个答案

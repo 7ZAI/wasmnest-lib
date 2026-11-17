@@ -3,7 +3,7 @@
 use super::scaffold::{denied, drop_handle, mint, FakePorts};
 use super::*;
 
-/// 权限门（票 01 门禁用例）：未授予 `peer` 即拒绝，且不触碰句柄表/引擎
+/// 权限门：未授予 `peer` 即拒绝，且不触碰句柄表/引擎
 #[test]
 fn peer_denied_without_permission() {
     let ports = FakePorts::with(&[]);
@@ -37,7 +37,7 @@ fn headless_wording_is_verbatim() {
     );
 }
 
-/// 域函数面（票 04 红测）：非属主调 `peer_close` 拿到的就是属主拒绝，
+/// 域函数面（红测）：非属主调 `peer_close` 拿到的就是属主拒绝，
 /// 而不是先撞上「无头上下文不可用」——判定顺序本身也是被断言的行为
 #[test]
 fn peer_close_by_non_owner_is_denied_before_app_check() {

@@ -1,4 +1,4 @@
-//! 前端插件通道身份（frontend channel identity，审计票 06 / P0-5）
+//! 前端插件通道身份（frontend channel identity，P0-5）
 //!
 //! Tauri 的 `#[tauri::command]` **拿不到调用者身份**：同一 webview 内宿主代码与全部插件前端
 //! 代码同权，`plugin_*` 命令参数里的 `plugin_id` 因此是**自报值**——任一插件前端可直接
@@ -242,7 +242,7 @@ impl FrontendChannelRegistry {
         }
     }
 
-    /// 宿主面命令的身份门（ADR 0058 方案 A：管理类命令只认宿主前端凭证）
+    /// 宿主面命令的身份门（方案 A：管理类命令只认宿主前端凭证）
     ///
     /// 与 [`Self::authorize`] 的差别：插件面令牌（即使目标是自己）也一律拒绝——
     /// 激活 / 停用 / 安装 / 卸载 / 审批是宿主职权，插件前端不得自启停或互相操纵。
@@ -551,7 +551,7 @@ mod tests {
             .is_err());
     }
 
-    /// 宿主面命令的身份门（ADR 0058 方案 A）：宿主 loader 会话放行
+    /// 宿主面命令的身份门（方案 A）：宿主 loader 会话放行
     #[test]
     fn require_host_identity_accepts_host_loader_session() {
         let registry = FrontendChannelRegistry::new();

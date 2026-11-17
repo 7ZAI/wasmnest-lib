@@ -1,6 +1,6 @@
 //! 定时器 / 重载限频用例 + 宿主退役面源码扫描锁。
 //!
-//! **票 04 迁移记录**：原文件的夹具功能态用例（degraded 激活与恢复 / 持久化意图 /
+//! **迁移记录**：原文件的夹具功能态用例（degraded 激活与恢复 / 持久化意图 /
 //! 激活-调用-停用闭环 / 热重载循环）与夹具脚手架（`build_test_component` /
 //! `setup_wasm_plugin(_with_model)`）随「wasm-core 不再持全 world 绑定」迁桌面宿主
 //! `src-tauri/tests/wasm_flow_e2e.rs`（判决性探针实测：本族是最后一批依赖内核测试
@@ -10,11 +10,11 @@
 use super::scaffold::*;
 use super::*;
 
-// 票 03 删除的用例 `test_dispatch_lifecycle_and_input_to_wasm_plugin`：
+// 删除的用例 `test_dispatch_lifecycle_and_input_to_wasm_plugin`：
 // 它覆盖的「事件 → payload → dispatch → wasm 回调」链路随宿主观察面退役
 // （派发点、监听器实现、注册表三处同批删除），无对象可测。
 // 插件导出的 `on_session_lifecycle` / `on_input_submitted` 仍由 SDK 默认实现兜底，
-// 其 WIT 面随票 10 整 interface 删除时收口。
+// 其 WIT 面随整 interface 删除时收口。
 
 // ==================== PluginServices（可测部分） ====================
 
@@ -39,7 +39,7 @@ async fn test_plugin_timer_register_replace_abort() {
     );
     assert_eq!(host.plugin_timers.lock().unwrap().len(), 1);
 
-    // 重复注册替换旧句柄（v6 ADR 0003：同一插件仅保留一个定时器）
+    // 重复注册替换旧句柄（v6：同一插件仅保留一个定时器）
     PluginServices::register_plugin_timer(
         &host,
         TEST_PLUGIN_ID.to_string(),
@@ -70,15 +70,15 @@ async fn test_schedule_plugin_reload_throttle() {
     }
 }
 
-// 票 03 删除的用例 `test_session_listener_registration_via_services`：
+// 删除的用例 `test_session_listener_registration_via_services`：
 // `PluginServices` 的两条注册面（生命周期 / 输入）已随宿主观察面退役，
 // 注册表与派发点不复存在，本用例无对象可测。
 
-// ==================== 内核会话域防回接锁（票 11） ====================
+// ==================== 内核会话域防回接锁 ====================
 
 /// 防回接锁的源码扫描面：宿主 `src` + **六个 server lib crate 的 `src`**
 ///
-/// server-lib-split 票 07：面抽 crate 后只扫宿主 `src` 是不够的——退役面若被回接到
+/// server-lib-split：面抽 crate 后只扫宿主 `src` 是不够的——退役面若被回接到
 /// crate 里，宿主侧的锁一个也看不见。尤其 `wasmnest-server-peer-net`（传输编排下沉后
 /// 引擎面正是最可能复归编排的地方）与 `wasmnest-server-websocket`（会话观察面）。
 /// crate 清单的登记处是 `server::crate_boundary_lock::SERVER_LIB_CRATES`（单一事实源）。
@@ -119,13 +119,13 @@ fn collect_retired_domain_rs_files() -> Vec<(std::path::PathBuf, String)> {
 
 /// 源码扫描锁：宿主侧不得再出现内核会话域的任何符号。
 ///
-/// 票 11 删除了 `src/session/` 整个目录（`SessionManager` / `SessionConfigManager` /
+/// 删除了 `src/session/` 整个目录（`SessionManager` / `SessionConfigManager` /
 /// `SessionOutputManager` / `GlobalOutputManager` / `SessionInfoRegistry` / 环与
 /// 订阅者实现）。这不是「换了个位置放」——会话真源在 `com.wasmnest.bedcode`
 /// 登记域，宿主只剩 `host-pty`（引擎）+ `host-connection`（连接清单）+ `session_gateway`
-/// （互调窄转发层）。谁把内核会话对象加回来，谁就要先推翻票 11 的裁定。
+/// （互调窄转发层）。谁把内核会话对象加回来，谁就要先推翻该裁定。
 ///
-/// 与票 03 的锁同理：只扫**非注释行**（各模块里「为什么删」的说明段落是记账），
+/// 与另一锁同理：只扫**非注释行**（各模块里「为什么删」的说明段落是记账），
 /// 且跳过两张锁自身（`sync_handler.rs` 与本文件——它们把标识符当字符串去匹配）。
 #[test]
 fn retired_kernel_session_domain_is_not_reintroduced() {
@@ -165,16 +165,16 @@ fn retired_kernel_session_domain_is_not_reintroduced() {
 
     assert!(
         violations.is_empty(),
-        "内核会话域（票 11 已整目录删除）出现回接痕迹：\n{}",
+        "内核会话域（已整目录删除）出现回接痕迹：\n{}",
         violations.join("\n")
     );
 }
 
-// ==================== 对等传输编排域防回接锁（传输编排下沉票 3） ====================
+// ==================== 对等传输编排域防回接锁（传输编排下沉） ====================
 
 /// 源码扫描锁：宿主 peer 域不得再把传输任务编排状态机接回来。
 ///
-/// 票 3 把发送/接收任务编排整体下沉 `file-transfer` 插件（事件归约状态机，
+/// 发送/接收任务编排整体下沉 `file-transfer` 插件（事件归约状态机，
 /// 真源在其私有库）：宿主 `peer_engine_*` 收敛为「会话句柄表 + 引擎事件桥」——
 /// 旧版所持的任务 DTO 形状（`PeerTransferDto`）、并发闸门（`pick_pending_to_start`
 /// / `pump_send_queue`）、历史封顶（`HISTORY_CAP` / `RECEIVE_TERMINAL_CAP`）、
@@ -182,11 +182,11 @@ fn retired_kernel_session_domain_is_not_reintroduced() {
 /// 预登记（`register_remote_pull`）、peer_name 解析（`resolve_peer_name`）、
 /// 批量恢复编排（`peer_resume_all_transfers` / `resume_all_transfers_for_plugin`）
 /// 与并发脉冲（`set_transfer_concurrency_for_plugin`）一并退役。谁把这些加回来，
-/// 谁就要先推翻票 3 裁决。
+/// 谁就要先推翻该裁决。
 ///
-/// 与票 11 的锁同理：只扫**非注释行**（模块头「为什么删」的说明段落是记账），
+/// 与上一锁同理：只扫**非注释行**（模块头「为什么删」的说明段落是记账），
 /// 且跳过锁自身。fail-visible 双保险之一——另一保险是 `send-files` 载荷
-/// `concurrency` 字段检测（wasm-core-lib-split 票 05 起在
+/// `concurrency` 字段检测（lib-split 时起在
 /// `wasmnest-server-peer-net::plugin_binding`，行为级）。
 #[test]
 fn retired_peer_transfer_orchestration_is_not_reintroduced() {
@@ -234,18 +234,18 @@ fn retired_peer_transfer_orchestration_is_not_reintroduced() {
 
     assert!(
         violations.is_empty(),
-        "对等传输编排域（票 3 已整体下沉插件）出现回接痕迹：\n{}",
+        "对等传输编排域（已整体下沉插件）出现回接痕迹：\n{}",
         violations.join("\n")
     );
 }
 
-// ==================== 退役面防回接锁（票 03） ====================
+// ==================== 退役面防回接锁 ====================
 
 /// 源码扫描锁：宿主侧不得再把「注册了就能收到会话回调」的观察面接回来。
 ///
-/// 票 03 的裁决是**整体退役**（不换成总线 topic）：这两条通道在 P1-b 真源下沉后
+/// 整体退役的裁决（不换成总线 topic）：这两条通道在 P1-b 真源下沉后
 /// 生产流量归零，留着「代码在、永远不触发」是下一处断链的种子。本锁把裁决变成
-/// 可执行判据——谁把注册表 / 派发点 / 修饰链加回来，谁就要先推翻票 03 的裁定。
+/// 可执行判据——谁把注册表 / 派发点 / 修饰链加回来，谁就要先推翻该裁定。
 ///
 /// 只扫「宿主源码里的定义与调用」，不扫注释：本文件与各模块的说明段落里出现这些
 /// 名字是**记账**（说清为什么删），不是回接。
@@ -286,21 +286,21 @@ fn retired_session_observation_surface_is_not_reintroduced() {
 
     assert!(
         violations.is_empty(),
-        "会话观察面（票 03 已整体退役）出现回接痕迹：\n{}",
+        "会话观察面（已整体退役）出现回接痕迹：\n{}",
         violations.join("\n")
     );
 }
 
-// ==================== 认证中心发现路径防回接锁（ADR 0031 v32） ====================
+// ==================== 认证中心发现路径防回接锁（v32） ====================
 
 /// 源码扫描锁：宿主侧不得再出现「能力探测 + 排序取首个」的认证中心发现路径。
 ///
-/// v32（2026-09-29，ADR 0031）把认证中心角色发现从「扫描导出 auth-policy 的
+/// v32（2026-09-29）把认证中心角色发现从「扫描导出 auth-policy 的
 /// 激活插件 + 按 id 取第一个」改为**注册表显式登记**（`auth-center-register` +
 /// 唯一性仲裁）——旧路径在候选 > 1 时选中未实现策略的插件（2026-09-29 移动端
 /// 4001 日志风暴事故根因），且与 api_registry 锚点形成**两套发现机制并存**的
 /// 结构病灶。谁把这些符号加回宿主源码（函数 / 常量 / fail-open 降级），谁就要
-/// 先推翻 ADR 0031 的裁定。
+/// 先推翻该裁定。
 ///
 /// 只扫「宿主源码里的定义与调用」，不扫注释：本文件与各模块的说明段落里出现这些
 /// 名字是**记账**（说清为什么删），不是回接。fail-visible 形态③（删即抛）。

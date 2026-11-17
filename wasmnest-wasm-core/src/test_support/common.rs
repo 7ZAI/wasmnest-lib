@@ -5,11 +5,11 @@
 //! 私有库串行锁、认证中心注册表测试闸门。
 //!
 //! **常编译 pub（非 `#[cfg(test)]`）**：宿主集成测试链的是不带 `cfg(test)` 的 lib，
-//! 必须经常编译面才能消费（按 `test_tokens` 常编译先例，ADR 0037 D7 同款裁决）。
+//! 必须经常编译面才能消费（按 `test_tokens` 常编译先例，同款裁决）。
 //! 门控在父模块：本面随 `desktop-assembly`（桌面宿主开默认 features 时可见）；
 //! 移动消费面见兄弟模块 `bare`（`test-support` feature）。
 //!
-//! 上提来源（wasm-core 纯净性收口票 05b，2026-10-06）：
+//! 上提来源（纯净性收口，2026-10-06）：
 //! - `manager/runtime.rs` mod tests：`setup_wasm_runtime(_with_config)` /
 //!   `plugin_db_root` / `session_plugin_db_guard`（完整迁入，内部 `use crate::…`
 //!   不变，同 crate 可直接引用）
@@ -95,9 +95,9 @@ pub fn setup_wasm_runtime_with_setup(setup: EngineSetup) -> (WasmRuntime, Arc<Wa
 
         let storage = Arc::new(PluginStorage::new(db.clone()));
 
-        // 配置管理器持一个建好 schema 的内核库：票 02 的 legacy 迁移通道经
+        // 配置管理器持一个建好 schema 的内核库：legacy 迁移通道经
         // `host-session.config-*` 读 `session_configs`，表不存在即报
-        // `no such table`（票 07 的旧教训）。会话管理器自 v21 起无库依赖
+        // `no such table`（旧教训）。会话管理器自 v21 起无库依赖
         // （内核不再读配置表），故此处不再共库——变量保留仅为驱动
         // 建表副作用（init_schema），有意不读（下划线前缀）。
         let _kernel_db = Arc::new(std::sync::Mutex::new({
@@ -118,7 +118,7 @@ pub fn setup_wasm_runtime_with_setup(setup: EngineSetup) -> (WasmRuntime, Arc<Wa
 
         // 无头构建：不创建 AppHandle（tao 事件循环不允许在测试线程初始化）
         let mut wasm_runtime = WasmRuntime::with_setup(storage.clone(), None, setup).unwrap();
-        // guest 事件派发器（票 03 / 票 04）：缺省 `UnwiredGuestEvents`（派发即
+        // guest 事件派发器：缺省 `UnwiredGuestEvents`（派发即
         // fail-visible，不静默丢消息）——需要 `events` 导出投递的宿主集成测试自行
         // 注入 `DesktopGuestEvents`（见桌面 `tests/support/mod.rs` 的 setup_wasm_runtime）。
         // 注入 AOT 缓存目录（生产由 app_handle 派生，测试无头上下文手动注入）
@@ -136,11 +136,11 @@ pub fn setup_wasm_runtime_with_setup(setup: EngineSetup) -> (WasmRuntime, Arc<Wa
             Arc::new(CapabilityRegistry::new()),
         );
         // 注入插件私有库根目录（无头上下文无 AppHandle，见字段文档）：
-        // 票 08 的 S1 闭环需要真实私有库（host-plugin-database）
+        // S1 闭环需要真实私有库（host-plugin-database）
         host_ctx.set_plugin_db_root(Some(plugin_db_root()));
         let host_ctx = Arc::new(host_ctx);
 
-        // 能力域端口（wasm-core-lib-split 票 03 / 04 / 05 / 06）：迁出 `wasm_core` 的
+        // 能力域端口（lib-split 分批迁出）：迁出 `wasm_core` 的
         // 能力域（mdns / ws / peer-net / http）经端口取宿主能力，使权限判定与引擎上下文的
         // 取法落在**本用例自己的**管理器/总线/库上（进程级只有一格，见
         // `wasmnest_host_kit::ports` 模块文档「两条通道」）。走与生产同一个装配入口
@@ -154,7 +154,7 @@ pub fn setup_wasm_runtime_with_setup(setup: EngineSetup) -> (WasmRuntime, Arc<Wa
         host_ctx
             .set_task_engine(Arc::new(CoreTaskEngine::new(host_ctx.clone())))
             .await;
-        // 单元执行器注册表（与 PluginHost 生产装配同构，票 02 批次 05）：遍历域
+        // 单元执行器注册表（与 PluginHost 生产装配同构，批次 05）：遍历域
         // 自报条目注册（幂等去重按具体类型，多测试共用进程级注册表）。内核测试
         // 二进制只含内核内自报的 fs / http 执行器；process 执行器随域住宿主。
         for entry in crate::host_api::unit_executor::collected_unit_executors() {
@@ -176,7 +176,7 @@ pub fn setup_wasm_runtime_with_setup(setup: EngineSetup) -> (WasmRuntime, Arc<Wa
 /// `db_path`：`None` = 内存库（默认）；`Some(path)` = 文件后备库（持久化用例两代
 /// 上下文指同一文件，模拟重启）。
 ///
-/// **为什么放本模块**（常编译 pub）：迁宿主的域（票 02 批次 04 起路径 B）其单测随域
+/// **为什么放本模块**（常编译 pub）：迁宿主的域（批次 04 起路径 B）其单测随域
 /// 住进宿主 `src/plugin/<domain>.rs`，而 `manager::capability` 注册表面不对外——宿主
 /// 侧无法手工拼 `WasmHostContext::new` 的注册表参数，只能经本 crate 的公开测试基建
 /// 拿上下文（`test_tokens` 常编译同款裁决）。
@@ -237,7 +237,7 @@ pub fn session_plugin_db_guard() -> StdMutexGuard<'static, ()> {
 
 pub use crate::host_api::auth_center::{hold_registry_desk, registry_gate, reset};
 
-/// 占用认证中心注册表的**测试闸门**（v32 / ADR 0031 K1 单中心 desk）
+/// 占用认证中心注册表的**测试闸门**（单中心 desk）
 ///
 /// 注册表是**进程级单例**：桥接门 `session_active()` 查它，而走同一闸门的闭环用例
 /// 会 `reset()` 清台。本文件用例会与它们**并行**执行——一旦被清台，本文件的桥接调用
@@ -260,7 +260,7 @@ pub async fn lock_auth_center_desk() -> SemaphorePermit<'static> {
 /// 加锁调用 on_message。is_activated 恒真（本测试全部实例均已 activate，
 /// 「未激活订阅者不投递」的语义由门禁/注销断言覆盖）。
 ///
-/// **票 05b 上提**（wasm-core 纯净性收口）：lib 集成测试（session_e2e）与
+/// **收口时上提**（纯净性收口）：lib 集成测试（session_e2e）与
 /// wasm-core 内部测试（ws_e2e / pty_e2e / sdk_e2e / ws_output_perf /
 /// terminal_output_perf）共用；`instances` 字段 pub（lib 侧字面量构造）。
 pub struct TestInstanceDispatcher {
@@ -322,10 +322,10 @@ impl crate::bus::MessageDispatcher for TestInstanceDispatcher {
 
 // ==================== 互调 wire 捕获器 / 会话中心 api 清单 ====================
 
-/// 互调 wire 捕获器（票 10 闭环）：静态订阅认证中心的请求 topic，记录
+/// 互调 wire 捕获器（闭环）：静态订阅认证中心的请求 topic，记录
 /// file-transfer → auth center 的 JSON-RPC 请求（含 params 原样）
 ///
-/// **票 05b 上提**：lib 集成测试（session_e2e）与 wasm-core 内部测试共用；
+/// **收口时上提**：lib 集成测试（session_e2e）与 wasm-core 内部测试共用；
 /// `captures` 字段 pub（lib 侧字面量构造 + 断言读）。
 pub struct AuthCenterCaptureHandler {
     pub captures: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>,
@@ -342,7 +342,7 @@ impl crate::bus::BusMessageHandler for AuthCenterCaptureHandler {
     }
 }
 
-// ==================== 夹具产物读取面 / 应用仓读取面：已归位平台仓（票 08 批次三） ====================
+// ==================== 夹具产物读取面 / 应用仓读取面：已归位平台仓 ====================
 //
 // 曾在此的两类跨仓读取随消费者一并迁平台仓：
 // - `session_apis`（读应用仓 bedcode 桌面 manifest）→ 桌面 `src-tauri/tests/support/`；
@@ -453,7 +453,7 @@ impl TestOwnerHandle {
 /// cfg(test)** 的本 crate，此模块在那边不存在 ⇒ 不可能盖掉宿主装配的真端口
 /// （域的 `install_ports` 是 `OnceLock`，首个装配者胜出）。
 ///
-/// **为什么需要**（wasm-core 纯净性收口票 02 批次 03）：ws / http 的端口 adapter 已迁
+/// **为什么需要**（纯净性收口批次 03）：ws / http 的端口 adapter 已迁
 /// 宿主 `src-tauri/src/plugin/{ws,http}.rs`，而**内核测试二进制不链宿主 lib** ⇒ 宿主
 /// 自报的装配器不在场，两条通道（进程级 `install_ports` / 实例级 `set_domain_ports`）
 /// 都无人装配 ⇒ 凡走真实组件全链路的用例（`manager::host` 的激活/停用/实例调用模型、
@@ -600,7 +600,7 @@ pub(crate) mod kernel_test_domain_ports {
                 }
             });
             match verdict {
-                // origin 是归一化后的 origin（不含 path / query，AGENTS §8 凭据红线）
+                // origin 是归一化后的 origin（不含 path / query，凭据红线）
                 Ok(verdict) if verdict.is_allowed() => OutboundAuth::Allowed {
                     origin: verdict.origin().to_string(),
                 },

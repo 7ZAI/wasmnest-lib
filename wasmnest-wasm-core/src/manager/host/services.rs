@@ -11,13 +11,13 @@ use super::PluginHost;
 use crate::manager::runtime::PluginServices;
 use crate::manifest::PluginState;
 
-// ==================== 观察面派发（票 03 已退役） ====================
+// ==================== 观察面派发（已退役） ====================
 //
 // 本文件原有 `PluginHost::{dispatch_lifecycle_to_plugin, dispatch_input_to_plugin}`
 // 两个派发点（连同 `is_activated_block` 门禁）——把宿主会话事件序列化后送给插件的
 // `on_session_lifecycle` / `on_input_submitted` 导出。派发源（SessionManager 的
-// 两张监听器注册表）与监听器实现（`manager/host/listeners.rs`）随票 03 一并退役，
-// 派发点因此无消费者，同批删除。插件侧那两个导出仍存在（WIT 面随票 10 收口）。
+// 两张监听器注册表）与监听器实现（`manager/host/listeners.rs`）一并退役，
+// 派发点因此无消费者，同批删除。插件侧那两个导出仍存在（WIT 面已收口）。
 
 // ==================== PluginServices Implementation ====================
 
@@ -59,7 +59,7 @@ impl PluginServices for PluginHost {
                         // 与 SQLite datetime('now') 同格式（UTC，无时区后缀），
                         // 便于插件在 SQL 中直接字符串比较到期时间
                         "now_utc": now.format("%Y-%m-%d %H:%M:%S").to_string(),
-                        // 本地时区基准（task-scheduler spec §5.1）：
+                        // 本地时区基准：
                         // 调度时间表达式按用户本地时间解释，由宿主注入（WASM 无系统时钟）
                         "now_local": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     });
@@ -127,7 +127,7 @@ impl PluginServices for PluginHost {
         // 同 dispatch_process_done 模式：同步门面（两模型同构；调用失败自动重载
         // 恢复；插件未激活/已卸载时仅记日志，尽力而为）。
         // 未导出 events-task 的旧产物：on_task_event 返回 Ok(false) → 事件丢弃 +
-        // 首次 warn + 计数（宿主不缓存；status/log-jobs 自愈，spec §5.3）
+        // 首次 warn + 计数（宿主不缓存；status/log-jobs 自愈）
         let event_str = match serde_json::to_string(&event) {
             Ok(s) => s,
             Err(e) => {

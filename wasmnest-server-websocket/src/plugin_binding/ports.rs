@@ -1,14 +1,15 @@
 //! host-websocket 能力域的宿主端口（边界层）
 //!
-//! ## 设计依据（`wasmnest-server-base::ports` 先例，票 03 已在 mdns 域跑通）
+//! ## 设计依据
 //!
 //! 消费方（本 crate）声明端口，宿主实现。本 crate **不依赖 tauri、不依赖宿主
 //! bin crate**，故该域的机制面（连接表 / 帧协议 / 端点表 / 权限门位置）自持，
 //! 只把「宿主才有的五件事」经端口要过来。
 //!
+//! 先例参照 `wasmnest-server-base::ports`（在 mdns 域已跑通同套端口形态）。
 //! | 方法 | 为什么需要它 |
 //! | --- | --- |
-//! | [`WsPorts::check_permission`] | 权限门（`ws:client` / `ws:server`）是**宿主安全闸门**（AGENTS §5.1.3 四类薄壳之二），不该可插拔 ⇒ 留宿主，本域只问结果（拒绝文案与 warn 落宿主侧） |
+//! | [`WsPorts::check_permission`] | 权限门（`ws:client` / `ws:server`）是**宿主安全闸门**，不该可插拔 ⇒ 留宿主，本域只问结果（拒绝文案与 warn 落宿主侧） |
 //! | [`WsPorts::publish`] | 向**已拼好的完整 topic** 投递状态事件；总线订阅方隔离在宿主侧（`owned_topic` 是 SDK 纯函数，留在能力域） |
 //! | [`WsPorts::bus_port`] | 入站端点登记要挂一个总线端口（帧从已接连接回灌插件）；端口对象本身由宿主造 |
 //! | [`WsPorts::dispatch_frame`] | `events-ws` 可选导出投递：目标在插件实例里（`PluginHost` 实现），本域只能要结果 |
@@ -60,7 +61,7 @@ impl WsFrameTarget<'_> {
 pub enum FrameDispatch {
     /// 已投递给插件的 `events-ws` 导出
     Delivered,
-    /// 插件未导出该接口（按 spec §2.2 降级：丢弃 + 首次 warn + 计数）
+    /// 插件未导出该接口（降级：丢弃 + 首次 warn + 计数）
     NotExported,
     /// 宿主尚未注入投递器（无头 / 两阶段初始化中间态）：不计数不 panic
     Unavailable,
@@ -75,7 +76,7 @@ pub enum FrameDispatch {
 pub trait WsPorts: Send + Sync + 'static {
     /// 权限判定（`ws:client` / `ws:server`）
     ///
-    /// 返回 `false` 时**宿主侧**必须已按 AGENTS §8 落 `warn`（结构化字段
+    /// 返回 `false` 时**宿主侧**必须已落 `warn`（结构化字段
     /// `plugin_id` / `permission` / `api`）；本域不重复落日志。宿主侧也拿不到
     /// 权限管理器时（无头 / 测试）**必须返回 false**（fail-safe，与既有
     /// `host_api::check_permission` 同向）。

@@ -1,46 +1,45 @@
 //! host-pty 逻辑层 —— 插件私有伪终端原语（ABI v16，6 条）
 //!
-//! spec：`.scratch/2026-09-19-pty-base-service/spec.md`；本模块随能力域整面迁入
-//! `wasmnest-pty-engine`（.scratch/2026-10-06-pty-capability-domain/spec.md D1/D2）。
+//! 本模块随能力域整面迁入 `wasmnest-pty-engine`。
 //!
-//! **零业务代码红线（ADR 0022 / spec D1）**：本模块只做引擎原语——裸 PTY 创建、
+//! **零业务代码红线**：本模块只做引擎原语——裸 PTY 创建、
 //! 字节读写面、句柄登记、属主仲裁、按游标应答。spawn 只收
 //! `command + args + env + workingDir + cols/rows`，**不做** shell 包装
 //! （`bash -lic` / PowerShell `-Command` / CMD `/K`）、WSL 路径转换、危险字符校验、
-//! 默认 shell 探测（那些是宿主业务会话线与插件产品的语义，spec D5）。
+//! 默认 shell 探测（那些是宿主业务会话线与插件产品的语义）。
 //!
-//! **与业务会话线零交叉（spec D2）**：插件 PTY 不进 `SessionComponents`、不注册
+//! **与业务会话线零交叉**：插件 PTY 不进 `SessionComponents`、不注册
 //! `GlobalOutputManager`、不参与业务会话事件链；共享同一 PTY 引擎
 //! （[`PtySession`]）但互不可见。边界对侧是 `host-terminal` / `host-session` /
 //! `terminal-hooks`（服务宿主业务会话），三者与本接口不得互相转发。
 //!
-//! **输出面是纯拉取（spec D3）**：每个 PTY 一条有界环形缓冲 [`PtyRing`]，读线程
+//! **输出面是纯拉取**：每个 PTY 一条有界环形缓冲 [`PtyRing`]，读线程
 //! 单生产者写入，插件按自己的游标 `ring-fetch`。慢插件只损失自己的历史（淘汰最旧并
 //! 以 `truncated` 上报缺口），背压绝不回传到读线程；**没有 push 回调**（wasmtime
 //! Store 不可重入，异步唤醒插件在语义上不成立）。限频通知面见
 //! [`super::output`]（只是提示，不是数据面）。
 //!
-//! **P2 限频唤醒（2026-09-27 补）**：在拉取语义之上加一条**通知**而非数据推送——
+//! **限频唤醒（提示面）**：在拉取语义之上加一条**通知**而非数据推送——
 //! 写侧装饰器 `OutputNotifySink` 在落环之后按限频（≤1 次/50 ms/句柄）向属主私有
 //! topic `<owner>::pty:output` 发布 `{ ptyId }`，插件收到后自行按游标拉取。
 //! 它是**提示而非承诺**：可被合并 / 丢弃（无订阅、队列满、插件未激活），
 //! 数据面与背压语义一字未变（消费者兜底仍是轮询 + `truncated` resync），
-//! 不改 WIT / 不改 ABI（ADR 0022 D3 的拉取语义保持，见 ADR 0029 §7）。
+//! 不改 WIT / 不改 ABI（拉取语义保持不变）。
 //!
-//! **宿主广播声明已退役（websocket 业务下沉票 08）**：`hostBroadcastSessionId`
+//! **宿主广播声明已退役**：`hostBroadcastSessionId`
 //! 字段与广播句柄映射已删除——PTY 引擎不再知道 session id，会话 id → pty 句柄的
-//! 映射只在插件登记域（`session record.pty_id`），插件经 `ring-fetch` 自持输出游标
-//! （spec §4.3）。宿主历史/输出读取改经插件互调。
+//! 映射只在插件登记域（`session record.pty_id`），插件经 `ring-fetch` 自持输出游标。
+//! 宿主历史/输出读取改经插件互调。
 //!
-//! **多消费者并发拉取语义（票 07 的输入，写死在契约里）**：同一句柄的环可被属主
+//! **多消费者并发拉取语义（写死在契约里）**：同一句柄的环可被属主
 //! 插件（`ring-fetch`）与宿主广播面（直读）**同时**拉取。游标由各调用方自持，
 //! [`PtyRing::fetch`] 是纯读（不消费、不推进全局状态）——两个消费的游标互不知晓、
 //! 互不影响；淘汰由**产出量**驱动（环满即淘汰最旧），任一消费者的读取都不释放空间，
-//! 各自落后于驻留起点都会 `truncated`。环容量必须覆盖最慢消费者的滞后（07 实测）。
+//! 各自落后于驻留起点都会 `truncated`。环容量必须覆盖最慢消费者的滞后（实测）。
 //!
-//! **终止与摘除的单一发布者不变量（票 04）**：`kill()` 只发起终止（引擎侧优雅中断 →
+//! **终止与摘除的单一发布者不变量**：`kill()` 只发起终止（引擎侧优雅中断 →
 //! 兜底强杀），**不**自己发事件；句柄摘除与事件发布统一由 spawn 时起动的退出监听
-//! 任务在「读线程 EOF + 子进程回收」齐备（票 01 的 [`PtyTerminated`] 汇聚门）时完成，
+//! 任务在「读线程 EOF + 子进程回收」齐备（[`PtyTerminated`] 汇聚门）时完成，
 //! 且**只有从注册表 `remove` 成功的那一方**才发布事件——自然退出 / 主动 kill / 停用
 //! 回收三条路径交汇时，每条 PTY 恰好一条 `pty:exit`，不多发也不漏发。
 
@@ -230,7 +229,7 @@ pub fn pty_spawn(
 
 // ==================== 数据域（pty:io） ====================
 
-/// 写入输入字节（票 03）
+/// 写入输入字节
 ///
 /// 分块与让出节奏在引擎侧（`PtySession::write`：4000 字节分块 + 逐块 yield，避免打满
 /// PTY 内核缓冲）；本层的 [`PLUGIN_PTY_MAX_WRITE_BYTES`] 是**一次调用的准入上限**，
@@ -255,7 +254,7 @@ pub fn pty_write(
         .map_err(|e| format!("pty write: 写入失败 (pty_id {pty_id}): {e}"))
 }
 
-/// 调整终端尺寸（票 03）
+/// 调整终端尺寸
 ///
 /// 透传到 PTY 尺寸即视为成功；**不承诺同步生效时序**（内核把 winsize 变更以 SIGWINCH
 /// 通知前台进程组，全屏程序在下一帧重绘才对齐），插件按输出形态验证。
@@ -274,7 +273,7 @@ pub fn pty_resize(
         .map_err(|e| format!("pty resize: 调整尺寸失败 (pty_id {pty_id}, {cols}x{rows}): {e}"))
 }
 
-/// 查询进程是否仍在运行（票 03）
+/// 查询进程是否仍在运行
 ///
 /// 判据 = `running` 标志 **且** 读线程尚未终结：子进程自然退出时引擎的 `running`
 /// 不会翻下（只有 kill/销毁会，业务线依赖这一语义），而插件私有 PTY 释放了 slave
@@ -295,7 +294,7 @@ pub fn pty_is_running(
     ))
 }
 
-/// `is-running` 的判据组合（纯函数：真值表可确定性锁定，见票 03 变异 C-②）
+/// `is-running` 的判据组合（纯函数：真值表可确定性锁定）
 ///
 /// 单独抽出来的唯一理由是「进程已自然退出」这一格无法稳定抓窗口——EOF 之后毫秒级
 /// 就会被退出监听摘除句柄。故把组合逻辑做成纯判定，四格真值表直接断言；会话状态
@@ -304,7 +303,7 @@ pub(crate) fn running_verdict(running: bool, output_terminated: bool) -> bool {
     running && !output_terminated
 }
 
-/// 终止并销毁（票 04）：优雅 Ctrl-C → 兜底强杀，复用引擎既有语义
+/// 终止并销毁：优雅 Ctrl-C → 兜底强杀，复用引擎既有语义
 ///
 /// `Ok(())` 表示**终止已发起**；句柄摘除与 `<owner>::pty:exit`（reason=killed）由退出
 /// 监听在「EOF + 子进程回收」齐备时完成（见模块头的单一发布者不变量）。因此 kill 后

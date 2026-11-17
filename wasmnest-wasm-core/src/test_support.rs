@@ -58,7 +58,7 @@ pub fn runtime_engine(runtime: &crate::manager::runtime::WasmRuntime) -> &wasmti
     runtime.engine()
 }
 
-// ==================== 说明：应用仓读取已全部归位平台仓（票 08 批次三） ====================
+// ==================== 说明：应用仓读取已全部归位平台仓 ====================
 //
 // 能力仓测试**不读应用仓任何目录**：曾在此的 `apps_root` / `app_dir` resolver 随
 // 其消费者（bedcode 桌面 manifest 清单 / 移动插件构建）一并迁平台仓测试面

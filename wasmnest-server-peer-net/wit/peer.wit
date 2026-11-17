@@ -133,6 +133,14 @@ interface host-peer {
     /// `peer:receive-event` 直推 `pull-started` 引擎事实事件
     /// （batchId/nodeId/files/totalSize/tsMs），任务行由插件事件归约自建
     pull-files: func(session-handle: string, dir-id: string, files-json: string) -> result<u32, string>;
+    /// 写入本机穿透配置快照（不透明 JSON 对象，≤16 KiB）：只承载接入元数据，
+    /// 对端可经 `fetch-config` 按需拉取。覆盖写、幂等；节点重启不清空。
+    /// 能力域只校验「JSON 对象 + 大小上限」，字段语义归插件。
+    set-config-snapshot: func(config-json: string) -> result<_, string>;
+    /// 拉取可信对端的穿透配置快照（单请求会话；session 句柄寻址，断线按记忆
+    /// 地址重拨）→ 不透明 JSON 字符串；`none` = 对端未设置 / 不提供。
+    /// 协议失败显性报错——不把「读不到」伪装成「没有配置」。
+    fetch-config: func(session-handle: string) -> result<option<string>, string>;
     /// 设置接收落点目录（空串 = 恢复默认 Downloads\WasmNest\；引擎落盘配置原语，
     /// ADR 0022 v3）
     set-download-dir: func(path: string) -> result<_, string>;

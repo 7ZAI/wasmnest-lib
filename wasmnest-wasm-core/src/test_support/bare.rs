@@ -8,7 +8,7 @@
 //! - 内部引用已改指统一运行时壳（`LoadedWasmPlugin` / 统一 `add_to_linker`）；
 //!   共享符号（`TEST_PLUGIN_ID` / `plugin_raw_store`）单点定义在父模块。
 //!
-//! **夹具组件构建器已归位移动宿主测试面（票 08 批次三）**：
+//! **夹具组件构建器已归位移动宿主测试面**：
 //! `build_test_component` / `build_terminal_session_component` 读移动夹具 crate
 //! （`plugin-component-test`）与应用仓 bedcode 工程，随包夹具与产物均住平台仓；
 //! 能力仓单克隆不再要求它们在场。移动宿主侧同名构建器住
@@ -71,7 +71,7 @@ pub fn setup_headless_runtime(
 /// 单形态（2026-10-13）：`abi-form` 要求是宿主注入的策略（wasm-core 零端 ABI
 /// 知识）——端宿主测试要断言「形态不符的组件被拒绝」，必须注入端真实规格而非
 /// 一律 `UNCONSTRAINED`。整数 ABI 版本上限检查已随 wit 包版本化退役
-/// （ADR 0051 D2）：产物新旧由 linker 的 import 名逐字匹配裁决，无"高版本自报"
+/// 产物新旧由 linker 的 import 名逐字匹配裁决，无"高版本自报"
 /// 形态可注入。
 pub fn setup_headless_runtime_with_abi(
     aot_cache_dir: Option<std::path::PathBuf>,
@@ -103,7 +103,7 @@ pub fn setup_headless_runtime_with_config(
     Ok(runtime)
 }
 
-/// 构造插件实例 state（统一 host-kit 形态，wasm-core-mobile-purity 票 04）
+/// 构造插件实例 state（统一 host-kit 形态）
 ///
 /// 取代旧自持 `WasmPluginState { plugin_id, host_ctx, runtime_handle,
 /// granted_permissions, on_message_binary }` 字面量：权限真源 = 共享内核
@@ -139,7 +139,7 @@ pub fn build_component_state_with_ctx(
     )
 }
 
-// ==================== 组件实例观测面（宿主集成测试转发，票 05） ====================
+// ==================== 组件实例观测面（宿主集成测试转发） ====================
 //
 // 宿主集成测试链的是**不带 cfg(test)** 的 lib（`#[cfg(test)]` 项等价于不可达），
 // 而 fixture e2e 随绑定归位迁到移动宿主 `src-tauri/tests/`——它们需要的壳内私有面

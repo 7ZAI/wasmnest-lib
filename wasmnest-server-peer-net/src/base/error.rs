@@ -170,7 +170,7 @@ pub enum PeerNetError {
         source: std::io::Error,
     },
 
-    // ==================== 传输会话（issue 05）====================
+    // ==================== 传输会话 ====================
     /// 传输会话 IO/编解码失败（读写帧、文件落盘层）
     ///
     /// `role` 标注失败发生在哪一端角色（sender/receiver），detail 说明具体操作。
@@ -181,7 +181,7 @@ pub enum PeerNetError {
     #[error("transfer protocol violation ({role}): {detail}")]
     TransferProtocol { role: &'static str, detail: String },
 
-    // ==================== 共享目录（issue 07）====================
+    // ==================== 共享目录 ====================
     /// 读取共享目录注册表文件失败（IO 层）
     #[error("read shared dirs file failed: {path}: {source}")]
     SharedDirsRead {

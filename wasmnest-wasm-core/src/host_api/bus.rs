@@ -6,7 +6,7 @@
 //! 投递机制（订阅/退订的异步 spawn——队列与订阅簿是各端形状）。
 //!
 //! 桌面策略：**总线无权限位**（topic 形态即 ACL）——端口
-//! `check_permission` 恒 `true`；互调门经 core-security 授权框架（ADR 0017 层 1）。
+//! `check_permission` 恒 `true`；互调门经 core-security 授权框架。
 //! guest 可见错误文本与 warn 结构化字段逐字保留（`component.rs` 绑定层与本文件
 //! 测试调用面零改动）。
 
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(msg.payload, serde_json::json!({ "hello": "world" }));
     }
 
-    // ==================== 互调门禁（ADR-0017） ====================
+    // ==================== 互调门禁 ====================
 
     /// 已登记 api 的请求 topic：放行（门禁命中声明清单）
     #[test]

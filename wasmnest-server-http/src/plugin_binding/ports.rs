@@ -8,8 +8,8 @@
 //!
 //! | 方法 | 为什么需要它 |
 //! | --- | --- |
-//! | [`HttpPorts::check_permission`] | 权限门（`network:http`）是**宿主安全闸门**（AGENTS §5.1.3 四类薄壳之二），不该可插拔 ⇒ 留宿主，本域只问结果（拒绝文案与 warn 落宿主侧） |
-//! | [`HttpPorts::authorize_outbound`] | 出站授权裁决（弹窗询问 / 网络授权记录 / 档位策略）**整条链留在宿主**（票 06 验收项；闸门不应可插拔），本域只消费三态结果 |
+//! | [`HttpPorts::check_permission`] | 权限门（`network:http`）是**宿主安全闸门**，不该可插拔 ⇒ 留宿主，本域只问结果（拒绝文案与 warn 落宿主侧） |
+//! | [`HttpPorts::authorize_outbound`] | 出站授权裁决（弹窗询问 / 网络授权记录 / 档位策略）**整条链留在宿主**（闸门不应可插拔），本域只消费三态结果 |
 //! | [`HttpPorts::event_sink`] | 流式推送的前端事件通道（宿主才有前端事件面）。**必须能表达「缺席」**——无头上下文的流式请求要显性报错，不得静默丢弃 chunk |
 //! | [`HttpPorts::block_on_any`] | 同步↔异步桥：guest 侧的 host function 是同步的，而 HTTP 客户端是 async。**桥的实现在宿主**（含 wasmtime-wasi ambient runtime 与 actix `current_thread` 自锁规避），本域不复制第二份 |
 //!
@@ -77,7 +77,7 @@ pub trait OutboundEnvelope: Send + Sync {
 pub enum OutboundAuth {
     /// 放行（`origin` = 归一化后的 origin，进 debug 日志）
     Allowed {
-        /// 归一化 origin（不含 path / query——AGENTS §8 凭据红线）
+        /// 归一化 origin（不含 path / query——凭据不落错误串）
         origin: String,
     },
     /// 拒绝（携带 reason 词汇与归一化 origin，供错误串逐字复原）
@@ -94,11 +94,11 @@ pub enum OutboundAuth {
 /// 宿主能力端口
 ///
 /// 实现方是各端宿主的适配器（桌面端见宿主 adapter `src-tauri/src/plugin/http.rs`
-/// 的 `HostHttpPorts`——票 02 批次 03 自 `wasm_core::host_api::http` 迁出）。
+/// 的 `HostHttpPorts`——原本住 `wasm_core::host_api::http`，整域迁出）。
 pub trait HttpPorts: Send + Sync + 'static {
     /// 权限判定（`network:http`）
     ///
-    /// 返回 `false` 时**宿主侧**必须已按 AGENTS §8 落 `warn`（结构化字段
+    /// 返回 `false` 时**宿主侧**必须已落 `warn`（结构化字段
     /// `plugin_id` / `permission` / `api`）；本域不重复落日志。宿主侧也拿不到
     /// 权限管理器时（无头 / 测试）**必须返回 false**（fail-safe）。
     fn check_permission(&self, plugin_id: &str, permission: &str, api: &str) -> bool;

@@ -65,12 +65,11 @@ pub const HOST_TUNNEL_FUNCTIONS: &[&str] = &[
     "status",
 ];
 
-// ==================== 错误码词表（设计 §7.1，通道层子集） ====================
+// ==================== 错误码词表（通道层子集） ====================
 //
 // `invalid-frame` / `proxy-bind-failed` / `tunnel-idle` 是通道层新增的实现侧错误码：
 // 分别拒绝畸形首帧 / 回环代理绑定失败 / 短连接 HTTP 流空闲回收。三者只回原因
-// 类别，不回显票据或请求内容。设计 §7.1 的词表不是封闭集，新增项在应用仓 T05
-// 实施记录里登记。
+// 类别，不回显票据或请求内容。词表不是封闭集，新增项在实施记录里登记。
 
 /// 应用配对或传输信任任一不成立，且无有效票据
 pub const CODE_NOT_MATCHED: &str = "not-matched";
@@ -90,11 +89,11 @@ pub const CODE_PEER_OFFLINE: &str = "peer-offline";
 pub const CODE_INVALID_FRAME: &str = "invalid-frame";
 /// 回环代理绑定失败
 pub const CODE_PROXY_BIND_FAILED: &str = "proxy-bind-failed";
-/// `allowWan=false` / 未配置 relay 地址，外网通道不可用（不变量 9 / 设计 §7.1）
+/// `allowWan=false` / 未配置 relay 地址，外网通道不可用
 pub const CODE_WAN_DISABLED: &str = "wan-disabled";
-/// 同网段 LAN 不可达 / 服务未启动，判据不明确（设计 §7.1；带手动「尝试外网」出路）
+/// 同网段 LAN 不可达 / 服务未启动，判据不明确（带手动「尝试外网」出路）
 pub const CODE_LAN_UNREACHABLE: &str = "lan-unreachable";
-/// relay 连接失败 / 超时（设计 §7.1；不外溢成明文直连）
+/// relay 连接失败 / 超时（不外溢成明文直连）
 pub const CODE_RELAY_UNREACHABLE: &str = "relay-unreachable";
 /// 本端不提供该通道形态（移动端无对等 HTTP/WS 面时 `expose` 显性失败）
 pub const CODE_TUNNEL_UNAVAILABLE: &str = "tunnel-unavailable";
@@ -165,7 +164,7 @@ mod tests {
         assert!(WIT.contains("pairing-ticket: option<string>"));
     }
 
-    /// `configure` 必须在 `expose` / `connect` 之前可独立调用（T06 的
+    /// `configure` 必须在 `expose` / `connect` 之前可独立调用（
     /// allowWan / relay 地址入口），且仍属 0.0.1 预发布线。
     #[test]
     fn configure_is_declared_before_any_service_primitive() {

@@ -1,4 +1,4 @@
-//! 插件清单 / 状态 / 贡献 / 角色词汇的中性层（单形态票 02 M4）
+//! 插件清单 / 状态 / 贡献 / 角色词汇的中性层
 //!
 //! 机制层不直接依赖任一 SDK crate（`wasmnest-plugin-api` / `_mobile`）：本模块
 //! 自持与双端 SDK wire 副本**形状对齐**的 serde 类型——取桌面 + 移动 manifest
@@ -8,7 +8,7 @@
 //! （`manager/loader.rs` 解析 plugin.json）与宿主消费面（`HostPluginInfo`）则
 //! 直接只用本模块类型。
 //!
-//! 词汇面契约仍双端独立演进（ADR 0018）：本模块是**宿主机制**的唯一词汇来源，
+//! 词汇面契约仍双端独立演进（既定口径）：本模块是**宿主机制**的唯一词汇来源，
 //! SDK 副本是 guest 面 wire 形状——两侧以 serde 形状对齐 + 绑定层转换衔接，
 //! 不跨 crate 依赖。
 
@@ -62,7 +62,7 @@ pub struct PluginManifest {
     /// 请求的权限列表
     #[serde(default)]
     pub permissions: Vec<String>,
-    /// 对外可互调 api 清单（ADR-0017，插件互调机制）
+    /// 对外可互调 api 清单（互调机制）
     #[serde(default)]
     pub api: Vec<String>,
     /// 扩展点声明
@@ -80,7 +80,7 @@ pub struct PluginManifest {
     /// 插件图标：图片路径（相对插件目录）或内联 SVG 标记
     #[serde(default)]
     pub icon: Option<String>,
-    /// WASI 预打开目录声明（**仅 worker 类别可用**，ADR 0034；桌面 manifest 专属）
+    /// WASI 预打开目录声明（**仅 worker 类别可用**；桌面 manifest 专属）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wasi_preopen_dirs: Vec<WasiPreopenDir>,
     /// 装配角色：`basic-service`（L1）/ `internal-business`（L2）/ `business-app`（L3，
@@ -100,7 +100,7 @@ pub struct PluginManifest {
     /// 单插件在册 `host-pty` 句柄数上限声明（会话引擎下沉 P1 / H1）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pty_quota: Option<usize>,
-    /// 内嵌 worker 声明（worker 机制，ADR 0059；spec `.scratch/2026-10-28-worker-mechanism/`）
+    /// 内嵌 worker 声明（worker 机制）
     ///
     /// 每项是一个即用即弃纯计算 wasm 子资源：wasm 放插件包 `worker/` 目录，
     /// 主插件（仍 `persistent`）经 `host-worker.submit` 调用。worker **私属于
@@ -170,7 +170,7 @@ fn default_plugin_type() -> PluginType {
 /// `crate::config::ResourceOverrides`，本模块再导出供 manifest 词汇统一）
 pub use crate::config::ResourceOverrides;
 
-/// 内嵌 worker 声明条目（manifest `workers` 数组元素；worker 机制 / ADR 0059）
+/// 内嵌 worker 声明条目（manifest `workers` 数组元素；worker 机制）
 ///
 /// worker 与主插件不同 world（零宿主 import，仅 WASI 内建；`wit/worker.wit`），
 /// 导出 `wasmnest:plugin/worker@<version>` 的 `run: func(input: string) -> string`
@@ -279,7 +279,7 @@ impl Default for PluginType {
 /// `Default` 取 `Both` **仅服务测试夹具与合成清单**（wire 层该字段必填、无 serde
 /// 缺省）：合成清单对两端都可装载，不把测试夹具钉死在某一个端。端名（desktop /
 /// mobile）在此是**双端共享的 wire 词汇**——不是按
-/// 端分叉的机制（ADR 0047 D2 判据只针对自持标识符的声明位，wire 取值不在此列）。
+/// 端分叉的机制（既定判据只针对自持标识符的声明位，wire 取值不在此列）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginPlatform {
@@ -315,7 +315,7 @@ impl PluginPlatform {
     }
 }
 
-/// 组件装配角色（manifest `type` 字段，core-plugin-manager · ADR 0032）
+/// 组件装配角色（manifest `type` 字段，core-plugin-manager）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginKind {
@@ -435,7 +435,7 @@ impl Default for PluginState {
     }
 }
 
-/// WASI 预打开目录声明条目（桌面 manifest `wasiPreopenDirs`；ADR 0034）
+/// WASI 预打开目录声明条目（桌面 manifest `wasiPreopenDirs`）
 ///
 /// 两形态：裸路径 = 可写挂载，`{path, readonly}` = 只读挂载。只读档只收紧
 /// guest 对该目录的写能力，不放宽授权。
@@ -552,14 +552,14 @@ pub struct PluginContributes {
     /// 自定义监控面板声明（monitor 统一壳消费；面板实现住提供方应用工程）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub monitor_panels: Vec<MonitorPanelContribution>,
-    /// 助手能力描述符（通用应用调用桥，票 01 / spec §4.2）：本应用声明「可被系统助手
+    /// 助手能力描述符（通用应用调用桥）：本应用声明「可被系统助手
     /// 调用」的命令。宿主据此在 `AppControlAPI.list()` 暴露给持有 `apps:control` 的应用，
     /// 并在 `invoke()` 做白名单校验。描述符不含任何 AI / 人格 / 会话 / 模型字段。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assistant_tools: Vec<AssistantToolDescriptor>,
     /// 全局入口声明（壳工具栏 / 胶囊菜单渲染的通用入口；`ui:globalEntry` 权限门控）
     ///
-    /// 纯 manifest 贡献面（票 04 / spec §4.3）：入口只对「已安装、已启用、激活成功」
+    /// 纯 manifest 贡献面：入口只对「已安装、已启用、激活成功」
     /// 的应用渲染；停用 / 卸载 / 未声明权限 / 用户关闭即消失。装载期一致性检查见
     /// [`PluginManifest::check_global_entry_permission`]。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -587,7 +587,7 @@ fn default_monitor_panel_order() -> i32 {
     100
 }
 
-/// 全局入口声明（`contributes.globalEntries` 条目；票 04 / spec §4.3）
+/// 全局入口声明（`contributes.globalEntries` 条目）
 ///
 /// 壳在工具栏尾部 / 胶囊菜单平台项之前渲染入口；点击经 `openApp` 进全屏。
 /// 宿主不知道入口指向的应用是什么，只渲染声明过的通用入口（宿主薄壳红线 B1–B6）。
@@ -611,7 +611,7 @@ fn default_global_entry_order() -> i32 {
     100
 }
 
-/// 助手能力风险等级（应用声明；助手策略只能升不能降，spec §5.6）
+/// 助手能力风险等级（应用声明；助手策略只能升不能降）
 ///
 /// 纯通用「应用能力描述」词汇——不含任何 AI / 人格 / 会话 / 模型语义（宿主薄壳红线 B1）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -631,7 +631,7 @@ pub enum AssistantToolOutput {
     Json,
 }
 
-/// 助手能力描述符（`contributes.assistantTools` 条目；票 01 / spec §4.2）
+/// 助手能力描述符（`contributes.assistantTools` 条目）
 ///
 /// `command` 必须是本应用 `contributes.commands` 里已声明的命令 id（构建期校验）；
 /// `args_schema` 为 JSON Schema（object），映射为 agent 工具的 parameters；
@@ -1110,12 +1110,12 @@ mod workers_wire_shape {
 }
 
 impl PluginManifest {
-    /// 全局入口权限一致性检查（票 04 / spec §4.3）
+    /// 全局入口权限一致性检查
     ///
     /// `contributes.globalEntries` 是 `ui:globalEntry` 门控的纯 manifest 贡献面：
     /// 声明了入口却没持有权限 = 清单配置缺口。装载期 **warn 不阻断**——壳前端按
     /// 权限过滤渲染（未声明权限 / 停用 / 用户关闭即消失），本检查让缺口在日志里
-    /// 点名（fail-visible，不静默返回空），与 spec §2.4「任何机制缺失 → 点名缺
+    /// 点名（fail-visible，不静默返回空），与既定口径「任何机制缺失 → 点名缺
     /// 什么 + 给出路」一致。
     pub fn check_global_entry_permission(&self) {
         if self.contributes.global_entries.is_empty() {
@@ -1138,7 +1138,7 @@ impl PluginManifest {
 
 #[cfg(test)]
 mod global_entry_tests {
-    //! 全局入口贡献面（票 04 / spec §4.3）：wire 形状 + 装载期权限一致性检查
+    //! 全局入口贡献面：wire 形状 + 装载期权限一致性检查
     use super::*;
 
     /// `contributes.globalEntries` 的 camelCase wire 形状与缺省（order 缺省 100）

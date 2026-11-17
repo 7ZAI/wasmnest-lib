@@ -1,4 +1,4 @@
-//! ADR 0033：认证问中心（中间件单测） — crate 内单元测试（自 packages/wasmnest-server-http/src/middleware/auth_gateway.rs 迁出）
+//! 认证问中心：中间件单测（本 crate 内单元测试）
 
 use super::*;
 
@@ -31,7 +31,7 @@ fn bearer_credential_extraction_matrix() {
 ///
 /// 这条不是「测试环境将就」：它锁的是「本面不得在没有中心的情况下放行」——
 /// 中间件里已经没有任何本地验签面，凭证形如与否都不影响结论。
-/// 前提断言取 `ports::get()`（票 04 后面不认识宿主 AppContext，
+/// 前提断言取 `ports::get()`（网关不认识宿主 AppContext，
 /// 注入与否的唯一可观测形态就是端口注册表本身）。
 #[test]
 fn no_runtime_context_denies_every_credential() {

@@ -8,7 +8,7 @@ use crate::manager::types::{LoadedPlugin, PluginSource};
 use crate::manager::validation::{validate_dir_binding, validate_plugin_id};
 use crate::permission::PermissionManager;
 use crate::system::constants::PLUGIN_DOWNLOAD_TEMP_DIR;
-// 中性词汇（票 02 M4）：清单/状态/类型统一取自 crate::manifest
+// 中性词汇（M4）：清单/状态/类型统一取自 crate::manifest
 use crate::manifest::{PluginManifest, PluginState, PluginType};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -187,7 +187,7 @@ impl PluginLoader {
                         path
                     );
                 } else {
-                    // 票 16：孤儿目录（历史安装遗留 / 插件 id 改名后的空壳）**不影响内置
+                    // 孤儿目录（历史安装遗留 / 插件 id 改名后的空壳）**不影响内置
                     // 插件加载**（内置插件来自 resources 目录，与本扫描路径无关），
                     // 每次启动刷 warn 是把排查噪音当信号。它唯一的实际影响——「安装查重
                     // 误判已安装、卡住同 id 重装」——在**安装路径**上已有专职处理与留痕
@@ -275,15 +275,15 @@ impl PluginLoader {
                     let manifest = manifest;
                     let _ = &manifest;
 
-                    // ==================== 全局入口权限一致性（票 04 / spec §4.3） ====================
+                    // ==================== 全局入口权限一致性 ====================
                     // contributes.globalEntries 是 ui:globalEntry 门控的纯 manifest 贡献面；
                     // 声明入口却未持权 = 清单配置缺口。warn 不阻断：壳前端按权限过滤渲染，
                     // 这里让缺口在日志里点名（fail-visible，不静默返回空）。
                     manifest.check_global_entry_permission();
 
-                    // 非核心能力域的装载期回调（票 02 批次 02 / 批次 03）：manifest
+                    // 非核心能力域的装载期回调（批次 02 / 批次 03）：manifest
                     // **原文**下发，解析权与**声明仲裁权**都在能力域——内核不解释
-                    // manifest 字段（AGENTS §5.1 B6）。`Err` = 该域拒绝此 manifest ⇒
+                    // manifest 字段。`Err` = 该域拒绝此 manifest ⇒
                     // **不装载**（fail-visible，不静默降级；如 host-pty 的 `ptyQuota`
                     // 越界）。故本回调**必须先于任何副作用**（授权登记在下一条）执行：
                     // 被拒插件不留半成品状态（权限 / 配额登记都不该发生）。
@@ -312,7 +312,7 @@ impl PluginLoader {
                     // 授权并过滤非法权限
 
                     // 授权结果只落在 PermissionManager（唯一真源）；LoadedPlugin 不再
-                    // 镜像一份 granted 列表（票 11 第 4 项：镜像字段只写不读）
+                    // 镜像一份 granted 列表（镜像字段只写不读）
                     permission_mgr.grant_permissions(&plugin_id, &manifest.permissions);
 
                     // 配额登记（会话引擎下沉 P1 / H1）：manifest `ptyQuota` → host-pty
@@ -389,7 +389,7 @@ impl PluginLoader {
         let content = fs::read_to_string(path)
             .map_err(|e| crate::AppError::Plugin(format!("Failed to read plugin.json: {}", e)))?;
 
-        // 解析与必填字段校验走唯一真源（票 11 第 6 项）
+        // 解析与必填字段校验走唯一真源
         let manifest = crate::manager::validation::parse_manifest_json(&content)?;
 
         // worker 声明的 wasm 文件存在性（装载入口独有的一道：结构面已在
@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(manifest.contributes.commands.len(), 1);
     }
 
-    /// worker 声明的 wasm 文件存在性在装载期拒绝（worker 机制 / ADR 0059）
+    /// worker 声明的 wasm 文件存在性在装载期拒绝（worker 机制）
     ///
     /// 反例先拒（点名 worker 与 worker/ 目录），文件在场后同 manifest 放行——
     /// 证明拒绝来自 file 存在性而不是声明本身。结构面（重名 / 路径注入）的用例
@@ -526,7 +526,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// 退役字段兼容（审计票 06 裁决 2）：`sandbox` 已退役（前端不做隔离，安全边界只在
+    /// 退役字段兼容：`sandbox` 已退役（前端不做隔离，安全边界只在
     /// Rust 端与 WASM 端），旧产物带该键时按「老端忽略未知字段」的演进约定照常加载
     #[test]
     fn test_load_manifest_ignores_retired_sandbox_field() {

@@ -1,4 +1,4 @@
-//! `host-peer.start-node` / `stop-node` 的服务租约映射（service-leases §4.1 / §9.1）
+//! `host-peer.start-node` / `stop-node` 的服务租约映射
 //!
 //! 用 fake registry + fake service 断言 outcome 映射，不启真实网络；
 //! 无租约装配（None）走兼容路径时以 `HEADLESS_UNAVAILABLE` 收口。

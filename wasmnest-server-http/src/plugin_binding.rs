@@ -1,17 +1,16 @@
 //! host-http 能力域 —— HTTP 协议能力（出站 fetch 1 条；服务端域端点注册引擎 API）
 //!
-//! spec：`.scratch/2026-10-04-wasm-core-lib-split/spec.md` §3.1 / §7 D10；票 06
-//! （自宿主 host_api 域的 http 实现整体迁入本 crate，入站 + 出站同 crate 两个模块）。
+//! 入站与出站两个模块同住本 crate：原本住 wasm-core 的 host_api http 实现整体迁入。
 //!
-//! **ADR 0052 D4 归位（票 03）**：`host-http-endpoint`（桌面扩展）的 **WIT 声明**
-//! 归桌面 `wit-src/cap-http.wit`（world `cap-http-endpoint`，T-02 落位）、**`impl Host`**
+//! **端扩展归位**：`host-http-endpoint`（桌面扩展）的 **WIT 声明**
+//! 归桌面 `wit-src/cap-http.wit`（world `cap-http-endpoint`）、**`impl Host`**
 //! 归桌面宿主 `src-tauri/src/plugin/http.rs`；本文件只保留**服务器引擎 API**
 //! （[`http_register_endpoint`] / [`http_unregister_endpoint`] / [`purge_for_plugin`]）
 //! 与路由表 [`crate::registry`]——后者被服务器自身的 `routes.rs` /
 //! `middleware/auth_gateway.rs` 与生命周期回收直接消费，是服务器引擎基础设施，
-//! 不是端扩展的 WIT 绑定面（逐项盘点见票 03 Comments）。
+//! 不是端扩展的 WIT 绑定面。
 //!
-//! **零业务代码红线（D1）**：本模块只做引擎原语——端点登记与属主仲裁、句柄铸造、
+//! **零业务代码红线**：本模块只做引擎原语——端点登记与属主仲裁、句柄铸造、
 //! 权限门位置、载荷形状校验、出站请求执行；HTTP 语义之外的任何解读（会话、供应商
 //! 协议、AI 格式…）全在插件侧。本域一律以 JSON 文本过界，不新增任何业务字段。
 //!
@@ -63,7 +62,7 @@ pub mod egress;
 ///
 /// **严格解析**（`deny_unknown_fields`）：未知字段一律注册失败——旧解析器静默
 /// 忽略新字段会让「应用以为某项设置生效了、实际没有」，这是本契约最危险的失败
-/// 模式（spec §2）。链路加密策略属于应用（`link_crypto::set_app_policy`），
+/// 模式。链路加密策略属于应用（`link_crypto::set_app_policy`），
 /// 不由端点注册声明。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -140,13 +139,13 @@ use wasmtime::component::{bindgen, Linker};
 
 /// 能力模块名（宿主白名单键 = 装载期日志与错误文案里的模块名）
 ///
-/// **常编译 pub**（票 02 批次 03）：adapter 迁宿主后白名单条目
+/// **常编译 pub**：adapter 迁宿主后白名单条目
 /// （`expect_host_module!`）与装载期一致性核对改在宿主侧引用本常量。
 pub const MODULE_NAME: &str = "http";
 
 /// 本域提供的 WIT 接口（必须与拼装 package 逐字一致；改错即 guest import 失配）
 ///
-/// ADR 0052 D2/D4：`host-http`（出站交集）契约真源在本 crate `wit/http.wit`；
+/// `host-http`（出站交集）契约真源在本 crate `wit/http.wit`；
 /// 服务端域 `host-http-endpoint`（桌面扩展）的 WIT 声明与 `impl Host` 已归桌面
 /// 宿主（本模块不再注册/声明它）。
 pub const MODULE_INTERFACES: &[&str] = &["wasmnest:http@0.0.1/host-http"];
@@ -220,10 +219,10 @@ fn on_plugin_purge(plugin_id: &str) {
     );
 }
 
-/// 生命周期钩子自报（票 02 批次 01 机制，批次 03 本域接入）
+/// 生命周期钩子自报
 ///
 /// 接入后内核 `manager/host/activation.rs` 不再直调本域回收入口——这是内核摘掉本域
-/// adapter 的前提（另一处是 `HttpUnitExecutor` 的消费点，见票面「ws / http 实测」节）。
+/// adapter 的前提（另一处是 `HttpUnitExecutor` 的消费点）。
 #[cfg(feature = "common-host")]
 pub static HOOKS: wasmnest_host_kit::DomainHooks = wasmnest_host_kit::DomainHooks {
     name: MODULE_NAME,
@@ -278,14 +277,14 @@ bindgen!({
     // `wasmnest::http::host_http::Host` 是**同名但不同类型**的 trait。宿主必须
     // 同时删掉自己的 http `Host` impl 与 `add_to_linker` 行，否则同一个 interface
     // 被注册两次 → 装配期 `defined twice`。
-    // 票 05：契约面脱端——bindgen 改指本 crate 自持分片 `wit/http.wit`
-    // （`world cap-http` 只 import 出站 `host-http`；ADR 0052 D2/D4 后服务端域
+    // 契约面脱端：bindgen 改指本 crate 自持分片 `wit/http.wit`
+    // （`world cap-http` 只 import 出站 `host-http`；服务端域
     // `host-http-endpoint` 已移出本分片，声明在桌面 wit-src、impl 在桌面宿主），
     // 不再读桌面 SDK 生成物目录。
     path: "wit/http.wit",
     world: "cap-http",
     // 与宿主同款：全部导出绑定生成 async 变体（wasmtime async store 要求）。
-    // cap-http 无 export 成员，此配置无生效对象（实测编译绿，票 05 实施记录）
+    // cap-http 无 export 成员，此配置无生效对象（实测编译绿）
     exports: { default: async },
 });
 
@@ -302,7 +301,7 @@ impl wasmnest::http::host_http::Host for WasmPluginState {
     }
 }
 
-/// v37 / ADR 0052 D4：`host-http-endpoint`（桌面扩展服务端域）的 `impl Host`
+/// `host-http-endpoint`（桌面扩展服务端域）的 `impl Host`
 /// 已迁桌面宿主 `src-tauri/src/plugin/http.rs`（路径 B 模块 `http-endpoint`）——
 /// 本模块不再生成/实现该 trait。
 

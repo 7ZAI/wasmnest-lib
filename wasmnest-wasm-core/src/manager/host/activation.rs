@@ -21,7 +21,7 @@ impl PluginHost {
     ///
     /// 与 [`Self::is_activated`] 的区别：Degraded 的实例是活的（前端模块会加载、扩展点已注册），
     /// 只是启动初始化未完成。前端通道令牌的签发条件是「运行中」而非严格 Activated
-    /// （审计票 06；功能门禁仍严格 Activated）。
+    /// （审计结论；功能门禁仍严格 Activated）。
     pub async fn is_running(&self, plugin_id: &str) -> bool {
         let plugins = self.plugins.read().await;
         plugins
@@ -46,7 +46,7 @@ impl PluginHost {
             let plugins = self.plugins.read().await;
             // Degraded 也是活实例（前端模块已加载、扩展点已注册、持久化态按启用计，
             // 见 `get_activated_state`）→ 退出时必须同样收到 `on_shutdown`；
-            // 此前只收 Activated，Degraded 插件在应用关闭时被静默跳过（审计票 09）。
+            // 此前只收 Activated，Degraded 插件在应用关闭时被静默跳过（审计结论）。
             plugins
                 .values()
                 .filter(|p| {
@@ -201,7 +201,7 @@ impl PluginHost {
         }
     }
 
-    /// 审批门禁（ADR 0020 / 审计票 03）：返回用户安装插件的生效权限集
+    /// 审批门禁：返回用户安装插件的生效权限集
     ///
     /// - `Ok(None)`：来源免审批（静态注册 / 随包扫描 / 内置 WASM）→ 宿主按 manifest 全量授权；
     /// - `Ok(Some(effective))`：用户 zip 安装且批准有效 → 生效权限 = 批准 ∩ 请求；
@@ -294,7 +294,7 @@ impl PluginHost {
     ) -> crate::Result<()> {
         tracing::info!(plugin_id = %plugin_id, persist, "[PluginHost] activate_plugin");
 
-        // 阶段 0.0（无锁）：审批门禁（ADR 0020）——用户 zip 安装的插件必须先获人工批准，
+        // 阶段 0.0（无锁）：审批门禁——用户 zip 安装的插件必须先获人工批准，
         // 且批准与目录内容哈希绑定。排在预授权之前：未获批准的插件不该先弹文件系统授权窗
         let approval_effective = self.approval_gate(plugin_id).await?;
 
@@ -314,7 +314,7 @@ impl PluginHost {
             declared_preopen_dirs: Vec<crate::manifest::WasiPreopenDir>,
             kind: crate::manifest::PluginKind,
             dependencies: Vec<String>,
-            /// 票 09a：manifest `contributes.wsEndpoints`——在激活成功阶段登记进宿主
+            /// manifest `contributes.wsEndpoints`——在激活成功阶段登记进宿主
             /// WS 端点注册表（声明驱动的静态路由，expand 阶段与旧硬编码分发并存）
             ws_endpoints: Vec<crate::manifest::WsEndpointContribution>,
         }
@@ -351,7 +351,7 @@ impl PluginHost {
                     tracing::debug!(plugin_id = %plugin_id, "[PluginHost] Plugin already activated, skipping");
                     return Ok(());
                 }
-                // 并发双激活去重（审计票 09）：实例锁只保证串行、不保证去重，落进 `_`
+                // 并发双激活去重（审计结论）：实例锁只保证串行、不保证去重，落进 `_`
                 // 分支会让第二次调用再跑一次 guest `activate()`（现仅靠 SDK OnceLock 兜底）。
                 // 此处幂等返回 Ok——返回 Ok 只表示「已在激活中」，终态以状态机为准；
                 // 「等待在途激活完成」需要跨调用同步原语与额外死锁面，本轮不引入。
@@ -396,8 +396,8 @@ impl PluginHost {
                 None => loaded.manifest.permissions.clone(),
             };
             let granted = self.permission.grant_permissions(plugin_id, &permissions);
-            // 词汇表外的声明会在授权时被过滤（= 没声明）。票 01 已把生产 manifest 的
-            // 装饰词汇清零、票 02 又取消了 storage 的默认授予，因此「声明了却没生效」
+            // 词汇表外的声明会在授权时被过滤（= 没声明）。生产 manifest 的
+            // 装饰词汇已清零、storage 的默认授予已取消，因此「声明了却没生效」
             // 必须可见——否则第三方插件作者只能靠运行时 permission denied 反推。
             let dropped: Vec<&String> = loaded
                 .manifest
@@ -413,7 +413,7 @@ impl PluginHost {
                 );
             }
             // 授权结果留在 PermissionManager 才是权限判定的唯一入口；此处不再写
-            // LoadedPlugin 镜像字段（票 11 第 4 项）
+            // LoadedPlugin 镜像字段
 
             // 置中间态后再释放锁执行 WASM activate：列表查询在激活期间
             // 可见 Activating（瞬时态，终态由下方 phase 2/3 写入）
@@ -471,7 +471,7 @@ impl PluginHost {
             //    实例化），实例预打开为空；重试激活（停用再启用）时授权已持久化，
             //    若实例未覆盖则重建——否则 /data 永远挂不上，激活自检必失败
             //    （Bug B 死循环）。未声明目录的 `mutex` 实例跳过（零开销）。
-            //    **仅 worker 类别可达**（ADR 0034）：非 worker 声明 preopen 在加载期
+            //    **仅 worker 类别可达**：非 worker 声明 preopen 在加载期
             //    被显性拒绝，主 wasm-app 数据目录走 host-fs + fs_request_auth，
             //    无实例漂移——本分支是 worker 预留能力的重建前置。
             let rebuild_reason: Option<String> = {
@@ -649,9 +649,9 @@ impl PluginHost {
                 .record_lifecycle(crate::monitor::LifecycleEvent::Degraded);
         }
 
-        // 登记互调 api 清单（ADR-0017）：激活后 `wasmnest.api.*` 请求可路由到本插件。
+        // 登记互调 api 清单（互调门禁）：激活后 `wasmnest.api.*` 请求可路由到本插件。
         // 未声明 api 的插件登记空清单，幂等无操作。
-        // 票 07 B2：改名插件额外登记旧 api 名（双投窗口）——仍指向本插件，
+        // 改名插件额外登记旧 api 名（双投窗口）——仍指向本插件，
         // 未更新的旧调用方按旧名互调时照常可达
         let api_list = with_api_aliases(plugin_id, &plan.api);
         self.wasm_host_ctx
@@ -663,11 +663,11 @@ impl PluginHost {
                 crate::AppError::Plugin(format!("插件 '{}' 登记互调 api 失败: {}", plugin_id, e))
             })?;
 
-        // 票 09a：manifest 声明的 WS 端点登记（expand——声明式静态路由与宿主硬编码
+        // manifest 声明的 WS 端点登记（expand——声明式静态路由与宿主硬编码
         // 分发并存）。这里的登记必须以「激活期」为锚点：deactivate 会 `purge_for_plugin`
         // 回收该插件全部 ws 端点，只有激活期重登记才能让 deactivate→activate 循环后
         // 声明端点不丢（与 httpEndpoints 的 load 期登记不同——ws 端点生命周期随激活）。
-        // 插件未导出 `events-ws` 的端点帧投递会降级为丢弃（宿主不缓存，spec §2.2），
+        // 插件未导出 `events-ws` 的端点帧投递会降级为丢弃（宿主不缓存），
         // 声明了但没接事件的插件即时看到的形态是可连但无回包——fail-visible 需按插件端
         // 是否实现回调判定，宿主只负责「按声明登记、按声明可达」。
         if !plan.ws_endpoints.is_empty() {
@@ -787,11 +787,11 @@ impl PluginHost {
     ) -> crate::Result<()> {
         tracing::info!(plugin_id = %plugin_id, persist, "[PluginHost] deactivate_plugin");
 
-        // 步骤 ①（票 06 §5.6 / I3③）：先停属主 + 丢 store，再做资源回收。
+        // 步骤 ①：先停属主 + 丢 store，再做资源回收。
         // `event-loop` 实例的属主是先于任何宿主资源回收被停止的唯一在飞 guest
         // 执行者——不这样做，回收（pty/ws/http/mdns/task）会与挂起的 guest task
         // 竞争。代价：guest `on_shutdown` / `deactivate` 无法执行（见下方针数），
-        // 这是与改造前**唯一的实质语义差异**（spec I3③ 已定稿：宁可显性跳过，
+        // 这是与改造前**唯一的实质语义差异**（既定口径：宁可显性跳过，
         // 也不赌一个挂起 task 永不放行）。`mutex` 实例无属主，此处 no-op。
         if let Some(report) = self.stop_instance_owner(plugin_id).await {
             if report.forced_abort || report.abandoned_requests > 0 {
@@ -804,19 +804,19 @@ impl PluginHost {
             }
         }
 
-        // mDNS 基础能力服务（spec v2 §5.1）：插件停用即回收其全部浏览 + 广播句柄
-        // （只碰本人）。**票 02 批次 03 起走自报钩子**（见下方
+        // mDNS 基础能力服务：插件停用即回收其全部浏览 + 广播句柄
+        // （只碰本人）。**此后走自报钩子**（见下方
         // `DomainHooksRegistry::on_plugin_purge`；域侧钩子在
         // `wasmnest-discovery-engine::HOOKS`）——adapter 迁出内核后内核不再点名该域。
 
-        // 认证中心注册表（ADR 0031）：属主停用即回收其认证中心角色——认证面随之
+        // 认证中心注册表：属主停用即回收其认证中心角色——认证面随之
         // fail-closed（无中心 = 拒绝），不静默降级成“无认证放行”（只碰本人）
         crate::host_api::auth_center::purge_for_plugin(plugin_id);
 
-        // 非核心能力域的停用回收（票 02 批次 01 机制）：遍历**自报**的生命周期钩子。
+        // 非核心能力域的停用回收：遍历**自报**的生命周期钩子。
         // 内核不点名任何能力域 crate——这是内核能摘掉对应依赖的前提。
         //
-        // 已接入的域（批次 02/03）：pty（kill 全部私有 PTY 并逐条补发
+        // 已接入的域：pty（kill 全部私有 PTY 并逐条补发
         // `<owner>::pty:exit`，reason=killed——本遍历必须在下方 `remove_all_subscriptions`
         // 之前，否则补发的事件无人可投）、mdns（浏览 / 广播句柄）、ws（出站连接 +
         // 服务端端点 + 在线客户端）、http（动态路由含对外 URL 别名——别名随属主消失，
@@ -910,7 +910,7 @@ impl PluginHost {
             }
         }
 
-        // 二次清扫（审计票 09）：`task::purge_for_plugin` 在本函数早段执行，早于 guest
+        // 二次清扫（审计结论）：`task::purge_for_plugin` 在本函数早段执行，早于 guest
         // `on_shutdown` / `deactivate`，在飞单元可能在 purge 之后才跑完并补投终态事件。
         // guest 清理结束后再收一次（幂等：已终态任务 cancel 返回 false、注册表条目与
         // 回调队列已摘除），补上这个次序小窗。
@@ -935,10 +935,10 @@ impl PluginHost {
         // 统一清理：取消注册和撤销权限
         self.registry.unregister_plugin(plugin_id).await;
         self.permission.revoke_all(plugin_id);
-        // 前端通道令牌随停用回收（审计票 06）：令牌是「该插件当前这次激活」的凭证，
+        // 前端通道令牌随停用回收（审计结论）：令牌是「该插件当前这次激活」的凭证，
         // 停用后旧令牌不得继续解析出身份（下次激活由 loader 重新签发）
         self.frontend_channel().revoke_plugin(plugin_id);
-        // 注销互调 api 清单（ADR-0017）：停用后目标调用被门禁拒绝
+        // 注销互调 api 清单（互调门禁）：停用后目标调用被门禁拒绝
         self.wasm_host_ctx.api_registry().unregister(plugin_id);
         // core-plugin-manager：系统组件停用即撤销其能力提供，能力回落宿主原语
         // （二选一装配：注册表对消费方恒可用；条件回落防误撤重建后的新注册）
@@ -950,7 +950,7 @@ impl PluginHost {
         // 清理消息总线订阅
         self.message_bus.remove_all_subscriptions(plugin_id).await;
 
-        // 票 03：会话生命周期 / 输入监听器的注册表已退役，停用时无需再按 plugin_id
+        // 会话生命周期 / 输入监听器的注册表已退役，停用时无需再按 plugin_id
         // 摘除（原 `remove_lifecycle_listener` / `remove_input_listener` 调用点）。
 
         let mut plugins = self.plugins.write().await;
@@ -992,7 +992,7 @@ impl PluginHost {
             if loaded.source == PluginSource::StaticRegistry {
                 continue;
             }
-            // core-plugin-manager · ADR 0032：角色驱动层（L1 基础服务 / L2 内部
+            // core-plugin-manager：角色驱动层（L1 基础服务 / L2 内部
             // 统一业务应用）启动时按角色无条件激活（activate_role_driven_components），
             // 其启停不持久化——持久化真源是「角色」而非用户状态，停用仅对当前会话生效
             if loaded.manifest.kind.is_role_driven() {
@@ -1031,11 +1031,11 @@ impl PluginHost {
         }
     }
 
-    /// 角色驱动层先于业务应用激活（L1 基础服务 → L2 内部统一业务，ADR 0032）——**本段为历史残留注释**
+    /// 角色驱动层先于业务应用激活（L1 基础服务 → L2 内部统一业务）——**本段为历史残留注释**
     ///
     /// 实现已迁至 [`Self::activate_role_driven_components`]（`boot.rs`）：层序取自 SDK 常量
     /// `PluginKind::ROLE_DRIVEN_LOAD_ORDER`，含 L2 第二批。保留本段仅记录旧口径：
-    /// **不**承诺「只停不删」（按 kind 拒绝卸载的守卫未实现，见 ADR 0032 §6 L1 清单第 3 项）。
+    /// **不**承诺「只停不删」（按 kind 拒绝卸载的守卫未实现，见既定的 L1 清单第 3 项）。
 
     /// 判断插件是否应该按需激活
     pub async fn should_lazy_activate(&self, plugin_id: &str) -> bool {
@@ -1076,7 +1076,7 @@ fn find_duplicate_id_claim(
         .next()
 }
 
-// ==================== 旧 api 名双投窗口（票 07 B2） ====================
+// ==================== 旧 api 名双投窗口 ====================
 
 /// 改名插件的 api 名别名：`(新插件 id, 旧插件 id)`。
 ///

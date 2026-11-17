@@ -1,19 +1,19 @@
-//! 宿主→插件互调客户端（中立层，ADR 0033）
+//! 宿主→插件互调客户端（中立层）
 //!
 //! **归属更正**：本模块原住在 `utils/auth/auth_center.rs`（注释写「调用认证中心
 //! 互调 api」），但它实际是**通用** JSON-RPC 客户端——会话中心、认证中心、任何
 //! 插件互调 api 都经它发起，唯一的差别只是目标 api 名。把通用客户端放在认证域
 //! 会让「会话 API 依赖认证模块」这种错位在代码里成立，也会诱导后来人以为
-//! `call_api` 只服务认证。故上提到 `wasm_core::intercall`（ADR 0033 §附带清理）。
+//! `call_api` 只服务认证。故上提到 `wasm_core::intercall`（附带清理）。
 //!
-//! wire 形状与 SDK `api_call` 约定一致（ADR 0017：JSON-RPC 2.0 over host-bus）：
+//! wire 形状与 SDK `api_call` 约定一致（JSON-RPC 2.0 over host-bus）：
 //! 请求 `{jsonrpc, id, method, params}`，响应 `{jsonrpc, id, result | error}`。
 //! 请求 topic `wasmnest.api.<plugin-id>.<method>`，回复 topic
 //! `wasmnest.api.reply.<caller>.<request-id>`；caller 是宿主虚拟身份
 //! [`crate::host_api::api::HOST_API_CALLER_ID`]（互调门禁只校验目标 api
 //! 的声明，不校验调用方身份——宿主对插件一律同权）。
 //!
-//! 这是 ADR 0022 §5.1.3 允许的**零解析窄转发**之一：宿主不解释 `method` 语义、
+//! 这是宿主允许的**零解析窄转发**之一：宿主不解释 `method` 语义、
 //! 不拆 `params` 字段（装进 JSON-RPC 信封只是为了发出去）、`result` 原样回传。
 
 use std::sync::atomic::{AtomicU64, Ordering};

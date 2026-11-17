@@ -1,19 +1,17 @@
 //! 文件系统访问校验器
 //!
-//! ## 判定顺序（2026-09-27 授权策略增强 · 票 02/03 起）
+//! ## 判定顺序（授权策略增强后）
 //!
 //! 0. **硬拒绝记录**（`plugin_auth_records` 中 `effect='deny'` 命中目标）：直接拒绝，
-//!    不弹窗、不看任何放行层——用户显式撤销/拒绝过的目标优先于一切放行路径
-//!    （spec §6.1 第 1 步）；
+//!    不弹窗、不看任何放行层——用户显式撤销/拒绝过的目标优先于一切放行路径；
 //! 1. **第一方集成目录预授权**（[`FIRST_PARTY_TRUSTED_DIRS`]）：只对具名第一方插件、
 //!    只在其归属清单点名的目录段内免弹窗——不是「白名单插件任意路径放行」，
 //!    也不是「路径里出现 `.claude/` 就放行」。**它排在策略之前**：档位管不着这批
-//!    内置免询问项（spec §7 裁定「优先级高于策略档位」，否则该表存在的唯一理由
-//!    就被「总是询问」架空了）；
+//!    内置免询问项（否则该表存在的唯一理由就被「总是询问」架空了）；
 //! 2. **策略档位**（[`super::strategy::StrategyStep`]，判定时实时读取）：
 //!    「总是询问」在此**跳过**下面两条 allow 记录（含旧记录回退）直接进询问；
 //!    「默认」继续往下；「始终允许」免询问直接放行，并以 `source='always_allow'`
-//!    落账（票 04；spec §4.1 第 2 档的口径是「不问，但必须留痕」——免询问也要在
+//!    落账（免询问也要在
 //!    管理界面可见，否则最高风险档上会出现不可见空洞）；
 //! 3. **授权记录命中**（同表 `effect='allow'`）：目标命中且**操作集覆盖**本次操作才放行；
 //! 4. **旧版扁平前缀回退**（`plugin_storage.fs_granted_paths`，**只读**）：存量用户的
@@ -22,7 +20,7 @@
 //!    应答三态见 [`FsDecision`]：「总是询问」档不提供「记住」（该档不读记录，
 //!    落一条永远不会被读到的记录只会造成两处口径）。
 //!
-//! ## resolve 规则（spec §5.2）
+//! ## resolve 规则
 //!
 //! 只有「记录 + 旧记录」两级**都有确定性结论**时才可能免弹窗，规则是：
 //!
@@ -32,8 +30,8 @@
 //! 3. 集合为空 ⇒ 回退旧记录：命中任一前缀 → 放行（视作 read + write，与旧版逐字一致）。
 //!
 //! **操作维度**（[`FsOps`]）：授权记录带生效操作集，读与写不再互相隐含。授权「读」
-//! 某目录后，插件写该目录会**再问一次**（spec §12.1 C5）；旧记录没有操作维度，
-//! 按读写都授权处理，存量用户零感知。
+//! 某目录后，插件写该目录会**再问一次**（写操作不能靠读授权隐含放行）；旧记录没有
+//! 操作维度，按读写都授权处理，存量用户零感知。
 //!
 //! 每条判定都在日志里点明**命中的是哪一层**（`layer = ...`），排障时不必靠猜：
 //! 免弹窗来源不唯一（清单 / 策略自动放行 / 记录 / 旧记录 / 用户刚同意），
@@ -82,7 +80,7 @@ use std::time::Duration;
 use tauri::Emitter;
 use tokio::sync::{oneshot, Mutex};
 
-/// 弹窗授权请求的等待上限（无应答即拒——AGENTS §8 fail-safe 默认）
+/// 弹窗授权请求的等待上限（无应答即拒——fail-safe 默认）
 ///
 /// 生产值固定 30s；测试可经 [`FsAuthChecker::with_prompt_timeout`] 调小，
 /// 否则「超时不落账」这条契约要等 30 秒才验得到。
@@ -93,7 +91,7 @@ const PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum FsGrantLayer {
     /// 第一方集成目录预授权（按插件 id 归属）
     FirstPartyDir,
-    /// 「始终允许」档的免询问放行（票 04；记录已按 `source='always_allow'` 落账）
+    /// 「始终允许」档的免询问放行（记录已按 `source='always_allow'` 落账）
     AlwaysAllow,
     /// 授权记录命中（`plugin_auth_records` 的 allow 且操作集覆盖本次操作）
     RecordGrant,
@@ -114,7 +112,7 @@ impl FsGrantLayer {
 
 /// 第一方免弹窗目录的形态
 ///
-/// **纯净性收口票 08（P0-2）**：本类型是判定语义（机制）留在本 crate；
+/// **纯净性收口（P0-2）**：本类型是判定语义（机制）留在本 crate；
 /// **产品清单不在本 crate**——`FIRST_PARTY_TRUSTED_DIRS` 常量已删除，清单由
 /// 宿主 lib 装配时经 `FsAuthChecker::new` 注入（`Vec<(&'static str, Vec<TrustedDir>)>`），
 /// 空表 = 无免弹窗项（无头 / 测试 / 未装配宿主语义逐字不变）。
@@ -129,13 +127,13 @@ pub enum TrustedDir {
     ProjectSegment(&'static str),
 }
 
-/// 第一方免弹窗项的**只读投影**（授权管理界面的读模型用，spec §9.3 / 票 08）
+/// 第一方免弹窗项的**只读投影**（授权管理界面的读模型用）
 ///
 /// 判定语义只有本模块一处真源（[`first_party_dir_matches_with_home`]）；这里仅把
 /// 清单翻译成可展示形状，使这批「内置免询问」在授权管理界面可见——不导出就等于
-/// 用户看不见的特权（spec §7「必须配套」）。
+/// 用户看不见的特权（「必须配套」的口径）。
 ///
-/// 展示文案不在此处拼：`kind` + `value` 交前端按 locale 组合（AGENTS §6 用户可见
+/// 展示文案不在此处拼：`kind` + `value` 交前端按 locale 组合（用户可见
 /// 文案一律走 i18n，宿主 Rust 不产出面向用户的中文串）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -292,7 +290,7 @@ impl AuthOrigin {
     }
 }
 
-/// 授权询问的应答决定（票 03 固定四态，wire 值即命令参数）
+/// 授权询问的应答决定（固定四态，wire 值即命令参数）
 ///
 /// 「允许本次 / 拒绝 / 以后都拒绝」三个按钮 + 「默认」档的「记住」勾选，组合起来
 /// 正好落在这四个决定上。写成枚举而不是两个布尔：`allowed + remember` 的双布尔
@@ -342,7 +340,7 @@ impl FsDecision {
 ///
 /// 抽成注入点而不是在测试里硬塞 `AppHandle`：tao 事件循环不允许在测试线程建
 /// `AppHandle`，而「弹窗按弹出时档位渲染 / 应答落账 / 超时不落账」这些契约必须
-/// 在**真实判定链**上验证（只测纯函数的变异教训见 spec §12.2）。
+/// 在**真实判定链**上验证（只测纯函数的教训：落账粒度一类的契约必须在同一条链上验）。
 /// `None` = 无头上下文 ⇒ 询问层不可用 ⇒ 拒绝。
 pub type PromptEmitter = Arc<dyn Fn(&str, serde_json::Value) -> Result<(), String> + Send + Sync>;
 
@@ -362,7 +360,7 @@ struct PendingRequest {
     origin: AuthOrigin,
     /// **弹出时**的策略档位（决定弹窗给不给「记住」、应答怎么落账）
     ///
-    /// 在弹窗弹出时固定下来（spec §8.1）：等待应答期间用户改了档位，这个弹窗
+    /// 在弹窗弹出时固定下来：等待应答期间用户改了档位，这个弹窗
     /// 仍按旧口径走完——半途改口径会让「用户看到的按钮」与「实际落账」不一致。
     strategy: AuthStrategy,
     /// 回复通道
@@ -373,7 +371,7 @@ impl PendingRequest {
     /// 本弹窗是否提供「记住」（= 该弹窗弹出时的档位是否会读授权记录）
     ///
     /// 「总是询问」档跳过记录 ⇒ 落账写了也没人读 ⇒ 弹窗不提供「记住」
-    /// （spec §6.3），应答侧据此把越界的 `allow_remember` 降级为一次性放行。
+    ///，应答侧据此把越界的 `allow_remember` 降级为一次性放行。
     fn offers_remember(&self) -> bool {
         StrategyStep::of(self.strategy).reads_allow_records()
     }
@@ -405,7 +403,7 @@ struct RecordSignals {
 pub struct FsAuthChecker {
     /// 插件存储（**只读**旧版扁平授权前缀；新授权一律进授权记录表）
     storage: Arc<PluginStorage>,
-    /// 授权策略与授权记录真源（判定实时读取，不缓存——spec §8.1）
+    /// 授权策略与授权记录真源（判定实时读取，不缓存）
     auth_records: AuthPolicyStore,
     /// 待处理的弹窗授权请求
     pending_requests: Arc<Mutex<Vec<PendingRequest>>>,
@@ -413,7 +411,7 @@ pub struct FsAuthChecker {
     emit: Option<PromptEmitter>,
     /// 弹窗等待上限（生产 [`PROMPT_TIMEOUT`]；测试可调小以验证超时语义）
     prompt_timeout: Duration,
-    /// 第一方免弹窗归属清单（**宿主注入**，票 08/P0-2：产品数据出厂 lib，
+    /// 第一方免弹窗归属清单（**宿主注入**：产品数据出厂 lib，
     /// 判定逻辑留本 crate）。空表 = 无免弹窗项——无头 / 测试 / 未装配宿主
     /// 语义逐字不变（无豁免表 = 无免弹窗项）。
     first_party_dirs: Vec<(&'static str, Vec<TrustedDir>)>,
@@ -565,13 +563,13 @@ impl FsAuthChecker {
         if signals.deny_hit {
             return NoDialogDecision::Denied;
         }
-        // 1. 第一方集成目录（清单归属，spec §7；撤销它只能靠 deny 记录）。
-        //    排在策略之前：档位管不着这批内置免询问项（spec §7 裁定），
+        // 1. 第一方集成目录（清单归属；撤销它只能靠 deny 记录）。
+        //    排在策略之前：档位管不着这批内置免询问项，
         //    否则「弹窗把一次技能同步拆成 N 次点击」的老问题会回来
         if self.first_party_dir_matches(plugin_id, canonical) {
             return NoDialogDecision::Allowed(FsGrantLayer::FirstPartyDir);
         }
-        // 2. 策略档位（判定时实时读取，不缓存、不做激活期快照——spec §8.1）
+        // 2. 策略档位（判定时实时读取，不缓存、不做激活期快照）
         let step = match strategy::evaluate(&self.auth_records, plugin_id, AuthResource::Fs).await {
             Ok(step) => step,
             Err(e) => {
@@ -597,11 +595,11 @@ impl FsAuthChecker {
                 );
                 return NoDialogDecision::Ask(AuthStrategy::AlwaysAsk);
             }
-            // 「始终允许」（票 04）：免询问放行 + 以 `source='always_allow'` 落账。
-            // 它**不读**已有 allow 记录（spec §4.1 第 2 档），因此记录覆盖与否都在
-            // 这里直接放行；落账让「免询问自动放行」在管理界面可见（spec §9.4）。
+            // 「始终允许」：免询问放行 + 以 `source='always_allow'` 落账。
+            // 它**不读**已有 allow 记录，因此记录覆盖与否都在
+            // 这里直接放行；落账让「免询问自动放行」在管理界面可见。
             // 硬闸门（deny 记录 / 路径规范化 / manifest 声明 / 配额）全在本步之前或
-            // 之外，档位管不着（spec §4.2、票 04 的红测断言）
+            // 之外，档位管不着。
             Tier::AutoAllow => {
                 // 审计义务随档位携带（S-11）：类型上防止「match 后什么都不做」——
                 // 删除落账会让本断言（debug 测试构建）与行为测试同时转红
@@ -618,7 +616,7 @@ impl FsAuthChecker {
             // 3. 授权记录命中且操作集覆盖本次能力 → 放行
             Some(ops) if ops.covers(needed) => NoDialogDecision::Allowed(FsGrantLayer::RecordGrant),
             // 3'. 授权记录命中但操作集不含本次所需 → 该子树由用户显式管理过，
-            //     旧记录对它**作废**（spec §5.2 第 2 步的短路条件），进询问
+            //     旧记录对它**作废**（短路条件），进询问
             Some(_) => NoDialogDecision::Ask(AuthStrategy::Default),
             // 4. 没有任何 allow 记录命中 → 回退旧版扁平前缀（视作读写都授权）
             None => {
@@ -655,7 +653,7 @@ impl FsAuthChecker {
 
         let mut signals = RecordSignals::default();
         for row in &rows {
-            // 记录里的目标在落账时已经过 `grant_target` 规范化（spec §5.1），且本
+            // 记录里的目标在落账时已经过 `grant_target` 规范化，且本
             // 判定入口的 `canonical` 也已规范化 ⇒ 直接组件边界比较。旧实现对每行
             // 目标重新 canonicalize（逐组件 syscall），「始终允许」档按访问路径持续
             // 落账后记录数只增不减（上限 500），一次 fs.read 能打出上百次系统调用
@@ -687,7 +685,7 @@ impl FsAuthChecker {
     ///
     /// 判定语义只有本模块一处真源（[`first_party_dir_matches_with_home`]）；这里仅把
     /// 清单翻译成可展示形状，使这批「内置免询问」在授权管理界面可见——不导出就等于
-    /// 用户看不见的特权（spec §7「必须配套」）。空表（未装配）→ 空投影。
+    /// 用户看不见的特权（「必须配套」的口径）。空表（未装配）→ 空投影。
     pub fn first_party_trusted_dirs(&self) -> Vec<FirstPartyDirEntry> {
         self.first_party_dirs
             .iter()
@@ -756,7 +754,7 @@ impl FsAuthChecker {
         }
 
         // 「记住」只在弹出时档位会读记录的前提下才落账。等待应答期间档位可能已被
-        // 改成「总是询问」，但那不影响**这个**弹窗的口径（spec §8.1：已等待应答的
+        // 改成「总是询问」，但那不影响**这个**弹窗的口径（已等待应答的
         // 弹窗按弹出时的旧策略走完）。越界的 `allow_remember`（该弹窗根本没给
         // 「记住」按钮）降级为一次性放行并留痕：放行方向与用户意图一致，只是不落
         // 一条此后没人读的记录。
@@ -795,7 +793,7 @@ impl FsAuthChecker {
         })
     }
 
-    /// 「始终允许」档的免询问放行留痕（spec §4.1 第 2 档：不问，但必须落账）
+    /// 「始终允许」档的免询问放行留痕（不问，但必须落账）
     ///
     /// 目标粒度 = 本次请求的路径本身（与插件直请路径的「记住」同一套
     /// [`GrantScope::Exact`] 规则）：记录是**前缀**，逐个目标访问按目标累积。
@@ -804,7 +802,7 @@ impl FsAuthChecker {
     ///
     /// 落账失败 / 容量上限（[`GrantOutcome::DroppedByCap`]）都**不影响放行方向**：
     /// 档位的语义是「不问」，留痕是它的义务，但留不下痕时拒绝访问是更坏的结果
-    /// （用户明确配了这个档位；且 spec §4.2 的硬闸门在更靠前的位置已经拦过一遍）。
+    /// （用户明确配了这个档位；且硬闸门在更靠前的位置已经拦过一遍）。
     async fn land_auto_allow(&self, plugin_id: &str, canonical: &Path, ops: FsOps) {
         let target = canonical.to_string_lossy().to_string();
         match self
@@ -986,7 +984,7 @@ impl FsAuthChecker {
     /// - [`GrantScope::Directory`]：目录 → 自身；文件 → 所在父目录（选择器语义，
     ///   见 [`directory_scope_target`]）。
     ///
-    /// 记录里存**规范化路径**（spec §5.1），判定侧同一规范化，避免 `\\?\` 前缀 /
+    /// 记录里存**规范化路径**，判定侧同一规范化，避免 `\\?\` 前缀 /
     /// 符号链接造成「明明授权了却仍弹窗」。规范化失败（路径不存在且无父目录，极少）
     /// 返回 `None`，调用方跳过落账而不是存一个永远匹配不上的目标。
     ///
@@ -1116,7 +1114,7 @@ impl FsAuthChecker {
     /// 查询路径是否已授权（含所需操作集），**不弹窗**
     ///
     /// 两个无弹窗消费者共用它，语义都是「没有授权就是没有」：
-    /// - WASI 预打开目录校验（**仅 worker 类别可达**，ADR 0034——非 worker 声明
+    /// - WASI 预打开目录校验（**仅 worker 类别可达**——非 worker 声明
     ///   preopen 已被加载期闸门拒绝）：只为已授权目录建 preopen，防止插件借自身
     ///   storage 配置（config 可由插件写）指向任意路径绕过授权弹窗；
     /// - 任务单元（core-task 池线程）：未授权即 fail-visible 拒绝，绝不从池线程弹窗
@@ -1146,7 +1144,7 @@ impl FsAuthChecker {
     /// 放行判据**——放行只看免弹窗判定（`decide_without_dialog`）。`ops` 同时决定
     /// 弹窗文案（读取 / 写入 / 读写）与「记住」落账的操作集。
     /// `strategy` 是**弹出时**的档位：写进待应答请求（应答按它落账）并发给前端
-    /// （前端据此决定给不给「记住」按钮），pop 之后不再重读（spec §8.1）。
+    /// （前端据此决定给不给「记住」按钮），pop 之后不再重读。
     async fn request_user_auth_batch(
         &self,
         plugin_id: &str,
@@ -1231,7 +1229,7 @@ impl FsAuthChecker {
     /// 旧版扁平授权前缀回退（`plugin_storage.fs_granted_paths`，**只读**）
     ///
     /// 存量用户的既有目录授权继续生效：命中任一前缀即放行，**视作读写都授权**
-    /// （旧记录没有操作维度，spec §5.2 第 3 步）。新授权一律进授权记录表，
+    /// （旧记录没有操作维度）。新授权一律进授权记录表，
     /// 本表不再被写入（写入方法只剩测试用的 [`Self::seed_legacy_granted_path`]）。
     ///
     /// 只在新表**没有任何 allow 记录命中**时才被走到（见 `decide_without_dialog`）：
@@ -1343,12 +1341,12 @@ impl FsAuthChecker {
 
     /// **测试专用**：预置一条旧版扁平授权前缀（`plugin_storage.fs_granted_paths`）
     ///
-    /// 旧表自票 02 起退化为只读回退：生产路径（`respond` 落账）只写授权记录表，
+    /// 旧表自迁移起退化为只读回退：生产路径（`respond` 落账）只写授权记录表，
     /// 本方法是**唯一**写入口——闭环用例（session_e2e / task_e2e /
     /// wasi_e2e 预打开）与 legacy 回退用例都靠它构造存量用户状态。
     /// 粒度规则与旧实现逐字一致（目录 → 自身；已存在文件 → 自身；不存在路径 → 父目录）。
     ///
-    /// **常编译 pub（wasm-core 纯净性收口票 05b）**：原 `#[cfg(test)]`（wasm-core
+    /// **常编译 pub（wasm-core 纯净性收口后）**：原 `#[cfg(test)]`（wasm-core
     /// 内部测试可见）；lib 集成测试（session_e2e，独立测试二进制）看不到 cfg(test)
     /// 项，提为常编译 pub 供 `wasmnest_wasm_core::…` 消费。
     pub async fn seed_legacy_granted_path(
@@ -1545,7 +1543,7 @@ fn strip_verbatim_prefix(path: &Path) -> PathBuf {
 /// `home = None` 时 `Home` 形态**不放开**（只剩段名形态可用）：取不到家目录就把
 /// `~/.agents` 这类清单退化成「任意位置的 `.agents` 段」是反向的降级。
 ///
-/// **票 08（P0-2）**：清单改为参数注入（[`FsAuthChecker::new`] 第 3 参），
+/// **纯净性收口（P0-2）**：清单改为参数注入（[`FsAuthChecker::new`] 第 3 参），
 /// 判定逻辑（机制）留本 crate 不变；空表 = 恒不命中。
 fn first_party_dir_matches_with_home(
     table: &[(&'static str, Vec<TrustedDir>)],
@@ -1594,7 +1592,7 @@ mod tests {
 
     /// 内存数据库 + 无投递口（None）的校验器：无法弹窗，未授权路径应保守拒绝
     ///
-    /// 默认空豁免表（票 08/P0-2：豁免表宿主注入，测试默认无豁免）——普通用例
+    /// 默认空豁免表（豁免表宿主注入，测试默认无豁免）——普通用例
     /// 语义与旧「无清单条目插件」一致；first-party 专项用例改用
     /// [`first_party_checker`]（注入测试表）。
     async fn headless_checker() -> FsAuthChecker {
@@ -1602,7 +1600,7 @@ mod tests {
     }
 
     /// first-party 专项用例的校验器：注入**测试特制**豁免表（中性 plugin_id，
-    /// 不携带产品 wire——purity 票 08：wasm-core 连测试也不得持产品清单；
+    /// 不携带产品 wire——wasm-core 连测试也不得持产品清单；
     /// 目录形态与 lib 真源清单一致，验证的是判定机制而非产品绑定）
     async fn first_party_checker() -> FsAuthChecker {
         FsAuthChecker::new(checker_storage(), None, test_first_party_table())
@@ -1642,8 +1640,8 @@ mod tests {
     /// 可弹窗的校验器（注入投递口）＋捕获事件，超时可调小
     ///
     /// 用**真实弹窗链路**替代「手工塞 pending」：档位 → 弹窗 payload → 应答 / 超时
-    /// 的契约必须在同一条链上验（spec §12.2 的教训：只测纯函数会让落账粒度一类的
-    /// 变异全绿）。
+    /// 的契约必须在同一条链上验（只测纯函数的教训：落账粒度一类的
+    /// 变异会全绿）。
     async fn promptable_checker(timeout: Duration) -> (FsAuthChecker, EmittedLog) {
         let log: EmittedLog = Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = log.clone();
@@ -1684,7 +1682,7 @@ mod tests {
         std::fs::canonicalize(std::env::temp_dir()).expect("temp dir must be canonicalizable")
     }
 
-    /// 票 07 红测本体：**第三方** `fs:read` 插件读任意位置的 `.claude/` 不再免弹窗
+    /// 红测本体：**第三方** `fs:read` 插件读任意位置的 `.claude/` 不再免弹窗
     ///
     /// 旧实现按 `.claude/` 子串放行所有插件，`/tmp/x/.claude/settings.json` 这种
     /// 攻击者可控位置也免弹窗——「访问未授权目录按需弹窗」的兜底被架空。
@@ -1778,7 +1776,7 @@ mod tests {
 
     /// 命中层的归属必须说得出来（日志「为什么这次没弹框」全靠它）
     ///
-    /// 票 02 起旧记录与新记录分成两层：`legacy-grant` 与 `record-grant` 必须报得开，
+    /// 迁移起旧记录与新记录分成两层：`legacy-grant` 与 `record-grant` 必须报得开，
     /// 否则「为什么这次没弹框」在迁移期无法回答（是旧记录在兜底还是新记录命中）。
     #[tokio::test]
     async fn matched_layer_names_the_reason_for_no_dialog() {
@@ -1986,7 +1984,7 @@ mod tests {
 
     /// 投影完备性：注入表里每一条都被导出，且顺序一致（机制面）
     ///
-    /// 少一条 = 授权管理界面看不见一项免询问特权（spec §7 的不可见特权正是要避免的）；
+    /// 少一条 = 授权管理界面看不见一项免询问特权（不可见特权正是要避免的）；
     /// 顺序一致 = 界面渲染顺序与审计面（清单本身）可逐行对照。
     /// 产品清单的 well-formed 审计（条目非空 / id 不重复 / 只放第一方 / 已知消费者
     /// 不变）随清单出厂迁移 lib（`src-tauri/src/first_party_dirs.rs` 模块测试）。
@@ -2631,7 +2629,7 @@ mod tests {
             );
         }
         assert!(checker.pending_requests.lock().await.is_empty());
-        // 一次性放行（remember=false）同样**不写旧表**：旧表自票 02 起只读
+        // 一次性放行（remember=false）同样**不写旧表**：旧表自迁移起只读
         assert!(
             checker
                 .storage
@@ -2639,14 +2637,14 @@ mod tests {
                 .await
                 .expect("storage read")
                 .is_none(),
-            "票 02 后 fs_granted_paths 不得再被写入"
+            "迁移后 fs_granted_paths 不得再被写入"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
 
     // ==================== is_granted（WASI 预打开校验，无弹窗） ====================
 
-    /// `is_granted` 的免弹窗集合 == `matched_layer` 的集合（票 07 后不再等于「任意路径」）
+    /// `is_granted` 的免弹窗集合 == `matched_layer` 的集合（不再等于「任意路径」）
     ///
     /// 它是 WASI 预打开与任务单元的唯一判据：这里放开一分，那两条无弹窗通道就放开一分。
     #[tokio::test]
@@ -2686,7 +2684,7 @@ mod tests {
                 .await,
             "白名单插件的全盘特权已退役"
         );
-        // 旧记录授权 → 放开（读写都算，spec §5.2 第 3 步），且只对获授权的插件放开
+        // 旧记录授权 → 放开（读写都算），且只对获授权的插件放开
         let dir = canonical_temp_dir().join("fs-auth-isgranted");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.to_string_lossy().to_string();
@@ -2718,7 +2716,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // ==================== 票 02：授权记录按操作拆分（读 / 写）====================
+    // ==================== 授权记录按操作拆分（读 / 写） ====================
 
     /// 手工入队一个待应答请求（`strategy` = 该弹窗**弹出时**的档位）
     ///
@@ -2883,7 +2881,7 @@ mod tests {
 
     /// C5 反例（短路条件）：子树在记录里被显式管理过、但不含本次操作 ⇒ **不回退旧记录**
     ///
-    /// 变异判据（票 02 指定的变异自检）：把 `decide_without_dialog` 的
+    /// 变异判据（指定的变异自检）：把 `decide_without_dialog` 的
     /// `Some(_) => Ask` 反转成「继续回退旧记录」——旧记录是读写都授权的，
     /// 于是这里的写会被旧记录放行，本条转红。
     #[tokio::test]
@@ -3017,8 +3015,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 撤销（spec §8.4）：删 allow + 落 deny ⇒ 该目标与其子树**直接拒绝**，
-    /// 且 deny 优先于第一方免询问目录（spec §6.1 第 1 步）
+    /// 撤销：删 allow + 落 deny ⇒ 该目标与其子树**直接拒绝**，
+    /// 且 deny 优先于第一方免询问目录（第 0 层的判据）
     #[tokio::test]
     async fn revoke_records_deny_that_wins_over_first_party_dir() {
         let checker = first_party_checker().await;
@@ -3067,8 +3065,8 @@ mod tests {
         std::fs::remove_dir_all(&project).ok();
     }
 
-    /// 票 08：撤销的**两种出口**都要通——落 deny ⇒ 第一方免询问失效；移除该 deny
-    /// ⇒ 第一方免询问恢复（spec §8.4 要求的「两种意图都有出口」）
+    /// 撤销的**两种出口**都要通——落 deny ⇒ 第一方免询问失效；移除该 deny
+    /// ⇒ 第一方免询问恢复（「两种意图都有出口」的判据）
     ///
     /// 变异判据：`remove_deny` 若顺手删了同目标的 allow 行、或只删一半，本条的后半段
     /// 转红（恢复后仍被拒 = 用户失去「反悔」的出口）。
@@ -3212,7 +3210,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // ==================== 票 03：「总是询问」档 + 询问三态 ====================
+    // ==================== 「总是询问」档 + 询问三态 ====================
 
     /// 设文件侧档位（走真源写入面，与设置页控件同一条路）
     async fn set_fs_strategy(checker: &FsAuthChecker, plugin_id: &str, strategy: AuthStrategy) {
@@ -3225,7 +3223,7 @@ mod tests {
 
     /// C2 正例 + C12：「总是询问」下已授权目录**仍询问**（跳过 allow 记录），改回默认档即时恢复
     ///
-    /// 变异判据（票 03 指定）：把 `StrategyStep::Ask` 分支改回继续读记录 ——
+    /// 变异判据（指定的变异自检）：把 `StrategyStep::Ask` 分支改回继续读记录 ——
     /// 本条的「仍要问」两处断言（`decide_without_dialog` / `check`）转红。
     #[tokio::test]
     async fn always_ask_skips_new_table_records_and_asks_again() {
@@ -3277,7 +3275,7 @@ mod tests {
             "无弹窗通道的拒绝不得残留 pending"
         );
 
-        // 实时读取（spec §8.1）：改回默认档，同一个目录立刻恢复「记录命中即静默」
+        // 实时读取：改回默认档，同一个目录立刻恢复「记录命中即静默」
         set_fs_strategy(&checker, "com.wasmnest.test", AuthStrategy::Default).await;
         assert!(
             checker
@@ -3324,11 +3322,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// C2 反例（spec §6.1 第 1 步）：「总是询问」下已有 deny 记录**不再询问**
+    /// C2 反例（第 0 层判据）：「总是询问」下已有 deny 记录**不再询问**
     ///
     /// 跳过的只是 allow 记录——用户明确说过的「以后都拒绝」在更靠前的第 0 层就拦下，
     /// 否则同一条硬拒绝会每次访问重新弹窗，等于把 deny 记录作废。
-    /// 变异判据（票 03 指定）：把 deny 判定移到策略层之后（或让 `Ask` 直通询问），
+    /// 变异判据（指定的变异自检）：把 deny 判定移到策略层之后（或让 `Ask` 直通询问），
     /// 本条「不弹窗」的断言转红。
     #[tokio::test]
     async fn always_ask_still_honours_deny_records_without_dialog() {
@@ -3379,7 +3377,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// spec §7：第一方免询问项**不受档位影响**（档位管不着这批内置特权）
+    /// 第一方免询问项**不受档位影响**（档位管不着这批内置特权）
     ///
     /// 「总是询问」若把第一方层也失效，agent-hub 同步一次技能就要用户点 N 次——
     /// 那张表存在的唯一理由（免掉 N 次点击）就被架空了。撤销它只能靠 deny 记录
@@ -3408,7 +3406,7 @@ mod tests {
         std::fs::remove_dir_all(&project).ok();
     }
 
-    // ==================== 票 04：「始终允许」档（免询问放行 + 留痕） ====================
+    // ==================== 「始终允许」档（免询问放行 + 留痕） ====================
 
     /// 某应用在文件侧的记录行（读模型投影，含来源与操作集）
     async fn fs_records(
@@ -3425,7 +3423,7 @@ mod tests {
 
     /// C3 正例：「始终允许」下未覆盖的新目标免询问放行，并以 `source='always_allow'` 落账
     ///
-    /// 变异判据（票 04 指定）：把档位映射的 `AlwaysAllow` 改成 `Ask` / `ConsultRecords`
+    /// 变异判据（指定的变异自检）：把档位映射的 `AlwaysAllow` 改成 `Ask` / `ConsultRecords`
     /// （=「始终允许」改回询问）——无头上下文没有弹窗通道，本条的放行断言与层断言一起转红。
     #[tokio::test]
     async fn always_allow_allows_new_target_and_lands_always_allow_record() {
@@ -3463,7 +3461,7 @@ mod tests {
             "免询问放行不得残留 pending"
         );
 
-        // 留痕（spec §4.3：免询问也必须落账，否则界面出现不可见空洞）
+        // 留痕（免询问也必须落账，否则界面出现不可见空洞）
         let rows = fs_records(&checker, "com.wasmnest.test").await;
         assert_eq!(
             rows.len(),
@@ -3597,7 +3595,7 @@ mod tests {
             !checker
                 .check("com.wasmnest.test", &broken, FsOp::Read)
                 .await,
-            "路径规范化失败即拒：任何档位都放行不了（spec §4.2）"
+            "路径规范化失败即拒：任何档位都放行不了"
         );
         assert!(
             !checker
@@ -3752,7 +3750,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// spec §8.1：已等待应答的弹窗按**弹出时**的旧策略走完，不半途改口径
+    /// 已等待应答的弹窗按**弹出时**的旧策略走完，不半途改口径
     ///
     /// 两个方向都锁：
     /// ① 弹出时默认档 → 等待期间档位被改成「总是询问」，这个弹窗的「记住」仍落账
@@ -3832,7 +3830,7 @@ mod tests {
         std::fs::remove_dir_all(&dir2).ok();
     }
 
-    /// 正例：「以后都拒绝」落 deny 记录（spec §8.4），该目标与其子树此后被直接拒绝
+    /// 正例：「以后都拒绝」落 deny 记录，该目标与其子树此后被直接拒绝
     ///
     /// 变异判据：把 `respond` 里的 `DenyAlways` 分支改成不落账（或落成 allow），
     /// 本条转红。
@@ -3956,11 +3954,11 @@ mod tests {
     }
 }
 
-// ==================== FsAuthGate 端口实现（票 02 B5 起常编译） ====================
+// ==================== FsAuthGate 端口实现（常编译） ====================
 //
 // crate 内机制面（approval / 域测试夹具）经端口 trait 消费授权判定；宿主
 // 切换后宿主 FsAuthChecker（白名单 / 弹窗真源）另行实现同一 trait 注入。
-// **票 02 B5 起常编译**（`bare-host` / `common-host` 两个形态 feature 已于
+// **常编译**（`bare-host` / `common-host` 两个形态 feature 已于
 // 2026-10-13 单形态收口退休，本 impl 的常编译语义不变）：统一 `WasmHostContext`
 // 的 `fs_auth` 槽收敛为
 // `Arc<dyn FsAuthGate>`（超集，见 `host_api/context.rs` 字段注释），桌面形态把
