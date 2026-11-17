@@ -201,7 +201,6 @@ pub const PERMISSION_APPS_CONTROL: &str = "apps:control";
 /// 门禁落点：宿主聚合 `globalEntries` 时按本位过滤。
 pub const PERMISSION_UI_GLOBAL_ENTRY: &str = "ui:globalEntry";
 
-
 /// 音频采集（WIT `host-audio` 的 open/start/stop/close）：占用麦克风的高风险面
 pub const PERMISSION_AUDIO_CAPTURE: &str = "audio:capture";
 /// 音频数据面 / 元数据面（WIT `host-audio` 的 list-devices/status/ring-fetch/level）
@@ -288,7 +287,10 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
         stringify!(PERMISSION_UI_GLOBAL_ENTRY),
         PERMISSION_UI_GLOBAL_ENTRY,
     ),
-    (stringify!(PERMISSION_AUDIO_CAPTURE), PERMISSION_AUDIO_CAPTURE),
+    (
+        stringify!(PERMISSION_AUDIO_CAPTURE),
+        PERMISSION_AUDIO_CAPTURE,
+    ),
     (stringify!(PERMISSION_AUDIO_IO), PERMISSION_AUDIO_IO),
     (stringify!(PERMISSION_STT_INFER), PERMISSION_STT_INFER),
     (stringify!(PERMISSION_STT_MODEL), PERMISSION_STT_MODEL),

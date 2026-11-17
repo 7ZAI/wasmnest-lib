@@ -1,7 +1,7 @@
 # 能力仓 CI（7ZAI/wasmnest-lib#7）：fmt --check + 默认形态依赖门禁 + 按 crate 遍历
 # cargo test。
 #
-# 仓形态约束（AGENTS.md §1 / §4）：无根 workspace——21 个顶层 crate 平铺仓根、
+# 仓形态约束（AGENTS.md §1 / §4）：无根 workspace——22 个顶层 crate 平铺仓根、
 # 各自 Cargo.toml / Cargo.lock，一个 crate 一个 cargo 调用；不存在「仓级 cargo
 # test」。夹具 crate（wasmnest-host-kit/fixtures/*、wasmnest-wasm-core/fixtures/*）
 # 在二层目录，不入 `*/Cargo.toml` 顶层遍历面，也不入 CI（wasm 夹具另需目标端
@@ -10,7 +10,7 @@
 # 编译时长大头（CI 时长预估）：wasmnest-host-kit 默认形态**非可选**依赖
 # wasmtime 48 + wasmtime-wasi(p3)（数 GB 级编译产物，单 crate 冷编译十分钟级）；
 # server-core / server-http / server-websocket 拉 actix 栈；其余 crate 分钟级。
-# 6 个能力域 crate（discovery / pty / audio / http / websocket / peer-net）的 wasmtime 是
+# 7 个能力域 crate（discovery / pty / audio / stt / http / websocket / peer-net）的 wasmtime 是
 # optional 依赖且 default = []，默认形态不参与编译。**P0（2026-11-08）后不再有
 # crate 默认拉 tauri**：server-base 的 `tauri-compat` 默认关、桌面宿主显式开启，
 # 故 CI 不再安装 webkit2gtk 等仅服务 Tauri 的系统包。缓解措施：sccache——仓根
@@ -48,7 +48,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: cargo fmt --check（按 crate 遍历，覆盖全部 21 个顶层 crate）
+      - name: cargo fmt --check（按 crate 遍历，覆盖全部 22 个顶层 crate）
         run: |
           set -eu
           for d in */Cargo.toml; do

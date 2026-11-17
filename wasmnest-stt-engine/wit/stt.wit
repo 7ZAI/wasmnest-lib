@@ -1,0 +1,124 @@
+package wasmnest:stt@0.0.1;
+// ======================================================================
+/// 插件私有本地语音识别（host-stt，v1）：模型目录 / 会话 / 异步任务 / 结果。
+///
+/// **本接口的定位**：宿主侧唯一的本地 ASR 出口。它只做四件机制事——列出可用的
+/// 语音模型、按插件自己的模型选择打开一条 PCM 会话、把会话交给宿主的推理后端、
+/// 让插件轮询任务状态与结果。**不含**任何产品语义：无「录音」「供应商路由」
+/// 「回退」「文本落库」「VAD 分段」，也不认识任何云端 API。语音→文字的编排
+/// （采集、切片、供应商选择、历史记录）归应用仓插件。
+///
+/// 约定与红线：
+/// - **属主隔离**：会话与任务句柄仅创建者插件可调，他人 -> 明确错误；
+///   插件停用时宿主回收其全部会话与在途任务。
+/// - **输入格式固定**：会话接收 16 kHz 单声道交错 S16LE PCM（裸字节，不带容器头）。
+///   设备原生格式由 host-audio 的归一目标负责；容器解码（mp3/m4a/…）不在本域。
+/// - **异步任务**：`finalize` 立即返回 job-id，推理在宿主后台线程执行；插件按
+///   `job-status` 轮询、`job-result` 取结果、`job-cancel` 请求取消。v1 无事件面
+///   （状态快照自愈；事件面需要宿主任务投递，随接线票另议）。
+/// - **模型共享、下载受限**：模型目录是宿主级共享资产；下载源只来自固定 catalog
+///   的 URL（宿主可配镜像前缀），不接受插件传入任意 URL。模型完整性（SHA-256）
+///   由宿主校验，插件只拿模型 id。
+/// - **权限两域**：`stt:infer`（会话 / 任务 / 模型清单——消耗推理资源）与
+///   `stt:model`（模型下载 / 删除 / 本地导入——写共享资产）。
+/// - **明确不做**：VAD / 分段策略 / 音频解码 / 文本持久化 / 供应商回退 /
+///   说话人分离 / 实时流式（v1 会话是「先追加、后 finalize」的批式形状）。
+///
+/// `open-session` 的 options-json（camelCase）：
+/// `{ "modelId": "small", "language": "auto" | "zh" | "en", "translate"?: false,
+///    "prompt"?: "..." }`
+/// ——`language` 缺省 `auto`；`auto` 由后端自行检测。`prompt` 仅透传给支持的
+/// 后端（whisper 的 initial prompt）。
+interface host-stt {
+    /// 一个可选模型的元数据（宿主 catalog 的只读投影）
+    record model-info {
+        /// 稳定标识（catalog 键；插件只经它选择模型）
+        id: string,
+        /// 人类可读名称
+        name: string,
+        /// 一句话说明（精度 / 速度 / 适用语言）
+        description: string,
+        /// 支持的语种（ISO 639-1；空列表 = 后端未声明）
+        languages: list<string>,
+        /// 下载体积（字节，catalog 声明值）
+        size-bytes: u64,
+        /// 是否已在宿主模型目录中可用
+        installed: bool,
+        /// 是否正在下载
+        downloading: bool,
+        /// 是否为推荐模型
+        recommended: bool,
+    }
+
+    /// 模型下载状态（`model-status` 的返回）
+    record download-status {
+        /// 模型 id
+        model-id: string,
+        /// `idle` | `downloading` | `verifying` | `installed` | `error`
+        state: string,
+        /// 已下载字节
+        downloaded-bytes: u64,
+        /// 总字节（catalog 声明值；未知时为 0）
+        total-bytes: u64,
+        /// `error` 时的可读原因；其余为 none
+        message: option<string>,
+    }
+
+    /// 打开一条识别会话：校验模型、登记属主、分配 `stt-<uuid>` 句柄。
+    ///
+    /// 打开不启动推理；PCM 由 `append` 追加，`finalize` 才提交任务。
+    open-session: func(options-json: string) -> result<string, string>;
+
+    /// 追加一段 16 kHz 单声道 S16LE PCM，返回会话累计字节数。
+    ///
+    /// 空字节是合法 no-op；长度必须为偶数（S16 样本宽度）；超过宿主单会话上限
+    /// 即 `Err`（不截断、不静默丢弃）。
+    append: func(session-id: string, pcm: list<u8>) -> result<u64, string>;
+
+    /// 结束追加并提交异步识别任务，立即返回 `stt-job-<uuid>`。
+    ///
+    /// 会话被消费（后续 append/finalize 报不存在）；音频过短、模型未安装、
+    /// 在途任务超额都返回 `Err`，不创建假任务。
+    finalize: func(session-id: string) -> result<string, string>;
+
+    /// 放弃会话（不创建任务），返回是否真的回收了一条会话。
+    abort-session: func(session-id: string) -> result<bool, string>;
+
+    /// 任务状态快照（JSON）：
+    /// `{ "jobId", "state": "running"|"completed"|"failed"|"cancelled",
+    ///    "modelId", "elapsedMs", "error"?: { "kind", "message" } }`
+    job-status: func(job-id: string) -> result<string, string>;
+
+    /// 已完成任务的结果（JSON）：
+    /// `{ "jobId", "text", "language", "elapsedMs",
+    ///    "segments": [{ "text", "startMs", "endMs", "isFinal": true }] }`
+    ///
+    /// 未完成 / 失败 / 取消的任务返回 `Err`（先查 `job-status` 取原因）。
+    job-result: func(job-id: string) -> result<string, string>;
+
+    /// 请求取消任务；已完成任务返回 `Ok(false)`，在途任务返回 `Ok(true)`。
+    /// 取消是尽力而为：后端不支持中断时，结果在推理返回后被丢弃。
+    job-cancel: func(job-id: string) -> result<bool, string>;
+
+    /// 宿主 catalog 的模型清单（含 installed / downloading 状态）。
+    models-list: func() -> result<list<model-info>, string>;
+
+    /// 开始下载 catalog 中的模型（幂等：已安装/下载中直接返回模型 id）。
+    model-download: func(model-id: string) -> result<string, string>;
+
+    /// 模型下载状态（轮询面）。
+    model-status: func(model-id: string) -> result<download-status, string>;
+
+    /// 删除已安装模型；下载中 / 有在途任务使用该模型时返回 `Err`。
+    model-remove: func(model-id: string) -> result<bool, string>;
+
+    /// 从插件可访问的本地文件导入模型（按 catalog 的 SHA-256 / 体积校验）。
+    ///
+    /// `path` 必须经宿主文件授权链（`fs:pick` 选择结果或已授权目录）；
+    /// 导入成功后模型在宿主模型目录中共享可用。
+    model-import: func(model-id: string, path: string) -> result<bool, string>;
+}
+
+world cap-stt {
+    import host-stt;
+}

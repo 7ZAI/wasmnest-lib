@@ -4601,6 +4601,7 @@ dependencies = [
  "wasmnest-server-http",
  "wasmnest-server-peer-net",
  "wasmnest-server-websocket",
+ "wasmnest-stt-engine",
 ]
 
 [[package]]
@@ -4695,6 +4696,7 @@ dependencies = [
  "actix-service",
  "actix-web",
  "anyhow",
+ "base64 0.22.1",
  "futures-util",
  "reqwest",
  "serde",
@@ -4754,6 +4756,18 @@ dependencies = [
  "uuid",
  "wasmnest-server-base",
  "wasmnest-server-core",
+]
+
+[[package]]
+name = "wasmnest-stt-engine"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

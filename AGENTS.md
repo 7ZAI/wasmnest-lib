@@ -69,6 +69,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 | `wasmnest-discovery-engine` | mDNS：共享守护 + 类型中枢 + 浏览 / 广播句柄表 | `[]+ch`；`wit/mdns.wit` |
 | `wasmnest-pty-engine` | PTY：进程生命周期 / 读取线程 / 环形缓冲 | `[]+ch`；`wit/pty.wit` |
 | `wasmnest-audio-engine` | 音频采集：设备枚举 / 采集会话 / PCM 归一（目标采样率 + 声道 → 交错 S16LE）/ 帧环游标拉取 / 电平；`backend-cpal` = cpal 四端后端（默认关） | `[]+ch`；`backend-cpal`；`test-util`；`wit/audio.wit` |
+| `wasmnest-stt-engine` | 本地语音识别：固定 catalog（base / small / turbo，SHA-256 校验）/ PCM 会话 / 异步任务 / 模型下载与导入；`backend-whisper` = whisper.cpp 后端（默认关）、`model-download` = HTTP 下载（默认关） | `[]+ch`；`backend-whisper`；`model-download`；`test-util`；`wit/stt.wit` |
 | `wasmnest-ws-client-engine` | WS 出站客户端：句柄表 / 双任务 / 心跳 / 退避重连 / 停用回收 | 无 feature；`wit/ws.wit` |
 | `wasmnest-cli-engine` | CLI 机制骨架：命令目录 / argv 解析 / 帮助补全 / 本机 IPC wire | 零内部依赖 |
 | `wasmnest-crypto-engine` | 中性加密原语 + 名称寻址注册表；自带 `CryptoError` | 零内部依赖 |
@@ -94,14 +95,14 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 ### 2.1 依赖方向
 
 - **本仓 → 平台仓**：零源码读取；唯一耦合 = `wasmnest-contract` 常量 / `wit/*.wit` / crate 版本。平台读本仓 = sibling path + `pnpm run check:manifest`（校验 HEAD == tag 且工作树干净）。
-- **平台仓 → 本仓**：path 依赖；桌面宿主开 `common-host`（6 个能力域），移动宿主不开（自有 `host_domains/*`，只取引擎面）。
+- **平台仓 → 本仓**：path 依赖；桌面宿主开 `common-host`（7 个能力域），移动宿主不开（自有 `host_domains/*`，只取引擎面）。
 - **架构债**：`wasm-core` 的 `desktop-assembly`（默认开）依赖未发布 SDK `wasmnest-plugin-api = "0.0.1"`；消费侧 `[patch.crates-io]` 指回工作树 SDK，版本须与 SDK `Cargo.toml` 逐字一致。**勿扩大**（§4.2 / §8）。
 - **能力域 `[dependencies]` 禁止**：SDK（`wasmnest-plugin-api*`）、双端 wasm-core、`wasmnest-host-kit`（只经 `common-host` 装配）、`tauri`、`actix`（传输面自身除外）。每条有配对锁（§2.4）。
 - 依赖被重命名时必须显式写 `package = "..."`。
 
 ### 2.2 契约真源与版本（改 WIT 前必读）
 
-- **包版本真源**：`wasmnest:plugin`（core import + 全部 guest 导出面）= `wasmnest-contract/src/lib.rs` 的 `PACKAGE_NAME` / `PACKAGE_VERSION` / `PACKAGE`；各域包（`wasmnest:{pty,mdns,peer,tunnel,http,ws,notify,clipboard}@0.0.1`）= 该域 `wit/<domain>.wit` 首行 + 本 crate 的 `WIT_PACKAGE` / `MODULE_INTERFACES` / `EXPORTS` 字面量（`inventory` 要求编译期常量、跨 crate 无 const 插值——这些副本同批改）。
+- **包版本真源**：`wasmnest:plugin`（core import + 全部 guest 导出面）= `wasmnest-contract/src/lib.rs` 的 `PACKAGE_NAME` / `PACKAGE_VERSION` / `PACKAGE`；各域包（`wasmnest:{pty,mdns,audio,stt,peer,tunnel,http,ws,notify,clipboard}@0.0.1`）= 该域 `wit/<domain>.wit` 首行 + 本 crate 的 `WIT_PACKAGE` / `MODULE_INTERFACES` / `EXPORTS` 字面量（`inventory` 要求编译期常量、跨 crate 无 const 插值——这些副本同批改）。
 - **文本形状是跨语言契约**：常量必须保持 `pub const <NAME>: &str = "<值>";` 精确形态（含 `: &str`、无 macro / `env!` / `concat!`）——平台仓 node 解析器按此形状取值，改形状会静默打穿拼装与清单门禁。
 - **消费口径**：宿主只经 `wasm-core` re-export 消费契约包名 / 版本；库内零依赖共享词汇（`server-base` / `host-api-core` / `cli-engine`）可直接依赖 `wasmnest-contract`。
 - **WIT 分片**：`wasm-core/wit/core.wit`（**内核唯一合法绑定**，只收机制必需面）+ `wasm-core/wit/worker.wit`（worker world，零宿主 import，一期不进 compose）+ 各域 `wit/<domain>.wit`（域自持，`world cap-<domain>`）+ 端 cap（平台仓 `wit-src/cap-*.wit`）。本仓不做 union world；端组合在平台仓 `compose.json`。
@@ -128,6 +129,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 | `wasmnest-discovery-engine/src/wire.rs` | `host/bus.rs`（topic ×2）+ `host/mdns.rs`（事件名） |
 | `wasmnest-pty-engine/src/wire.rs` | `host/bus.rs`（topic ×2）+ `host/pty.rs`（事件名）+ `permission.rs`（行级）+ `wire::key` |
 | `wasmnest-audio-engine/src/wire.rs` | `permission.rs`（`audio:capture` / `audio:io` 行级；v1 无事件面故无 topic 副本；漂移锁登记属接线票） |
+| `wasmnest-stt-engine/src/wire.rs` | `permission.rs`（`stt:infer` / `stt:model` 行级；v1 无事件面故无 topic 副本） |
 | `wasmnest-ws-client-engine/src/wire.rs` | 移动 SDK `host/ws.rs` + `permission.rs`（事件名 / topic / 帧头） |
 
 - 副本**定义块与 SDK 逐字一致**（漂移锁按行 / 块比对，换行归一化）；本地说明只写模块文档，**不改定义块内注释**。
@@ -155,11 +157,11 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 
 ### 3.1 能力域默认形态（`default = []` + `common-host`）
 
-带 `common-host` 的 6 个 crate：`wasmnest-{discovery,pty,audio}-engine` + `wasmnest-server-{http,websocket,peer-net}`。
+带 `common-host` 的 7 个 crate：`wasmnest-{discovery,pty,audio,stt}-engine` + `wasmnest-server-{http,websocket,peer-net}`。
 
 - **默认形态 = 纯引擎 + 端口**：零 WIT / 零 SDK / 零 wasmtime / 零宿主框架（Tauri、actix）/ 零 bundled SQLite / 零系统信息与文件监听——任何宿主可直接引用。
 - **例外**：`server-http` / `-websocket` / `-core` 与 `wasm-core` 不在此承诺内（默认树仍有 actix / rusqlite；wasm-core 带 Tauri / actix / rusqlite）——不得描述为「任何宿主可直接引用」。
-- **判据**：`sh scripts/check-default-form-deps.sh --offline`（CI 不带 `--offline`）覆盖 8 个宿主无关 crate（server-base / crypto / cli / pty / audio / discovery / ws-client / p2p），命中 `tauri` / `actix*` / `rusqlite` / `sysinfo` / `notify` / `inotify` 即红（按 crate 名 token 精确匹配，别用裸 grep——路径含 `tauriProject`）。
+- **判据**：`sh scripts/check-default-form-deps.sh --offline`（CI 不带 `--offline`）覆盖 9 个宿主无关 crate（server-base / crypto / cli / pty / audio / stt / discovery / ws-client / p2p），命中 `tauri` / `actix*` / `rusqlite` / `sysinfo` / `notify` / `inotify` 即红（按 crate 名 token 精确匹配，别用裸 grep——路径含 `tauriProject`）。
 - **`common-host` 才装配** `bindgen!` / `HostModule` 自报 / `inventory::submit!` / `impl Host`；开 feature 后 ABI / WIT / 权限位 / 事件形状 / 注册零变化（装配桌面 WIT 依赖，不是行为分叉）。
 - 平台边经端口 trait 注入；**端口缺席 fail-visible**；引擎里不写 `#[cfg]` 端分支、不自建平台判断。
 - **无头探针门禁**：永不开 `common-host`；`cargo tree -e normal` 出现 `wasmtime` / `wit-bindgen` / `inventory` / `wasmnest-host-kit` / `wasmnest-plugin-api` 即违规。
@@ -188,6 +190,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 - **discovery-engine**：全进程共享守护只允许 `engine.rs` 创建一次；同一服务类型只允许 `type_hub.rs` 调 `daemon.browse` / `stop_browse`（重复 browse 会静默杀死别人的事件流）；新增调用点必须改测试仓 `mdns_browse_singleton_lock` 白名单并写理由。
 - **pty-engine**：跨平台零 wasm；只接受调用方算好的 argv，**不做 shell 包装**；输出走环形缓冲 + 水印通知。
 - **audio-engine**：采集机制只有四件事——设备枚举 / 会话生命周期 / PCM 归一（目标采样率 + 声道 → 交错 S16LE）/ 有界帧环游标拉取 + 电平；**不做** VAD / 分段 / 编码 / 降噪 / 回放 / 事件面（ASR 编排归应用仓）。采集线程零阻塞（回调只「归一 + 追加环」），锁序只能 `stream` → `runtime` 且**绝不在持 `runtime` 锁时 Drop 后端流**（cpal drop 会等回调）；`cpal` 只经 `backend-cpal`（默认关）进图，后端可替换（`CaptureBackend` trait）。
+- **stt-engine**：本地 ASR 机制只有四件事——模型目录（固定 catalog / SHA-256 / 镜像前缀）/ PCM 会话（16 kHz 单声道 S16LE）/ 异步任务 / 模型下载与导入；**不做** VAD / 容器解码 / 供应商路由 / 回退 / 文本落库（语音→文字的编排归应用仓）。whisper 后端只经 `backend-whisper`、HTTP 下载只经 `model-download`（均默认关），默认形态零原生依赖；删除模型前必须先让后端释放模型缓存（内存映射持有文件句柄）。
 - **ws-client-engine**：`host-websocket` 客户端 5 原语 + 停用回收；平台差（权限门 / 投递 / 后台任务 / jwt 代发 / 退避）全经 `WsClientPorts` 注入；生产清单零内部依赖。
 - **notify / clipboard-engine**：契约房，只持 WIT、零 Rust 实现；平台不支持项**静默忽略**（写死在契约文档），实现端不得改成报错。
 - **cli-engine**：CLI 机制骨架；零内部依赖（只 contract + serde）；`WireError` 是纯 wire 类型，宿主错误 → 语义码映射住宿主侧。

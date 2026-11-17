@@ -22,6 +22,9 @@ wasmnest-pty-engine = { path = "../wasmnest-pty-engine", version = "0.0.1" }
 # 音频采集能力域（默认形态 = 纯引擎 + 端口，零原生音频库：cpal 只在
 # `backend-cpal` feature 里，无头宿主永不开）
 wasmnest-audio-engine = { path = "../wasmnest-audio-engine", version = "0.0.1" }
+# 本地语音识别能力域（默认形态 = 纯引擎 + 端口，零原生推理 / 网络依赖：
+# whisper 后端只在 `backend-whisper`、HTTP 下载只在 `model-download`，无头宿主永不开）
+wasmnest-stt-engine = { path = "../wasmnest-stt-engine", version = "0.0.1" }
 # CLI 能力域（默认形态 = 纯机制：命令目录 / 解析 / 帮助 / wire 契约；CLI 前端与
 # 执行 handler 住装配侧——本 crate 只引用其默认形态钉「零 wasm / 零异步运行时」）
 wasmnest-cli-engine = { path = "../wasmnest-cli-engine", version = "0.0.1" }
