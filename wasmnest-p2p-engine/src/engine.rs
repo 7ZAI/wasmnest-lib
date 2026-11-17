@@ -1523,7 +1523,10 @@ fn handle_swarm_event(
                     }
                 }
             }
-            ConnectedPoint::Listener { send_back_addr, .. } => {
+            ConnectedPoint::Listener {
+                local_addr,
+                send_back_addr,
+            } => {
                 let node_id = match node_id_from_peer_id(&peer_id) {
                     Ok(id) => id,
                     Err(e) => {
@@ -1538,7 +1541,7 @@ fn handle_swarm_event(
                     }
                 };
                 let remote_addr = socket_addr_or_zero(&send_back_addr);
-                let transport = Transport::from_multiaddr(&send_back_addr);
+                let transport = inbound_transport(&local_addr, &send_back_addr);
                 ports.events.transport_changed(TransportChanged {
                     node_id: node_id.clone(),
                     transport,
@@ -1858,6 +1861,19 @@ fn socket_addr_or_zero(ma: &Multiaddr) -> SocketAddr {
     })
 }
 
+/// 入站连接的传输形态。
+///
+/// 经中继的入站连接里，`send_back_addr` 只带对端 PeerId（libp2p 不把 circuit
+/// 前缀放进回程地址），本端接受连接的 `local_addr` 才带 `/p2p-circuit`。只看
+/// 回程地址会把中继链路误判为内网直连，导致状态展示与「经中继发送」提示失真。
+fn inbound_transport(local_addr: &Multiaddr, send_back_addr: &Multiaddr) -> Transport {
+    if Transport::from_multiaddr(local_addr) == Transport::WanRelay {
+        Transport::WanRelay
+    } else {
+        Transport::from_multiaddr(send_back_addr)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1866,6 +1882,32 @@ mod tests {
     use futures_util::io::{AsyncReadExt, AsyncWriteExt};
     use std::time::Duration;
     use tokio::sync::Mutex as AsyncMutex;
+
+    // ==================== 入站传输形态 ====================
+
+    #[test]
+    fn inbound_relay_address_wins_over_peer_only_send_back_addr() {
+        // 经中继的入站连接：回程地址只有对端 PeerId，circuit 前缀在本端本地地址上。
+        let local: Multiaddr = "/ip4/113.45.43.60/tcp/4001/p2p/12D3KooWBSCkgKRqQWpPhGGC61TfEWno22bcEGXxQvohhPbQBkud/p2p-circuit"
+            .parse()
+            .unwrap();
+        let send_back: Multiaddr = "/p2p/12D3KooWJcWHQ69dhvmt8nm6wy5sjxeiKXYBsB9mUCniYkWYXL4E"
+            .parse()
+            .unwrap();
+        assert_eq!(inbound_transport(&local, &send_back), Transport::WanRelay);
+    }
+
+    #[test]
+    fn inbound_lan_address_falls_back_to_send_back_addr() {
+        let local: Multiaddr = "/ip4/192.168.1.5/tcp/47613".parse().unwrap();
+        let send_back: Multiaddr = "/ip4/192.168.1.4/tcp/47613".parse().unwrap();
+        assert_eq!(inbound_transport(&local, &send_back), Transport::LanDirect);
+
+        let relayed: Multiaddr = "/ip4/113.45.43.60/tcp/4001/p2p/12D3KooWBSCkgKRqQWpPhGGC61TfEWno22bcEGXxQvohhPbQBkud/p2p-circuit/p2p/12D3KooWJcWHQ69dhvmt8nm6wy5sjxeiKXYBsB9mUCniYkWYXL4E"
+            .parse()
+            .unwrap();
+        assert_eq!(inbound_transport(&local, &relayed), Transport::WanRelay);
+    }
 
     // ==================== 测试装配 ====================
 
