@@ -1,4 +1,4 @@
-//! Guest 事件导出派发契约面（票 03 / ADR 0022）
+//! Guest 事件导出派发契约面
 //!
 //! ## 为什么这是「契约面」而非机制
 //!
@@ -11,19 +11,19 @@
 //! | 桌面 | `on-message` / `on-process-done` |
 //! | 移动 | `on-bus-message` / `on-auth-success` / `on-disconnect` / `on-session-created` / `on-session-stopped` |
 //!
-//! 二者都不在 core.wit（内核机制面，ADR 0052 D1）内，绑进内核等于让内核对
+//! 二者都不在 core.wit（内核机制面）内，绑进内核等于让内核对
 //! 「哪端的 events」表态，并把某端 SDK 依赖钉进内核。
 //!
 //! ## 为什么不能用原生 `TypedFunc` 探测绕过绑定
 //!
 //! 两个导出返回 WIT `result<_, string>`，而 `Result<T, E>` **不实现
 //! `ComponentNamedList`** —— `result` 返回是 bindgen 的特例处理，原生 TypedFunc
-//! 层面无对应表达（ticket-03 §9.6 实测）。既有的可选导出探测能用原生形态，正因为
+//! 层面无对应表达（实测）。既有的可选导出探测能用原生形态，正因为
 //! 它们返回 `()`。
 //!
 //! ## 裁决（用户 2026-10-11「按架构原则进行」）
 //!
-//! 按 ADR 0022 §5.1.3「机制留内核、契约面上移」：本 trait 是内核向宿主开的**窄缝**，
+//! 按「机制留内核、契约面上移」：本 trait 是内核向宿主开的**窄缝**，
 //! 由各端宿主用自己的 `bindgen!` 实现并注入（与 `HostModule` 自报同一范式）。
 
 // `WasmPluginState` 从 host-kit 直取（机制内核的中性类型的唯一真源）——本文件

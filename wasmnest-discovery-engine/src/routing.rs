@@ -1,11 +1,11 @@
-//! host-mdns 能力路由词汇（域自持；票 02 批次 03）
+//! host-mdns 能力路由词汇（域自持）
 //!
 //! ## 为什么在域侧
 //!
 //! `host-mdns` 的能力名、三层方法族前缀与 5 条导出函数名都是 **WIT 接口的词汇**——
 //! 只有本域知道自己导出什么。此前它们写在内核 `manager/capability.rs` 的 `const`
 //! 闭表里（`CAP_HOST_MDNS` / `EXPORT_MDNS_*` / `FORWARD_MDNS`）：接口改名要改内核，
-//! 而本 crate 早已从内核依赖图摘出（批次 03），内核连引用都做不到。
+//! 而本 crate 早已从内核依赖图摘出，内核连引用都做不到。
 //!
 //! 现在：本域经 `wasmnest_host_kit::submit_routable_capability!` 自报（与能力模块
 //! 自报 / 生命周期钩子自报同范式），内核收集后并入路由表——提供者探测（「组件是否
@@ -15,7 +15,7 @@
 //!
 //! 提供者实例是 wasmtime 组件，调它的导出必须**编译期具名**：内核
 //! `CapabilityTarget::mdns_*`（5 方法）+ `forward_mdns_*`（5 转发）就是这层调用面，
-//! 属机制（通用注册表 + 寻址，AGENTS §5.1.3 薄壳③）。宿主 adapter 调用时把本模块的
+//! 属机制（通用注册表 + 寻址）。宿主 adapter 调用时把本模块的
 //! [`CAPABILITY`] 传进内核函数，于是**内核源码里不再出现本域的任何字面量**。
 //!
 //! ## 漂移锁（本文件单测）
@@ -36,7 +36,7 @@ pub const FORWARD_PREFIX: &str = "mdns";
 /// 顺序与内核 `CapabilityTarget` 的方法族一致（browse / stop-browse / advertise /
 /// stop-advertise / is-advertising），宿主 adapter 逐条按名取用。
 ///
-/// **版本后缀是契约包的组成部分**（ADR 0051 D3）：组件导出实例的键 = `ns:pkg/iface@version`，
+/// **版本后缀是契约包的组成部分**：组件导出实例的键 = `ns:pkg/iface@version`，
 /// 无版本写法对版本化产物恒不命中。字面量里的版本后缀必须与 `wasmnest-contract`
 /// crate 的真源一致——本表走 `inventory` 静态自报（`static ROUTE` +
 /// `submit_routable_capability!` 要求编译期常量），版本嵌在串中段的组合名没有
@@ -95,8 +95,8 @@ mod tests {
 
     /// 每条导出都属于 `MODULE_INTERFACES` 里那个以能力名结尾的接口
     ///
-    /// 版本免疫（票 05）：`MODULE_INTERFACES` 是元数据常量（全名 `wasmnest:plugin@<version>/
-    /// host-mdns`），`EXPORTS` 是运行期按名匹配面（版本化随票 03）——两侧都按 `/` 取尾段
+    /// 版本免疫：`MODULE_INTERFACES` 是元数据常量（全名 `wasmnest:plugin@<version>/
+    /// host-mdns`），`EXPORTS` 是运行期按名匹配面——两侧都按 `/` 取尾段
     /// 只比接口名与函数名，版本后缀漂移不破坏本判据。
     #[test]
     fn exports_belong_to_the_wit_interface() {

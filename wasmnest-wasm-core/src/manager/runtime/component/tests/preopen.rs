@@ -1,4 +1,4 @@
-//! WASI 预打开目录解析与 build_ctx 装配（仅 worker 类别，ADR 0034）
+//! WASI 预打开目录解析与 build_ctx 装配（仅 worker 类别）
 //!
 //! 自 `common/component.rs` 的 `mod tests` 拆出（共享脚手架在父 `mod tests`，
 //! 经 `use super::*` 可见）；fixture 互斥与产物构建语义不变。
@@ -78,7 +78,7 @@ async fn resolve_preopen_dirs_filters_ungranted_and_blank() {
         &[
             WasiPreopenDir::writable(rogue.to_string_lossy().to_string()),
             // 只读档同样要授权：声明 ~/.ssh 式的路径为 readonly 不得换来预打开
-            // （票 07 裁决 3——档位收紧 guest 能力，不是免弹窗通道）
+            // （档位收紧 guest 能力，不是免弹窗通道）
             WasiPreopenDir::read_only(missing.to_string_lossy().to_string()),
             WasiPreopenDir::writable("   ".to_string()),
             WasiPreopenDir::writable("/".to_string()),

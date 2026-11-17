@@ -1,11 +1,11 @@
-//! `host-tunnel` 能力域 —— WIT 层（T06）。
+//! `host-tunnel` 能力域 —— WIT 层。
 //!
 //! ## 分层
 //!
 //! ```text
 //!   本文件          权限门位置 + 服务租约 acquire/release + WIT 形状转换
 //!   manager.rs      单一引用计数 / 句柄表 / 对等面生命周期 / 状态投影
-//!   server/client/… T05 的线协议、票据、准入、面登记与本地代理
+//!   server/client/… 线协议、票据、准入、面登记与本地代理
 //! ```
 //!
 //! **零业务代码**：本域只做内网穿透机制；应用语义（远程访问开关、二维码内容、
@@ -444,7 +444,7 @@ mod wit_layer {
     pub const MODULE_INTERFACES: &[&str] = &["wasmnest:tunnel@0.0.1/host-tunnel"];
     /// 本域读写的权限位（三位：serve / connect / probe）
     ///
-    /// T19 的 `tunnel:probe` 只授予 `probe-relay`，**不**授权任何写面——第三位的
+    /// `tunnel:probe` 只授予 `probe-relay`，**不**授权任何写面——第三位的
     /// 存在本身是安全判据（配置中心不因「测一下」获得端口映射能力）。
     pub const MODULE_PERMISSIONS: &[&str] = &[
         PERMISSION_TUNNEL_SERVE,
@@ -686,7 +686,7 @@ mod tests {
         assert_eq!(
             crate::tunnel::plugin_binding::MODULE_PERMISSIONS.len(),
             3,
-            "T19 起隧道域是三位：serve / connect / probe"
+            "隧道域是三位：serve / connect / probe"
         );
         assert_eq!(crate::tunnel::plugin_binding::MODULE_NAME, "tunnel");
     }

@@ -1,4 +1,4 @@
-//! 执行护栏（票据 05）：语句超时 / 结果行数上限 / 序列化字节上限 + 入口级全链路回归
+//! 执行护栏：语句超时 / 结果行数上限 / 序列化字节上限 + 入口级全链路回归
 //!
 //! 护栏常量取自 `wasmnest-server-base::constants`（机制上限，不可由插件参数调整——
 //! 安全边界）。迁移自宿主同名用例：超时错误与 SQL 错误**必须可区分**（分类混同会让
@@ -14,7 +14,7 @@ use crate::host_api::sqlite_scaffold::*;
 use crate::permission::PERMISSION_STORAGE;
 use crate::system::constants::{PLUGIN_DB_QUERY_MAX_BYTES, PLUGIN_DB_QUERY_MAX_ROWS};
 
-// ==================== 执行护栏（票据 05）：超时 / 行数上限 / 字节上限 ====================
+// ==================== 执行护栏：超时 / 行数上限 / 字节上限 ====================
 
 /// 内存连接 + n 行数据（事务内批量插入，测试用）
 fn mem_conn_with_rows(n: usize) -> rusqlite::Connection {

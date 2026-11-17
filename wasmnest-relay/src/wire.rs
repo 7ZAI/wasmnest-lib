@@ -1,8 +1,8 @@
 //! `/wasmnest/relay-control/1` 线协议：分帧 + 请求/响应形状。
 //!
 //! 帧格式与穿透通道 `/wasmnest/tunnel/1` 同款：`u32be len | JSON`。选 JSON 而不是
-//! protobuf 的理由是这个协议只承载「版本 / 模式 / 兑换」三条低频消息，可读性比
-//! 字节效率重要得多（排查现场用 `xxd` 就能看懂）。
+//! protobuf 的理由是这个协议只承载「版本 / 模式 / 兑换 / 会合」几条低频消息，可读性
+//! 比字节效率重要得多（排查现场用 `xxd` 就能看懂）。
 //!
 //! 版本纪律：协议名里的 `1` 是**线上主版本**，只允许新增协议名（`/2`），不允许
 //! 原地改语义。控制面是可选面——老的客户端不实现它也能正常用中继，因此这里不做
@@ -16,8 +16,9 @@ pub const PROTOCOL_NAMESPACE: &str = "/wasmnest/";
 pub const CONTROL_PROTOCOL: &str = "/wasmnest/relay-control/1";
 /// 控制协议的载荷版本
 pub const CONTROL_PROTOCOL_VERSION: u32 = 1;
-/// 单帧上限（控制消息只有几百字节；4 KiB 足够防呆，且挡住恶意大帧占内存）
-pub const MAX_FRAME_BYTES: usize = 4096;
+/// 单帧上限（请求只有几百字节；64 KiB 留给会合名单——64 台设备约 14 KiB，
+/// 4 KiB 会把完整房间的回执直接卡成 `TooLarge`。仍是防御性上限，挡住恶意大帧）
+pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 /// 控制请求
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,13 +36,52 @@ pub enum ControlRequest {
         /// token 明文（Noise 内层传输，中继侧只存摘要）
         token: String,
     },
+    /// 登记 / 续期本设备，并取回同房间的其它设备（跨 NAT 发现）。
+    ///
+    /// `room` 是客户端自定的不透明房间键（当前实现固定 `nest`）；中继不解释
+    /// 语义，只按房间隔离可见性。`node-id` 由客户端自报，宿主拨号握手会复核；
+    /// 中继不把它当授权依据。
+    Announce {
+        /// 客户端支持的载荷版本
+        v: u32,
+        /// 房间键
+        room: String,
+        /// 64 位小写 hex 节点 ID
+        node_id: String,
+        /// 展示名（可为空）
+        name: String,
+    },
+    /// 只读查询同房间设备（不续期自己）
+    Query {
+        /// 客户端支持的载荷版本
+        v: u32,
+        /// 房间键
+        room: String,
+    },
+}
+
+/// 会合表里的一台设备（`announce` / `query` 回执）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendezvousPeer {
+    /// 对端 libp2p PeerId（base58；拼 `<relay>/p2p-circuit/p2p/<peer>` 用）
+    pub peer_id: String,
+    /// 对端自报的节点 ID（64 位小写 hex；拨号握手复核）
+    pub node_id: String,
+    /// 展示名（空 = 对端未命名）
+    #[serde(default)]
+    pub name: String,
+    /// 最近登记时刻（Unix 毫秒）
+    pub last_seen_ms: u64,
 }
 
 impl ControlRequest {
     /// 载荷版本
     pub fn version(&self) -> u32 {
         match self {
-            Self::Hello { v } | Self::Enroll { v, .. } => *v,
+            Self::Hello { v }
+            | Self::Enroll { v, .. }
+            | Self::Announce { v, .. }
+            | Self::Query { v, .. } => *v,
         }
     }
 }
@@ -72,6 +112,9 @@ pub struct ControlResponse {
     /// 是否完成 enrollment（`enroll` 回带）
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub enrolled: Option<bool>,
+    /// 同房间的其它设备（`announce` / `query` 回带；失败时缺省）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub peers: Option<Vec<RendezvousPeer>>,
 }
 
 impl ControlResponse {
@@ -86,7 +129,15 @@ impl ControlResponse {
             access: None,
             allowed: None,
             enrolled: None,
+            peers: None,
         }
+    }
+
+    /// 带会合结果的响应
+    pub fn with_peers(peers: Vec<RendezvousPeer>) -> Self {
+        let mut response = Self::ok();
+        response.peers = Some(peers);
+        response
     }
 
     /// 失败响应（原因词汇固定，便于客户端分支处理）
@@ -100,6 +151,7 @@ impl ControlResponse {
             access: None,
             allowed: None,
             enrolled: None,
+            peers: None,
         }
     }
 }
@@ -216,6 +268,57 @@ mod tests {
         assert!(
             serde_json::from_str::<ControlRequest>(r#"{"op":"nope","v":1}"#).is_err(),
             "未知 op 应拒绝"
+        );
+    }
+
+    #[test]
+    fn 会合请求序列化并拒绝未知字段() {
+        let announce = serde_json::to_string(&ControlRequest::Announce {
+            v: 1,
+            room: "nest".into(),
+            node_id: "a".repeat(64),
+            name: "phone".into(),
+        })
+        .expect("序列化");
+        assert_eq!(
+            announce,
+            format!(
+                r#"{{"op":"announce","v":1,"room":"nest","node_id":"{}","name":"phone"}}"#,
+                "a".repeat(64)
+            )
+        );
+
+        let query = serde_json::to_string(&ControlRequest::Query {
+            v: 1,
+            room: "nest".into(),
+        })
+        .expect("序列化");
+        assert_eq!(query, r#"{"op":"query","v":1,"room":"nest"}"#);
+
+        assert!(
+            serde_json::from_str::<ControlRequest>(
+                r#"{"op":"query","v":1,"room":"nest","extra":1}"#
+            )
+            .is_err(),
+            "未知字段应拒绝"
+        );
+    }
+
+    #[test]
+    fn 会合响应只序列化_peers() {
+        let response = ControlResponse::with_peers(vec![RendezvousPeer {
+            peer_id: "12D3KooW".into(),
+            node_id: "b".repeat(64),
+            name: "desktop".into(),
+            last_seen_ms: 1,
+        }]);
+        let json = serde_json::to_string(&response).expect("序列化");
+        assert_eq!(
+            json,
+            format!(
+                r#"{{"v":1,"ok":true,"peers":[{{"peer_id":"12D3KooW","node_id":"{}","name":"desktop","last_seen_ms":1}}]}}"#,
+                "b".repeat(64)
+            )
         );
     }
 

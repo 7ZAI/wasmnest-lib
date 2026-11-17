@@ -1,4 +1,4 @@
-//! 事务批次（票据 06）：`execute-batch` 的全提交 / 全回滚语义与语句数上限
+//! 事务批次：`execute-batch` 的全提交 / 全回滚语义与语句数上限
 //!
 //! 另含裸事务控制（`BEGIN` / `COMMIT` / `SAVEPOINT` …）在 execute 级的拒绝——跨调用
 //! 持有事务会占住全局连接锁，必须引导到批次原语。
@@ -11,7 +11,7 @@ use crate::host_api::sqlite_scaffold::*;
 use crate::permission::PERMISSION_STORAGE;
 use crate::system::constants::PLUGIN_DB_EXECUTE_BATCH_MAX_STATEMENTS;
 
-// ==================== 事务批次（票据 06）：execute-batch ====================
+// ==================== 事务批次：execute-batch ====================
 
 /// 事务批次语义：全部成功才提交；任一句失败整体回滚（前序语句一并回滚）
 #[test]

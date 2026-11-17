@@ -1,4 +1,4 @@
-//! `net.transport` 应用作用域服务（service-leases spec §3.4）
+//! `net.transport` 应用作用域服务
 //!
 //! 把 [`ServerSupervisor`] 的生命周期映射到
 //! [`wasmnest_server_base::service::ScopedService`]：0→1 启动 Actix（WS + HTTP

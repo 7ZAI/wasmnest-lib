@@ -13,7 +13,7 @@ use super::conn::{CloseConnection, SendBinaryMessage, SendTextMessage, WsConnBas
 
 /// 连接注册参数（注册表唯一入口）
 ///
-/// 终态（websocket 业务下沉票 08）只剩插件端点一类连接：属主 + 端点标识
+/// 终态只剩插件端点一类连接：属主 + 端点标识
 /// 是广播过滤与按属主回收的全部依据（旧 `ChannelKind` 与 Event/Terminal
 /// 通道已随业务路由删除）。
 pub struct WsRegistration {

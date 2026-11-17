@@ -1,4 +1,4 @@
-//! WasmNest 局域网链路报文加密协议核心（issue 09 共享 crate）
+//! WasmNest 局域网链路报文加密协议核心（共享 crate）
 //!
 //! 桌面端 server（`server/link_crypto.rs`）与移动端 Rust 侧（event WS 客户端）
 //! 的共同消费层，消除第三份协议实现。字节级表面与移动端 TS 实现

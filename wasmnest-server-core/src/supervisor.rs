@@ -88,7 +88,7 @@ impl Default for ServerSupervisor {
 impl ServerSupervisor {
     /// 创建独立实例（测试隔离用；生产代码应使用 [`global`]）
     ///
-    /// 全局单例在 lib test binary 内跨模块共享（票据 14/16 规范）：
+    /// 全局单例在 lib test binary 内跨模块共享：
     /// 需要隔离状态的测试应构造独立实例，避免并行调度下状态污染。
     pub fn new() -> Self {
         Self {

@@ -6,14 +6,14 @@
 use super::*;
 use crate::system::error::EventEnvelope;
 
-/// 插件运行时异常语义码（trap / panic 合并，ADR 0030 注册表 v0）
+/// 插件运行时异常语义码（trap / panic 合并，注册表 v0）
 pub const PLUGIN_TRAP_CODE: &str = "host.plugin.trap";
 /// 自动恢复失败语义码（插件进入 Error 态）
 pub const PLUGIN_RECOVERY_FAILED_CODE: &str = "host.plugin.recovery-failed";
 /// 插件自检失败语义码（插件主动上报，如 hooks 脚本拷贝失败）
 pub const PLUGIN_SELF_CHECK_FAILED_CODE: &str = "host.plugin.self-check-failed";
 
-/// 运行时异常 `kind` → 语义码（ADR 0030 决定 7）
+/// 运行时异常 `kind` → 语义码
 ///
 /// `panic` 与 `trap` 对用户是同一件事（应用异常退出、宿主已尝试自动重载），合并为
 /// 同一码；未知 kind 落兜底 `host.internal`——宁可通用文案，不臆造语义。
@@ -46,7 +46,7 @@ pub fn self_check_envelope(plugin_name: &str) -> EventEnvelope {
 impl PluginHost {
     /// 标记插件为错误状态
     ///
-    /// `error` 是**宿主侧诊断事实**（故障分类、失败原因），按 ADR 0030 决定 11
+    /// `error` 是**宿主侧诊断事实**（故障分类、失败原因）
     /// 不得被 UI 渲染——用户面只出徽标 + 通用文案，技术详情走本函数调用点的日志。
     pub async fn mark_error(&self, plugin_id: &str, error: String) {
         {
@@ -80,7 +80,7 @@ impl PluginHost {
     /// - `trap`：wasm trap / 导出绑定失败 / store 中毒（已调度自动重载）
     /// - `recovery_failed`：自动重载失败，插件进入 Error 态
     ///
-    /// 载荷是错误信封 `{ code, request_id, params: { name } }`（ADR 0030 决定 7），
+    /// 载荷是错误信封 `{ code, request_id, params: { name } }`，
     /// 语义码由 [`runtime_error_code`] 映射；全量错误（panic 消息 / 回溯 / 错误链）
     /// **只进日志**，与信封的 `request_id` 同条带出（日志始终记录，重载循环期间不丢现场）。
     ///

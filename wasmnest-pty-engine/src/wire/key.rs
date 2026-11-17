@@ -1,4 +1,4 @@
-//! 按键组合线协议（原宿主 `enums/special_key.rs`，票 01 收编为单一事实源）
+//! 按键组合线协议（原宿主 `enums/special_key.rs`，收编为单一事实源）
 //!
 //! 动态按键组合解析系统 — 替代原硬编码 SpecialKey enum
 //! 支持所有键盘修饰键组合：Ctrl/Shift/Alt + 字母/数字/功能键/方向键

@@ -5,7 +5,7 @@
 //! [`block_on_async`] 及其依赖的 ambient runtime 基础设施（[`ambient_handle`]
 //! 与 [`block_on_ambient`]）。
 //!
-//! **位置纪律（票 01：wasm_core 依赖单向化）**：这三个符号是应用无关的运行时
+//! **位置纪律（wasm_core 依赖单向化）**：这三个符号是应用无关的运行时
 //! 工具，原定义在 `crate::manager::runtime`，使得 `host_api` 与
 //! `security` 只为调桥就反向依赖 manager（见
 //! `.scratch/2026-09-24-wasm-core-decouple/spec.md` C2）。归位后本模块**不引用
@@ -229,21 +229,21 @@ pub fn ambient_handle() -> tokio::runtime::Handle {
     AMBIENT_RT.handle().clone()
 }
 
-// ==================== Error Boundary（移动装配面，fork 迁入，票 06 批次 03） ====================
+// ==================== Error Boundary（移动装配面，fork 迁入，批次 03） ====================
 //
 // WS 读写任务 / 重连任务在 crate 侧 spawn 的 panic 防护（宿主 system/error_boundary.rs
 // 同形状副本；桌面侧消费面在宿主 src-tauri，本 crate 桌面分支不含）。
 
 // block_on_ambient / ambient_handle 双端同名同形（root 既有段已提供，fork 段不重复——
-// 票 06 批次 03 迁入时去重；见上方 root 段的同名函数）
+// 迁入时去重；见上方 root 段的同名函数）
 
 // ==================== Error Boundary（宿主 system/error_boundary.rs 同形状副本） ====================
 //
-// 票 17 批次 2：WS 读写任务 / 重连任务迁入 crate 后在 crate 侧 spawn，需要
+// 批次 2：WS 读写任务 / 重连任务迁入 crate 后在 crate 侧 spawn，需要
 // 同款 panic 防护。宿主保留原文件（宿主引擎面多处消费），双份形状由
-// fork_boundary_lock 的机制核在场断言钉住；票 19 抽共享核时随机制一并上提。
+// fork_boundary_lock 的机制核在场断言钉住；抽共享核时随机制一并上提。
 //
-// 常编译（单形态票 02 M5）：错误边界是双端共用的公共设施——桌面包容 WS
+// 常编译（单形态）：错误边界是双端共用的公共设施——桌面包容 WS
 // 连接任务、移动壳的 WS 读写 / 重连任务都在 crate 侧 spawn 后台任务——形态
 // feature（`common-host` / `bare-host`）已随单形态收口（2026-10-13）退役，
 // 本段不再有任何门控。block_on_ambient / ambient_handle（root 常编译段）供

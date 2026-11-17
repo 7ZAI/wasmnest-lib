@@ -1,6 +1,6 @@
 //! Engine/AOT 缓存 key/配置校验/桥重入——**形态无关纯机制用例**
 //!
-//! 票 04 拆分：本文件原含 18 条用例，其中 14 条需要真实 SDK 夹具实例（燃料看门狗 /
+//! 拆分：本文件原含 18 条用例，其中 14 条需要真实 SDK 夹具实例（燃料看门狗 /
 //! AOT 缓存全链 / limiter 记账 / monitor / trap 证据链 / 资源覆盖），随
 //! 「wasm-core 不再持全 world 绑定」迁桌面宿主 `src-tauri/tests/engine_e2e.rs`；
 //! 留本文件的 3 条不实例化组件（缓存 key 纯函数 / 配置校验 / block_on_async 重入），
@@ -22,7 +22,7 @@ fn test_aot_cache_key_factors_source_size() {
     assert_ne!(aot_cache_key(path, 100), aot_cache_key(path, 200));
 }
 
-/// 票据 02 验收：非法配置（燃料为 0）被 set_config 拒绝且带上下文；旧配置不受影响
+/// 验收：非法配置（燃料为 0）被 set_config 拒绝且带上下文；旧配置不受影响
 #[test]
 
 fn test_set_config_rejects_invalid() {

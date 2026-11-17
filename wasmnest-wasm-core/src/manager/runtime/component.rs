@@ -1,7 +1,7 @@
 //! Component Model 壳（**单形态**，2026-10-13 起无 common/bare 之分 · 用户裁决）
 //!
 //! **本模块不持有任何 WIT 绑定**（原全 world `bindgen!` 已删，其最后消费者是内核
-//! 测试替身，随夹具用例迁宿主一并退役；移动那份票 05 一并迁移动宿主）——cap 域
+//! 测试替身，随夹具用例迁宿主一并退役；移动那份一并迁移动宿主）——cap 域
 //! `Host` impl 归各端宿主（桌面 `src-tauri/src/plugin/bindings.rs`，移动
 //! `src-tauri/src/plugin/host_domains/`），core 交集 8 域归
 //! `manager/runtime/core_binding.rs`（绑契约真源 `wit/core.wit`）。
@@ -30,7 +30,7 @@ use crate::manager::runtime::engine;
 /// WASI 装配面（p2/p3 注册 + 预打开上下文）——核心常编译，双端同源
 /// （用户裁决 2026-10-12；本壳不再自持任何 WASI 实现，只剩调用）
 use crate::manager::runtime::wasi;
-// guest 事件派发契约面（票 03 / ADR 0022）：`events` 导出双端词汇不同、且带
+// guest 事件派发契约面：`events` 导出双端词汇不同、且带
 // `result` 返回（原生 TypedFunc 表达不了），调用契约由宿主实现并注入，本壳只转发。
 use crate::manager::runtime::guest_events::GuestEventDispatcher;
 use crate::manifest::WasiPreopenDir;
@@ -41,41 +41,41 @@ use std::sync::Arc;
 use wasmtime::component::{Component, Instance, Linker};
 use wasmtime::Store;
 
-// v27（票 10 删除的 `impl wasmnest::plugin::host_terminal::Host`）：
+// v27（已删除的 `impl wasmnest::plugin::host_terminal::Host`）：
 // `host-terminal.send` 是「宿主替插件往交互终端注入按键」的最后一处业务面入口，
 // 零生产消费者（P1-b 起属主判定查已清空的内核登记，对真实会话恒拒），随
 // `host-session` 同批删除。
 
-/// 在册连接清单（票 04）：独立 interface。
-/// **票 10 起是本面唯一入口**——`host-session` 上那条同判据的旧别名随整 interface 删除。
-/// 已迁宿主（票 02 批次 05，`src-tauri/src/plugin/connection.rs` 路径 B：WIT impl +
+/// 在册连接清单：独立 interface。
+/// **此后是本面唯一入口**——`host-session` 上那条同判据的旧别名随整 interface 删除。
+/// 已迁宿主（`src-tauri/src/plugin/connection.rs` 路径 B：WIT impl +
 /// 域函数随域走宿主；判据 `connection:read` 不变）。
 
-// v27（票 10 删除的 `impl wasmnest::plugin::host_session::Host`）：
+// v27（已删除的 `impl wasmnest::plugin::host_session::Host`）：
 // 12 条原语（list-sessions / get / create-with-spec / lifecycle-register /
 // input-register / close / remove / rename / resize / annotate / connections-list
 // 别名 / output-ring-fetch）整块退役。会话真源在 `com.wasmnest.bedcode`
 // 登记域，宿主侧不再有「会话」这一原语域的对外能力面。
 
-// host-process（v8）/ host-app（v8）/ host-timer（v6）已迁宿主（票 02 批次 05，
+// host-process（v8）/ host-app（v8）/ host-timer（v6）已迁宿主（
 // `src-tauri/src/plugin/{process,app,timer}.rs` 路径 B：宿主自带 bindgen + `Host` impl +
 // 域函数同处；`ProcessUnitExecutor` 随域走宿主并经 `submit_unit_executor!` 自报注册）。
 
-// host-api-call（互调，ADR-0017）的 **WIT impl** 已迁宿主（票 02 批次 05，
+// host-api-call（互调）的 **WIT impl** 已迁宿主（
 // `src-tauri/src/plugin/api_call.rs` 路径 B 薄转发：无权限门，互调门禁在注册表）。
 // 回复道编排（`api_call` + `ReplyHandler` + 属主校验）**留内核** `host_api/api.rs`
 // ——内核 `intercall`（通用互调客户端）与 `auth_center` 桥接（注册表留内核裁决）
 // 经 `call_plugin_api_host` 消费同一条编排，与 peer/ws/http「内核仍消费引擎面」同判据。
 
-// ==================== host-platform（ADR 0022 v2）====================
+// ==================== host-platform ====================
 //
-// host-mdns / host-peer 两个 interface 已随 wasm-core-lib-split 票 03 / 05 迁为
+// host-mdns / host-peer 两个 interface 已随 wasm-core 拆 lib 迁为
 // 能力域（经 `inventory` 自报装配，见下节），本节只剩留 core 的 POSIX / 机制面。
 
 // v36：`host-platform` 的桌面扩展函数（wsl-distros / local-ipv4-addresses /
 // reveal-in-dir）拆入 `host-platform-desktop`（桌面独有交集切片），WIT impl 已迁
-// 宿主 `src-tauri/src/plugin/platform.rs`（票 02 批次 06）；`pick-folders` 随后
-// （2026-10-13 功能级统一，ADR 0052 D3）并入 core `host-platform`，不再在桌面扩展里。
+// 宿主 `src-tauri/src/plugin/platform.rs`；`pick-folders` 随后
+// （功能级统一后）并入 core `host-platform`，不再在桌面扩展里。
 
 // ==================== Component Linker 组装 ====================
 
@@ -153,7 +153,7 @@ pub(crate) fn add_to_linker(
     linker: &mut Linker<WasmPluginState>,
     wasi_cfg: &WasiConfig,
 ) -> crate::Result<()> {
-    // 第一段：core 交集 8 域（票 03 Option A 收口进 `core_binding`——双端唯一一份，
+    // 第一段：core 交集 8 域（收口进 `core_binding`——双端唯一一份，
     // 绑契约真源 `wit/core.wit` 的 `world core`，不经端生成物）。本壳不再逐行列举。
     crate::manager::runtime::core_binding::add_to_linker(linker)?;
     // 第二段：自动收集到的能力模块（迁出 wasm_core 的域）。当前白名单为空 ⇒ 空转，
@@ -165,7 +165,7 @@ pub(crate) fn add_to_linker(
     // `manager::runtime::wasi::add_to_linker`——含「同步 adapter 在 async store 下
     // 重入 panic ⇒ 用 async adapter」的实证注释）。
     wasi::add_to_linker(linker, wasi_cfg)?;
-    // 票 04：本函数至此不再有 `#[cfg(test)]` 分支——cap 域（含桌面扩展三接口）的
+    // 本函数至此不再有 `#[cfg(test)]` 分支——cap 域（含桌面扩展三接口）的
     // `Host` impl 全在宿主（`src-tauri/src/plugin/`），内核测试二进制经宿主集成
     // 测试覆盖夹具功能态（原四个内核测试替身已随用例迁宿主删除）。
     Ok(())
@@ -173,7 +173,7 @@ pub(crate) fn add_to_linker(
 
 // ==================== 组件插件实例 ====================
 
-/// 实例元数据：宿主侧只读投影（票 06 §5.1，与 Store/Instance 的所有权分离）
+/// 实例元数据：宿主侧只读投影（与 Store/Instance 的所有权分离）
 ///
 /// 拆分动机（调用模型无关）：`mutex` 与 `event-loop` 两种模型下宿主侧都需要
 /// **不进实例**就能读到这些量——导出能力探测结果、WASI 预打开目录、创建时刻
@@ -222,14 +222,14 @@ pub(crate) struct OptionalExports {
 /// （无 (ptr,len) 内存搬运）。Store 必须与 Instance 一起持有，
 /// 否则导出函数无法调用。
 ///
-/// 调用模型（票 06）：本结构是 `mutex` 模型下的实例锁内容物；`event-loop`
+/// 调用模型：本结构是 `mutex` 模型下的实例锁内容物；`event-loop`
 /// 模型下整个结构被移动进属主任务（持有 `&mut Store` 的唯一位置），宿主侧
 /// 只保留 [`InstanceMeta`] 副本。
 pub struct LoadedWasmPlugin {
     meta: InstanceMeta,
     instance: Instance,
     store: Store<WasmPluginState>,
-    /// 端专属 guest 事件派发器（票 03 / ADR 0022：机制留内核、契约面上移）
+    /// 端专属 guest 事件派发器（机制留内核、契约面上移）
     ///
     /// 与 [`WasmRuntime`] **共享同一槽位**而非实例化时快照：`PluginHost::new`
     /// 会在宿主注入之前扫描即实例化（无头 harness 同序），快照会让这批实例
@@ -277,7 +277,7 @@ impl LoadedWasmPlugin {
         // Store 装配（limiter 接线 + 首调用燃料注入）走引擎模块的唯一一份
         let mut store = engine::new_store(engine, state)?;
 
-        // 票 02：CM_ASYNC 引擎下实例化必须走 async 入口（wasip3 组件导入 async
+        // CM_ASYNC 引擎下实例化必须走 async 入口（wasip3 组件导入 async
         // wasi 0.3 函数，同步 instantiate 报 async-required）；同步组件在
         // instantiate_async 下行为等价。形态差异经 `InstantiateMode` 表达，机制
         // 本体在引擎模块（fiber 驱动见 `block_on_async`）。
@@ -288,7 +288,7 @@ impl LoadedWasmPlugin {
             engine::InstantiateMode::Async,
         )
         .map_err(|e| {
-            // v27（票 10）：**旧 SDK 产物的失败形态必须可诊断**。ABI 破坏性变更
+            // v27（已删除的旧接口）：**旧 SDK 产物的失败形态必须可诊断**。ABI 破坏性变更
             // （删 `host-session` / `host-terminal` 两个 import、删 `terminal-hooks`
             // 导出）后，旧产物在**实例化**阶段就会失败（找不到 import 的实现），
             // 早于 `verify_abi` 的版本协商——wasmtime 的报错本身点名了缺失的
@@ -305,7 +305,7 @@ impl LoadedWasmPlugin {
         Self::verify_abi(&mut store, &instance, abi)?;
 
         // core-plugin-manager：探测能力接口导出（系统组件据此注册为
-        // 能力提供者；含票 12 auth-policy 仅探测能力——所有新 SDK 插件默认
+        // 能力提供者；含 auth-policy 仅探测能力——所有新 SDK 插件默认
         // 导出（拒绝实现），宿主中间件只消费认证中心实例）
         let exported_capabilities =
             crate::manager::capability::probe_exported_capabilities(&instance, &mut store);
@@ -339,7 +339,7 @@ impl LoadedWasmPlugin {
         &self.meta
     }
 
-    // ==================== 属主化访问器（票 06，`event-loop` 模型用） ====================
+    // ==================== 属主化访问器（`event-loop` 模型用） ====================
     //
     // 属主任务在 `run_concurrent` 之外需要预先取出这些量（进入作用域后只能经
     // `&Accessor` 触达 store，无法再 `&mut self`）：Instance 句柄（Copy）、指标句柄、
@@ -389,10 +389,10 @@ impl LoadedWasmPlugin {
 
     /// 本次实例实际预打开成功的主机目录（空 = 无声明 / 未授权 / 创建失败）
     ///
-    /// 宿主激活时的预打开目录漂移判定自票 06 起直接读装配条目的
+    /// 宿主激活时的预打开目录漂移判定自迁移起直接读装配条目的
     /// [`InstanceMeta::preopened_dirs`]（属主模型下不允许「锁实例读元数据」——
     /// 那是第二个 Store 入口）；本访问器保留给直接持有实例的测试。
-    /// **仅 worker 类别可达**（ADR 0034）：非 worker 声明 preopen 已被加载期闸门拒绝。
+    /// **仅 worker 类别可达**：非 worker 声明 preopen 已被加载期闸门拒绝。
     #[allow(dead_code)]
     pub(crate) fn preopened_dirs(&self) -> &[String] {
         &self.meta.preopened_dirs
@@ -404,10 +404,10 @@ impl LoadedWasmPlugin {
     /// 的版本协商更早）：
     /// - **v27**：删了两个 import interface（`host-session` / `host-terminal`）与一个
     ///   export interface（`terminal-hooks`）；
-    /// - **v28**：`host-events.broadcast-sync` 函数退役（websocket 业务下沉票 08——
+    /// - **v28**：`host-events.broadcast-sync` 函数退役（websocket 业务下沉——
     /// 旧 SDK 产物的实例化失败判据 → 重建指引（空串 = 不是这个原因，不加噪音）
     ///
-    /// 项目不承担 ABI 向后兼容义务（研发起步期无外部公开契约，AGENTS.md §0）：破坏性
+    /// 项目不承担 ABI 向后兼容义务（研发起步期无外部公开契约）：破坏性
     /// 契约变更（删 import/export interface）在**实例化阶段**即失败——比 `verify_abi`
     /// 的版本协商更早。组件模型不提供「向后兼容的缺省 import」，失败本身不可避免，
     /// 本条只负责把失败**可诊断**：wasmtime 原文点名缺失的 import/export（文案形态
@@ -436,7 +436,7 @@ impl LoadedWasmPlugin {
         }
         "（该产物由其他插件协议（ABI）的插件 SDK 构建，请用当前 SDK 重建插件产物）".to_string()
     }
-    /// **只检查形态**（ADR 0051 D2：整数 ABI 协商随 wit 包版本化退役）：
+    /// **只检查形态**（整数 ABI 协商随 wit 包版本化退役）：
     /// - `abi-form.form()` 必须等于 [`AbiPolicy::form`] 要求值（桌面 = 1（component
     ///   形态）；移动 WIT 无 `abi-form` 导出 ⇒ 宿主注入 `form: None` = 不要求）
     /// - 版本不在此检查：宿主与 guest 的 `package wasmnest:plugin@<version>` 不等时，
@@ -449,10 +449,10 @@ impl LoadedWasmPlugin {
         // 本路径不经 exports()（实例化后立即校验），独立重置燃料
         engine::inject_call_fuel(store)?;
 
-        // 形态检查（版本协商已随 wit 包版本化退役，ADR 0051 D2）：`abi-form.form()`
+        // 形态检查（版本协商已随 wit 包版本化退役）：`abi-form.form()`
         // 无 `result` 返回（`() -> u32`），**可以**原生探测——与 `events.*` 那类带
         // `result` 的导出不同（`Result` 不实现 `ComponentNamedList`，原生 TypedFunc
-        // 表达不了，见 ticket-03 §9.6）。版本一致性由 wasmtime linker 的含版本
+        // 表达不了，见旧版设计记录）。版本一致性由 wasmtime linker 的含版本
         // import 名匹配保证：不等即实例化期被拒，诊断自带包名 + 版本。（`abi-form` 是桌面 cap 导出；移动 WIT 无此导出，宿主注入
         // `form: None` 即跳过——统一壳按注入规格检查，wasm-core 零端形态知识）
         if let Some(expected_form) = abi.form {
@@ -477,7 +477,7 @@ impl LoadedWasmPlugin {
         // 缺失容忍为 None——旧插件只收 JSON，二进制消息由总线按格式不匹配拒绝。
         // 必须用 ItemName 路径语法（`iface.func` 点号）：组件的接口导出是嵌套
         // 实例形态，`iface#func` 平名字符串的 str 查找恒不命中（wasmtime 47 实证，
-        // 票据 06 修复——此前平名探测恒返回 None，二进制导出从未真正被发现）
+        // 修复——此前平名探测恒返回 None，二进制导出从未真正被发现）
         let on_message_binary = crate::contract::export_item("events-binary", "on-message-binary")
             .parse::<wasmtime::component::wit_parser::ItemName>()
             .ok()
@@ -490,7 +490,7 @@ impl LoadedWasmPlugin {
 
         // v14：动态探测可选导出 events-ws（两条回调分别探测，缺失容忍为 None）。
         // 语义与 events-binary 同构：未导出 → 状态事件照收（bus），消息帧丢弃 +
-        // 首次 warn + 计数（宿主不缓存，spec §2.2 D2）；旧插件加载零回归。
+        // 首次 warn + 计数（宿主不缓存）；旧插件加载零回归。
         // 同样必须用 ItemName 路径语法（`iface.func` 点号），理由同上
         let on_ws_message = crate::contract::export_item("events-ws", "on-message")
             .parse::<wasmtime::component::wit_parser::ItemName>()
@@ -560,7 +560,7 @@ impl LoadedWasmPlugin {
     ///
     /// `export_name` 用 `ItemName` 路径语法（`pkg:ns/iface.func`，组件接口
     /// 导出为嵌套实例形态，平名 `iface#func` 无法命中）
-    /// pub（票 05c）：lib 集成测试（auth_center_perf 探针）直接驱动能力导出
+    /// pub：lib 集成测试（auth_center_perf 探针）直接驱动能力导出
     pub fn call_capability_export<Params, Results>(
         &mut self,
         export_name: &str,
@@ -598,10 +598,10 @@ impl LoadedWasmPlugin {
     /// 实例化时探测到的可路由能力接口导出（core-plugin-manager）；
     /// 空 = 纯应用插件（不提供能力）
     ///
-    /// 宿主侧（认证中心候选 / 系统组件装配）自票 06 起直接读装配条目的
+    /// 宿主侧（认证中心候选 / 系统组件装配）自迁移起直接读装配条目的
     /// [`InstanceMeta::exported_capabilities`]，本访问器保留给测试。
     #[allow(dead_code)]
-    /// pub（票 05b）：lib 集成测试断言实例导出能力集（system_component_test）
+    /// pub：lib 集成测试断言实例导出能力集（system_component_test）
     pub fn exported_capabilities(&self) -> &[String] {
         &self.meta.exported_capabilities
     }
@@ -614,7 +614,7 @@ impl LoadedWasmPlugin {
     }
 
     /// 调用插件的 activate 导出
-    /// pub（票 05b）：lib 集成测试（session_e2e）直接驱动真实产物激活
+    /// pub：lib 集成测试（session_e2e）直接驱动真实产物激活
     pub fn activate(&mut self) -> crate::Result<i32> {
         let _timer = self.track_call();
         // 激活耗时单独记账：调用聚合含 `activate`，但监控页需要把「启动成本」
@@ -655,7 +655,7 @@ impl LoadedWasmPlugin {
     }
 
     /// 调用插件的 deactivate 导出
-    /// pub（票 05b）：lib 集成测试直接驱动真实产物停用
+    /// pub：lib 集成测试直接驱动真实产物停用
     pub fn deactivate(&mut self) -> crate::Result<i32> {
         let _timer = self.track_call();
         let exports = self.core_exports()?;
@@ -677,7 +677,7 @@ impl LoadedWasmPlugin {
     }
 
     /// 调用插件的 invoke_command 导出（JSON 载荷保留，语义与 core 路径 1:1）
-    /// pub（票 05b）：lib 集成测试经插件命令面驱动被测行为
+    /// pub：lib 集成测试经插件命令面驱动被测行为
     pub fn invoke_command(&mut self, command_name: &str, args_json: &str) -> crate::Result<String> {
         let _timer = self.track_call();
         let exports = self.core_exports()?;
@@ -691,8 +691,8 @@ impl LoadedWasmPlugin {
         }
     }
 
-    // v27（票 10 删除的 `on_terminal_input` / `on_terminal_output`）：
-    // 对应的 `terminal-hooks` interface 已从 WIT world 删除（票 03 起它已无派发源：
+    // v27（已删除的 `on_terminal_input` / `on_terminal_output`）：
+    // 对应的 `terminal-hooks` interface 已从 WIT world 删除（此前它已无派发源：
     // 逐帧输入修饰链与终端输出修饰链都不再由宿主调用）。宿主要求的导出集因此少一个
     // interface，SDK 侧对应绑定与缺口说明见 `packages/plugin-sdk-desktop/rust`。
 
@@ -738,7 +738,7 @@ impl LoadedWasmPlugin {
             .clone()
     }
 
-    /// 派发委托给宿主注入的 [`GuestEventDispatcher`]（票 03 / ADR 0022）：本壳不
+    /// 派发委托给宿主注入的 [`GuestEventDispatcher`]（机制留内核、契约面上移）：本壳不
     /// 持有 `events` 绑定。调用计时与燃料续费仍留机制侧。
     pub fn on_message(
         &mut self,
@@ -788,7 +788,7 @@ impl LoadedWasmPlugin {
 
     /// 调用插件的 WS 帧接收导出（v14，可选导出动态探测）
     ///
-    /// 返回 `Ok(true)` = 已投递；`Ok(false)` = 该回调未导出——调用方按 spec §2.2
+    /// 返回 `Ok(true)` = 已投递；`Ok(false)` = 该回调未导出——调用方按
     /// 降级（丢弃 + 首次 warn + 计数，宿主不缓存）。无返回值（观察型回调）：
     /// guest 内部失败经 host-log 记录；此处仅 trap 上抛
     pub fn on_ws_frame(&mut self, frame: &crate::bus::WsFrameDispatch) -> crate::Result<bool> {
@@ -846,10 +846,10 @@ impl LoadedWasmPlugin {
     /// 调用插件的宿主并发任务事件导出（v20，可选导出动态探测）
     ///
     /// 返回 `Ok(true)` = 已投递；`Ok(false)` = 该回调未导出——消费派发任务按
-    /// spec §5.3 降级（事件丢弃 + 首次 warn + 计数，宿主不缓存；`status`/
+    /// 降级（事件丢弃 + 首次 warn + 计数，宿主不缓存；`status`/
     /// `list-jobs` 自愈）。无返回值（观察型回调，同 `on_ws_frame`）。
     ///
-    /// pub（票 02 批次 05）：宿主集成测试 `tests/task_e2e.rs` 直驱 SDK 回调链
+    /// pub：宿主集成测试 `tests/task_e2e.rs` 直驱 SDK 回调链
     /// （dispatch → on_task_event → events-task 导出 → fixture 收集）——迁移前
     /// 内核 task_e2e 在 lib 内直调同款；与 `activate` / `invoke_command` 的
     /// 集成测试公开面先例同口径。
@@ -869,9 +869,9 @@ impl LoadedWasmPlugin {
         Ok(true)
     }
 
-    // v27（票 10 删除的 `on_session_lifecycle` / `on_input_submitted`）：
-    // `events` interface 里的这两个导出已从 WIT world 删除。派发源在票 03 就没了
-    // （宿主侧观察注册表 + 派发点退役），留着「实现了但永不触发」的导出正是票 03
+    // v27（已删除的 `on_session_lifecycle` / `on_input_submitted`）：
+    // `events` interface 里的这两个导出已从 WIT world 删除。派发源此前就没了
+    // （宿主侧观察注册表 + 派发点退役），留着「实现了但永不触发」的导出正是
     // 明确禁止的状态。会话生命周期事实由插件自驱、跨插件事件走 `host-events` /
     // `host-bus`。`on-message` / `on-process-done` 仍是必选导出，保留。
 
@@ -934,7 +934,7 @@ impl LoadedWasmPlugin {
 
     /// 获取插件的 manifest JSON
     #[allow(dead_code)] // 测试覆盖,生产侧 manifest 走其他加载路径
-    /// pub（票 05b）：lib 集成测试读插件 manifest（api 清单比对）
+    /// pub：lib 集成测试读插件 manifest（api 清单比对）
     pub fn get_manifest(&mut self) -> crate::Result<String> {
         let _timer = self.track_call();
         let exports = self.core_exports()?;
@@ -984,10 +984,10 @@ mod tests {
         wasmtime::Engine::new(&config).expect("create test engine")
     }
 
-    // 组件往返用例与 `build_test_component` 构建器随票 04 迁桌面宿主
+    // 组件往返用例与 `build_test_component` 构建器已迁桌面宿主
     // `src-tauri/tests/{component_e2e,engine_e2e}.rs`（wasm-core 不再持全 world
     // 绑定 ⇒ 本测试二进制无法实例化 SDK 夹具）；夹具构建由桌面宿主
-    // `src-tauri/tests/fixture_keeper.rs` 负责（票 08 批次三：构建器随夹具 crate
+    // `src-tauri/tests/fixture_keeper.rs` 负责（夹具构建器随夹具 crate
     // 归位平台仓，内核只持自持夹具 `fixtures/*`）。
 
     // ==================== 分片测试（common/component/tests/） ====================

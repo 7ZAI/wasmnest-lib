@@ -14,8 +14,8 @@
 //! - **权限位**：移动端有（`PERMISSION_BUS` granted 集）、桌面无（形态即 ACL）——
 //!   经 [`BusPorts::check_permission`] 承载，发布/订阅函数收 `Option<&PermissionGate>`
 //!   （`None` = 该端无权限位策略，如桌面）；
-//! - **互调门**：ADR 0017 层 1（`wasmnest.api.<api>` 请求道须命中已激活插件声明
-//!   清单）——桌面走 core-security 授权框架；移动 WIT 无 host-api-call 域，适配器
+//! - **互调门**：`wasmnest.api.<api>` 请求道须命中已激活插件声明
+//!   清单——桌面走 core-security 授权框架；移动 WIT 无 host-api-call 域，适配器
 //!   恒放行（= 既有行为）。回复道（`wasmnest.api.reply.`）免校验：回复的调用方即目标。
 //!
 //! ## 错误文本纪律
@@ -66,10 +66,10 @@ pub fn is_reply_topic(topic: &str) -> bool {
 /// 投递机制（spawn / block 驱动）留各端，本模块只出**门禁**。
 pub trait BusPorts: Send + Sync {
     /// 权限判定（移动端 granted 集消费 `PERMISSION_BUS`；桌面无权限位 → 恒 `true`）。
-    /// 返回 `false` 时实现方必须已按 AGENTS §8 落拒绝 warn。
+    /// 返回 `false` 时实现方必须已落拒绝 `warn`。
     fn check_permission(&self, plugin_id: &str, permission: &str, api: &str) -> bool;
 
-    /// 互调门禁（ADR 0017 层 1）：目标 api 是否命中**已激活插件**的声明清单。
+    /// 互调门禁：目标 api 是否命中**已激活插件**的声明清单。
     /// 桌面经 core-security 授权框架三段管线；移动无 host-api-call 域 → 恒 `true`。
     fn authorize_api_call(&self, plugin_id: &str, api: &str) -> bool;
 
@@ -131,7 +131,7 @@ pub fn check_subscribe_access(plugin_id: &str, topic: &str) -> Result<(), String
     Ok(())
 }
 
-/// 互调门禁（ADR 0017 层 1，JSON 与二进制发布共用）：`wasmnest.api.<api>` 请求
+/// 互调门禁（JSON 与二进制发布共用）：`wasmnest.api.<api>` 请求
 /// topic 的目标 api 必须命中某已激活插件的声明清单；`wasmnest.api.reply.` 是响应
 /// 通道（回复 topic 的调用方即为目标），免校验；普通广播 topic 不校验。
 fn check_api_gate(ports: &dyn BusPorts, plugin_id: &str, topic: &str) -> Result<(), String> {
@@ -141,7 +141,7 @@ fn check_api_gate(ports: &dyn BusPorts, plugin_id: &str, topic: &str) -> Result<
                 plugin_id = %plugin_id,
                 topic = %topic,
                 api = %api,
-                "bus publish: api call to undeclared api rejected (inter-plugin call gate, ADR-0017)"
+                "bus publish: api call to undeclared api rejected (inter-plugin call gate)"
             );
             return Err(format!(
                 "bus error: api '{}' is not declared by any activated plugin (gate)",

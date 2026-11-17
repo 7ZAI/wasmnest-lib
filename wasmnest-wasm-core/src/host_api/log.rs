@@ -1,4 +1,4 @@
-//! 日志域能力域 **adapter**（实现层已上移共享核，票 18 批次 4）
+//! 日志域能力域 **adapter**（实现层已上移共享核，批次 4）
 //!
 //! 机制语义（统一 callsite / 按调用点缓存的 `'static` Metadata / per-plugin 级别
 //! 阈值过滤 / `[plugin:xxx]` 前缀格式化）在 `wasmnest-host-api-core::log`（双端单点，

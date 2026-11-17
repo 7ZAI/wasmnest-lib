@@ -17,10 +17,10 @@
 //!    info 常量是跨端兼容性表面（移动端 TS 实现必须逐字节一致）。
 //! 4. **过滤器骨架** [`LinkEncryptionFilter`]：注册进 `TrafficFilterChain` 的
 //!    转换型过滤器。本地豁免三分支与应用策略判定已完整实现；豁免外流量的
-//!    真实加解密由 issue 02（HTTP 信封）/ issue 04（WS 帧）在本模块填充。
+//!    真实加解密由 HTTP 信封 / WS 帧在本模块填充。
 //!
-//! 决策模型（spec §6）：应用声明自己的加密要求 → 接收方按线上信封自动识别 →
-//! 响应绑定与降级检测两条强制安全耦合在 issue 02/04 落地。
+//! 决策模型：应用声明自己的加密要求 → 接收方按线上信封自动识别 →
+//! 响应绑定与降级检测两条强制安全耦合在 HTTP 信封 / WS 帧落地。
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -69,11 +69,11 @@ fn db_error(err: rusqlite::Error) -> AppError {
     AppError::Database(err.to_string())
 }
 
-// ==================== 引擎注册表抽象（票 02：WS/HTTP 只留加密抽象层） ====================
+// ==================== 引擎注册表抽象（WS/HTTP 只留加密抽象层） ====================
 // 生产运行时路径的算法调用一律经 crypto 引擎注册表按名解析，模块不再直接依赖具体
 // 算法实现。先解析为模块级 lazy 引用，避免逐帧重复查表。
 // 数据面固定选 AES-256-GCM / HKDF-SHA256 / X25519（与移动端线协议金样一致）；
-// 协商套件参数化（票 05）将把这里涉及的算法名提升为可注入。
+// 协商套件参数化将把这里涉及的算法名提升为可注入。
 /// 数据面 AEAD：AES-256-GCM（应用内兔取模块级引用，避免逐帧查注册表）
 static DATA_AEAD: LazyLock<&'static dyn AeadProvider> =
     LazyLock::new(|| resolve_aead(AEAD_AES_256_GCM).expect("crypto engine 必须注册 aes-256-gcm"));
@@ -84,7 +84,7 @@ static DATA_KDF: LazyLock<&'static dyn KdfProvider> =
 static DATA_ECDH: LazyLock<&'static dyn KeyAgreementProvider> =
     LazyLock::new(|| resolve_key_agreement(KEY_AGREEMENT_X25519).expect("crypto engine 必须注册 x25519"));
 
-// ==================== 协议核心再导出（issue 09 共享 crate） ====================
+// ==================== 协议核心再导出（共享 crate） ====================
 // 字节级协议面已抽至 packages/link-crypto（桌面 server 与移动端 event WS
 // 共同消费，消除第三份实现）；此处保持既有模块路径与测试可见性不变。
 use wasmnest_link_crypto as proto;
@@ -108,7 +108,7 @@ const IDENTITY_FORMAT_VERSION: u32 = 1;
 /// 过滤器注册名（注销与日志定位用）
 pub const FILTER_NAME: &str = "link-crypto";
 
-// HKDF info 常量——协议兼容性表面，issue 05 移动端 TS 实现必须逐字节一致
+// HKDF info 常量——协议兼容性表面，移动端 TS 实现必须逐字节一致
 // （已抽至共享 crate，经上方 pub use 保持既有路径可见）
 
 // ==================== 应用链路加密策略（应用拥有，宿主只执行） ====================
@@ -439,9 +439,12 @@ impl LinkIdentity {
     /// - 文件存在且损坏/版本不符 → 报错拒绝重建：静默换钥会让移动端 pin 全部
     ///   失效，宁可本次启动禁用加密并由用户显式处理。
     ///
-    /// 生成路径先写同目录唯一 tmp，再 `hard_link` 发布到正式名（目标已存在即失败）：
-    /// 并发的两个首启不会各写一份不同密钥（后到者回退加载既有身份，内存指纹与磁盘
-    /// 密钥始终一致），读者也永远看不到半截 JSON（进程中途被杀只留下 tmp）。
+    /// 生成路径先写同目录唯一 tmp，再发布到正式名（目标已存在即失败）：并发的两个
+    /// 首启不会各写一份不同密钥（后到者回退加载既有身份，内存指纹与磁盘密钥始终
+    /// 一致），读者也永远看不到半截 JSON。发布步由
+    /// [`wasmnest_server_base::private_file::create_private_file_exclusive`] 承担——
+    /// Android 上 `hard_link` 被 SELinux 拒绝，那里必须走 `create_new` 回退（2026-11-11
+    /// 移动端首启崩溃的根因）。
     pub fn load_or_create(dir: &Path) -> Result<Self> {
         let path = dir.join(IDENTITY_FILE);
         if path.exists() {
@@ -456,44 +459,10 @@ impl LinkIdentity {
         let json = serde_json::to_string_pretty(&file)
             .map_err(|e| AppError::Internal(format!("serialize link identity failed: {e}")))?;
 
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        let tmp = path.with_extension(format!("{}.{nanos}.tmp", std::process::id()));
-
-        use std::io::Write;
-        let mut opened = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|e| AppError::Internal(format!("create {}: {e}", tmp.display())))?;
-        // 私钥文件限属主可读（与 peer-net 身份文件同模式）
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            opened
-                .set_permissions(std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| AppError::Internal(format!("chmod {}: {e}", tmp.display())))?;
-        }
-        let written = opened
-            .write_all(json.as_bytes())
-            .and_then(|_| opened.sync_all())
-            .map_err(|e| AppError::Internal(format!("write {}: {e}", tmp.display())));
-        drop(opened);
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e);
-        }
-
-        let published = match std::fs::hard_link(&tmp, &path) {
-            Ok(()) => Ok(true),
-            // 并发初始化已有人写盘：加载既有身份，丢弃本次生成
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(e) => Err(AppError::Internal(format!("publish {}: {e}", path.display()))),
-        };
-        let _ = std::fs::remove_file(&tmp);
-        if !published? {
+        let outcome = wasmnest_server_base::private_file::create_private_file_exclusive(&path, json.as_bytes())
+            .map_err(|e| AppError::Internal(format!("create {}: {e}", path.display())))?;
+        if outcome == wasmnest_server_base::private_file::CreateOutcome::AlreadyExisted {
+            // 并发首启已有人写盘：加载既有身份，丢弃本次生成
             return Self::load(&path);
         }
         tracing::info!(file = %path.display(), "link crypto identity generated");
@@ -528,13 +497,13 @@ impl LinkIdentity {
         Ok(Self { keypair, fingerprint })
     }
 
-    /// 公钥（base64，配对响应下发用，issue 03 消费）
+    /// 公钥（base64，配对响应下发用）
     pub fn public_b64(&self) -> String {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(self.keypair.public())
     }
 
-    /// 私钥引用（请求解密 / WS 派生用，issue 02/04 消费）
+    /// 私钥引用（请求解密 / WS 派生用）
     pub(crate) fn keypair(&self) -> &wasmnest_crypto_engine::x25519::X25519KeyPair {
         &self.keypair
     }
@@ -582,7 +551,7 @@ pub fn identity_parts() -> Option<(&'static str, String)> {
 }
 
 /// 身份私钥访问（02/04 内部派生用；未初始化返回 None，调用方 fail-closed）
-#[allow(dead_code)] // 预留：ADR 02/04 内部派生路径尚未接入
+#[allow(dead_code)] // 预留：内部派生路径尚未接入
 pub(crate) fn identity_keypair() -> Option<&'static wasmnest_crypto_engine::x25519::X25519KeyPair> {
     IDENTITY.get().map(|i| i.keypair())
 }
@@ -623,13 +592,13 @@ pub fn derive_http_traffic_keys(shared_ikm: &[u8], http_path: &str) -> Result<Ht
 
 // 派生单个 WS 方向密码上下文（HKDF OKM 36B：32B key + 4B 随机前缀）——
 // 实现已抽至共享 crate（proto 内部）；桌面侧经 derive_server_handshake 间接消费
-// ==================== WS 会话加密（issue 04） ====================
+// ==================== WS 会话加密 ====================
 
 // WS 帧常量与来源类型字节（WS_BINARY_HEADER_LEN / WS_FRAME_VERSION /
 // WS_TRANSCRIPT_PREFIX / ORIGIN_TEXT / ORIGIN_BINARY）已抽至共享 crate，
 // 经文件头 `pub use proto::{...}` 保持既有模块路径与测试可见性不变。
 
-// ==================== 链路加密套件（票 05 套件参数化） ====================
+// ==================== 链路加密套件（套件参数化） ====================
 // 「套件」= 一组合法的算法组合（密钥交换 + AEAD + KDF），按名字寻址。名字即
 // 引擎词汇（三算法名都必须在 crypto/ 注册表白名单内，杜绝随手拼一个不存在的组合）。
 // 当前线协议只实现**一套**（X25519 + AES-256-GCM + HKDF-SHA256，与移动端线协议
@@ -710,9 +679,9 @@ pub struct WsHandshake {
     pub ciphers: WsSessionCiphers,
 }
 
-/// 双 ECDH 握手派生（spec §3）：服务端生成新鲜 s_eph，
+/// 双 ECDH 握手派生：服务端生成新鲜 s_eph，
 /// IKM = ECDH(s_eph,m_eph) ‖ ECDH(Kd,m_eph)，salt = "bc-link-crypto/v1" ‖ m_ek_b64 ‖ s_ek_b64。
-/// 字节拼接顺序是跨端兼容性表面，issue 05 移动端 TS 必须一致（金样互验钉死）。
+/// 字节拼接顺序是跨端兼容性表面，移动端 TS 必须一致（金样互验钉死）。
 /// 公式实现在共享 crate；本函数只负责身份私钥与临时密钥生命周期。
 pub fn derive_ws_session_ciphers(client_ek_b64: &str) -> Result<WsHandshake> {
     let Some(identity) = IDENTITY.get() else {
@@ -943,7 +912,7 @@ fn ws_encrypt_outbound_text_binary(addr: &str, channel_str: &str, origin: u8, pl
     }
 }
 
-// ==================== HTTP 信封协议（issue 02） ====================
+// ==================== HTTP 信封协议 ====================
 
 // 协商信号头与协议版本常量（NEGOTIATION_HEADER / PROTOCOL_VERSION）已抽至
 // 共享 crate，经文件头 `pub use proto::{...}` 保持既有模块路径可见。
@@ -976,7 +945,7 @@ fn http_aad(direction: Direction, path: &str) -> Vec<u8> {
 // ---------- 请求级响应密钥缓存 ----------
 //
 // filter 是全局单例、出入站两次独立调用，而响应加密密钥只能从该次请求的
-// 临时公钥派生（spec §3 实现要点）。入站成功解密时写入，出站命中即取走，
+// 临时公钥派生（协议实现要点）。入站成功解密时写入，出站命中即取走，
 // 未命中（入站被拒/未协商）→ 响应保持明文。
 /// 移动端每请求全新临时密钥对 → (peer, ek) 天然唯一，无并发覆盖问题。
 /// 容量护栏：TTL（30s）已收敛缓存规模，但 GET 懒加载高频协商下极端流量仍可
@@ -1040,7 +1009,7 @@ fn take_http_keys(peer: &str, ek_b64: &str) -> Option<HttpTrafficKeys> {
 // ==================== 过滤器骨架 ====================
 
 /// 明文白名单路由（HTTP）：配对引导期端点——它们本身是 pinning 建立即刻，
-/// 必须明文可达；健康检查供探活。豁免不受任何配置开关影响（spec §6 硬约束）。
+/// 必须明文可达；健康检查供探活。豁免不受任何配置开关影响。
 fn is_plaintext_whitelisted(route: &str) -> bool {
     // 路径穿越不得以 `/api/auth/` 前缀骗取白名单豁免（配对窗口闸门同判据）
     if route.contains("..") || route.to_ascii_lowercase().contains("%2e%2e") {
@@ -1061,7 +1030,7 @@ pub fn is_loopback_peer(peer: &str) -> bool {
     parse_peer(peer).is_some_and(|addr| addr.ip().is_loopback())
 }
 
-/// 本地豁免判定（spec §4 + 内网穿透 T04 不变量 15）：
+/// 本地豁免判定（含内网穿透的不变量 15）：
 /// ① 普通面的环回对端（hook 脚本调 /api/plugin/*、本机工具直连 REST）；
 /// ② 配对引导白名单路由（HTTP；peer 面同样保留，Noise 内明文 HTTP 是有意设计）。
 ///
@@ -1160,7 +1129,7 @@ impl LinkEncryptionFilter {
     /// HTTP 入站：协商 → ECDH(Kd, ek) 派生 → 解信封 → 缓存响应密钥。
     /// 任一步失败一律 Reject（fail-closed），错误详情进 400 响应体。
     /// 明文放行留痕（每端点首次）：注册日志说明端点存在，首连日志说明它真的被
-    /// 明文使用（spec §7 审计要求）；只记端点与对端，不写载荷 / 密钥材料
+    /// 明文使用（审计要求）；只记端点与对端，不写载荷 / 密钥材料
     fn audit_plaintext(ctx: &FilterContext<'_>, policy: EncryptionPolicy) {
         if !note_plaintext_connection(ctx.owner, ctx.endpoint) {
             return;
@@ -1192,7 +1161,7 @@ impl LinkEncryptionFilter {
             //
             // 拒绝码 = `encryption-unsupported`：对端**根本没有发起**协商。宿主无法
             // 区分「旧版本客户端（不会协商）」与「没有 pin 信任锚的客户端（筹不出
-            // 密钥）」，所以文案把两条出路都点名，不假装知道是哪一种（T07 判据：
+            // 密钥）」，所以文案把两条出路都点名，不假装知道是哪一种（判据：
             // 显性失败 + 升级提示，无明文回退）。
             return if policy.allows_plaintext() {
                 Self::audit_plaintext(ctx, policy);
@@ -1290,7 +1259,7 @@ impl LinkEncryptionFilter {
             Ok(envelope_json) => {
                 crate::metrics::MetricsCollector::global().inc_encrypted_frame();
                 ctx.data = envelope_json;
-                // 响应加密标记（spec §4）：移动端据 `X-WasmNest-Crypto: v1`
+                // 响应加密标记：移动端据 `X-WasmNest-Crypto: v1`
                 // 识别加密响应并解信封；值必须带 "v" 前缀（与请求侧
                 // parse_negotiation 的 `format!("v{PROTOCOL_VERSION}")` 同源），
                 // 裸 `1` 会被移动端 `respHeader === 'v1'` 判为不匹配 → 误报降级
@@ -1312,7 +1281,7 @@ impl LinkEncryptionFilter {
 /// 链路加密过滤器（转换型）
 ///
 /// 注册进全局责任链后对所有通道的收发载荷生效；裁决按 `owner` 的应用策略
-/// （`app_policy`，见模块头 §1），本地豁免流量零介入直通。
+/// （`app_policy`，见模块头「应用策略」），本地豁免流量零介入直通。
 pub struct LinkEncryptionFilter;
 
 impl TrafficFilter for LinkEncryptionFilter {
@@ -1697,7 +1666,7 @@ mod tests {
         assert_ne!(a.response, other.response);
     }
 
-    /// HTTP 双方向密钥金样向量（票据 15 变异守卫）
+    /// HTTP 双方向密钥金样向量（变异守卫）
     ///
     /// 固定 IKM `[7u8; 32]` + path `/api/sessions` 锁死派生输出字节：
     /// 任何 HKDF info 常量 / salt / 参数改动（如交换 HTTP_INFO_REQUEST ↔
@@ -1719,7 +1688,7 @@ mod tests {
         );
     }
 
-    /// WS 方向密钥金样向量（票据 15）：锁死 c2s/s2c HKDF 派生输出
+    /// WS 方向密钥金样向量：锁死 c2s/s2c HKDF 派生输出
     ///
     /// 固定 ikm `[9u8; 64]` + salt，方向 info 常量被交换（变异）时断言失败。
     /// 移动端 TS 复刻必须逐字节一致——协议兼容锚点。
@@ -1741,7 +1710,7 @@ mod tests {
         );
     }
 
-    // ---------- 链路加密套件解析（票 05 套件参数化） ----------
+    // ---------- 链路加密套件解析 ----------
 
     /// 默认套件三算法名都在引擎注册表白名单内（套件与引擎词汇不漂移）
     #[test]
@@ -1777,7 +1746,7 @@ mod tests {
         }
     }
 
-    // ---------- WS 会话加密（issue 04） ----------
+    // ---------- WS 会话加密 ----------
 
     /// 移动端 TS 侧的派生复刻：相同字节序列必须得到相同密钥（跨端兼容锚点）
     #[test]
@@ -2166,7 +2135,7 @@ mod tests {
         assert_eq!(now, "{corrupt", "拒绝路径不得改写损坏的身份文件");
     }
 
-    // ---------- HTTP 协议层（issue 02） ----------
+    // ---------- HTTP 协议层 ----------
 
     #[test]
     fn negotiation_parsing_accepts_only_v1_pair() {
@@ -2254,7 +2223,7 @@ mod tests {
         assert_eq!(take_http_keys("cap-peer", "EK0000"), None, "最早项应被逐出");
         let last = format!("EK{:04}", HTTP_KEY_CACHE_MAX + 7);
         assert!(take_http_keys("cap-peer", &last).is_some(), "最新条目应可命中");
-        // 只清理本测试写入的 key（全表 clear 会污染并行测试，票据 14 同类问题）
+        // 只清理本测试写入的 key（全表 clear 会污染并行测试）
         {
             let mut map = HTTP_KEY_CACHE.lock().unwrap();
             for i in 0..(HTTP_KEY_CACHE_MAX + 8) {
@@ -2294,7 +2263,7 @@ mod tests {
                 "过期条目应在 store 时被清扫"
             );
             assert!(map.contains_key(&cache_key("sweep-peer", "FRESH==")), "新条目应保留");
-            // 只清理本测试写入的 key（全表 clear 会污染并行测试，票据 14 同类问题）
+            // 只清理本测试写入的 key（全表 clear 会污染并行测试）
             map.remove(&cache_key("sweep-peer", "STALE=="));
             map.remove(&cache_key("sweep-peer", "FRESH=="));
         }
@@ -2351,7 +2320,7 @@ mod tests {
             outbound.data = resp_plain.clone();
             assert_eq!(LinkEncryptionFilter.on_outbound(&mut outbound), Verdict::Continue);
             assert_ne!(outbound.data, resp_plain, "响应应已加密");
-            // 加密响应必须回协商头标记（spec §4）：客户端据 `X-WasmNest-Crypto: v1`
+            // 加密响应必须回协商头标记：客户端据 `X-WasmNest-Crypto: v1`
             // 识别并解密，缺失/值不符会导致客户端误判明文降级（值必须是 "v1"）
             assert_eq!(
                 outbound.outbound_headers,
@@ -2863,7 +2832,7 @@ mod tests {
         );
     }
 
-    /// T07 测试锁：旧客户端（不发起协商）在 `required` 下被显性判为
+    /// 测试锁：旧客户端（不发起协商）在 `required` 下被显性判为
     /// `encryption-unsupported`，且**没有明文回退**。
     ///
     /// 判据三层同时断言：① 拒绝码是 `encryption-unsupported`（不是笼统的
@@ -2921,7 +2890,7 @@ mod tests {
         remove_app_policy(owner);
     }
 
-    /// T07 测试锁（对照）：**发起过**协商但链路建不起来 → `encryption-required`
+    /// 测试锁（对照）：**发起过**协商但链路建不起来 → `encryption-required`
     ///
     /// 两类必须分开：旧客户端（无协商）给升级提示，坏协商给「检查链路身份 / 重新
     /// 配对」——否则用户会被告知去升级一个已经升级过的对端。

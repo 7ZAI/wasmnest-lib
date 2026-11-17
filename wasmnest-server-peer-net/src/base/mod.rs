@@ -3,9 +3,9 @@
 //! 原 `wasmnest-peer-net` crate 的机制面整体迁入本模块：Ed25519 节点身份 /
 //! libp2p 直连（TCP + noise + yamux，P1 起取代自签证书 + rustls）/ 信任闸门 /
 //! mDNS 服务注册 / 传输会话引擎原语 / 共享目录线协议。设计依据沿原 crate：
-//! ADR 0027 / 0028（传输栈方向与信任模型）。
+//! 传输栈方向与信任模型的既定裁决。
 //!
-//! ## 拆分口径（spec §4.1，产品语义不下沉、机制全部保留）
+//! ## 拆分口径（产品语义不下沉、机制全部保留）
 //!
 //! - **机制**（本模块）：身份 / libp2p 传输 / 信任 / 帧 / 节点 / 连接 / mDNS 注册 /
 //!   传输线协议与断点续传 / 取消暂停 / 浏览拉取线协议与路径安全 / SAF 注入缝；
@@ -38,9 +38,9 @@ pub use frame::{read_hello, write_hello, TrustHelloFrame, TrustStatus, TrustStat
 pub use identity::{NodeId, NodeIdentity};
 pub use node::{PeerNetNode, PeerNetNodeConfig, StaticPeerRecord};
 pub use shared::{
-    browse_shared_dir, list_shared_roots, pull_shared_file, resolve_rel_path, saf_not_found, sort_entries,
-    BrowseListing, SeqReader, SharedDirEntry, SharedDirHandler, SharedDirRoot, SharedDirStore, SharedRootMeta,
-    SharedSafAccess,
+    browse_shared_dir, fetch_shared_config, list_shared_roots, pull_shared_file, resolve_rel_path, saf_not_found,
+    sort_entries, BrowseListing, SeqReader, SharedConfigSnapshot, SharedDirEntry, SharedDirHandler, SharedDirRoot,
+    SharedDirStore, SharedRootMeta, SharedSafAccess,
 };
 pub use transfer::batch::DirEntry;
 pub use transfer::{

@@ -52,43 +52,9 @@ pub enum PeerNetError {
         source: serde_json::Error,
     },
 
-    /// 创建身份文件失败（首启 `create_new` 抢占）
+    /// 发布身份文件失败（首启 tmp 写入 / 发布步；失败步骤与路径由底层 io 错误点名）
     #[error("create node identity file failed: {path}: {source}")]
     IdentityCreate {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// 写入身份文件失败（首启 create_new 后的 write / sync）
-    #[error("write node identity file failed: {path}: {source}")]
-    IdentityWrite {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// 写入临时文件失败（原子写第一步）
-    #[error("write node identity temp file failed: {path}: {source}")]
-    IdentityWriteTemp {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// 临时文件替换正式文件失败（原子写第二步）
-    #[error("atomic rename of node identity file failed: {from} -> {to}: {source}")]
-    IdentityRename {
-        from: PathBuf,
-        to: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// 设置身份文件权限失败（仅 unix）
-    #[error("restrict permissions on node identity file failed: {path}: {source}")]
-    #[allow(dead_code)]
-    IdentityPermissions {
         path: PathBuf,
         #[source]
         source: std::io::Error,
@@ -204,7 +170,7 @@ pub enum PeerNetError {
         source: std::io::Error,
     },
 
-    // ==================== 传输会话（issue 05）====================
+    // ==================== 传输会话 ====================
     /// 传输会话 IO/编解码失败（读写帧、文件落盘层）
     ///
     /// `role` 标注失败发生在哪一端角色（sender/receiver），detail 说明具体操作。
@@ -215,7 +181,7 @@ pub enum PeerNetError {
     #[error("transfer protocol violation ({role}): {detail}")]
     TransferProtocol { role: &'static str, detail: String },
 
-    // ==================== 共享目录（issue 07）====================
+    // ==================== 共享目录 ====================
     /// 读取共享目录注册表文件失败（IO 层）
     #[error("read shared dirs file failed: {path}: {source}")]
     SharedDirsRead {

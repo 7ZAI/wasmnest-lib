@@ -1,4 +1,4 @@
-//! 契约包名的**单点派生**（ADR 0051 D3/D4 · `wit-package-semver` 票 03）
+//! 契约包名的**单点派生**（`wit-package-semver` 机制）
 //!
 //! ## 为什么运行期全部走这里，而不是各写一个字面量
 //!
@@ -67,7 +67,7 @@ fn derive(key: String, make: impl FnOnce() -> String) -> &'static str {
     made
 }
 
-/// `host-mdns` 所在 WIT 包（ADR 0061 按能力域拆包后独立包全名）
+/// `host-mdns` 所在 WIT 包（按能力域拆包后的独立包全名）
 ///
 /// 能力域接口不再属于 `wasmnest:plugin`：导出键的包段与版本段都变成该域自己的。
 /// 值由 `wasmnest-discovery-engine` 的 `EXPORTS` 字面量经内核

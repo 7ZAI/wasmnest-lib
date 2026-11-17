@@ -5,7 +5,7 @@
 //! `owner: plugin_id`）。与 peer-net 引擎共享同一守护——消灭「双 daemon 同绑
 //! 5353 互抢多播包」的结构性病灶（真机实证：只发现自己、发现不了对端）。
 //!
-//! **listener 级不变量（ADR 0054）**：共享守护只是第一层——mdns-sd 对每个服务类型
+//! **listener 级不变量**：共享守护只是第一层——mdns-sd 对每个服务类型
 //! 只有**一个 listener 槽**且重复 `browse` 是「后到覆盖先到」，所以本进程对同一服务
 //! 类型的 `daemon.browse` / `stop_browse` **只能由类型中枢**
 //! （[`crate::type_hub`]）代持：任意数量的消费者（含 peer-net 与移动旧链路）在其中枢
@@ -117,7 +117,7 @@ fn daemon() -> &'static ServiceDaemon {
 
 /// 守护若已初始化则返回（stop/query 前预防性保护：单测表操作不触网）
 ///
-/// `pub`：双端宿主共享化后（spec M3）stop 路径需在不拉起守护的前提下取句柄
+/// `pub`：双端宿主共享化后 stop 路径需在不拉起守护的前提下取句柄
 /// （host_ports / 命令面 stop 分支）；clone 廉价（mdns-sd 守护句柄内部 Arc）
 pub fn daemon_if_initialized() -> Option<ServiceDaemon> {
     DAEMON.get().map(|d| d.clone())
@@ -182,7 +182,7 @@ struct BrowserEntry {
     task: Arc<dyn DiscoveryTask>,
     /// 类型中枢订阅守卫（不透明）：**条目移除即 Drop ⇒ 中枢退订**（该浏览通道关闭、
     /// 浏览任务 recv 断开退出）；同类型其他订阅者不受影响，归零则中枢自行
-    /// `stop_browse` 并移除（spec §2.1-④）。字段不读取，纯生命周期托管
+    /// `stop_browse` 并移除。字段不读取，纯生命周期托管
     _subscription: Box<dyn std::any::Any + Send + Sync>,
     /// 所属插件（停用时按属主回收全部句柄）
     owner: String,
@@ -220,7 +220,7 @@ const NOT_OWNER: &str = "not owner of mdns handle";
 ///
 /// **浏览侧另有一层不变量**：同一服务类型的 `daemon.browse` / `stop_browse` 只允许
 /// 类型中枢（[`crate::type_hub`]）调用——共享守护让 peer-net 与插件落到同一个
-/// listener 槽上，谁重复 `browse` 谁就把对方的事件流顶成死信道（ADR 0054）。
+/// listener 槽上，谁重复 `browse` 谁就把对方的事件流顶成死信道。
 /// 需要浏览事件请改用 [`crate::type_hub::subscribe_type`]。
 pub fn shared_daemon() -> ServiceDaemon {
     daemon().clone()
@@ -242,7 +242,7 @@ pub fn browse(
     if !ports.check_permission(plugin_id, "host_mdns_browse") {
         return Err(denied());
     }
-    // 能力路由：本能力由系统组件提供时转发到它的同形导出（票 09 扩表）；
+    // 能力路由：本能力由系统组件提供时转发到它的同形导出；
     // 无提供者才走本域引擎。位置与 kv 域一致：**权限门之后、引擎副作用之前**。
     if let Some(result) = ports.forward_mdns_browse(plugin_id, service_type) {
         return result;

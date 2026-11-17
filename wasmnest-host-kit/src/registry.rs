@@ -25,17 +25,16 @@ use crate::module::HostModuleDesc;
 use crate::state::WasmPluginState;
 use crate::{HostKitError, Result};
 
-// ==================== 描述符零产品名词判据（ADR 0035 D4） ====================
+// ==================== 描述符零产品名词判据 ====================
 
 /// 描述符禁用词表：模块名 / 接口路径 / 权限位中不得出现的产品名词词段
 ///
 /// 判据规则（词段相等，非子串包含）见 [`ModuleRegistry::product_noun_violations`]。
 /// 这些词代表产品语义（会话 / 终端 / 配对 / 设备 / 传输 / 文件 / 对话 / AI / Agent /
-/// PTY 实例 / MCP）；一旦进入描述符，注册表就从「通用注册表与寻址」退化成业务容器
-/// （AGENTS §5.1 B1/B5）。
+/// PTY 实例 / MCP）；一旦进入描述符，注册表就从「通用注册表与寻址」退化成业务容器。
 ///
 /// **端独有扩展的例外不在这里**：豁免由各扫描点显式登记（例：移动 `mobile-terminal-stream`
-/// 是 ADR 0047 / ADR 0052 D4 保留的窄转发端扩展，命中 `terminal` 属端事实），
+/// 是保留的窄转发端扩展，命中 `terminal` 属端事实），
 /// 本表只定义「什么算命中」。
 pub const PRODUCT_NOUN_DENYLIST: &[&str] = &[
     "session",
@@ -172,7 +171,7 @@ impl ModuleRegistry {
         Err(HostKitError::WhitelistMismatch { unlisted, missing })
     }
 
-    /// 描述符产品名词命中（空 = 通过；AGENTS §5.1 B1/B5 红线）
+    /// 描述符产品名词命中（空 = 通过）
     ///
     /// **为什么在机制侧**：描述符是 [`crate::module::HostModuleDesc`] 的自报面，而
     /// `inventory` 收集按**测试二进制**隔离——某端宿主 adapter 自报的模块只有该端
@@ -180,11 +179,11 @@ impl ModuleRegistry {
     /// （wasm-core / 两端宿主）对自己的 `ModuleRegistry::collected()` 全量跑一次。
     ///
     /// **只返回原始命中、不做豁免**：端独有扩展可以合法携带端事实词汇（例：移动
-    /// `mobile-terminal-stream`，ADR 0047 / ADR 0052 D4 保留的窄转发端扩展），
+    /// `mobile-terminal-stream`，保留的窄转发端扩展），
     /// 豁免由各扫描点把期望命中集显式登记后比对（防「静默放过」）。
     ///
     /// 匹配粒度 = **词段相等**，不是子串包含：`database:main` 里的 `ai` 是 `main`
-    /// 的内部子串，不命中（票 08 实测修正，子串判据曾把纯机制权限位判成产品名词）。
+    /// 的内部子串，不命中（子串判据会把纯机制权限位误判成产品名词）。
     pub fn product_noun_violations(&self) -> Vec<DescriptorNounViolation> {
         let mut violations = Vec::new();
         for desc in self.descs() {

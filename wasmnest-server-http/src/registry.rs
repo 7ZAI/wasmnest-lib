@@ -340,7 +340,7 @@ pub fn count_by_owner(owner: &str) -> usize {
     lock().by_id.values().filter(|e| e.owner == owner).count()
 }
 
-/// 全部已注册端点快照（宿主审计面：未声明策略的端点也必须可枚举，spec §7）
+/// 全部已注册端点快照（宿主审计面：未声明策略的端点也必须可枚举）
 ///
 /// 排序 = 属主 + 内部路径（稳定展示序；HashMap 遍历序不保证）。声明值不在这里：
 /// 端点策略是 `link_crypto` 的表，宿主按句柄拼合后才是完整的"谁在明文"快照。

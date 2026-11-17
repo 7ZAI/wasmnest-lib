@@ -128,7 +128,7 @@ pub struct FilterContext<'a> {
     pub endpoint: &'a str,
     /// 协商信号（链路加密）：HTTP = 请求头 `X-WasmNest-Crypto` 原始值
     /// （如 "v1 <ek_b64>"），无协商为空串；WS 不用此字段（握手态由
-    /// link_crypto 的连接密码表按 peer 查询）。issue 02 引入。
+    /// link_crypto 的连接密码表按 peer 查询）。
     pub negotiation: &'a str,
     /// 当前载荷（可原地替换实现加解密）
     pub data: Vec<u8>,
@@ -433,7 +433,7 @@ mod tests {
     }
 
     /// 插件端点通道（`TrafficChannel::WsPlugin`）参与帧级过滤链：inbound / outbound
-    /// 均执行（spec §4.6 / 票 05 checklist），且通道名稳定（日志字段）
+    /// 均执行，且通道名稳定（日志字段）
     #[test]
     fn ws_plugin_channel_runs_both_directions() {
         assert_eq!(TrafficChannel::WsPlugin.as_str(), "ws-plugin");

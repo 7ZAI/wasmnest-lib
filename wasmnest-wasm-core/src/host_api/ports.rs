@@ -1,10 +1,10 @@
-//! 宿主引擎端口（批次 2 · 票 17 §6.2）——插件机制面与宿主引擎的唯一桥
+//! 宿主引擎端口（批次 2）——插件机制面与宿主引擎的唯一桥
 //!
 //! 运行时与 16 域迁入本 crate 后，所有「离宿主无法实现」的引擎调用不再直引
 //! 宿主符号（`crate::state::get_auth_manager` / `crate::peer_net::*` /
 //! `crate::egress::policy` / android_plugins 桥……），一律经本端口注入。
 //!
-//! **票 02 B5 起常编译（双端共享）**：统一 `WasmHostContext` 把 `ports` 槽并入
+//! **自 B5 起常编译（双端共享）**：统一 `WasmHostContext` 把 `ports` 槽并入
 //! 超集后，本模块不再是移动 adapter 专属——桌面形态也编译（其上下文给
 //! `UnimplementedPorts` 占位，桌面引擎调用不经过端口）。`FsAuthGate` 的
 //! `Any` 超 trait 是下转型访问器（`WasmHostContext::fs_auth_checker`）的类型
@@ -51,7 +51,7 @@ pub trait AuthEnginePort: Send + Sync {
     async fn has_credentials(&self) -> bool;
 }
 
-/// 主连接事实面（票 12 `host-connection.primary-target` 的引擎读数）
+/// 主连接事实面（`host-connection.primary-target` 的引擎读数）
 ///
 /// `Ok(None)` = 从未配置目标；`Ok(Some((target, connected)))` = 传输事实。
 #[async_trait]
@@ -82,7 +82,7 @@ pub trait SafIoPort: Send + Sync {
     ) -> std::result::Result<(), String>;
 }
 
-/// WS 自动重连策略面（票 12 R1：全局退避单一事实源 `connection::reconnect`
+/// WS 自动重连策略面（全局退避单一事实源 `connection::reconnect`
 /// 留宿主；crate 侧按策略推进重连循环）
 #[async_trait]
 pub trait WsReconnectPolicyPort: Send + Sync {
@@ -105,7 +105,7 @@ pub enum FsAuthOp {
 /// 文件授权闸门面（宿主 fs_auth 的窄投影）
 ///
 /// crate 侧只问「这个插件能不能读/写这个路径」；授权判定链（路径白名单 →
-/// 插件白名单 → 弹窗授权）是宿主安全闸门（ADR 0022 §5.1.3 ②），真源在宿主。
+/// 插件白名单 → 弹窗授权）是宿主安全闸门（四类薄壳之「安全闸门」），真源在宿主。
 ///
 /// 窄授权判据（机制面消费的最小面）
 ///
@@ -133,7 +133,7 @@ pub trait FsAuthGate: Send + Sync {
 ///
 /// 单形态（2026-10-13 裁决）之前这两处是内核里的
 /// `#[cfg(feature = "desktop-assembly")]` 二选一：`"desktop"` / `"mobile"` 字面量
-/// 与 `ServerSupervisor` 直读写死在内核——按 ADR 0049 D1 的判定口径（「桌面这样写、
+/// 与 `ServerSupervisor` 直读写死在内核——按判定口径（「桌面这样写、
 /// 移动那样写」就不是机制）应属端宿主。现在内核只经本端口取端值，实现分别住
 /// `桌面宿主 src-tauri/src/plugin/host_facts.rs` 与
 /// `移动宿主 src-tauri/src/plugin/host_ports.rs`。
@@ -192,7 +192,7 @@ pub trait HostEnginePorts: Send + Sync {
     /// 全局 JWT token（jwt-auth 首帧代发 / 宿主代注 Bearer；token 不落插件）
     fn global_token(&self) -> String;
 
-    // ==================== host-config 端专属项（票 03） ====================
+    // ==================== host-config 端专属项 ====================
     //
     // `host-config` 是 core.wit 的双端全等 interface，白名单词汇由内核持并集
     // （见 `host_api/config.rs`）。并集里属**端专属事实**的一项是移动下载目录
@@ -287,7 +287,7 @@ pub trait HostEnginePorts: Send + Sync {
 
 /// 系统选择器端口（`host-platform` 的 `pick-files` / `pick-folders` 端实现）
 ///
-/// 端差异落宿主（ADR 0052 D1「差异应该在各自的宿主侧」）：桌面 = 原生对话框
+/// 端差异落宿主（「差异应该在各自的宿主侧」）：桌面 = 原生对话框
 /// （宿主 `桌面宿主 src-tauri/src/plugin/platform_picker.rs`），移动 = SAF
 /// 选择器（经 [`EnginePortsPlatformPicker`] 适配本模块 `HostEnginePorts` 已有的两条
 /// SAF 端口）。内核只持共享机制——`fs:pick` 权限门 + 选择后 `authorize_picked`

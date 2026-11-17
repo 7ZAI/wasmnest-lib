@@ -9,7 +9,7 @@
 //!   （= 预留）、预留失败退避重试。feature 关闭时 [`crate::engine::RunningNode::reserve_relay`]
 //!   显性返回 [`P2pError::RelayDisabled`]，不静默降级。
 //!
-//! ## 地址形状（设计 §4.2）
+//! ## 地址形状
 //!
 //! ```text
 //! relay 端点（钉住 PeerId）: /ip4/203.0.113.10/tcp/4001/p2p/12D3KooWRelay...
@@ -28,7 +28,7 @@ use libp2p::{Multiaddr, PeerId};
 
 use crate::error::P2pError;
 
-/// 一次连接的底层传输形态（设计 §7.2 `peer:transport` 词表）
+/// 一次连接的底层传输形态（`peer:transport` 事件词表）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     /// LAN 直连（不经 relay 数据面）
@@ -47,7 +47,7 @@ impl Transport {
         }
     }
 
-    /// 设计 §7.2 的事件词表字面（日志/事件桥使用）
+    /// 事件词表字面（日志/事件桥使用）
     pub fn as_str(self) -> &'static str {
         match self {
             Self::LanDirect => "lan-direct",
@@ -58,7 +58,7 @@ impl Transport {
 
 /// relay 预留（reservation）生命周期状态
 ///
-/// 词汇对齐设计 §7.2：`relay-reserved`（[`Self::Reserved`]）/ `relay-lost`
+/// 词汇与事件桥一致：`relay-reserved`（[`Self::Reserved`]）/ `relay-lost`
 /// （[`Self::Lost`]）。`Connecting` 是引擎内部的「预留请求在飞」，让宿主状态栏
 /// 能区分「还没连上」与「真丢了」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -99,7 +99,7 @@ pub struct RelayStatus {
 
 /// 已钉住 PeerId 的 relay 端点
 ///
-/// 钉住是安全判据（设计 §4.10）：relay 身份在 multiaddr 中固定，**不接受**
+/// 钉住是安全判据：relay 身份在 multiaddr 中固定，**不接受**
 /// 「同 IP 不同 PeerId」的替换——否则同名 relay 被中间人顶替后 Noise 只保护到
 /// 假 relay，端到端语义被削弱。
 #[derive(Debug, Clone)]
@@ -344,7 +344,7 @@ impl WithP2pTail for Multiaddr {
 /// 预留请求的硬超时：超过即视为失败并进入退避（relay 不可达 / 拒绝都不该挂死）
 pub const RESERVATION_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 退避参数：1s 起，逐次翻倍，封顶 60s（沿用设计 §4.8「指数退避」）
+/// 退避参数：1s 起，逐次翻倍，封顶 60s（指数退避）
 pub const RETRY_BASE: Duration = Duration::from_secs(1);
 /// 退避封顶
 pub const RETRY_MAX: Duration = Duration::from_secs(60);

@@ -1,9 +1,9 @@
-//! 审批门禁（ADR 0020 / 审计票 03）用例。
+//! 审批门禁用例。
 
 use super::scaffold::*;
 use super::*;
 
-// ==================== 审批门禁（ADR 0020 / 审计票 03） ====================
+// ==================== 审批门禁 ====================
 
 /// 注册一个「用户 zip 安装」的 TS-only 插件，安装目录指向 `dir`
 async fn register_user_installed(host: &PluginHost, id: &str, dir: &Path, permissions: &[&str]) {

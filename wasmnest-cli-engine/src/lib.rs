@@ -38,7 +38,7 @@ pub use wire::{Decision, Frame, RequestOp, WireError};
 
 #[cfg(test)]
 mod drift_tests {
-    //! 自洽漂移单测（AGENTS §6.4：新增能力域必须自持）——表 ↔ 解析器 ↔ 帮助三面
+    //! 自洽漂移单测——表 ↔ 解析器 ↔ 帮助三面
     //! 互为对偶锁：任何一面新增 / 改名而漏配另一面，这里即红。
     use super::*;
 

@@ -2,7 +2,7 @@
 //!
 //! **用户裁决（2026-10-12）**：WASI（p2/p3）**住核心**、双端都可用且**默认全开**，
 //! 开 / 关交给外部配置（[`WasiConfig`]）；目的是将来 **worker 类别**插件
-//! （ADR 0034 L3.b）双端都要跑 wasm 时，不必各端再自建一份接线。
+//! 双端都要跑 wasm 时，不必各端再自建一份接线。
 //!
 //! 因此形态（桌面 / 移动）不再是「有 WASI / 无 WASI」的差异轴：
 //! - 装配面（p2/p3 linker 注册 + 预打开上下文构建）在本模块，双端共用的**唯一**
@@ -14,7 +14,7 @@
 //!   已建 linker 不生效——与 Engine 参数的固化语义同类，见
 //!   [`crate::manager::runtime::WasmRuntime::set_config`] 的 warn；要改需重建运行时。
 //!
-//! 预打开目录（manifest `wasiPreopenDirs`，**仅 worker 类别**，ADR 0034）的展开 /
+//! 预打开目录（manifest `wasiPreopenDirs`，**仅 worker 类别**）的展开 /
 //! 授权过滤 / 挂载也在本模块：`expand_preopen_declarations` →
 //! `resolve_preopen_dirs` → `build_ctx`。
 
@@ -50,7 +50,7 @@ pub(crate) fn add_to_linker(
     if cfg.p2 {
         // WASI preview2（wasm32-wasip2 插件经 std::fs 直接访问文件所需的全部接口：
         // clock/random/cli/filesystem/io/sockets）。
-        // 票 02：同步 adapter（add_to_linker_sync）在 async store 下调用线进入
+        // 同步 adapter（add_to_linker_sync）在 async store 下调用线进入
         // tokio runtime 上下文后其内部 ambient block_on 会重入 panic
         // （"Cannot start a runtime from within a runtime"，实证 wasi preopen e2e），
         // 改使 async adapter（fiber 内原生 await，与 wasip3 p3 同机制）。
@@ -95,12 +95,12 @@ pub(crate) fn empty_ctx() -> wasmtime_wasi::WasiCtx {
 /// 目录逐项预打开到 guest 路径 `/data`、`/data1`、…；无声明时为空上下文。
 /// 单项失败仅告警不阻断（该目录 guest 不可见，由插件激活时自检并引导用户）。
 ///
-/// **仅 worker 类别（`lifecycle: ephemeral`，ADR 0032 L3.b 预留）可用**（ADR 0034）：
+/// **仅 worker 类别（`lifecycle: ephemeral` 预留）可用**：
 /// 主 wasm-app 文件访问一律走宿主 `host-fs` 授权机制，非 worker 声明 preopen 在
 /// 构建期与加载期双侧显性拒绝——本函数是 worker 启用后的预留能力装配点，
 /// 当前对一切可加载 manifest 不可达（worker 未实现）。
 ///
-/// 挂载档由条目声明决定（审计票 07 只读档）：`readonly: true` → `FsPerms::ReadOnly`，
+/// 挂载档由条目声明决定（只读档）：`readonly: true` → `FsPerms::ReadOnly`，
 /// 其余（裸路径 / `readonly` 缺省或 false）→ `FsPerms::ReadWrite`，与改造前逐字一致。
 /// 档位**不影响是否放行**——未授权目录两档都建不出 preopen（[`resolve_preopen_dirs`]）。
 ///
@@ -237,14 +237,14 @@ fn expand_preopen_declarations_with_home(
 
 /// 解析 manifest `wasiPreopenDirs` 声明为可预打开的主机路径列表（含挂载档）
 ///
-/// **仅 worker 类别可用**（ADR 0034，机制保留为 worker 预留能力）；主 wasm-app
+/// **仅 worker 类别可用**（机制保留为 worker 预留能力）；主 wasm-app
 /// 不经过此路径（非 worker 声明 preopen 已被加载期闸门拒绝）。
 ///
 /// - 先经 [`expand_preopen_declarations`] 展开
 /// - 仅保留已授权目录（is_granted 无弹窗校验）：manifest 路径可能指向任意
 ///   主机位置，不得绕过授权机制建立预打开。只读档同样要授权——档位只收紧
-///   guest 能力，不放宽宿主边界（票 07 裁决 3）
-/// - **所需能力按档位取**（票 02 操作拆分）：只读档要读授权，读写档要读 + 写授权。
+///   guest 能力，不放宽宿主边界
+/// - **所需能力按档位取**：只读档要读授权，读写档要读 + 写授权。
 ///   预打开把这两项能力直接交给 guest（WASI 层不再过宿主闸门），所以授权记录必须
 ///   覆盖对应能力——否则「授权读」的目录换来一个可写 preopen，操作拆分被原地架空
 /// - 无 tokio 运行时上下文（无头场景）无法查询授权 → 返回空（不阻断加载）
@@ -275,7 +275,7 @@ fn resolve_preopen_dirs_with_home(
             } else {
                 FsOps::READ_WRITE
             };
-            // 票 02 B5：`is_granted` 是 FsAuthChecker 具体机制方法（不在窄
+            // `is_granted` 是 FsAuthChecker 具体机制方法（不在窄
             // FsAuthGate trait 上）——经下转型访问器取回（桌面装配恒 Some）
             let checker = host_ctx.fs_auth_checker();
             block_on_async(checker.is_granted(plugin_id, dir.path(), needed))

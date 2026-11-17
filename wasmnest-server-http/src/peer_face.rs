@@ -2,7 +2,7 @@
 //!
 //! 配对窗口只放行配对引导端点：配对态连接即便来自 loopback，也不得触达业务
 //! 路径。闸门挂在 app 级 face 链外层，`/ws` 与静态端点同样受管。
-//! 配对连接注册表与 `peerNodeId` 由宿主经 `PeerFaceResolver` 注入（T05 接线），
+//! 配对连接注册表与 `peerNodeId` 由宿主经 `PeerFaceResolver` 注入，
 //! 本模块只消费 [`RequestFace`]，不读请求头。
 
 use actix_web::body::MessageBody;
@@ -13,7 +13,7 @@ use wasmnest_server_base::face::RequestFace;
 
 use crate::dtos::{ApiResponse, CODE_PLUGIN_AUTH_FAILED};
 
-/// 配对引导端点前缀（设计 §4.1：bedcode 的 `/api/auth/*`）
+/// 配对引导端点前缀（`/api/auth/*`）
 pub const PAIRING_PATH_PREFIX: &str = "/api/auth/";
 
 /// 配对窗口路径白名单（纯函数，供双端与测试锁复用）

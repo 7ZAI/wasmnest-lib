@@ -9,7 +9,7 @@ use super::owner::{GuestOp, GuestReply};
 use super::{PluginHost, PLUGIN_AUTO_RELOAD_MIN_INTERVAL_SECS};
 use crate::manager::types::PluginSource;
 
-/// ADR 0030 决定 6：插件错误字符串 → 信封 AppError
+/// 插件错误字符串 → 信封 AppError
 ///
 /// - 标记 JSON（SDK `bail_with_code!` / `user_facing_string` 产物）→ 校验形状后透传
 ///   `UserFacing{code, params}`（宿主**不解释业务语义**）；
@@ -62,7 +62,7 @@ impl PluginHost {
         args: serde_json::Value,
     ) -> crate::Result<serde_json::Value> {
         if !self.is_activated(plugin_id).await {
-            // 机制失败：显式友好码（ADR 0030 注册表 v0），detail 只进日志
+            // 机制失败：显式友好码（注册表 v0），detail 只进日志
             return Err(crate::AppError::user_facing(
                 "host.plugin.not-activated",
                 serde_json::json!({ "plugin": plugin_id }),
@@ -245,7 +245,7 @@ impl PluginHost {
         // 插件 invoke_command 的 Err 经 SDK 宏序列化为 {"error": "..."} 的**成功**
         // JSON（非 WIT Err），此处还原为真正错误——否则前端把失败当成功
         // （真机实证：dial-peer 被拒仍 markConnected，桌面显示「已连接」）。
-        // ADR 0030 决定 6：SDK `bail_with_code!` 产标记 JSON 错误字符串，宿主只做
+        // SDK `bail_with_code!` 产标记 JSON 错误字符串，宿主只做
         // 机制检测 + 形状校验 + 透传，不解释业务语义；未标记/畸形 → 兜底 + 插件标识。
         if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
             if !err.is_empty() {
@@ -319,12 +319,12 @@ impl PluginHost {
         result
     }
 
-    // 票 03 删除的两条输入侧管道：
+    // 删除的两条输入侧管道：
     // - `process_terminal_input`（逐帧修饰链）——宿主不再修改用户键入的字节；
     //   终端输入由 `com.wasmnest.bedcode` 经 `host-pty.write` 原样写入。
     // - `process_input_submitted`（提交行观察分发）——行重建与任务域分发都在插件内。
     // 输出侧 `process_terminal_output` / `has_terminal_handlers` 暂留：它服务的是
-    // 业务输出环（`session/session_output.rs`），随内核会话目录在票 11 一并退役。
+    // 业务输出环（`session/session_output.rs`），随内核会话目录一并退役。
 }
 
 #[cfg(test)]
@@ -335,7 +335,7 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::Mutex;
-    /// 构造最小 PluginHost（票据 32：路由错误分支测试）
+    /// 构造最小 PluginHost（路由错误分支测试）
     ///
     /// 空插件目录 + 内存 DB；wasmtime 初始化一次。auth_service 测试同模式。
     async fn test_plugin_host() -> Arc<PluginHost> {
@@ -365,7 +365,7 @@ mod tests {
         host
     }
 
-    /// 未激活插件 → 拒绝（票据 32：路由首道门禁）
+    /// 未激活插件 → 拒绝（路由首道门禁）
     #[tokio::test]
     async fn invoke_rust_command_rejects_inactive_plugin() {
         let host = test_plugin_host().await;
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(out, "out-data", "无 handler 时应原样返回输出");
     }
 
-    // ==================== 插件错误信封（ADR 0030 决定 6） ====================
+    // ==================== 插件错误信封 ====================
 
     /// 正例：标记 JSON → UserFacing 透传 code + params
     #[test]

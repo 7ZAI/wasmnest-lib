@@ -112,7 +112,7 @@ fn test_wasi_preopen_std_fs_e2e() {
     .expect("guest call thread panicked");
 }
 
-/// 只读档 preopen 端到端（审计票 07）：同一 fixture、同一挂载路径，声明改成
+/// 只读档 preopen 端到端：同一 fixture、同一挂载路径，声明改成
 /// `{path, readonly: true}` → guest 读得到、写不进，宿主侧字节不变。
 ///
 /// 与 `test_wasi_preopen_std_fs_e2e` 成对：那条锁住「可写档仍能写」（缺省档
@@ -217,7 +217,7 @@ fn test_wasi_preopen_read_only_std_fs_e2e() {
     .expect("guest call thread panicked");
 }
 
-/// 票 02 A1：wasip3 fixture async 闭环（本地装有 pinned nightly + wasm32-wasip3
+/// A1：wasip3 fixture async 闭环（本地装有 pinned nightly + wasm32-wasip3
 /// target 时执行；未装则跳过——CI stable 无该 target）
 ///
 /// 断言链（/tmp/wasip3-probe 场景 1-3 实证的机制落地到宿主测试）：
@@ -283,7 +283,7 @@ fn test_wasip3_fixture_async_closure() {
         .to_string();
     assert_ne!(hex1, hex2, "two get-random calls must differ");
 
-    // host-crypto 端到端探针已随票 02 批次 04 迁宿主 e2e（`src-tauri/tests/
+    // host-crypto 端到端探针已随批次 04 迁宿主 e2e（`src-tauri/tests/
     // host_crypto_e2e.rs` + 独立 crypto 夹具）——host-crypto 的 WIT 实现自内核
     // 迁宿主后，本二进制不再注册该 interface，夹具亦不再携带其 import。
 }

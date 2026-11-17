@@ -1,6 +1,6 @@
 //! 装配条目结构锁（I1：Store 只经装配条目、属主启动单点、能力导出无直锁调用）。
 //!
-//! **票 04 迁移记录**：原文件的三条两模型对照用例（命令往返 / 停用再激活 /
+//! **迁移记录**：原文件的三条两模型对照用例（命令往返 / 停用再激活 /
 //! trap 文案与失败可见性）随「wasm-core 不再持全 world 绑定」迁桌面宿主
 //! `src-tauri/tests/wasm_flow_e2e.rs`（`command_round_trip_works_in_both_call_models` /
 //! `deactivate_then_reactivate_works_in_both_call_models` /
@@ -75,7 +75,7 @@ fn instance_slot_structural_lock() {
         "属主模型必须只有一处常驻 run_concurrent 作用域"
     );
 
-    // fuel / 指标口径（spec §3.3「task 级计量」）：续费在 start 前发生、
+    // fuel / 指标口径（「task 级计量」）：续费在 start 前发生、
     // 计时器绑到 task 生命周期（start → finish），不得退回「每调用一把锁」的形态
     assert!(
         owner_src.contains("refill_fuel(&mut access"),

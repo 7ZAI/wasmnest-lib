@@ -1,4 +1,4 @@
-//! host_api 共享实现核边界锁（票 18 §6 门禁）
+//! host_api 共享实现核边界锁
 //!
 //! lib.rs 模块文档「边界判据」的机械执行面：
 //!
@@ -10,8 +10,7 @@
 //!    各端 adapter 的职责，实现层保持机制级最小依赖；
 //! 4. **域文件在场**：实现层模块不得以「重构」为名被清空（缺失 = 共享核名存实亡）。
 //!
-//! 只扫非注释行：本锁自身的说明与源文件里的记账注释不算回接
-//! （注释纪律见 AGENTS §6——注释解释为什么，锁不惩罚解释）。
+//! 只扫非注释行：注释解释「为什么」，锁不惩罚解释。
 
 use std::path::{Path, PathBuf};
 
@@ -41,7 +40,7 @@ fn impl_layer_has_no_sdk_wasm_core_host_platform_or_runtime_deps() {
     });
     assert!(
         violations.is_empty(),
-        "host_api 共享实现核出现越界依赖（票 18 §2 判据：实现层不得引用 SDK / wasm-core / 宿主平台 / 运行时）：\n{}",
+        "host_api 共享实现核出现越界依赖（实现层不得引用 SDK / wasm-core / 宿主平台 / 运行时）：\n{}",
         violations.join("\n")
     );
 }

@@ -18,7 +18,7 @@ wasmnest_host_kit::expect_host_module!(wasmnest_server_http::plugin_binding::MOD
 
 /// 自动收集到的能力模块集与树内白名单**完全相等**（双向）
 ///
-/// 这是「自动装配」机制唯一的不静默漂移护栏（wasm-core-lib-split 票 03）：
+/// 这是「自动装配」机制唯一的不静默漂移护栏：
 /// - 多出（unlisted）：有 crate 被加进依赖却没过 review，或强制引用行被人加了
 ///   注释掉 ⇒ 红
 /// - 少了（missing）：依赖被删 / 能力 crate 没被链接进来（inventory 的
@@ -69,7 +69,7 @@ fn missing_capability_module_fails_loudly_with_remediation() {
 }
 
 // fail-visible 形态① 反向（收集到但白名单没有）**不在本文件测**：本 crate 的
-// 测试二进制收集集随迁移批次收缩（票 02 批次 03 起 http / ws / peer / mdns 陆续
+// 测试二进制收集集随迁移批次收缩（批次 03 起 http / ws / peer / mdns 陆续
 // 移出本 crate，最终为空），任何依赖「收集集非空」的用例都会在后续批次变成
 // 恒真或必红。该方向的判据由两处承担：
 // ① `wasmnest-host-kit/tests/registry.rs`（探针模块保证收集集非空；含
@@ -92,9 +92,9 @@ fn collected_module_names_are_unique() {
     );
 }
 
-/// 描述符零产品名词（AGENTS §5.1 B1/B5 红线）
+/// 描述符零产品名词（B1/B5 红线）
 ///
-/// 模块注册表必须是「通用注册表与寻址」（§5.1.3 明列的宿主允许薄壳），一旦
+/// 模块注册表必须是「通用注册表与寻址」（宿主允许薄壳），一旦
 /// 描述符里出现产品名词，它就退化成业务容器。
 ///
 /// **判据与词表的单一真源在 host-kit**（`ModuleRegistry::product_noun_violations`）：

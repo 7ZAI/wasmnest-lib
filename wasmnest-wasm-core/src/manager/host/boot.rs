@@ -59,7 +59,7 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// L2 层「静态声明 + 动态就绪」的运行时判据（ADR 0031 K9 · fail-visible 形态②）
+/// L2 层「静态声明 + 动态就绪」的运行时判据（fail-visible 形态②）
 ///
 /// 抽成纯函数只为可单测：boot 循环本身要整套 `PluginHost` 才跑得起来，而这条判据
 /// 决定「是否必须在就位点点名报错」——fail-closed 下它唯一的可见信号就是这条日志，
@@ -113,7 +113,7 @@ impl PluginHost {
         // 无头/测试上下文无 AppHandle（`self.wasm_host_ctx().app_handle()` 为
         // None）：降级为纯日志跳过（与统一异常通道同策略），不影响上方静态插件的
         // 回调分发。整核抽出：不再经 lib `AppContext::try_global()`，直接取
-        // 本 host 的 WasmHostContext（AppHandleScope，spec §2.3）。
+        // 本 host 的 WasmHostContext（AppHandleScope）。
         if let Some(handle) = self.wasm_host_ctx().app_handle() {
             let _ = handle.emit(LIFECYCLE_STARTUP, serde_json::json!({}));
         }
@@ -170,7 +170,7 @@ impl PluginHost {
         tracing::info!("PluginHost notify_shutdown completed");
     }
 
-    /// 角色驱动层先于业务应用激活（L1 基础服务 → L2 内部统一业务，ADR 0032）
+    /// 角色驱动层先于业务应用激活（L1 基础服务 → L2 内部统一业务）
     ///
     /// 三张加载层：**L1 → L2 → L3**。L1 最先（其 host-* 同形能力要先装配进
     /// 能力注册表，否则消费方激活时的依赖检查会误报缺失）；L2 次之（宿主网关的
@@ -182,7 +182,7 @@ impl PluginHost {
     /// 插件 ID 排序（确定性，不引入隐式优先级规则）。
     ///
     /// 「单个失败不阻断其余」沿用：失败组件落 Error 态，其余照常激活。L2 失败时
-    /// L3 仍会激活、但认证面全拒（fail-closed，ADR 0031）——因此该失败必须有
+    /// L3 仍会激活、但认证面全拒（fail-closed）——因此该失败必须有
     /// 可见信号（`error` 日志 + 插件列表 Error 态），不能只落内部状态。
     pub(crate) async fn activate_role_driven_components(&self) {
         for kind in PluginKind::ROLE_DRIVEN_LOAD_ORDER {
@@ -214,7 +214,7 @@ impl PluginHost {
                     continue;
                 }
             }
-            // L2 的「静态声明 + 动态就绪」两段（ADR 0031 K9）：**整层激活完毕后**
+            // L2 的「静态声明 + 动态就绪」两段：**整层激活完毕后**
             // 仍无认证中心在册，才是 fail-closed 的报错条件。不能逐个插件比属主——
             // L2 可以有多插件（auth-center + monitor），非属主的同级插件是常态。
             // 该报错是「旧产物 / 中心忘注册」的 fail-visible 形态②：必须在就位点
@@ -235,10 +235,10 @@ impl PluginHost {
         }
     }
 
-    /// 存量兼容（ADR 0020 迁移）：升级前已启用的用户插件首启自动批准一次
+    /// 存量兼容（迁移）：升级前已启用的用户插件首启自动批准一次
     ///
     /// 审批门禁上线前，用户安装的插件按 manifest 全量授权即可运行；直接按新门禁拒绝
-    /// 会把用户现有功能打死（票 03 裁决 1）。因此对「持久化状态为已启用 且 尚无批准
+    /// 会把用户现有功能打死。因此对「持久化状态为已启用 且 尚无批准
     /// 记录」的用户安装插件补一条批准记录并 `warn` 留痕——用户仍可在插件详情页看到
     /// 完整权限清单。从未启用过的用户插件不在此列，照常走人工审批。
     ///
@@ -355,7 +355,7 @@ impl PluginHost {
                     }
                     plugins
                         .get(*id)
-                        // L3 批 = 业务应用面（ADR 0032）：角色驱动层（L1/L2）由
+                        // L3 批 = 业务应用面：角色驱动层（L1/L2）由
                         // `activate_role_driven_components` 按角色激活，其启停不
                         // 持久化（见 `get_activated_state`），故本批不重复激活它们
                         .map(|p| {
@@ -376,7 +376,7 @@ impl PluginHost {
         let mut activated_count = 0usize;
         for plugin_id in &to_activate {
             tracing::info!(plugin_id = %plugin_id, "[PluginHost] Auto-activating plugin");
-            // 存量兼容（ADR 0020）：审批门禁上线前就已启用的用户插件，首启补一次自动批准
+            // 存量兼容（迁移）：审批门禁上线前就已启用的用户插件，首启补一次自动批准
             self.auto_approve_legacy_user_plugin(plugin_id).await;
             match self.activate_plugin(plugin_id, false).await {
                 Ok(()) => activated_count += 1,

@@ -1,6 +1,6 @@
 //! `host-storage` 能力域的 3 条原语：权限门 / 系统空间纵深守卫 / 键值往返与属主隔离
 //!
-//! 迁移自宿主 `wasm_core::host_api/storage.rs` 的同名用例（票 08），断言逐字保留：
+//! 迁移自宿主 `wasm_core::host_api/storage.rs` 的同名用例，断言逐字保留：
 //! 未授权一律拒（含 set / delete）、授权后 get/set/delete 往返、跨插件隔离、
 //! 未设置 key 返回 `None`、删不存在 key 幂等、以及 R-02 纵深（`__system__` 系统空间
 //! 对插件面原语一律不可达）。

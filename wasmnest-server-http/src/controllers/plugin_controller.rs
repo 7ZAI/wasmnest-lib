@@ -26,7 +26,7 @@ pub(crate) fn plugin_http_status(response: &serde_json::Value) -> u16 {
         .unwrap_or(200)
 }
 
-/// 调用方请求 headers 白名单（票据 04）：只透传业务相关头，
+/// 调用方请求 headers 白名单：只透传业务相关头，
 /// 避免透传全部请求头带来的凭据泄露与枚举面。
 /// 凭据类头（authorization / cookie / proxy-authorization 等）一律不透传。
 const PLUGIN_HEADER_WHITELIST: &[&str] = &["content-type", "accept", "x-request-id"];
@@ -49,7 +49,7 @@ pub(crate) fn filter_plugin_request_headers(
     out
 }
 
-/// 插件响应 content-type 提取（票据 04）：`contentType` 字段指定响应类型；
+/// 插件响应 content-type 提取：`contentType` 字段指定响应类型；
 /// 缺失/非法时返回 None（调用方保持默认 application/json）。
 pub(crate) fn plugin_http_content_type(response: &serde_json::Value) -> Option<String> {
     response
@@ -58,7 +58,7 @@ pub(crate) fn plugin_http_content_type(response: &serde_json::Value) -> Option<S
         .map(|s| s.to_string())
 }
 
-/// 插件响应附加头提取（票 03）：`headers` 字段为 `{ "Header-Name": "value" }`
+/// 插件响应附加头提取：`headers` 字段为 `{ "Header-Name": "value" }`
 /// 字符串映射（如 file-tree-children 的 `Cache-Control`）；缺失/非法条目忽略。
 /// 值只接受字符串——宿主不替插件解释或转换头值。
 pub(crate) fn plugin_http_headers(response: &serde_json::Value) -> Vec<(String, String)> {
@@ -73,7 +73,7 @@ pub(crate) fn plugin_http_headers(response: &serde_json::Value) -> Vec<(String, 
 
 // ==================== 路由判定（纯函数，供测试固化） ====================
 
-/// 端点认证判定（纯函数，票 08 / ABI v29）：登记档位 + 本次请求是否已过宿主验签 → 是否放行
+/// 端点认证判定（纯函数）：登记档位 + 本次请求是否已过宿主验签 → 是否放行
 ///
 /// `Jwt` 档要求 `verified`（宿主 JWT 中间件已注入 claims）；`None` 档免凭证，但仍
 /// 携带 [`HttpCaller`] 身份，让插件自己按身份收紧（裁决 3）。
@@ -88,17 +88,17 @@ pub(crate) fn plugin_http_auth_allowed(auth: EndpointAuth, verified: bool) -> bo
     }
 }
 
-/// 宿主判定的调用方身份（票 08 裁决 3 + 内网穿透 T03）——转发给插件的 `caller` 字段取值
+/// 宿主判定的调用方身份（对等面 / 环回 / 匿名区分）——转发给插件的 `caller` 字段取值
 ///
 /// 四档互斥，按「对等面 > 已验签 > 环回 > 匿名」优先判定：
 /// - [`HttpCaller::Peer`]：经对等 HTTP/WS 面入站的隧道流量。TCP 对端虽是
 ///   127.0.0.1，也**不得**被当作 `localhost`（不变量 3/15）；即便该请求带 JWT，
-///   `caller` 仍是 `peer`，`device` 上下文照常注入（设计 §4.5）。
+///   `caller` 仍是 `peer`，`device` 上下文照常注入。
 /// - [`HttpCaller::Device`]：普通面上 JWT 验签通过的可信设备
 /// - [`HttpCaller::Localhost`]：普通面的环回调用方（hook 脚本、本机工具）
 /// - [`HttpCaller::Anonymous`]：普通面的局域网匿名调用方
 ///
-/// 凭据红线：任何一档都不带 JWT 本体与设备指纹（AGENTS.md §8）。
+/// 凭据红线：任何一档都不带 JWT 本体与设备指纹。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HttpCaller {
     Device,
@@ -143,7 +143,7 @@ pub(crate) fn request_face(req: &actix_web::HttpRequest) -> RequestFace {
 ///
 /// 连接身份只在认证中心放行后注入（认证闸门 `auth_gateway`），因此 `device` 与
 /// 「宿主已验签」同源同步；设备上下文只取 claims 派生标识，
-/// **JWT 本体与指纹不出宿主**（AGENTS.md §8 凭据红线）。
+/// **JWT 本体与指纹不出宿主**（凭据红线）。
 /// 注意：peer 面上 `caller` 恒为 `Peer`，「是否已验签」请改用 `device.is_some()`。
 pub(crate) fn caller_identity(req: &actix_web::HttpRequest) -> (HttpCaller, Option<serde_json::Value>) {
     let identity = get_authenticated_identity(req);
@@ -176,7 +176,7 @@ pub(crate) fn resolve_http_owner<'a>(requested: &'a str, requested_activated: bo
 /// 一次业务 HTTP 请求转发到插件 `_http_endpoint` 所需的全部入参
 ///
 /// `pub(crate)`：`server/gateway.rs` 的业务 URL 别名走的是同一个内核——「新增传输机制」
-/// 是票 01 明确禁止的形态，两条路径必须共用请求构造与响应映射（含 headers 白名单、
+/// 是新增传输机制，两条路径必须共用请求构造与响应映射（含 headers 白名单、
 /// status/contentType 解析口径），否则同一请求经网关与经 `/api/plugin/*` 会答出两版。
 pub(crate) struct PluginHttpRequest<'a> {
     /// 去掉 `/api/plugin/{plugin_id}/` 前缀后的端点段（网关路径取别名目标的端点段）
@@ -193,7 +193,7 @@ pub(crate) struct PluginHttpRequest<'a> {
     pub caller: HttpCaller,
     /// 宿主验签后的可信设备上下文（仅已验签时有值；peer 面带 JWT 同样注入）
     ///
-    /// 只给 claims 派生的标识字段，**JWT 本体与指纹一律不透传**（AGENTS.md §8 凭据红线）。
+    /// 只给 claims 派生的标识字段，**JWT 本体与指纹一律不透传**。
     pub device: Option<serde_json::Value>,
     /// 传输面标记（T03）：peer 面时线协议追加 `peerNodeId` / `pairing`
     pub face: RequestFace,
@@ -201,7 +201,7 @@ pub(crate) struct PluginHttpRequest<'a> {
 
 /// 插件 `_http_endpoint` 入参构造（纯函数，供双轨契约测试逐字段锁定）
 ///
-/// `headers` 字段为票据 04 增量追加、`device` 为票 01 网关追加、`caller` 为票 08 追加
+/// `headers` 字段是后加的、`device` 由网关追加、`caller` 再由认证档位追加
 /// ——都是字段级追加，老插件忽略未知字段（协议增量原则）。
 pub(crate) fn build_plugin_http_args(req: &PluginHttpRequest) -> serde_json::Value {
     let mut args = serde_json::json!({
@@ -265,7 +265,7 @@ pub(crate) async fn forward_to_plugin(owner: &str, req: &PluginHttpRequest<'_>) 
             if let Some(content_type) = plugin_http_content_type(&response) {
                 builder.insert_header((actix_web::http::header::CONTENT_TYPE, content_type));
             }
-            // headers 可选（票 03）：插件透传附加响应头（如 Cache-Control）
+            // headers 可选：插件透传附加响应头（如 Cache-Control）
             for (name, value) in plugin_http_headers(&response) {
                 match actix_web::http::header::HeaderName::try_from(name.clone()) {
                     Ok(header_name) => {
@@ -293,7 +293,7 @@ pub(crate) async fn forward_to_plugin(owner: &str, req: &PluginHttpRequest<'_>) 
     }
 }
 
-/// 「调用方未验签」响应（票 08）：HTTP 401 + 业务码 1007，与 JWT 中间件的 401 同一码
+/// 「调用方未验签」响应：HTTP 401 + 业务码 1007，与 JWT 中间件的 401 同一码
 ///
 /// 文案同时点名两条出路（带合法 JWT / 在 manifest 逐条声明 `auth: "none"`）——
 /// 收紧后打不通的调用方必须能从错误里读出该改哪一侧，而不是只看到「authentication failed」。
@@ -313,7 +313,7 @@ pub(crate) fn plugin_http_unauthenticated_response(full_path: &str) -> HttpRespo
 /// 仅支持已激活的 Rust / WASM 插件，TS-only 插件的 HTTP 端点通过前端 Tauri event 桥接。
 ///
 /// 认证：`auth_gateway` 中间件先问认证中心（放行时注入连接身份），本 handler 按**属主端点
-/// 声明的档位**决定是否要求已验签（票 08）：manifest 未声明 `auth` 即最严档 `jwt`，
+/// 声明的档位**决定是否要求已验签：manifest 未声明 `auth` 即最严档 `jwt`，
 /// 免凭证必须逐条显式声明 `auth: "none"`。服务监听 0.0.0.0，收紧前「插件端点对局域网
 /// 无凭证可达」正是本票处置的风险。
 pub async fn plugin_http_endpoint(
@@ -383,7 +383,7 @@ pub async fn plugin_http_endpoint(
     }
 
     // 构造请求参数：method、path、白名单 headers、body、query、调用方身份
-    // headers 字段为票据 04 增量追加，caller / device 为票 01 / 票 08 追加——
+    // headers 字段后加，caller / device 由网关与认证档位追加——
     // 老插件忽略未知字段（字段演进增量原则）
     let method = req.method().as_str();
     let request_headers = filter_plugin_request_headers(req.headers());
@@ -460,7 +460,7 @@ mod tests {
         assert_eq!(plugin_http_status(&serde_json::json!({"status": 1000})), 200);
     }
 
-    /// 请求头白名单（票据 04）：白名单内透传（小写），凭据/白名单外丢弃
+    /// 请求头白名单：白名单内透传（小写），凭据/白名单外丢弃
     #[test]
     fn filter_plugin_request_headers_whitelist_only() {
         use actix_web::http::header::{HeaderMap, HeaderName, HeaderValue};
@@ -511,7 +511,7 @@ mod tests {
         assert_eq!(plugin_http_content_type(&serde_json::json!({"contentType": 123})), None);
     }
 
-    /// 票 08：端点级认证判定只有「档位 × 是否已验签」两个输入，四格全覆盖
+    /// 端点级认证判定只有「档位 × 是否已验签」两个输入，四格全覆盖
     #[test]
     fn auth_tier_judges_verification_state_only() {
         assert!(
@@ -529,7 +529,7 @@ mod tests {
         );
     }
 
-    /// 票 08：身份判定的优先级与线协议取值
+    /// 身份判定的优先级与线协议取值
     ///
     /// 已验签压倒环回（本机带 token 的请求就是 device）；拿不到对端地址时按匿名处理
     /// （fail-closed：绝不因为「读不到地址」就升成本机身份）。
@@ -557,9 +557,9 @@ mod tests {
         );
     }
 
-    /// 票 08 + 凭据红线：`caller_identity` 只给身份派生标识，凭证本体与指纹不外泄
+    /// 凭据红线：`caller_identity` 只给身份派生标识，凭证本体与指纹不外泄
     ///
-    /// 认证中心交回的连接身份经中间件注入 extensions（ADR 0033：宿主不再自行验签，
+    /// 认证中心交回的连接身份经中间件注入 extensions（宿主不再自行验签，
     /// 也没有签发面，故本用例直接构造身份而不造 token）。断言：转发给插件的
     /// `device` 上下文只有 `deviceId` / `deviceName`，**不含指纹**。
     #[test]
@@ -619,7 +619,7 @@ mod tests {
         );
     }
 
-    /// 内网穿透 T03 安全锁：peer 面（含 loopback + 已验签）永不当 localhost
+    /// 内网穿透安全锁：peer 面（含 loopback + 已验签）永不当 localhost
     ///
     /// 变异杀死：把 `classify` 里的 peer_face 分支删掉/放到验签之后，本用例立刻红。
     #[test]
@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(build(RequestFace::local(), false), (HttpCaller::Localhost, None));
     }
 
-    /// 内网穿透 T03 安全锁：客户端自报头不构成面标记，`peerNodeId` 只来自宿主注入
+    /// 内网穿透安全锁：客户端自报头不构成面标记，`peerNodeId` 只来自宿主注入
     #[test]
     fn peer_context_ignores_client_supplied_headers() {
         use actix_web::http::header::{HeaderName, HeaderValue};
@@ -685,7 +685,7 @@ mod tests {
         assert!(!args.to_string().contains("forged-node"), "伪造头不得进入线协议");
     }
 
-    /// 票 08：认证拒绝的响应形状是「401 + 1007 + 点名两条出路」，而不是 200 带业务码
+    /// 认证拒绝的响应形状是「401 + 1007 + 点名两条出路」，而不是 200 带业务码
     ///
     /// 走真实 actix body 读取（不是只看构造器），否则「忘了 `.Unauthorized()`」
     /// 这种最可能的写错方式不会被测到。

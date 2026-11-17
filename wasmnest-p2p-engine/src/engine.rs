@@ -252,7 +252,7 @@ impl RunningNode {
 
     /// [`Self::dial`] 的显式超时版本
     ///
-    /// 多地址拨号（[`Self::dial_addrs`]）按候选给短窗口（LAN 2~3s，见设计 §4.9）；
+    /// 多地址拨号（[`Self::dial_addrs`]）按候选给短窗口（LAN 2~3s）；
     /// 超时结算与清理语义与 [`Self::dial`] 完全一致（清在飞登记，防迟到连接误命中）。
     pub async fn dial_with_timeout(
         &self,
@@ -289,26 +289,17 @@ impl RunningNode {
             }
         }
         if must_redial {
-            // 对端换址重启：先断旧链路并等登记摘除，否则新 ConnectionEstablished
-            // 会命中旧 ConnState（按 PeerId 键控）被当成重复连接累加。
+            // 对端地址变化**不预先断开旧链路**：同一对端可能同时有内网直连与
+            // relay 两条可达路径，旧链路此刻可能仍承载在飞传输。先拨新地址，
+            // 成功后由 ConnectionEstablished 的同 PeerId 分支累加连接并把链路
+            // 记录切到新地址；旧连接由 ping / 空闲回收，失败则旧链路保持可用。
+            // 反过来先断旧链路会在新地址不可达时把在飞会话一并打断（真机现象：
+            // 外网传输中切内网，传输直接 Failed）。
             tracing::info!(
                 node_id = %expected_node_id,
                 ?dial_addr,
-                "peer address changed; dropping stale link before redial"
+                "peer address changed; dialing new address while keeping existing link"
             );
-            let _ = self.disconnect(expected_node_id.clone()).await;
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if self.peer_link(&expected_node_id).is_none() {
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    return Err(P2pError::Dial(
-                        "stale link did not close after address change".to_string(),
-                    ));
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
         }
         let (tx, rx) = oneshot::channel();
         self.inner
@@ -341,7 +332,7 @@ impl RunningNode {
 
     /// 多地址拨号：按调用方给定顺序逐个尝试，首个成功即返回
     ///
-    /// 设计 §4.9 的拨号策略落在调用方（先 LAN、明确不在内网才 relay），引擎只保证
+    /// 拨号策略落在调用方（先 LAN、明确不在内网才 relay），引擎只保证
     /// **顺序 + 逐候选短超时 + 失败成因逐条可见**：
     ///
     /// - 顺序 = 入参顺序（不排序、不去重、不自动把 relay 提前）；
@@ -361,7 +352,7 @@ impl RunningNode {
 
     /// [`Self::dial_addrs`] 的逐候选项超时版本。
     ///
-    /// 设计 §4.9 要求 LAN 与 relay 候选使用不同窗口（relay 先连中继再开
+    /// LAN 与 relay 候选需用不同窗口（relay 先连中继再开
     /// circuit，跨公网/移动网络 3s 明显偏紧）；超时由调用方按候选决定。
     pub async fn dial_addrs_with_timeouts<F>(
         &self,
@@ -395,7 +386,7 @@ impl RunningNode {
                 }
                 Err(err) => {
                     tracing::debug!(%addr, error = %err, "候选地址拨号失败，尝试下一个");
-                    // 结构化逐候选成因：调用方按自己的判据表（§4.9）映射，
+                    // 结构化逐候选成因：调用方按自己的判据表映射，
                     // 不对拼接文本做子串匹配。
                     failures.push(DialAttempt {
                         addr: addr.to_string(),
@@ -493,6 +484,36 @@ impl RunningNode {
             }
             link.peer_id
         };
+        let mut control = self.inner.control.lock().await;
+        match tokio::time::timeout(
+            STREAM_OPEN_TIMEOUT,
+            control.open_stream(peer_id, StreamProtocol::new(protocol)),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => Ok(stream),
+            Ok(Err(e)) => Err(P2pError::Stream {
+                protocol: protocol.to_string(),
+                detail: e.to_string(),
+            }),
+            Err(_) => Err(P2pError::StreamTimeout(protocol.to_string())),
+        }
+    }
+
+    /// 向**任意已连接 PeerId** 开一条具名流，不经过链路准入闸门。
+    ///
+    /// 只给宿主基础设施协议用（当前 = 中继控制面 `/wasmnest/relay-control/1`）：
+    /// 中继是 libp2p 传输层节点，不走 peer-net 的 trust-status 准入，因此
+    /// [`Self::open_stream`] 会以 `NotConnected` 拒绝。业务数据面**不得**调用本
+    /// 方法绕过准入——协议名与调用方由边界锁约束。
+    ///
+    /// # Errors
+    /// 对端未连接 / 协议协商失败 / 超时；不自动拨号（调用方应先建立 relay 预留）。
+    pub async fn open_stream_to_peer(
+        &self,
+        peer_id: PeerId,
+        protocol: &'static str,
+    ) -> Result<libp2p::swarm::Stream, P2pError> {
         let mut control = self.inner.control.lock().await;
         match tokio::time::timeout(
             STREAM_OPEN_TIMEOUT,
@@ -780,7 +801,7 @@ struct PendingDial {
 
 /// relay 预留运行时：端点轮换、请求硬超时、指数退避、状态发布
 ///
-/// 一个节点同时只维护**一个**预留（设计 §4.8：reservation 由宿主隧道管理器单一
+/// 一个节点同时只维护**一个**预留（reservation 由宿主隧道管理器单一
 /// 引用计数所有；引擎不并行为多个 relay 建预留）。多端点语义是「按顺序 failover」，
 /// 不是「全建」——避免同一节点在多 relay 上散落孤儿预留。
 #[cfg(feature = "relay")]
@@ -1384,7 +1405,7 @@ fn handle_swarm_event(
         } => match endpoint {
             ConnectedPoint::Dialer { address, .. } => {
                 // relay 控制连接是基础设施连接：不登记链路、不发 peer_connected，
-                // 否则宿主设备列表会把 relay 当业务对端（设计 §4.1「relay 不是信任点」）。
+                // 否则宿主设备列表会把 relay 当业务对端（relay 不是信任点）。
                 if infra_peers.contains(&peer_id) {
                     tracing::debug!(%peer_id, "relay 控制连接已建立（不登记为业务对端）");
                     return;
@@ -1954,6 +1975,22 @@ mod tests {
         panic!("监听地址 2s 内未出现");
     }
 
+    /// 取回环监听地址（`0.0.0.0` 绑定时同端口可由 `127.0.0.2` 到达，
+    /// 用于构造同一节点两条可拨地址）
+    async fn wait_loopback_listen(node: &RunningNode) -> SocketAddr {
+        for _ in 0..100 {
+            if let Some(sa) = node
+                .listen_addresses()
+                .iter()
+                .find(|a| a.ip().is_loopback())
+            {
+                return *sa;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("回环监听地址 2s 内未出现");
+    }
+
     /// 等待对端链路登记（拨号方 dial 返回早于被拨方处理入站事件）
     async fn wait_peer_link(node: &RunningNode, node_id: &NodeId) -> PeerLink {
         for _ in 0..100 {
@@ -2026,6 +2063,91 @@ mod tests {
             "B 侧应为入站（已过准入）：{ev}"
         );
 
+        a.shutdown().await;
+        b.shutdown().await;
+    }
+
+    /// 换址拨号不得先断旧链路：旧链路可能仍承载在飞业务流。
+    ///
+    /// 回归现场：外网传输中切内网，引擎按候选新地址拨号前先 `disconnect`，
+    /// 旧 relay 链路上的发送会话直接 `connection is closed → Failed`。
+    #[tokio::test]
+    async fn 换址拨号_保留旧链路与在飞流() {
+        // 0.0.0.0 绑定：同端口既能由 127.0.0.1 到达，也能由 127.0.0.2 到达
+        let b_config = P2pNodeConfig {
+            listen_addr: IpAddr::from([0, 0, 0, 0]),
+            ..localhost_config()
+        };
+        let (b_ports, _b_rx) = ports_with(Arc::new(AutoAdmit));
+        let (b, mut streams) =
+            P2pEngine::start_with_protocols(NodeKey::generate(), b_config, b_ports, &[TRANSFER])
+                .unwrap();
+        let b_listen = wait_loopback_listen(&b).await;
+
+        let (a_ports, _a_rx) = ports_with(Arc::new(AutoAdmit));
+        let a = P2pEngine::start(NodeKey::generate(), localhost_config(), a_ports).unwrap();
+        let b_node_id = b.node_id().clone();
+
+        // 第一条链路：127.0.0.1
+        a.dial(
+            listen_multiaddr(IpAddr::from([127, 0, 0, 1]), b_listen.port()),
+            b_node_id.clone(),
+        )
+        .await
+        .expect("首拨应成功");
+
+        let mut incoming = streams.remove(TRANSFER).expect("业务协议接收器");
+        let server = tokio::spawn(async move {
+            let mut inbound = incoming.next().await.expect("应收到旧链路业务流");
+            let mut buf = [0u8; 4];
+            inbound
+                .stream
+                .read_exact(&mut buf)
+                .await
+                .expect("旧链路读请求");
+            assert_eq!(&buf, b"ping");
+            // 等换址拨号完成后再回写：旧链路若被预先断开，这里会写失败
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            inbound
+                .stream
+                .write_all(b"pong")
+                .await
+                .expect("旧链路写回失败（旧连接被提前断开）");
+            inbound.stream.flush().await.expect("flush");
+        });
+
+        let mut old_stream = a
+            .open_stream(&b_node_id, TRANSFER)
+            .await
+            .expect("旧链路开流");
+        old_stream.write_all(b"ping").await.expect("旧链路写请求");
+        old_stream.flush().await.expect("flush");
+
+        // 第二条链路：127.0.0.2（同节点不同地址 → 命中换址分支）
+        a.dial_with_timeout(
+            listen_multiaddr(IpAddr::from([127, 0, 0, 2]), b_listen.port()),
+            b_node_id.clone(),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("换址拨号应成功");
+
+        // 旧链路仍可往返：修复前旧连接被 disconnect，这里会 EOF
+        let mut buf = [0u8; 4];
+        old_stream
+            .read_exact(&mut buf)
+            .await
+            .expect("旧链路读回失败（旧连接被提前断开）");
+        assert_eq!(&buf, b"pong");
+
+        let link = wait_peer_link(&a, &b_node_id).await;
+        assert_eq!(
+            link.remote_addr.ip(),
+            IpAddr::from([127, 0, 0, 2]),
+            "链路记录应切到新地址"
+        );
+
+        server.await.expect("server task");
         a.shutdown().await;
         b.shutdown().await;
     }
@@ -2524,7 +2646,7 @@ mod tests {
         impl RelayServer {
             async fn start(key: Keypair, port: u16) -> Self {
                 let peer_id = key.public().to_peer_id();
-                // 默认 128KiB / 2min 会把 1MiB 与 100MiB 用例掐断（T01 吞吐验收）
+                // 默认 128KiB / 2min 会把 1MiB 与 100MiB 用例掐断（吞吐验收）
                 let config = relay::Config {
                     max_circuit_bytes: 256 * 1024 * 1024,
                     max_circuit_duration: Duration::from_secs(600),
@@ -2543,7 +2665,7 @@ mod tests {
                         let mut behaviour = relay::Behaviour::new(peer_id, config);
                         // 默认 Status::Disable 不对外通告 HOP 协议（客户端会得到
                         // Reservation(Unsupported)）；测试 relay 固定开启，等价于
-                        // T13 部署里的显式启用。
+                        // 部署里的显式启用。
                         behaviour.set_status(Some(relay::Status::Enable));
                         behaviour
                     })
@@ -2608,7 +2730,7 @@ mod tests {
             false
         }
 
-        /// T01 核心用例：A 预留 → B 经 relay 拨 A → `/wasmnest/session/1` 往返 1MiB
+        /// 核心用例：A 预留 → B 经 relay 拨 A → `/wasmnest/session/1` 往返 1MiB
         #[tokio::test]
         async fn 经_relay_预留_拨号_并往返_1mib_具名流() {
             let relay = RelayServer::start(Keypair::generate_ed25519(), 0).await;
@@ -2717,12 +2839,12 @@ mod tests {
             a.shutdown().await;
         }
 
-        /// T01 PoC 指标（手动跑）：
+        /// PoC 指标（手动跑）：
         /// `cargo test --features relay relay_poc_metrics -- --ignored --nocapture`
         ///
         /// 记录：预留建立耗时 / 环回 relay RTT / 1MiB 与 100MiB 吞吐。
         /// **这是 loopback 数据**，只能作实现正确性与数量级参考；真机跨网数据
-        /// 必须按 T10 在「手机蜂窝 ↔ 家庭宽带」上另测（本机无法代替）。
+        /// 必须在「手机蜂窝 ↔ 家庭宽带」上另测（本机无法代替）。
         #[tokio::test]
         #[ignore = "PoC 指标测量，手动运行（--ignored --nocapture）"]
         async fn relay_poc_metrics() {

@@ -1,4 +1,4 @@
-//! 策略档位（票 06：三档在网络侧与文件侧同语义） — crate 内单元测试（自桌面宿主旧 `wasm_core/security/network_auth.rs` 面迁出）
+//! 策略档位（三档在网络侧与文件侧同语义） — crate 内单元测试（自桌面宿主旧 `wasm_core/security/network_auth.rs` 面迁出）
 
 use super::scaffold::*;
 use super::*;
@@ -7,7 +7,7 @@ use crate::security::auth_policy::AuthStrategy;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 //
-// 变异自检（spec §12.2）：
+// 变异自检：
 // - M1 把 `StrategyStep::Ask` 分支改成继续读记录 ⇒ `always_ask_prompts_again_despite_an_allow_record` 转红
 // - M2 把 `StrategyStep::AutoAllow` 改成询问 ⇒ `always_allow_releases_unrecorded_origin_and_records_it_as_unconfirmed`、
 //   `both_decision_faces_agree_on_every_tier` 转红
@@ -64,7 +64,7 @@ async fn always_ask_still_honors_deny_records_without_prompting() {
         "deny 记录命中不得再弹窗（否则同一条硬拒绝会在每次访问时重新问一遍）"
     );
 }
-/// 票 06 的落账口径：「总是询问」档下允许**不落账**（落一条没人读的记录 =
+/// 落账口径：「总是询问」档下允许**不落账**（落一条没人读的记录 =
 /// 在管理界面谎称「用户已授权」）
 #[tokio::test]
 async fn always_ask_allow_leaves_no_record_behind() {
@@ -140,7 +140,7 @@ async fn always_ask_keeps_the_deny_the_user_ever_gave() {
         "落下的 deny 记录必须免询问（否则该档把 deny 作废了）"
     );
 }
-/// 票 06 第二条：合并规则在「总是询问」档下**同样生效**（否则一次刷新几十次弹窗）
+/// 第二条：合并规则在「总是询问」档下**同样生效**（否则一次刷新几十次弹窗）
 #[tokio::test]
 async fn always_ask_still_merges_one_prompt_per_origin_batch() {
     let (checker, log) = promptable(TINY, TINY).await;
@@ -183,7 +183,7 @@ async fn always_allow_releases_unrecorded_origin_and_records_it_as_unconfirmed()
     let (checker, log) = promptable(TINY, TINY).await;
     set_strategy(&checker, "com.wasmnest.test", AuthStrategy::AlwaysAllow).await;
 
-    // URL 带 query：落库 target 绝不能含它（凭据红线，票 05 的约束对自动落账同样成立）
+    // URL 带 query：落库 target 绝不能含它（凭据红线，约束对自动落账同样成立）
     let verdict = checker
         .authorize_outbound(
             "com.wasmnest.test",
@@ -202,7 +202,7 @@ async fn always_allow_releases_unrecorded_origin_and_records_it_as_unconfirmed()
     assert_eq!(log.len(), 0, "始终允许不得弹窗");
 
     let stored = records(&checker, "com.wasmnest.test").await;
-    assert_eq!(stored.len(), 1, "免询问也必须留痕（spec §4.3）");
+    assert_eq!(stored.len(), 1, "免询问也必须留痕");
     assert_eq!(
         stored[0].target, "https://api.x.com:443",
         "落库 target 是 origin，不含 path / query"

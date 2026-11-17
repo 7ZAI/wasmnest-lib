@@ -9,13 +9,13 @@ use crate::security::fs_auth::FsAuthChecker;
 use std::sync::Arc;
 use tauri::State;
 
-// ==================== 前端通道身份（审计票 06 / P0-5） ====================
+// ==================== 前端通道身份（审计结论） ====================
 //
 // 本桥的插件面命令**不再信任参数里的 plugin_id**：调用方必须带 `credential`，
 // 身份由宿主解析（宿主面 loader 密钥 → 可操作任意目标；插件面令牌 → 目标必须是自己）。
 // 机制与威胁模型见 `plugin/security/frontend_channel.rs`。
 //
-// **宿主面命令门（ADR 0058 方案 A，2026-10-24，issue #21）**：生命周期管理命令
+// **宿主面命令门（既定方案 A，2026-10-24）**：生命周期管理命令
 // （plugin_preauthorize / plugin_activate / plugin_deactivate / plugin_approve /
 // plugin_install_from_file / plugin_uninstall）已纳入宿主面凭证门——激活 / 停用 /
 // 安装 / 卸载 / 审批是宿主职权，插件面令牌（即使目标是自己）也一律拒绝；前端调用点
@@ -89,7 +89,7 @@ pub async fn plugin_channel_token(
 ///
 /// 授权记录是安全闸门的配给账：插件面凭证不得用它枚举其它应用的授权情况，
 /// 更不能替用户撤销或同意。判据委托给
-/// `frontend_channel::require_host_identity`（ADR 0058 方案 A 的真源，有单测），
+/// `frontend_channel::require_host_identity`（宿主面命令门的真源，有单测），
 /// 本层只负责把失败换成各命令自己的 denial 文案——既有调用点的拒绝文案逐字不变。
 fn require_host_surface(
     plugin_host: &PluginHost,
@@ -219,7 +219,7 @@ pub async fn plugin_deactivate(
     result
 }
 
-/// 批准用户安装插件的权限清单（ADR 0020 审批门禁的放行操作）
+/// 批准用户安装插件的权限清单（审批门禁的放行操作）
 ///
 /// 生效权限 = 批准 ∩ manifest 请求；批准与插件目录内容哈希绑定，
 /// 目录内容在批准后变化 → 批准自动撤销并回到 NeedsApproval。
@@ -255,7 +255,7 @@ pub async fn plugin_get_activated_state(
 
 // ==================== Frontend Load Diagnostics ====================
 
-/// 插件前端模块加载诊断上报（宿主内部诊断通道，spec §3.7 / issue 04）
+/// 插件前端模块加载诊断上报（宿主内部诊断通道）
 ///
 /// 前端 PluginLoader 在 TS 模块导入/激活成败时调用，把结果写入 tracing 落盘日志
 /// （runtime.*.log），使日志能看到插件加载「后端半程之外」的前端半程。仅写日志：
@@ -368,9 +368,9 @@ pub async fn plugin_storage_delete(
     plugin_host.storage().delete(&plugin_id, &key).await
 }
 
-// ==================== Plugin Terminal（票 08 已注销） ====================
+// ==================== Plugin Terminal（已注销） ====================
 
-// `plugin_terminal_send_input` 随票 08 删除：它是「宿主替插件把终端输入导流到 PTY」
+// `plugin_terminal_send_input` 随迁移删除：它是「宿主替插件把终端输入导流到 PTY」
 // 的桥，会话命令面注销后插件前端改走自家命令通道（`session.input` → 本插件
 // `session::input_via_pty`），宿主不再有这条替插件写输入的路径。
 //
@@ -411,7 +411,7 @@ pub async fn plugin_find_file_handler(
 /// 调用 Rust 插件的自定义 command
 ///
 /// 统一路由：前端通过 `invoke('plugin_invoke', { pluginId, command, args, credential })` 调用。
-/// **身份由 `credential` 绑定**（审计票 06）：插件只能驱动自己的 command（目标必须等于令牌
+/// **身份由 `credential` 绑定**（审计结论）：插件只能驱动自己的 command（目标必须等于令牌
 /// 身份），宿主前端持 loader 会话密钥可驱动任意插件的 command（宿主职权）。
 /// 此前该命令只查 `is_activated`，任何插件前端都能以他人 plugin_id 触发其命令副作用。
 #[tauri::command]
@@ -466,11 +466,11 @@ pub async fn plugin_dev_reload(
 /// 回复文件系统授权请求（由前端弹窗调用）
 ///
 /// 决定取值见 [`FsDecision`](crate::security::fs_auth::FsDecision)：
-/// `allow_once` / `allow_remember` / `deny` / `deny_always`（票 03 固定；「记住」只在
+/// `allow_once` / `allow_remember` / `deny` / `deny_always`（固定四态；「记住」只在
 /// 「默认」档成立，「总是询问」档的弹窗根本不提供它）。
 /// 未知决定值**显性报错**，不兜底成放行（与 [`plugin_network_auth_respond`] 同一口径）。
 ///
-/// **只接受宿主面凭证**（loader 会话密钥，审计票 06）：授权请求事件是广播的，插件前端也
+/// **只接受宿主面凭证**（loader 会话密钥，审计结论）：授权请求事件是广播的，插件前端也
 /// 能 `listen` 到，若该命令不绑身份，插件就能替用户「同意」自己的文件访问请求——
 /// 那是把授权弹窗变成摆设。宿主弹窗 `FsAuthDialog.vue` 持宿主面凭证，插件拿不到。
 #[tauri::command]
@@ -504,14 +504,14 @@ pub async fn plugin_fs_auth_respond(
     Ok(())
 }
 
-// ==================== Network Auth（票 05） ====================
+// ==================== Network Auth ====================
 
 /// 回复网络出站授权询问（由前端弹窗调用）
 ///
-/// **不复用 fs 侧的双布尔签名**（票 05 固定三态）：网络侧的询问粒度就是 origin，
+/// **不复用 fs 侧的双布尔签名**（固定三态）：网络侧的询问粒度就是 origin，
 /// 用户点头的语义是「这个地址可以访问」——不存在「只这一次、别记」的中间档。
 /// `allow_once` 落 allow 记录（`source='user'`）、`deny_always` 落 deny 记录、
-/// `deny` 不落账。未知决定值**显性报错**，不得兜底成放行（AGENTS §8 fail-visible）。
+/// `deny` 不落账。未知决定值**显性报错**，不得兜底成放行（fail-visible）。
 ///
 /// **只接受宿主面凭证**（与 [`plugin_fs_auth_respond`] 同一判据）：询问事件是广播的，
 /// 插件前端也能 `listen` 到；不绑身份的话插件就能替用户「同意」自己的出站访问。
@@ -546,9 +546,9 @@ pub async fn plugin_network_auth_respond(
     Ok(())
 }
 
-// ==================== 应用授权读模型（授权策略增强 · 票 01） ====================
+// ==================== 应用授权读模型（授权策略增强） ====================
 
-/// 应用授权读模型（spec §9.3）：策略 + 授权记录 + 第一方免询问项
+/// 应用授权读模型：策略 + 授权记录 + 第一方免询问项
 ///
 /// 设置页「应用授权」总览与应用详情页「授权记录」区块共用本命令，不各写一套查询。
 /// `plugin_id` 为空 = 总览（全部已安装 wasm 应用）；指定时只返回该应用——未安装 /
@@ -567,7 +567,7 @@ pub async fn plugin_auth_overview(
     credential: String,
     plugin_host: State<'_, Arc<PluginHost>>,
     db: State<'_, Arc<std::sync::Mutex<crate::db::Database>>>,
-    // 票 08/P0-2：第一方免弹窗项的产品清单出厂 lib，读模型经宿主装配的校验器取
+    // 第一方免弹窗项的产品清单出厂 lib，读模型经宿主装配的校验器取
     // 只读投影（与 plugin_fs_auth_respond 同一 State，已注册）
     fs_auth: State<'_, Arc<FsAuthChecker>>,
 ) -> crate::Result<Vec<crate::security::auth_policy::PluginAuthOverview>> {
@@ -608,7 +608,7 @@ pub async fn plugin_auth_overview(
     Ok(out)
 }
 
-/// 设置某应用在某资源上的授权策略档位（spec §4.1 三档；设置页策略控件的唯一写入口）
+/// 设置某应用在某资源上的授权策略档位（三档；设置页策略控件的唯一写入口）
 ///
 /// 管理面命令（宿主面凭证）：档位是安全闸门的松紧，插件面不得替用户改自己的档位。
 /// 未知档位值**显性报错**——写面不猜档位：把 `always_allow` 手误写错却静默存成
@@ -652,7 +652,7 @@ pub async fn plugin_auth_set_strategy(
     Ok(())
 }
 
-/// 撤销某目标的授权（spec §8.4：删除该目标的 allow 记录 + 落一条 `deny` 记录）
+/// 撤销某目标的授权（删除该目标的 allow 记录 + 落一条 `deny` 记录）
 ///
 /// 管理面命令（宿主面凭证）：撤销是安全决策——插件面不得替用户撤掉或保留自己的授权。
 /// 返回被删除的 allow 行数（0 表示该目标本就没有 allow 记录）。
@@ -691,7 +691,7 @@ pub async fn plugin_auth_revoke(
     Ok(removed)
 }
 
-/// 移除某目标的 deny 记录（spec §8.4 的恢复出口：只删 deny，回到未覆盖状态）
+/// 移除某目标的 deny 记录（恢复出口：只删 deny，回到未覆盖状态）
 ///
 /// 管理面命令（宿主面凭证）。返回删除的 deny 行数（0 = 本就没有 deny 记录）。
 #[tauri::command]
@@ -806,7 +806,7 @@ mod tests {
     //!    （`list_plugins` / `activate_plugin` / `invoke_rust_command` /
     //!    `storage()` 等）均已在 `host.rs` 测试中直接覆盖（含错误分支的
     //!    错误字符串断言），桥接层只是透传。
-    //! 4. 宿主面门禁（ADR 0058 方案 A 起 `require_host_surface` 委托
+    //! 4. 宿主面门禁（既定方案 A 起 `require_host_surface` 委托
     //!    `frontend_channel::require_host_identity`）：其可测逻辑（宿主面凭证放行、
     //!    插件面令牌即使目标是自己也拒绝、跨 webview 域隔离）已在该模块单测覆盖，
     //!    桥接层仍是薄委托（Err 时换用调用方传入的 denial 文案），不另测。
@@ -822,12 +822,12 @@ mod tests {
     //! 例外：`plugin_frontend_load_report` 不依赖任何 State 参数（纯日志透传），
     //! 可直接调用测试。
     //!
-    //! **已注销会话命令面的防回接锁**（扫宿主源码，票 08）已随票 08 批次三迁
+    //! **已注销会话命令面的防回接锁**（扫宿主源码）已随迁移迁
     //! 桌面宿主测试面（`src-tauri/tests/retired_session_command_lock.rs`）——
     //! 它读宿主源码，属平台侧判据；内核测试面只剩 `plugin_frontend_load_report`
     //! 一条纯本地用例。
 
-    /// 诊断上报命令：ok/error 两条路径都只写 tracing，恒返回 Ok（issue 04）
+    /// 诊断上报命令：ok/error 两条路径都只写 tracing，恒返回 Ok
     #[tokio::test]
     async fn frontend_load_report_always_ok() {
         let ok_report = super::plugin_frontend_load_report(

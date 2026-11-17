@@ -9,7 +9,7 @@ use tauri::Emitter;
 /// 非法 JSON 载荷直接 `Err`（H-05）：降级成字符串会让 guest 以为已投递、前端
 /// 收到形状不同的载荷、监听方按原 schema 解析运行时失败且无信号——静默降级
 /// 的断链形态。插件侧载荷错误应在来源处可见。实现层（严格解析语义）在共享核
-/// `wasmnest-host-api-core::events`（票 18 批次 4）。
+/// `wasmnest-host-api-core::events`（批次 4）。
 pub(crate) fn emit_event(
     app: &dyn crate::host_api::context::AppHandleScope,
     event_name: &str,

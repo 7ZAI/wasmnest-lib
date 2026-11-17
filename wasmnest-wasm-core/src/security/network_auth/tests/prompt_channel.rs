@@ -37,7 +37,7 @@ async fn concurrent_requests_to_same_origin_share_one_prompt() {
             "同 origin 的一批请求应被同一次允许放行: {verdict:?}"
         );
     }
-    assert_eq!(log.len(), 1, "同 origin 并发只弹一次（票 05 C9）");
+    assert_eq!(log.len(), 1, "同 origin 并发只弹一次");
     assert_eq!(
         counter.load(Ordering::SeqCst),
         3,
@@ -70,7 +70,7 @@ async fn different_origins_prompt_separately() {
     assert!(!first.await.expect("join").expect("authorize").is_allowed());
     assert!(!second.await.expect("join").expect("authorize").is_allowed());
 }
-/// 票 05 首句：同意后同一 origin 后续请求免询问（落 allow 记录 + 零弹窗）
+/// 首句：同意后同一 origin 后续请求免询问（落 allow 记录 + 零弹窗）
 #[tokio::test]
 async fn allow_once_records_origin_so_later_requests_are_silent() {
     let (checker, log) = promptable(TINY, TINY).await;

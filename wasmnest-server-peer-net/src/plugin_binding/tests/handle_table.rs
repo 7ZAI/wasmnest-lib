@@ -3,7 +3,7 @@
 use super::scaffold::{entry, RELAY_DIAL_ADDR};
 use super::*;
 
-/// 属主登记与判定（票 04）：句柄只有拨号方可继续操作
+/// 属主登记与判定：句柄只有拨号方可继续操作
 #[test]
 fn session_handle_is_owner_scoped() {
     let mut t = PeerHandleTable::default();

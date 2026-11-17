@@ -237,7 +237,7 @@ pub(super) async fn plugin_required_response_keeps_existing_error_shape() {
     purge("test-gw-shape");
 }
 
-/// 票 08：「要验签而未验签」的响应形状是 401 + 1007 + 点名对外路径
+/// 「要验签而未验签」的响应形状是 401 + 1007 + 点名对外路径
 #[actix_web::test]
 pub(super) async fn auth_required_response_says_authentication_not_activation() {
     let resp = unauthorized_response("/api/configs");
