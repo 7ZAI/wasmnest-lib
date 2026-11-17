@@ -64,6 +64,8 @@ inventory = { version = "0.3", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 # 出站执行层的错误类型（`anyhow::anyhow!` 错误串逐字保留）
 anyhow = "1"
+# 出站请求的二进制体承载（`bodyBase64` → 宿主解码为字节；WIT 不变）
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
