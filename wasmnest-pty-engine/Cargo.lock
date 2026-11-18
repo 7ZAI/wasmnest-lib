@@ -1962,11 +1962,11 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-contract"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "wasmnest-host-kit"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "inventory",
  "serde",
@@ -1977,7 +1977,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-pty-engine"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1997,7 +1997,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-server-base"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",

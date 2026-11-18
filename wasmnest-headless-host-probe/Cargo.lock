@@ -4543,11 +4543,11 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-contract"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "wasmnest-crypto-engine"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -4564,7 +4564,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-discovery-engine"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "flume",
  "local-ip-address",
@@ -4578,7 +4578,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-headless-host-probe"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde_json",
  "wasmnest-cli-engine",
@@ -4593,7 +4593,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-link-crypto"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -4608,7 +4608,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-p2p-engine"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -4623,7 +4623,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-pty-engine"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4638,7 +4638,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-server-base"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4656,7 +4656,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-server-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "actix-cors",
  "actix-service",
@@ -4678,7 +4678,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-server-http"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "actix-service",
  "actix-web",
@@ -4696,7 +4696,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-server-peer-net"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4725,7 +4725,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-server-websocket"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "actix",
  "actix-rt",

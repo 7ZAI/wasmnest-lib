@@ -22,13 +22,11 @@ license = "MIT"
 repository = "https://github.com/7ZAI/wasmnest-lib"
 edition = "2021"
 
-# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
-publish = false
 
 [dependencies]
 # 零依赖共享词汇（兜底语义码 DEFAULT_ERROR_CODE）——本 crate 不需要宿主错误信封：
 # 2026-11-08（P0）摘掉 server-base 依赖边，WireError 是纯 wire 类型，域错误映射住宿主。
-wasmnest-contract = { path = "../wasmnest-contract", version = "0.0.1" }
+wasmnest-contract = { path = "../wasmnest-contract", version = "0.1.0" }
 # wire 帧 / 目录元数据的序列化（JSON 行分帧 + manifest cli 段解析）
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

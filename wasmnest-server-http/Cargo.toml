@@ -1,13 +1,11 @@
 [package]
 name = "wasmnest-server-http"
-version = "0.0.1"
+version = "0.1.0"
 license = "MIT"
 description = "WasmNest 桌面 HTTP 传输面：动态端点注册表/协议网关/插件代理控制器/认证与流量过滤中间件/DTO 形状锚点 + host-http 能力域的插件绑定层（入站 2 + 出站 1 原语，wasm-core-lib-split 票 06）。默认形态 = 引擎机制 + 端口抽象（零 WIT 依赖），但**属传输面：默认依赖树含 actix**——不承诺「任何宿主可直接引用」（AGENTS §3.1 边界声明）；`common-host` feature 装配 WIT 绑定层（bindgen!/HostModule/inventory/impl Host）——能力域脱绑 P1"
 authors = ["binblink"]
 edition = "2021"
 
-# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
-publish = false
 
 [features]
 # 默认 = 纯引擎（任何宿主可引用：移动端 / 无头测试宿主 / 第三方宿主）
@@ -35,15 +33,15 @@ futures-util = "0.3"
 # （src/wire.rs + 漂移锁；能力域脱绑 P1——能力域默认零桌面 SDK 依赖）。
 # 桌面 SDK wasmnest-plugin-api 不再被本 crate 依赖。
 # 基础层（AppError/Result、常量、NetworkConfig、端口 traits 与全局注册表）
-wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1" }
+wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.1.0" }
 # 内核层（流量过滤链 TrafficFilterChain/Direction/FilterContext/TrafficChannel、
 # 链路加密 NEGOTIATION_HEADER、supervisor 状态）
-wasmnest-server-core = { path = "../wasmnest-server-core", version = "0.0.1" }
+wasmnest-server-core = { path = "../wasmnest-server-core", version = "0.1.0" }
 # ==================== 插件绑定层（host-http 能力域，wasm-core-lib-split 票 06） ====================
 # 全部 optional：只随 `common-host` feature 进编译图（能力域脱绑 P1）——
 # 无 feature 时 `cargo tree` 不出现以下任何 crate（纯引擎形态）。
 # 机制内核：插件实例状态（`add_to_linker::<S,D>` 的单态 S 必须在本 crate 可命名）
-wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true, version = "0.0.1" }
+wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true, version = "0.1.0" }
 # WIT 契约绑定（`bindgen!` 在 src/plugin_binding.rs，本 crate 自带 provider 侧生成）
 # —— spec D8「能力 crate 不自带 generate!」的前提在本 crate 不成立：宿主侧 `wasmnest`
 # 模块是 **guest 视角**（import 是调用函数，不是 `Host` trait + `add_to_linker`），

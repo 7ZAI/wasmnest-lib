@@ -1,12 +1,10 @@
 [package]
 name = "wasmnest-contract"
-version = "0.0.1"
+version = "0.1.0"
 license = "MIT"
 edition = "2021"
 description = "WasmNest 零依赖共享词汇：契约包名 / 版本唯一手写真源 + 跨层护栏常量（PLUGIN_DB_* / DEFAULT_ERROR_CODE）。零依赖、不装 WIT；[dependencies] 恒空由常驻断言钉住"
 
-# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
-publish = false
 
 # 契约 crate：零生产依赖。它必须能被任何宿主 / 工具单独依赖而不拖入
 # wasmtime / tauri / actix 这类重依赖（平台仓两处 node 脚本也用正则读本 crate

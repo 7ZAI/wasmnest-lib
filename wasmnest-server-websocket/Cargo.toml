@@ -1,13 +1,11 @@
 [package]
 name = "wasmnest-server-websocket"
-version = "0.0.1"
+version = "0.1.0"
 license = "MIT"
 description = "WasmNest 桌面 WebSocket 传输面：连接骨架/插件端点通道/连接与端点注册表/生命周期与优雅停机 + host-websocket 能力域的插件绑定层（server-lib-split 票 05 / wasm-core-lib-split 票 04）。默认形态 = 引擎机制 + 端口抽象（零 WIT 依赖），但**属传输面：默认依赖树含 actix**——不承诺「任何宿主可直接引用」（AGENTS §3.1 边界声明）；`common-host` feature 装配 WIT 绑定层（bindgen!/HostModule/inventory/impl Host）——能力域脱绑 P3"
 authors = ["binblink"]
 edition = "2021"
 
-# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
-publish = false
 
 [features]
 # 默认 = 纯引擎（任何宿主可引用：移动端 / 无头测试宿主 / 第三方宿主）
@@ -33,14 +31,14 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = { version = "0.1", features = ["attributes"] }
 # 基础层（AppError/Result、常量、端口 traits 与全局注册表、生命周期事件）
-wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1" }
+wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.1.0" }
 # 内核层（流量过滤链 / 链路加密 / 指标 / 组合装配 serve + TransportFace）
-wasmnest-server-core = { path = "../wasmnest-server-core", version = "0.0.1" }
+wasmnest-server-core = { path = "../wasmnest-server-core", version = "0.1.0" }
 # ==================== 插件绑定层（host-websocket 能力域，wasm-core-lib-split 票 04） ====================
 # 全部 optional：只随 `common-host` feature 进编译图（能力域脱绑 P3）——
 # 无 feature 时 `cargo tree` 不出现以下任何 crate（纯引擎形态）。
 # 机制内核：插件实例状态（`add_to_linker::<S,D>` 的单态 S 必须在本 crate 可命名）
-wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true, version = "0.0.1" }
+wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true, version = "0.1.0" }
 # WIT 契约绑定（`bindgen!` 在 src/plugin_binding.rs，本 crate 自带 provider 侧生成）
 # —— spec D8「不自带 generate!」的前提在本 crate 不成立：宿主侧 `wasmnest` 模块是
 # **guest 视角**（import 是调用函数，不是 `Host` trait + `add_to_linker`），

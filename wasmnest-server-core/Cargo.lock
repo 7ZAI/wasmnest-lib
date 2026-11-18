@@ -2155,11 +2155,11 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-contract"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "wasmnest-crypto-engine"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-link-crypto"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-server-base"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2207,7 +2207,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-server-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "actix-cors",
  "actix-service",

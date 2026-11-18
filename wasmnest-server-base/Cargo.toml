@@ -1,13 +1,11 @@
 [package]
 name = "wasmnest-server-base"
-version = "0.0.1"
+version = "0.1.0"
 license = "MIT"
 description = "WasmNest 桌面 server 基础层：错误信封/常量/错误边界/系统信息 DTO/网络配置形状/连接身份/端口 traits。默认依赖树只依赖零依赖契约仓（无 tauri / rusqlite / notify / link-crypto / mdns-sd / sysinfo）；`tauri-compat` / `mdns` / `system-info` 为可选 feature 且默认关，由消费方显式开启（server-lib-split 票 02 / P0 默认形态依赖边界）"
 authors = ["binblink"]
 edition = "2021"
 
-# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
-publish = false
 
 [features]
 # `tauri-compat`（**2026-11-08 起默认关**）：只为 `From<tauri::Error> for AppError`
@@ -50,7 +48,7 @@ tauri = { version = "2", features = [], optional = true }
 # 零依赖共享词汇（跨层护栏常量 PLUGIN_DB_* / DEFAULT_ERROR_CODE 真源）。
 # 2026-11-08（P0）：真源自 host-api-core / 本 crate 错误模块上移契约仓——本 crate
 # 不再为 4 个常量依赖机制实现层，向「叶子地基」对齐。
-wasmnest-contract = { path = "../wasmnest-contract", version = "0.0.1" }
+wasmnest-contract = { path = "../wasmnest-contract", version = "0.1.0" }
 # error_boundary（futures FutureExt::catch_unwind）
 futures-util = "0.3"
 # 服务租约：槽位互斥（service::ServiceRegistry 持锁跨 await）。

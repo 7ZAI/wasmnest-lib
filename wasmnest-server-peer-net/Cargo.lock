@@ -4233,11 +4233,11 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-contract"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "wasmnest-host-kit"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "inventory",
  "serde",
@@ -4248,7 +4248,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-p2p-engine"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -4264,7 +4264,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-server-base"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4282,7 +4282,7 @@ dependencies = [
 
 [[package]]
 name = "wasmnest-server-peer-net"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",

@@ -1,14 +1,12 @@
 [package]
 name = "wasmnest-host-kit"
-version = "0.0.1"
+version = "0.1.0"
 description = "WasmNest 插件宿主机制内核：能力模块契约 + 插件实例状态 + 自动注册表（双端共享锚点）"
 authors = ["binblink"]
 license = "MIT"
 repository = "https://github.com/7ZAI/BedCode"
 edition = "2021"
 
-# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
-publish = false
 
 [features]
 # 无 feature：`WasmPluginState` 的 WASI 槽（ctx / table + `WasiView`）**常编译**。
