@@ -47,6 +47,39 @@ pub(crate) fn headless_ctx() -> Arc<PeerCtx> {
     })
 }
 
+/// 带指定数据目录的无头上下文：信任表 / 共享注册表等**需要真实可落盘目录**的
+/// 用例用它（每用例各给一个 `tempfile::tempdir()`，避免进程级静态目录互相污染）。
+/// 节点仍未启动、四张会话表全空——只多了「磁盘可写」这一项能力。
+pub(crate) fn headless_ctx_with_data_dir(dir: PathBuf) -> Arc<PeerCtx> {
+    Arc::new(PeerCtx {
+        ports: Arc::new(PeerEnginePorts {
+            bus: Arc::new(NullBus),
+            event_sink: Arc::new(NullEventSink),
+            paths: Arc::new(DirPaths(dir)),
+            system_info: Arc::new(FixedSystemInfo),
+            mdns: Arc::new(UnreachableMdns),
+            platform: None,
+        }),
+        state: Arc::new(PeerNetState::default()),
+        transfer: Arc::new(PeerTransferState::default()),
+        receive: Arc::new(PeerReceiveState::default()),
+        remote: Arc::new(PeerRemoteState::default()),
+    })
+}
+
+/// 路径替身：应用数据目录 = 用例自备的临时目录
+struct DirPaths(PathBuf);
+
+impl PathsPort for DirPaths {
+    fn app_data_dir(&self) -> wasmnest_server_base::error::Result<PathBuf> {
+        Ok(self.0.clone())
+    }
+
+    fn download_dir(&self) -> wasmnest_server_base::error::Result<PathBuf> {
+        Ok(std::env::temp_dir().join(format!("wasmnest-peer-downloads-{}", std::process::id())))
+    }
+}
+
 /// 带平台默认共享目录的上下文变体（2026-10-22 peer-net-dissolve：验证平台目录
 /// 不被插件 `set-shared-roots` 全量推送清掉；decorate 兜底回归用例用）
 pub(crate) fn headless_ctx_with_platform_dir() -> Arc<PeerCtx> {

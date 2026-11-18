@@ -1,26 +1,31 @@
-//! Error types for Claude Code Remote
+//! `WasmNest` server 错误类型（错误信封的真源）
 //!
-//! 共享错误类型 - 桌面端和移动端都可用
-//!
-//! 桌面端专属：错误信封（ADR 0030）——跨进程失败一律承载为 `{ code, request_id, params? }`，
+//! 桌面端专属：错误信封——跨进程失败一律承载为 `{ code, request_id, params? }`，
 //! 技术详情（原文 / anyhow 链 / 堆栈）**永不出产生方进程**；移动端不跟演（error.rs 独立副本）。
 
 use rand::Rng;
 use serde::{Serialize, Serializer};
 use thiserror::Error;
 
-/// 未显式映射的错误统一兜底到此语义码（ADR 0030 §3：默认兜底 + 显式覆盖）。
+/// 未显式映射的错误统一兜底到此语义码（默认兜底 + 显式覆盖）。
 ///
 /// code 即前端 i18n key 的后半段（`errors.host.internal`），零映射层；改码 = 破坏性变更。
-pub const DEFAULT_ERROR_CODE: &str = "host.internal";
+///
+/// 真源 2026-11-08 上移 `wasmnest-contract`（零依赖共享词汇）——CLI wire 等中性消费方
+/// 只需要这个码，不必拖入整个桌面 server 错误信封。本处 re-export 保既有路径
+/// （`wasmnest_server_base::error::DEFAULT_ERROR_CODE` 与 wasm-core 的 glob 链）。
+pub use wasmnest_contract::DEFAULT_ERROR_CODE;
 
 #[derive(Error, Debug)]
 pub enum AppError {
-    #[error("Session error: {0}")]
-    Session(String),
-
+    /// 数据库错误（技术详情已是字符串）
+    ///
+    /// 2026-11-08（P0 默认形态依赖边界）：原本是 `Database(#[from] rusqlite::Error)`，
+    /// 一个变体就把 bundled SQLite 钉进了「叶子地基」的默认依赖树。SQLite 的
+    /// `Error` 不承载任何信封可见信息（落 `host.internal` 兜底码），故改为字符串：
+    /// 构造点在边界 `map_err` / `e.to_string()`，文案与 envelope 语义逐字不变。
     #[error("Database error: {0}")]
-    Database(#[from] rusqlite::Error),
+    Database(String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -56,7 +61,7 @@ pub enum AppError {
     Internal(String),
 
     /// 出站策略闸门（egress）：移动 host_impl/conn 域的出站策略拒绝/失败
-    /// （票 06 批次 03 超集化——fork 自持 error.rs 的唯一独有 variant 对齐共享真源，
+    /// （移动 fork 自持 error.rs 的唯一独有 variant，对齐共享真源；
     /// 桌面侧零消费零影响）
     #[error("Egress error: {0}")]
     Egress(String),
@@ -65,7 +70,7 @@ pub enum AppError {
     #[error("PTY error: {0}")]
     Pty(String),
 
-    /// 显式友好错误（ADR 0030 §3）——需 UI 特定文案 / 参数的调用点在失败处显式构造。
+    /// 显式友好错误——需 UI 特定文案 / 参数的调用点在失败处显式构造。
     ///
     /// - `code`：机器可读稳定标识，= 前端 i18n key 后缀（`errors.<code>`）；改码 = 破坏性变更
     /// - `params`：已消毒具名参数（显示名 / 端口 / 秒数 / 文件名），禁止技术文案 / 堆栈 / 凭据
@@ -81,7 +86,7 @@ pub enum AppError {
 }
 
 impl AppError {
-    /// 构造显式友好错误（ADR 0030 §3：默认兜底 + 显式覆盖的唯一入口）。
+    /// 构造显式友好错误（默认兜底 + 显式覆盖的唯一入口）。
     ///
     /// `params` 应为 `serde_json::json!({...})`；序列化时为 `Null` 则省略，不进信封。
     /// `detail` 仅在产生方进程日志中可见（同条 tracing 带 `request_id` / `error` 字段）。
@@ -103,7 +108,7 @@ pub type Result<T> = std::result::Result<T, AppError>;
 
 // Implement Serialize for Tauri IPC compatibility
 //
-// 实现说明（ADR 0030 §5）：`Serialize` 是跨进程边界的**唯一**转换点，且具有副作用：
+// 实现说明：`Serialize` 是跨进程边界的**唯一**转换点，且具有副作用：
 // 1. 生成短随机 `request_id`（该次失败在产生方日志中的关联键，支持方可凭它 + 时间精确 grep）
 // 2. 落同条 `tracing::error!` —— `request_id` 与 `error`（完整技术详情）结构化字段同条带出
 // 3. 输出信封对象 `{ code, request_id, params? }`，**永不携带**错误原文 / 堆栈 / 任何 detail
@@ -139,14 +144,15 @@ impl Serialize for AppError {
 /// 跨边界失败（IPC 信封 / 事件信封）共用这一个生成器：同一形态便于按值 grep
 pub fn new_request_id() -> String {
     let mut rng = rand::thread_rng();
-    (0..8).map(|_| format!("{:x}", rng.gen_range(0..16u8))).collect()
+    // 单次 32bit 随机数 → 定长 8 位小写 hex（形状不变，碰撞概率优于逐字符 4bit）
+    format!("{:08x}", rng.gen::<u32>())
 }
 
-/// 事件通道错误信封（ADR 0030 决定 7：事件与 IPC 同形状）
+/// 事件通道错误信封（事件与 IPC 同形状）
 ///
 /// 事件不经 `Serialize` 边界，`request_id` 在此生成并随载荷下发；调用方负责把
 /// 全量技术详情与同一个 `request_id` 打进**同一条** `tracing`，实现「用户提示 ↔ 详情」
-/// 关联（用户面不展示 request_id，见 ADR 决定 9）。
+/// 关联（用户面不展示 request_id）。
 ///
 /// 结构上**没有**存放详情的字段——与「详情不出产生方进程」是同一保证的第二道闸门。
 pub struct EventEnvelope {
@@ -191,12 +197,6 @@ impl From<tauri::Error> for AppError {
     }
 }
 
-impl From<notify::Error> for AppError {
-    fn from(e: notify::Error) -> Self {
-        AppError::Internal(format!("File watcher error: {}", e))
-    }
-}
-
 /// 允许在 crate::Result 函数中使用 anyhow::Context
 ///
 /// 使用方式：在 Result<crate::AppError> 上调用 .context() / .with_context()
@@ -207,13 +207,10 @@ impl From<anyhow::Error> for AppError {
     }
 }
 
-/// 链路加密共享 crate 错误 → AppError（issue 09：保留错误文案，
-/// 过滤器 Reject 理由与既有测试断言的字节面不变）
-impl From<wasmnest_link_crypto::LinkCryptoError> for AppError {
-    fn from(e: wasmnest_link_crypto::LinkCryptoError) -> Self {
-        AppError::Internal(e.to_string())
-    }
-}
+// 链路加密错误（`wasmnest_link_crypto::LinkCryptoError`）**不再**有 `From` impl：
+// 2026-11-08（P0）删掉 base → link-crypto 依赖边。消费方（`server-core::link_crypto`）
+// 在边界显式映射为 `AppError::Internal(e.to_string())`，对外文案逐字不变——协议核心
+// 不属地基层依赖面（base 只做传输无关的底座，不反向背加密协议）。
 
 #[cfg(test)]
 mod tests {
@@ -238,7 +235,7 @@ mod tests {
     fn non_user_facing_variants_default_to_host_internal() {
         for err in [
             AppError::Internal("database connection refused".into()),
-            AppError::Database(rusqlite::Error::InvalidQuery),
+            AppError::Database("Invalid query".into()),
             AppError::NotFound("file.txt".into()),
             AppError::InvalidInput("bad param".into()),
             AppError::Auth("expired".into()),
@@ -316,7 +313,7 @@ mod tests {
 
     #[test]
     fn code_stability_registry_v0() {
-        // ADR 0030 注册表 v0 宿主域基码：code 是公开契约，改码 = 破坏性变更
+        // 宿主域基码注册表：code 是公开契约，改码 = 破坏性变更
         assert_eq!(DEFAULT_ERROR_CODE, "host.internal");
         assert_eq!(
             AppError::user_facing_simple("host.invoke.timeout", "t").to_string(),

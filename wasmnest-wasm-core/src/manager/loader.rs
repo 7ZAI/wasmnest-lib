@@ -8,7 +8,7 @@ use crate::manager::types::{LoadedPlugin, PluginSource};
 use crate::manager::validation::{validate_dir_binding, validate_plugin_id};
 use crate::permission::PermissionManager;
 use crate::system::constants::PLUGIN_DOWNLOAD_TEMP_DIR;
-// 中性词汇（票 02 M4）：清单/状态/类型统一取自 crate::manifest
+// 中性词汇（M4）：清单/状态/类型统一取自 crate::manifest
 use crate::manifest::{PluginManifest, PluginState, PluginType};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -37,30 +37,85 @@ impl PluginLoader {
         Self::load_all_with_seen(plugins_dir, permission_mgr, source, &mut seen_ids)
     }
 
-    /// 扫描「随包内置目录 + 用户安装目录」，去重状态跨两次扫描共享（内置先到先得）
+    /// 扫描「随包内置目录 + 用户安装目录」，并按更新声明裁决同 id 冲突
     ///
     /// 返回 `(内置插件, 用户安装插件)`，调用方分别计数后再合并入表。
     ///
-    /// **同一 id 同时存在于两个目录时内置条目胜出**，用户目录里的副本被拒绝
-    /// （`Rejecting duplicate plugin id` 留痕）。两个来源的信任档不同：内置属
-    /// 应用构建信任域（`Wasm` / `FileScan`，免审批），用户副本属 `UserInstalled`
-    /// （须人工批准）。若放任用户副本顶替内置条目，随包插件会被整体降级为
-    /// 「待审批」而拒绝激活（现象：随包插件报 requires user approval），
-    /// 且以同 id 运行的是用户目录里那份代码——防冒名顶替语义随之失效。
+    /// **同 id 的裁决（2026-11-02 应用版本更新全链路）**：
+    /// - 默认仍由**内置条目胜出**：内置属应用构建信任域（`Wasm` / `FileScan`，
+    ///   免审批），用户副本属 `UserInstalled`（须人工批准）。放任用户副本无条件
+    ///   顶替，会把随包插件整体降级为「待审批」而拒绝激活，并让同 id 运行的是
+    ///   用户目录里那份代码（防冒名顶替语义失效）。
+    /// - **唯一例外 = 显式更新覆盖**：两侧都声明了同一条 `update` 更新源，且用户
+    ///   副本版本**严格新于**内置版本——这是用户在应用管理页显式执行「更新」后
+    ///   的产物。该副本仍走 `UserInstalled` 审批门禁：安装后内容哈希失配 → 下次
+    ///   激活落 NeedsApproval，新代码必须重新授权（升级保数据，不保信任）。
+    /// - 版本相同 / 更旧 / 更新源不一致 / 任一版本非法 → 一律保留内置条目，
+    ///   用户副本拒绝加载并留痕（不静默覆盖）。
     pub fn load_builtin_and_user(
         plugins_dir: &Path,
         user_plugins_dir: &Path,
         permission_mgr: &PermissionManager,
     ) -> (HashMap<String, LoadedPlugin>, HashMap<String, LoadedPlugin>) {
-        let mut seen_ids: HashSet<String> = HashSet::new();
-        let builtin = Self::load_all_with_seen(plugins_dir, permission_mgr, None, &mut seen_ids);
-        let user = Self::load_all_with_seen(
+        // 两次扫描各自去重（同一目录内的重复 id 仍先到先得），跨目录冲突由下面的
+        // 显式裁决处理——此前共享 seen_ids 会让用户副本在扫描阶段就被丢掉，
+        // 无法区分「重复」与「合法的更新覆盖」。
+        let builtin = Self::load_all(plugins_dir, permission_mgr, None);
+        let user = Self::load_all(
             user_plugins_dir,
             permission_mgr,
             Some(PluginSource::UserInstalled),
-            &mut seen_ids,
         );
-        (builtin, user)
+
+        let mut accepted_user = HashMap::new();
+        for (id, candidate) in user {
+            let Some(builtin_entry) = builtin.get(&id) else {
+                accepted_user.insert(id, candidate);
+                continue;
+            };
+            if Self::update_shadows_builtin(builtin_entry, &candidate) {
+                tracing::info!(
+                    plugin_id = %id,
+                    builtin_version = %builtin_entry.manifest.version,
+                    user_version = %candidate.manifest.version,
+                    "[PluginLoader] 用户安装的更新副本覆盖内置应用（需按 UserInstalled 审批）"
+                );
+                accepted_user.insert(id, candidate);
+            } else {
+                tracing::warn!(
+                    plugin_id = %id,
+                    builtin_version = %builtin_entry.manifest.version,
+                    user_version = %candidate.manifest.version,
+                    "[PluginLoader] Rejecting duplicate plugin id: 用户副本不是合法更新覆盖，保留内置条目"
+                );
+            }
+        }
+        (builtin, accepted_user)
+    }
+
+    /// 用户副本是否构成对内置换新的「合法更新覆盖」
+    ///
+    /// 三条同时成立才放行：两侧都声明了更新源、两侧更新源逐字段一致、用户版本
+    /// 严格新于内置版本。更新源一致性防止「同名 id 但发布源不同」的变体顶替。
+    fn update_shadows_builtin(builtin: &LoadedPlugin, candidate: &LoadedPlugin) -> bool {
+        let builtin_source = crate::app_update::resolve_update_source(
+            builtin.manifest.update.as_ref(),
+            &builtin.manifest.id,
+        );
+        let candidate_source = crate::app_update::resolve_update_source(
+            candidate.manifest.update.as_ref(),
+            &candidate.manifest.id,
+        );
+        let (Ok(Some(builtin_source)), Ok(Some(candidate_source))) =
+            (builtin_source, candidate_source)
+        else {
+            return false;
+        };
+        if builtin_source != candidate_source {
+            return false;
+        }
+        crate::app_update::version_is_newer(&candidate.manifest.version, &builtin.manifest.version)
+            .unwrap_or(false)
     }
 
     /// [`Self::load_all`] 的共享去重状态变体：`seen_ids` 由调用方持有并跨调用复用
@@ -132,7 +187,7 @@ impl PluginLoader {
                         path
                     );
                 } else {
-                    // 票 16：孤儿目录（历史安装遗留 / 插件 id 改名后的空壳）**不影响内置
+                    // 孤儿目录（历史安装遗留 / 插件 id 改名后的空壳）**不影响内置
                     // 插件加载**（内置插件来自 resources 目录，与本扫描路径无关），
                     // 每次启动刷 warn 是把排查噪音当信号。它唯一的实际影响——「安装查重
                     // 误判已安装、卡住同 id 重装」——在**安装路径**上已有专职处理与留痕
@@ -214,18 +269,21 @@ impl PluginLoader {
 
                     let extension_path = strip_verbatim_prefix(&path.to_string_lossy());
 
-                    // TS-only 插件强制设置 plugin_type
+                    // 纯前端插件的形态缺省与 main 必填判据在 load_manifest 收口
+                    // （历史遗留空块，随 2026-10-26 形态三档重定义清理语义注释）
 
                     let manifest = manifest;
+                    let _ = &manifest;
 
-                    if manifest.plugin_type == PluginType::TsOnly && !manifest.main.is_empty() {
+                    // ==================== 全局入口权限一致性 ====================
+                    // contributes.globalEntries 是 ui:globalEntry 门控的纯 manifest 贡献面；
+                    // 声明入口却未持权 = 清单配置缺口。warn 不阻断：壳前端按权限过滤渲染，
+                    // 这里让缺口在日志里点名（fail-visible，不静默返回空）。
+                    manifest.check_global_entry_permission();
 
-                        // 保留 manifest 中的 plugin_type，若未指定则默认 TsOnly
-                    }
-
-                    // 非核心能力域的装载期回调（票 02 批次 02 / 批次 03）：manifest
+                    // 非核心能力域的装载期回调（批次 02 / 批次 03）：manifest
                     // **原文**下发，解析权与**声明仲裁权**都在能力域——内核不解释
-                    // manifest 字段（AGENTS §5.1 B6）。`Err` = 该域拒绝此 manifest ⇒
+                    // manifest 字段。`Err` = 该域拒绝此 manifest ⇒
                     // **不装载**（fail-visible，不静默降级；如 host-pty 的 `ptyQuota`
                     // 越界）。故本回调**必须先于任何副作用**（授权登记在下一条）执行：
                     // 被拒插件不留半成品状态（权限 / 配额登记都不该发生）。
@@ -254,7 +312,7 @@ impl PluginLoader {
                     // 授权并过滤非法权限
 
                     // 授权结果只落在 PermissionManager（唯一真源）；LoadedPlugin 不再
-                    // 镜像一份 granted 列表（票 11 第 4 项：镜像字段只写不读）
+                    // 镜像一份 granted 列表（镜像字段只写不读）
                     permission_mgr.grant_permissions(&plugin_id, &manifest.permissions);
 
                     // 配额登记（会话引擎下沉 P1 / H1）：manifest `ptyQuota` → host-pty
@@ -331,14 +389,22 @@ impl PluginLoader {
         let content = fs::read_to_string(path)
             .map_err(|e| crate::AppError::Plugin(format!("Failed to read plugin.json: {}", e)))?;
 
-        // 解析与必填字段校验走唯一真源（票 11 第 6 项）
+        // 解析与必填字段校验走唯一真源
         let manifest = crate::manager::validation::parse_manifest_json(&content)?;
 
-        // TS-only 插件必须有 main 字段（目录扫描入口独有的一道）
+        // worker 声明的 wasm 文件存在性（装载入口独有的一道：结构面已在
+        // parse_manifest_json 的必填校验里过掉；zip 安装入口按「结构性必填」口径
+        // 不查，与 ptyQuota 同款分层——安装期可通过、装载期拒绝）
+        crate::manager::validation::validate_worker_files(
+            &manifest,
+            path.parent().unwrap_or_else(|| std::path::Path::new(".")),
+        )?;
 
-        if manifest.plugin_type == PluginType::TsOnly && manifest.main.is_empty() {
+        // 纯前端插件必须有 main 字段（目录扫描入口独有的一道）
+
+        if manifest.plugin_type == PluginType::Frontend && manifest.main.is_empty() {
             return Err(crate::AppError::Plugin(
-                "TS-only plugin.json missing main field".to_string(),
+                "frontend plugin.json missing main field".to_string(),
             ));
         }
 
@@ -395,6 +461,47 @@ mod tests {
         assert_eq!(manifest.contributes.commands.len(), 1);
     }
 
+    /// worker 声明的 wasm 文件存在性在装载期拒绝（worker 机制）
+    ///
+    /// 反例先拒（点名 worker 与 worker/ 目录），文件在场后同 manifest 放行——
+    /// 证明拒绝来自 file 存在性而不是声明本身。结构面（重名 / 路径注入）的用例
+    /// 在 `validation.rs`（parse 漏斗），本用例钉装载入口的接线。
+    #[test]
+    fn test_load_manifest_rejects_missing_worker_file() {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let plugin_dir = tmp_dir.path().join("com.test.worker");
+        fs::create_dir_all(plugin_dir.join("worker")).unwrap();
+
+        let manifest_json = serde_json::json!({
+            "id": "com.test.worker",
+            "name": "Worker Plugin",
+            "version": "1.0.0",
+            "platform": "both",
+            "pluginType": "backend",
+            "workers": [{ "name": "n", "file": "n.wasm" }]
+        });
+        let manifest_path = plugin_dir.join("plugin.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest_json).unwrap(),
+        )
+        .unwrap();
+
+        let err = PluginLoader::load_manifest(&manifest_path)
+            .err()
+            .expect("缺 worker wasm 必须装载期拒绝");
+        let text = err.to_string();
+        assert!(
+            text.contains("workers[n]") && text.contains("n.wasm") && text.contains("worker/"),
+            "错误必须点名 worker 名、文件与 worker/ 目录，got: {text}"
+        );
+
+        fs::write(plugin_dir.join("worker").join("n.wasm"), b"wasm").unwrap();
+        let manifest = PluginLoader::load_manifest(&manifest_path).expect("在场文件放行");
+        assert_eq!(manifest.workers.len(), 1);
+        assert_eq!(manifest.workers[0].name, "n");
+    }
+
     #[test]
     fn test_load_manifest_missing_id() {
         let tmp_dir = tempfile::TempDir::new().unwrap();
@@ -419,7 +526,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// 退役字段兼容（审计票 06 裁决 2）：`sandbox` 已退役（前端不做隔离，安全边界只在
+    /// 退役字段兼容：`sandbox` 已退役（前端不做隔离，安全边界只在
     /// Rust 端与 WASM 端），旧产物带该键时按「老端忽略未知字段」的演进约定照常加载
     #[test]
     fn test_load_manifest_ignores_retired_sandbox_field() {
@@ -451,21 +558,78 @@ mod tests {
 
     /// 在 `dir` 下写一个最小可加载插件目录（目录名 = manifest id，满足身份绑定校验）
     fn write_minimal_plugin(dir: &Path, id: &str) {
+        write_plugin(dir, id, "1.0.0", None);
+    }
+
+    /// 写一个带可选 `update` 声明的插件（版本 / 更新源可控）
+    fn write_plugin(dir: &Path, id: &str, version: &str, update: Option<serde_json::Value>) {
         let plugin_dir = dir.join(id);
         fs::create_dir_all(&plugin_dir).unwrap();
-        let manifest = serde_json::json!({
+        let mut manifest = serde_json::json!({
             "id": id,
             "name": format!("Test {}", id),
-            "version": "1.0.0",
+            "version": version,
             "platform": "both",
             "main": "index.js",
         });
+        if let Some(update) = update {
+            manifest["update"] = update;
+        }
         fs::write(
             plugin_dir.join("plugin.json"),
             serde_json::to_string_pretty(&manifest).unwrap(),
         )
         .unwrap();
         fs::write(plugin_dir.join("index.js"), "export default {}").unwrap();
+    }
+
+    /// 应用更新覆盖：同更新源且用户副本版本更新 → 用户副本胜出（UserInstalled，
+    /// 仍需审批）；版本相同 / 更旧 / 更新源不一致 / 用户副本无声明 → 内置胜出。
+    #[test]
+    fn test_user_update_shadows_builtin_only_when_newer_same_source() {
+        let update = || serde_json::json!({ "provider": "github-release" });
+        let cases = [
+            // (内置版本, 用户版本, 内置 update, 用户 update, 是否覆盖)
+            ("1.0.0", "1.0.1", Some(update()), Some(update()), true),
+            ("1.0.0", "1.0.0", Some(update()), Some(update()), false),
+            ("1.0.1", "1.0.0", Some(update()), Some(update()), false),
+            ("1.0.0", "1.0.1", Some(update()), None, false),
+            ("1.0.0", "1.0.1", None, Some(update()), false),
+            (
+                "1.0.0",
+                "1.0.1",
+                Some(update()),
+                Some(serde_json::json!({ "provider": "github-release", "repo": "other/repo" })),
+                false,
+            ),
+        ];
+        for (builtin_version, user_version, builtin_update, user_update, expect_override) in cases {
+            let builtin_dir = tempfile::TempDir::new().unwrap();
+            let user_dir = tempfile::TempDir::new().unwrap();
+            let id = "com.test.updatable";
+            write_plugin(builtin_dir.path(), id, builtin_version, builtin_update);
+            write_plugin(user_dir.path(), id, user_version, user_update);
+
+            let permission = PermissionManager::new();
+            let (builtin, user) = PluginLoader::load_builtin_and_user(
+                builtin_dir.path(),
+                user_dir.path(),
+                &permission,
+            );
+            assert!(builtin.contains_key(id), "内置条目必须始终加载");
+            assert_eq!(
+                user.contains_key(id),
+                expect_override,
+                "内置 {builtin_version} / 用户 {user_version} 的覆盖裁决不符"
+            );
+            if expect_override {
+                assert_eq!(
+                    user.get(id).unwrap().source,
+                    PluginSource::UserInstalled,
+                    "更新覆盖必须标 UserInstalled（审批门禁据此分档）"
+                );
+            }
+        }
     }
 
     /// 同 id 同时存在于内置与用户目录：内置条目胜出，用户副本必须被拒绝。

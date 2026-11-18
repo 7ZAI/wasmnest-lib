@@ -3,7 +3,7 @@
 use super::scaffold::{denied, drop_handle, mint, FakePorts};
 use super::*;
 
-/// 权限门（票 01 门禁用例）：未授予 `peer` 即拒绝，且不触碰句柄表/引擎
+/// 权限门：未授予 `peer` 即拒绝，且不触碰句柄表/引擎
 #[test]
 fn peer_denied_without_permission() {
     let ports = FakePorts::with(&[]);
@@ -37,7 +37,7 @@ fn headless_wording_is_verbatim() {
     );
 }
 
-/// 域函数面（票 04 红测）：非属主调 `peer_close` 拿到的就是属主拒绝，
+/// 域函数面（红测）：非属主调 `peer_close` 拿到的就是属主拒绝，
 /// 而不是先撞上「无头上下文不可用」——判定顺序本身也是被断言的行为
 #[test]
 fn peer_close_by_non_owner_is_denied_before_app_check() {
@@ -75,4 +75,51 @@ fn peer_close_by_owner_reaches_engine_side() {
     assert!(!err.starts_with(NOT_OWNER), "属主不应撞属主拒绝: {err}");
     assert_eq!(err, ports::HEADLESS_UNAVAILABLE);
     drop_handle(&h);
+}
+
+/// T21：`node-info` 同受 `peer` 权限门；未授予时不得触碰引擎上下文
+#[test]
+fn peer_node_info_denied_without_permission() {
+    let ports = FakePorts::with(&[]);
+    assert_eq!(
+        super::peer_node_info(&ports, "com.wasmnest.no-peer").unwrap_err(),
+        denied()
+    );
+}
+
+/// T21：授予后越过权限门，报无头上下文（与既有原语同口径，不伪造空身份）
+#[test]
+fn peer_node_info_granted_reaches_headless_gate() {
+    let ports = FakePorts::with(&[("com.wasmnest.peer-ok", PERMISSION_PEER)]);
+    assert_eq!(
+        super::peer_node_info(&ports, "com.wasmnest.peer-ok").unwrap_err(),
+        ports::HEADLESS_UNAVAILABLE
+    );
+}
+
+/// T21：`enable=true` + 空地址是调用方错误，先于引擎上下文报出
+#[test]
+fn configure_relay_rejects_empty_addrs_before_context() {
+    let ports = FakePorts::with(&[("com.wasmnest.peer-ok", PERMISSION_PEER)]);
+    let err = super::peer_configure_relay(&ports, "com.wasmnest.peer-ok", "[]", true).expect_err("空地址必须显性失败");
+    assert!(err.contains("must not be empty"), "got: {err}");
+}
+
+/// T21：坏 JSON 同样先于引擎上下文报出（不静默当 LAN-only）
+#[test]
+fn configure_relay_rejects_bad_json_before_context() {
+    let ports = FakePorts::with(&[("com.wasmnest.peer-ok", PERMISSION_PEER)]);
+    let err = super::peer_configure_relay(&ports, "com.wasmnest.peer-ok", "not-json", true)
+        .expect_err("坏 JSON 必须显性失败");
+    assert!(err.contains("invalid relay addrs json"), "got: {err}");
+}
+
+/// T21：释放路径（enable=false）允许空地址，越过权限门后报无头上下文
+#[test]
+fn configure_relay_disable_passes_to_context_gate() {
+    let ports = FakePorts::with(&[("com.wasmnest.peer-ok", PERMISSION_PEER)]);
+    assert_eq!(
+        super::peer_configure_relay(&ports, "com.wasmnest.peer-ok", "[]", false).unwrap_err(),
+        ports::HEADLESS_UNAVAILABLE
+    );
 }

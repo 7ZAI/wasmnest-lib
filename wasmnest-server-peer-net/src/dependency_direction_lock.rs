@@ -1,7 +1,7 @@
-//! peer-net 引擎域（含底座机制）的依赖方向锁（server-lib-split 票 06）
+//! peer-net 引擎域（含底座机制）的依赖方向锁
 //!
-//! peer-net 与三个传输面（core / http / websocket）**不构成同一条依赖链**——spec
-//! 决策 D2 判它是「引擎域」而非「传输面」：它不参与 actix 组合装配、不过流量过滤链、
+//! peer-net 与三个传输面（core / http / websocket）**不构成同一条依赖链**——
+//! 它被判定是「引擎域」而非「传输面」：它不参与 actix 组合装配、不过流量过滤链、
 //! 不用链路加密，只向下依赖基础层。2026-10-22 peer-net-dissolve：原共享引擎 crate
 //! `wasmnest-peer-net` 已拆分，底座机制（身份 / TLS / 信任 / mDNS 注册 / 传输会话引擎
 //! 原语）并入本 crate `base/` 子模块，mDNS 机制 `disable_virtual_interfaces` 归位
@@ -11,17 +11,17 @@
 //!
 //! 三条断言：
 //!
-//! - **D2（引擎域独立）**：本 crate 清单**不得**含 `wasmnest-server-core` /
+//! - **引擎域独立**：本 crate 清单**不得**含 `wasmnest-server-core` /
 //!   `-http` / `-websocket`（传输面）、`wasmnest-desktop`（宿主）、`tauri` / `actix`
-//!   （传输栈）。反向的「内核反向认识传输面」（spec 1.3 B 项）若发生，表现正是本
+//!   （传输栈）。反向的「内核反向认识传输面」若发生，表现正是本
 //!   crate 清单里长出传输面依赖，故一并由本锁覆盖。
-//! - **D5 取用（必须向下）**：清单**必须**含 `wasmnest-server-base`（错误类型 /
+//! - **必须向下取用**：清单**必须**含 `wasmnest-server-base`（错误类型 /
 //!   `error_boundary` / 端口 traits）——缺了说明有人把宿主内模块复制进本 crate，
 //!   或清单被误删。
 //! - **叶子性**：其余三个 server lib 清单**不得**依赖本 crate（peer-net 是叶子，
 //!   任何面经它取能力都是新的横向依赖）。宿主组合根依赖本 crate 是合法的，故不在
 //!   本锁的扫描面内。
-//! - **mDNS 单 listener 不变量（ADR 0054 / spec §0.4）**：本 crate 清单**不得**含
+//! - **mDNS 单 listener 不变量**：本 crate 清单**不得**含
 //!   `wasmnest-discovery-engine`——类型中枢句柄以**纯值**（`flume::Receiver` + 退订
 //!   守卫 + 重查闭包）经 `MdnsPort` 注入，server-peer-net 不认识 mDNS 引擎 crate。
 //!   （2026-10-22 起 discovery-engine 零内部 crate 依赖，此边本就不存在；锁继续
@@ -34,7 +34,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// 本 crate 源码 `.rs` 文件数下限（票 06 实测 6：lib + 4 个引擎适配/收集模块
+/// 本 crate 源码 `.rs` 文件数下限（实测 6：lib + 4 个引擎适配/收集模块
 /// + 本锁，下调留余量）
 const MIN_FILES: usize = 5;
 
@@ -49,7 +49,7 @@ const FORBIDDEN_DEPS: &[&str] = &[
     "wasmnest-desktop",
     "tauri",
     "actix",
-    // mDNS 引擎域（ADR 0054 / spec §0.4）：中枢句柄以纯值经 MdnsPort 注入，
+    // mDNS 引擎域（单 listener 不变量）：中枢句柄以纯值经 MdnsPort 注入，
     // server-peer-net 零 mDNS 依赖（引它即把「引擎认识引擎」接成横向边）
     "wasmnest-discovery-engine",
 ];

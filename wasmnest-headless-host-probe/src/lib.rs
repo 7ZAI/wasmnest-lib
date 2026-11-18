@@ -1,12 +1,11 @@
-//! 无头测试宿主探针（能力域脱绑 P6 验证矩阵 ③ 的长期载体）
+//! 无头测试宿主探针：让能力域在「没有插件宿主机制」的宿主里真实编译并链接一次
 //!
 //! ## 角色
 //!
-//! 能力域脱绑（P1–P5）之后，根 `packages/` 的能力域 crate 默认形态 = 纯引擎
-//! 机制 + 端口抽象（零 WIT 依赖），**任何宿主**可直接引用。本 crate 就是那个
-//! 「任何宿主」的最小实证：以非桌面宿主形态（永不开 `common-host` feature）
-//! 引用全部五个带桌面 WIT 绑定面的能力域 + server 地基，编译通过 + 引擎面
-//! smoke 断言即门禁。
+//! 能力域 crate 的默认形态 = 纯引擎机制 + 端口抽象（零 WIT 依赖），**任何宿主**
+//! 可直接引用。本 crate 就是那个「任何宿主」的最小实证：以非桌面宿主形态（永不
+//! 开 `common-host` feature）引用五个带桌面 WIT 绑定面的能力域 + CLI 机制 +
+//! server 地基/内核，编译通过 + 引擎面 smoke 断言即门禁。
 //!
 //! ## 钉住的三件事
 //!
@@ -24,19 +23,23 @@
 //! - 本 crate **不进任何宿主依赖清单**、不登记 `SPLIT_CRATES`（不是拆分产物，
 //!   是验证夹具）；受 `capability_crates_unit_tests_only` 锁自动治理（单测放
 //!   `src/` 内、零内部 dev-dependencies）。
-//! - 移动端真实接线（`移动宿主` 引能力域）归下游 `dual-end-shared-libs`
-//!   的 M 票——本 crate 承担其编译面等价验证（spec §3.3 ② 的载体），不预接线。
+//! - 移动端真实接线（`移动宿主` 引能力域）由下游改动落地，不在本 crate 预接线；
+//!   这里只负责证明它的编译面等价可行。
 
 // ==================== 强制引用（rlib 进编译图的最小面） ====================
 //
-// 五行缺一不可：少一行 = 该 crate 未被链接 = 「可引用」断言静默缩水。
-// `common-host` 未开 ⇒ 这些引用不触发任何 inventory 注册（非桌面宿主
-// 不应注册——它没有插件宿主机制，语义见各能力域 plugin_binding 模块头）。
+//! 五行缺一不可：少一行 = 该 crate 未被链接 = 「可引用」断言静默缩水。
+//! `common-host` 未开 ⇒ 这些引用不触发任何 inventory 注册（非桌面宿主
+//! 不应注册——它没有插件宿主机制，语义见各能力域 plugin_binding 模块头）。
 use wasmnest_discovery_engine as _;
 use wasmnest_pty_engine as _;
 use wasmnest_server_http as _;
 use wasmnest_server_peer_net as _;
 use wasmnest_server_websocket as _;
+// CLI 机制与 server 内核也必须在**链接**面自证：只被编译未被引用时，
+// 「非桌面宿主可链接」对它们不成立（编译过 ≠ 链接得过）。
+use wasmnest_cli_engine as _;
+use wasmnest_server_core as _;
 
 /// server 地基的总线消息契约（P5 自持副本的公开消费形状）
 pub use wasmnest_server_base::wire::BusMessage;

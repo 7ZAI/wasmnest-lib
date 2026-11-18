@@ -9,6 +9,8 @@
 //! - RSA 加密体积受限于密钥长度（如 2048 位密钥 OAEP-SHA256 最多约 190 字节明文），
 //!   因此直接用 RSA 加密大文件不现实；请改用 [`crate::hybrid`] 混合方案。
 //! - OAEP 填充默认使用 SHA-256 作为 MGF 哈希，已满足现代安全要求。
+//! - 签名固定为 **RSA-PSS**（`rsa` crate 的 `SigningKey<Sha256>` 默认 PSS），不是
+//!   PKCS#1 v1.5；跨端实现验证签名时必须按 PSS 处理，否则会表现为「签名总是不通过」。
 
 use base64::Engine;
 use rand::rngs::OsRng;
@@ -23,7 +25,7 @@ use rsa::{
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use wasmnest_server_base::error::{AppError, Result};
+use crate::error::{CryptoError, CryptoResult};
 
 /// 默认 RSA 密钥位数（推荐值）
 pub const DEFAULT_KEY_BITS: usize = 3072;
@@ -48,42 +50,42 @@ pub struct RsaPublicKey {
 ///
 /// `bits` 为模数位数，低于 [`MIN_KEY_BITS`] 时返回错误。生成耗时与位数正相关，
 /// 2048 位通常 < 500ms，3072 位约 1-3s（视 CPU）。
-pub fn rsa_generate(bits: usize) -> Result<RsaKeyPair> {
+pub fn rsa_generate(bits: usize) -> CryptoResult<RsaKeyPair> {
     if bits < MIN_KEY_BITS {
-        return Err(AppError::InvalidInput(format!(
+        return Err(CryptoError::invalid_input(format!(
             "RSA 密钥位数 {bits} 低于最小允许值 {MIN_KEY_BITS}"
         )));
     }
     let mut rng = OsRng;
     let private = RsaPrivateKey::new(&mut rng, bits)
-        .map_err(|e| AppError::Internal(format!("生成 RSA 密钥对失败（{bits} 位）: {e}")))?;
+        .map_err(|e| CryptoError::operation_failed(format!("生成 RSA 密钥对失败（{bits} 位）: {e}")))?;
     Ok(RsaKeyPair { private })
 }
 
 impl RsaKeyPair {
     /// 导出 SPKI PEM 格式公钥（可公开分发，X.509 兼容）
-    pub fn public_key_pem(&self) -> Result<String> {
+    pub fn public_key_pem(&self) -> CryptoResult<String> {
         let public = RawRsaPublicKey::from(&self.private);
         public
             .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
             .map(|s| s.to_string())
-            .map_err(|e| AppError::Internal(format!("导出 RSA 公钥 PEM 失败: {e}")))
+            .map_err(|e| CryptoError::operation_failed(format!("导出 RSA 公钥 PEM 失败: {e}")))
     }
 
     /// 导出 PKCS#8 PEM 格式私钥（须严格保密存储）
-    pub fn private_key_pem(&self) -> Result<String> {
+    pub fn private_key_pem(&self) -> CryptoResult<String> {
         self.private
             .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
             .map(|s| s.to_string())
-            .map_err(|e| AppError::Internal(format!("导出 RSA 私钥 PEM 失败: {e}")))
+            .map_err(|e| CryptoError::operation_failed(format!("导出 RSA 私钥 PEM 失败: {e}")))
     }
 
     /// 从 PKCS#8 或 PKCS#1 PEM 恢复私钥
-    pub fn from_pem(pem: &str) -> Result<Self> {
+    pub fn from_pem(pem: &str) -> CryptoResult<Self> {
         // 优先尝试 PKCS#8，失败则回退 PKCS#1
         let private = RsaPrivateKey::from_pkcs8_pem(pem)
             .or_else(|_| RsaPrivateKey::from_pkcs1_pem(pem))
-            .map_err(|e| AppError::InvalidInput(format!("解析 RSA 私钥 PEM 失败: {e}")))?;
+            .map_err(|e| CryptoError::invalid_input(format!("解析 RSA 私钥 PEM 失败: {e}")))?;
         Ok(Self { private })
     }
 
@@ -95,10 +97,10 @@ impl RsaKeyPair {
 
 impl RsaPublicKey {
     /// 从 SPKI / PKCS#1 PEM 构造
-    pub fn from_pem(pem: &str) -> Result<Self> {
+    pub fn from_pem(pem: &str) -> CryptoResult<Self> {
         // 校验 PEM 可解析
         let _ = RawRsaPublicKey::from_public_key_pem(pem)
-            .map_err(|e| AppError::InvalidInput(format!("解析 RSA 公钥 PEM 失败: {e}")))?;
+            .map_err(|e| CryptoError::invalid_input(format!("解析 RSA 公钥 PEM 失败: {e}")))?;
         Ok(Self { pem: pem.to_string() })
     }
 
@@ -107,33 +109,33 @@ impl RsaPublicKey {
         &self.pem
     }
 
-    fn inner(&self) -> Result<RawRsaPublicKey> {
+    fn inner(&self) -> CryptoResult<RawRsaPublicKey> {
         RawRsaPublicKey::from_public_key_pem(&self.pem)
-            .map_err(|e| AppError::Internal(format!("解析 RSA 公钥失败: {e}")))
+            .map_err(|e| CryptoError::operation_failed(format!("解析 RSA 公钥失败: {e}")))
     }
 }
 
 /// 使用 RSA 公钥 + OAEP-SHA256 加密
 ///
 /// 明文长度受密钥位数限制，超限返回错误。大体积载荷请用混合加密。
-pub fn rsa_encrypt_public(public: &RsaPublicKey, plaintext: &[u8]) -> Result<Vec<u8>> {
+pub fn rsa_encrypt_public(public: &RsaPublicKey, plaintext: &[u8]) -> CryptoResult<Vec<u8>> {
     let pub_key = public.inner()?;
     let mut rng = OsRng;
     pub_key
         .encrypt(&mut rng, Oaep::new::<Sha256>(), plaintext)
-        .map_err(|e| AppError::Internal(format!("RSA-OAEP 加密失败: {e}")))
+        .map_err(|e| CryptoError::operation_failed(format!("RSA-OAEP 加密失败: {e}")))
 }
 
 /// 使用 RSA 私钥 + OAEP-SHA256 解密
-pub fn rsa_decrypt(key_pair: &RsaKeyPair, ciphertext: &[u8]) -> Result<Vec<u8>> {
+pub fn rsa_decrypt(key_pair: &RsaKeyPair, ciphertext: &[u8]) -> CryptoResult<Vec<u8>> {
     key_pair
         .private()
         .decrypt(Oaep::new::<Sha256>(), ciphertext)
-        .map_err(|e| AppError::Internal(format!("RSA-OAEP 解密失败: {e}")))
+        .map_err(|e| CryptoError::operation_failed(format!("RSA-OAEP 解密失败: {e}")))
 }
 
 /// 使用 RSA 私钥 + PSS-SHA256 签名
-pub fn rsa_sign(key_pair: &RsaKeyPair, data: &[u8]) -> Result<Vec<u8>> {
+pub fn rsa_sign(key_pair: &RsaKeyPair, data: &[u8]) -> CryptoResult<Vec<u8>> {
     let signing_key = SigningKey::<Sha256>::new(key_pair.private().clone());
     let mut rng = OsRng;
     let signature: Signature = signing_key.sign_with_rng(&mut rng, data);
@@ -141,13 +143,14 @@ pub fn rsa_sign(key_pair: &RsaKeyPair, data: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// 使用对应公钥验签（PSS-SHA256）
-pub fn rsa_verify_public(public: &RsaPublicKey, data: &[u8], signature: &[u8]) -> Result<()> {
+pub fn rsa_verify_public(public: &RsaPublicKey, data: &[u8], signature: &[u8]) -> CryptoResult<()> {
     let pub_key = public.inner()?;
     let verifying = VerifyingKey::<Sha256>::new(pub_key);
-    let sig = Signature::try_from(signature).map_err(|e| AppError::InvalidInput(format!("RSA 签名格式无效: {e}")))?;
+    let sig =
+        Signature::try_from(signature).map_err(|e| CryptoError::invalid_input(format!("RSA 签名格式无效: {e}")))?;
     verifying
         .verify(data, &sig)
-        .map_err(|e| AppError::Internal(format!("RSA-PSS 验签失败: {e}")))
+        .map_err(|e| CryptoError::operation_failed(format!("RSA-PSS 验签失败: {e}")))
 }
 
 /// 便于传输的 base64 信封（公钥）
@@ -173,10 +176,10 @@ impl RsaSignatureEnvelope {
     }
 
     /// 还原为原始签名字节
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+    pub fn to_bytes(&self) -> CryptoResult<Vec<u8>> {
         base64::engine::general_purpose::STANDARD
             .decode(&self.signature_b64)
-            .map_err(|e| AppError::InvalidInput(format!("base64 解码签名失败: {e}")))
+            .map_err(|e| CryptoError::invalid_input(format!("base64 解码签名失败: {e}")))
     }
 }
 

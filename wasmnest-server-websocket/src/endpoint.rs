@@ -1,10 +1,10 @@
-//! 插件 WS 端点注册表（服务端域，spec `.scratch/2026-09-18-ws-base-service/`）
+//! 插件 WS 端点注册表（服务端域）
 //!
-//! **职责边界（spec D1 零业务代码红线）**：本表只登记引擎级事实——属主、路径后缀、
+//! **职责边界（零业务代码红线）**：本表只登记引擎级事实——属主、路径后缀、
 //! 认证策略、上限、事件总线；不解读、不拼装任何业务字段（消息格式 / 房间 / 协议 /
 //! 重连策略一律归插件）。
 //!
-//! - **命名空间注入（D5）**：插件只提供后缀 `path`，宿主拼出完整挂载路径
+//! - **命名空间注入**：插件只提供后缀 `path`，宿主拼出完整挂载路径
 //!   `/ws/plugin/<plugin-id>/<path>`——属主段由宿主按调用方注入，插件之间
 //!   不存在路径抢占（不同属主物理上挂不到同一路径）；
 //! - **属主隔离**：冲突只在同插件内判定（同属主同后缀 → 拒绝）；回收
@@ -12,7 +12,7 @@
 //! - **与 [`super::registry::WsSessionRegistry`] 的分工**：本表是**端点级**（挂载点）
 //!   注册，会话注册表是**连接级**（在线客户端）注册；`clientCount` 等在线数据取自后者。
 //!
-//! 上限语义（spec §4.4）：端点数超限 → 注册返回 `Err` 且无副作用；插件传入的
+//! 上限语义：端点数超限 → 注册返回 `Err` 且无副作用；插件传入的
 //! `maxClients` / `maxMessageBytes` 一律按宿主常量 / 配置上限截断（插件不能放宽
 //! 宿主安全边界）。
 
@@ -24,16 +24,16 @@ use wasmnest_server_base::ports::BusPort;
 /// 端点句柄前缀（`wse-<uuid>`；与客户端域 `wsc-<uuid>` 对称）
 pub const ENDPOINT_HANDLE_PREFIX: &str = "wse-";
 
-/// 插件端点挂载路径前缀：完整路径 `{PREFIX}/{plugin_id}/{path}`（spec D5）
+/// 插件端点挂载路径前缀：完整路径 `{PREFIX}/{plugin_id}/{path}`
 pub const PLUGIN_ENDPOINT_ROUTE_PREFIX: &str = "/ws/plugin";
 
-/// 端点认证档位（spec D8）——本 crate 自持副本（[`crate::wire`]，能力域脱绑 P3：
-/// 与桌面 SDK 原版逐字一致由平台仓漂移锁
-/// `cross-end-tests/tests/wire_drift_locks.rs` 钉死，漂移即红）
+/// 端点认证档位——本 crate 自持副本（[`crate::wire`]，能力域脱绑 P3：
+/// 与桌面 SDK 原版逐字一致由测试仓漂移锁
+/// `wasmnest-test/cross-end-tests/tests/wire_drift_locks.rs` 钉死，漂移即红）
 ///
-/// 票 08 起 WS 注册面与 HTTP 声明面共用这一张表，避免「两 transport 各自抄一遍
+/// WS 注册面与 HTTP 声明面共用这一张表，避免「两 transport 各自抄一遍
 /// `none|jwt`」的词汇漂移。缺省档位各面自己给：WS = `None`（本文件，历史行为），
-/// HTTP = `Jwt`（见 `wasm_core::manager::registry`，票 08 裁决 1「未声明即最严」）。
+/// HTTP = `Jwt`（见 `wasm_core::manager::registry`，未声明即最严）。
 pub use crate::wire::EndpointAuth;
 
 /// 已注册端点（克隆开销 = 一次 `Arc` + 三个短字符串）
@@ -96,6 +96,9 @@ pub fn mount_path(owner: &str, path: &str) -> String {
 ///
 /// 冲突判定按**完整挂载路径**（含属主段）——同属主同后缀视为冲突，
 /// 不同属主物理上不可能相同（路径内嵌 plugin-id）。
+///
+/// 链路加密策略按**应用**（owner）由宿主统一执行（应用在设置页决定，见
+/// `link_crypto::set_app_policy`），端点注册不携带加密声明。
 pub fn register(
     owner: &str,
     path: &str,
@@ -106,7 +109,7 @@ pub fn register(
 ) -> Result<EndpointEntry, String> {
     let mut table = lock();
 
-    // 端点数上限：超限直接 Err，不产生任何副作用（spec §4.4）
+    // 端点数上限：超限直接 Err，不产生任何副作用
     let owned = table.by_id.values().filter(|e| e.owner == owner).count();
     if owned >= PLUGIN_WS_MAX_ENDPOINTS_PER_PLUGIN {
         return Err(format!(
@@ -119,7 +122,7 @@ pub fn register(
         return Err(format!("ws register-endpoint: path already registered: {mount}"));
     }
 
-    // 宿主配置上限为硬边界：插件只能收紧，不能放宽（spec §4.4 上限截断为常量）
+    // 宿主配置上限为硬边界：插件只能收紧，不能放宽
     let host_limit = crate::routes::ws_frame_limit().max(1);
     let entry = EndpointEntry {
         endpoint_id: format!("{ENDPOINT_HANDLE_PREFIX}{}", uuid::Uuid::new_v4()),
@@ -174,9 +177,12 @@ pub fn list_by_owner(owner: &str) -> Vec<EndpointEntry> {
 
 /// 摘除端点（返回被摘除的条目；未知句柄 → `None`）
 pub fn remove(endpoint_id: &str) -> Option<EndpointEntry> {
-    let mut table = lock();
-    let entry = table.by_id.remove(endpoint_id)?;
-    table.id_by_mount.remove(&entry.mount_path);
+    let entry = {
+        let mut table = lock();
+        let entry = table.by_id.remove(endpoint_id)?;
+        table.id_by_mount.remove(&entry.mount_path);
+        entry
+    };
     Some(entry)
 }
 
@@ -199,6 +205,16 @@ pub fn purge_for_plugin(owner: &str) -> Vec<EndpointEntry> {
 /// 本插件已注册端点数
 pub fn count_by_owner(owner: &str) -> usize {
     lock().by_id.values().filter(|e| e.owner == owner).count()
+}
+
+/// 全部已注册端点快照（宿主审计面：未声明策略的端点也必须可枚举）
+///
+/// 排序 = 属主 + 挂载路径（稳定展示序；HashMap 遍历序不保证）。声明值不在这里：
+/// 端点策略是 `link_crypto` 的表，宿主按句柄拼合后才是完整的"谁在明文"快照。
+pub fn list_all() -> Vec<EndpointEntry> {
+    let mut entries: Vec<EndpointEntry> = lock().by_id.values().cloned().collect();
+    entries.sort_by(|a, b| (&a.owner, &a.mount_path).cmp(&(&b.owner, &b.mount_path)));
+    entries
 }
 
 /// 清空全部端点（仅测试用：全局表在 test 进程内跨用例共享）
@@ -298,6 +314,30 @@ mod tests {
         assert!(remove(&entry.endpoint_id).is_some());
         assert!(find_by_mount(&entry.mount_path).is_none());
         assert_eq!(count_by_owner(&plugin), 0);
+    }
+
+    /// 审计面：全部已注册端点（含未声明策略的）都能枚举，且同属主按挂载路径升序
+    #[test]
+    fn list_all_enumerates_every_registered_endpoint_in_stable_order() {
+        let plugin = owner("list-all");
+        let b = register_path(&plugin, "b").expect("register b");
+        let a = register_path(&plugin, "a").expect("register a");
+
+        let entries = list_all();
+        let ia = entries
+            .iter()
+            .position(|e| e.endpoint_id == a.endpoint_id)
+            .expect("a 应在全量快照中");
+        let ib = entries
+            .iter()
+            .position(|e| e.endpoint_id == b.endpoint_id)
+            .expect("b 应在全量快照中");
+        assert!(ia < ib, "同属主按挂载路径升序（a 在 b 前）");
+        assert_eq!(entries[ia].mount_path, format!("/ws/plugin/{plugin}/a"));
+
+        for entry in [a, b] {
+            remove(&entry.endpoint_id);
+        }
     }
 
     #[test]

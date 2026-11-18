@@ -14,6 +14,7 @@ async fn test_register_manifest_contributions() {
             id: "test.hello".into(),
             title: "Hello".into(),
             icon: None,
+            cli: None,
         }],
         views: vec![crate::manifest::ViewContribution {
             id: "test.view".into(),
@@ -39,7 +40,7 @@ async fn test_register_manifest_contributions() {
     assert_eq!(views[0].view_type, "sidebar");
 }
 
-// ==================== 注册入口收敛（票 11 第 3 项） ====================
+// ==================== 注册入口收敛 ====================
 
 /// 六类 contributes 全填的 manifest（等价锁用）
 fn all_contributions() -> PluginContributes {
@@ -48,6 +49,7 @@ fn all_contributions() -> PluginContributes {
             id: "test.hello".into(),
             title: "Hello".into(),
             icon: None,
+            cli: None,
         }],
         views: vec![crate::manifest::ViewContribution {
             id: "test.view".into(),
@@ -121,7 +123,7 @@ async fn contributions_snapshot(
 }
 
 /// 行为等价锁：启动期全量注册与安装/热重载走的单条注册必须产出**同一份注册面**，
-/// 且重复注册幂等（票 11 第 3 项：三处手抄收敛为 `register_plugin_contributions`）。
+/// 且重复注册幂等（三处手抄收敛为 `register_plugin_contributions`）。
 #[tokio::test(flavor = "multi_thread")]
 async fn contributions_identical_across_entry_points() {
     let mut plugin = make_plugin(TEST_PLUGIN_ID, PluginSource::FileScan, PluginState::Loaded);
@@ -174,7 +176,7 @@ async fn contributions_identical_across_entry_points() {
         .await;
 }
 
-/// 票 09a：manifest 声明的 WS 端点经 `register_declared_ws_endpoints` 登记进
+/// manifest 声明的 WS 端点经 `register_declared_ws_endpoints` 登记进
 /// 宿主 WS 端点注册表（声明驱动静态路由，expand 阶段接口本身已存在）。
 /// 锁三件事：①合法声明登记成功且路径完整（挂载 `/ws/plugin/<id>/<path>`）；
 /// ②认证档位透传（缺省 = none，显式 jwt 原样）；③非法 path（含 `/`）与未声明
@@ -204,13 +206,13 @@ async fn registered_manifest_declared_ws_endpoints() {
     use wasmnest_server_websocket::endpoint;
     // ws 域脱绑后（能力域脱绑 P3）端点认证档位为 `wire` 自持副本（与 SDK 漂移锁钉死）
     use wasmnest_server_websocket::wire::EndpointAuth;
-    let echo = endpoint::find_by_mount(&endpoint::mount_path(plugin_id, "echo"));
-    assert!(echo.is_some(), "declared echo endpoint must be registered");
-    assert_eq!(echo.unwrap().auth, EndpointAuth::None, "缺省档 = none");
+    let echo =
+        endpoint::find_by_mount(&endpoint::mount_path(plugin_id, "echo")).expect("echo registered");
+    assert_eq!(echo.auth, EndpointAuth::None, "缺省档 = none");
 
-    let chat = endpoint::find_by_mount(&endpoint::mount_path(plugin_id, "chat"));
-    assert!(chat.is_some(), "declared chat endpoint must be registered");
-    assert_eq!(chat.unwrap().auth, EndpointAuth::Jwt, "显式 jwt 原样登记");
+    let chat =
+        endpoint::find_by_mount(&endpoint::mount_path(plugin_id, "chat")).expect("chat registered");
+    assert_eq!(chat.auth, EndpointAuth::Jwt, "显式 jwt 原样登记");
 
     let bad = endpoint::find_by_mount(&endpoint::mount_path(plugin_id, "bad/path"));
     assert!(bad.is_none(), "含 / 的声明不得登记（fail-visible）");
@@ -267,7 +269,7 @@ fn registry_registration_has_single_call_site() {
         assert_eq!(
             joined.matches(call).count(),
             1,
-            "`{call}` 必须只在 register_plugin_contributions 内出现一次（票 11 第 3 项）"
+            "`{call}` 必须只在 register_plugin_contributions 内出现一次"
         );
     }
     // 退役面不得复燃：静态 HTTP 路由登记调用在源码中必须为零
@@ -281,7 +283,7 @@ fn registry_registration_has_single_call_site() {
     );
 }
 
-// ==================== 实例化入口收敛（票 11 第 2 项） ====================
+// ==================== 实例化入口收敛 ====================
 
 /// 指定 `rust_library` 与安装目录的 LoadedPlugin（实例化分支用）
 fn plugin_with_wasm(rust_library: &str, extension_path: &str) -> LoadedPlugin {

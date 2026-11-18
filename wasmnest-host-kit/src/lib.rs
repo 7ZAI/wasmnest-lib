@@ -3,14 +3,14 @@
 //! 本 crate 只装「机制」：插件实例状态、能力模块契约与自动注册表、能力域自报面
 //! （生命周期钩子 / 端口装配器 / 路由词汇）这些与**任何产品概念无关**的东西，从各端
 //! 宿主的 bin crate 里抬到可被能力 crate 依赖的位置。它是**双端共用**的锚点：桌面与
-//! 移动宿主都在直接依赖它（非「将来」），ADR 0018 的「双端契约各自演进」不因共享
+//! 移动宿主都在直接依赖它（非「将来」），双端契约各自演进不因共享
 //! 机制内核而改变。
 //!
 //! ## 为什么必须独立成 crate（两条硬约束，均已实测）
 //!
 //! 1. **被链接性**：`inventory::submit!` 展开为 linker-section 静态；未被任何
 //!    item 引用的 rlib 不进最终二进制，静态不执行 ⇒ 注册丢失。**已固化成两个
-//!    自动化用例**（票 09）：`tests/forced_link.rs`（顶层 `use ... as _;` ⇒ 收集
+//!    自动化用例：`tests/forced_link.rs`（顶层 `use ... as _;` ⇒ 收集
 //!    结果恰好等于探针自报的那一项）与 `tests/forced_link_absent.rs`
 //!    （全文件不提及探针 crate ⇒ 收集结果为空）。两者是两个测试二进制——强制
 //!    引用是链接期属性，同进程内无法既「有」又「无」。
@@ -38,11 +38,11 @@
 //!   能力 crate（packages/wasmnest-*）   两端宿主（wasm-core / src-tauri）
 //! ```
 //!
-//! ## 边界红线（AGENTS §5.1）
+//! ## 边界红线
 //!
 //! 本 crate 内**禁止出现任何产品名词**（会话 / 终端 / 配对 / 设备 / 传输 / AI…）。
 //! [`module::HostModuleDesc`] 只描述接口路径、权限位与 ABI 下界三类机制属性；
-//! 违反即命中 §5.1 B1（业务类型）/ B5（业务策略）红线。
+//! 一旦把业务名词暴露成模块名 / 接口 / 权限位，注册表就退化成业务容器。
 
 #![deny(missing_docs)]
 
@@ -116,7 +116,8 @@ impl std::fmt::Display for HostKitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Register { module, source } => {
-                write!(f, "host module '{module}' registration failed: {source}")
+                // `{:#}` 展开 anyhow 错误链（`Caused by: ...`）；`{source}` 只打最外层
+                write!(f, "host module '{module}' registration failed: {source:#}")
             }
             Self::WhitelistMismatch { unlisted, missing } => write!(
                 f,

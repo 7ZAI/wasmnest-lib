@@ -1,10 +1,10 @@
-//! 宿主引擎端口（批次 2 · 票 17 §6.2）——插件机制面与宿主引擎的唯一桥
+//! 宿主引擎端口（批次 2）——插件机制面与宿主引擎的唯一桥
 //!
 //! 运行时与 16 域迁入本 crate 后，所有「离宿主无法实现」的引擎调用不再直引
 //! 宿主符号（`crate::state::get_auth_manager` / `crate::peer_net::*` /
 //! `crate::egress::policy` / android_plugins 桥……），一律经本端口注入。
 //!
-//! **票 02 B5 起常编译（双端共享）**：统一 `WasmHostContext` 把 `ports` 槽并入
+//! **自 B5 起常编译（双端共享）**：统一 `WasmHostContext` 把 `ports` 槽并入
 //! 超集后，本模块不再是移动 adapter 专属——桌面形态也编译（其上下文给
 //! `UnimplementedPorts` 占位，桌面引擎调用不经过端口）。`FsAuthGate` 的
 //! `Any` 超 trait 是下转型访问器（`WasmHostContext::fs_auth_checker`）的类型
@@ -51,7 +51,7 @@ pub trait AuthEnginePort: Send + Sync {
     async fn has_credentials(&self) -> bool;
 }
 
-/// 主连接事实面（票 12 `host-connection.primary-target` 的引擎读数）
+/// 主连接事实面（`host-connection.primary-target` 的引擎读数）
 ///
 /// `Ok(None)` = 从未配置目标；`Ok(Some((target, connected)))` = 传输事实。
 #[async_trait]
@@ -82,7 +82,7 @@ pub trait SafIoPort: Send + Sync {
     ) -> std::result::Result<(), String>;
 }
 
-/// WS 自动重连策略面（票 12 R1：全局退避单一事实源 `connection::reconnect`
+/// WS 自动重连策略面（全局退避单一事实源 `connection::reconnect`
 /// 留宿主；crate 侧按策略推进重连循环）
 #[async_trait]
 pub trait WsReconnectPolicyPort: Send + Sync {
@@ -105,7 +105,7 @@ pub enum FsAuthOp {
 /// 文件授权闸门面（宿主 fs_auth 的窄投影）
 ///
 /// crate 侧只问「这个插件能不能读/写这个路径」；授权判定链（路径白名单 →
-/// 插件白名单 → 弹窗授权）是宿主安全闸门（ADR 0022 §5.1.3 ②），真源在宿主。
+/// 插件白名单 → 弹窗授权）是宿主安全闸门（四类薄壳之「安全闸门」），真源在宿主。
 ///
 /// 窄授权判据（机制面消费的最小面）
 ///
@@ -133,7 +133,7 @@ pub trait FsAuthGate: Send + Sync {
 ///
 /// 单形态（2026-10-13 裁决）之前这两处是内核里的
 /// `#[cfg(feature = "desktop-assembly")]` 二选一：`"desktop"` / `"mobile"` 字面量
-/// 与 `ServerSupervisor` 直读写死在内核——按 ADR 0049 D1 的判定口径（「桌面这样写、
+/// 与 `ServerSupervisor` 直读写死在内核——按判定口径（「桌面这样写、
 /// 移动那样写」就不是机制）应属端宿主。现在内核只经本端口取端值，实现分别住
 /// `桌面宿主 src-tauri/src/plugin/host_facts.rs` 与
 /// `移动宿主 src-tauri/src/plugin/host_ports.rs`。
@@ -192,7 +192,7 @@ pub trait HostEnginePorts: Send + Sync {
     /// 全局 JWT token（jwt-auth 首帧代发 / 宿主代注 Bearer；token 不落插件）
     fn global_token(&self) -> String;
 
-    // ==================== host-config 端专属项（票 03） ====================
+    // ==================== host-config 端专属项 ====================
     //
     // `host-config` 是 core.wit 的双端全等 interface，白名单词汇由内核持并集
     // （见 `host_api/config.rs`）。并集里属**端专属事实**的一项是移动下载目录
@@ -229,125 +229,6 @@ pub trait HostEnginePorts: Send + Sync {
 
     /// 本机 peer 节点 ID（自播回显过滤；未启动 None）
     fn current_node_id(&self, app: &tauri::AppHandle) -> Option<String>;
-
-    // ==================== peer：peer_net 引擎 ====================
-
-    /// 拨号建连（返回引擎应答的 `status` 字段：`"connected"` / 其他）
-    async fn peer_dial_endpoint(
-        &self,
-        app: &tauri::AppHandle,
-        node_id: String,
-        addr: String,
-        port: u16,
-    ) -> Result<String>;
-
-    /// 断开对端（返回是否命中；`close` 统一资源关闭的 session 路由）
-    async fn peer_disconnect(&self, app: &tauri::AppHandle, node_id: String) -> Result<bool>;
-
-    /// 首连应答
-    async fn peer_respond_consent(
-        &self,
-        app: &tauri::AppHandle,
-        request_id: String,
-        accepted: bool,
-    ) -> Result<bool>;
-
-    /// 信任列表（JSON 序列化由实现方完成）
-    async fn peer_list_trusted(&self, app: &tauri::AppHandle) -> Result<String>;
-
-    /// 撤销信任
-    async fn peer_revoke_trusted(&self, app: &tauri::AppHandle, node_id: String) -> Result<bool>;
-
-    /// 全量幂等替换引擎广播源（`[{ id, name, safTreeUri }]` JSON，camelCase）
-    async fn peer_set_shared_roots(
-        &self,
-        app: &tauri::AppHandle,
-        entries_json: String,
-    ) -> Result<()>;
-
-    /// 按需启动本机节点（幂等；caller = 属主）
-    async fn peer_start_node(&self, app: &tauri::AppHandle, caller: &str) -> Result<bool>;
-
-    /// 属主插件让节点下线（非属主拒绝）
-    async fn peer_stop_node(&self, app: &tauri::AppHandle, caller: &str) -> Result<bool>;
-
-    // ==================== peer：transfer / receive / remote ====================
-
-    /// 取消发送批
-    async fn peer_cancel_transfer(&self, app: &tauri::AppHandle, batch_id: String) -> Result<bool>;
-
-    /// 取消/拒绝接收批（pending 即拒；`close` 统一资源关闭的接收侧路由）
-    async fn peer_cancel_receiving(&self, app: &tauri::AppHandle, batch_id: String)
-        -> Result<bool>;
-
-    /// 发送一批文件（paths 已由域内完成双形态解析与并发脉冲字段拒绝）
-    async fn peer_send_files_with_policy(
-        &self,
-        app: &tauri::AppHandle,
-        node_id: String,
-        paths: Vec<String>,
-        force_encrypt: Option<bool>,
-    ) -> Result<String>;
-
-    /// 接收批应答
-    async fn peer_respond_transfer(
-        &self,
-        app: &tauri::AppHandle,
-        batch_id: String,
-        accept: bool,
-    ) -> Result<()>;
-
-    /// 接收策略
-    async fn peer_set_receive_policy(
-        &self,
-        app: &tauri::AppHandle,
-        mode: String,
-        timeout_secs: u64,
-    ) -> Result<()>;
-
-    /// 暂停发送批（返回是否命中）
-    async fn peer_pause_transfer(&self, app: &tauri::AppHandle, batch_id: String) -> Result<bool>;
-
-    /// 恢复发送批（返回是否命中）
-    async fn peer_resume_transfer(&self, app: &tauri::AppHandle, batch_id: String) -> Result<bool>;
-
-    /// 设置接收落点（None = 恢复默认）
-    async fn peer_set_download_dir(
-        &self,
-        app: &tauri::AppHandle,
-        path: Option<String>,
-    ) -> Result<()>;
-
-    /// 远端共享根列表（JSON 由实现方序列化）
-    async fn peer_list_shared_roots(
-        &self,
-        app: &tauri::AppHandle,
-        node_id: String,
-    ) -> Result<String>;
-
-    /// 远端目录浏览（JSON 由实现方序列化）
-    async fn peer_browse_directory(
-        &self,
-        app: &tauri::AppHandle,
-        node_id: String,
-        dir_id: String,
-        rel_path: String,
-    ) -> Result<String>;
-
-    /// 拉取文件（files_json 契约归宿主实现解析）
-    async fn peer_pull_files(
-        &self,
-        app: &tauri::AppHandle,
-        node_id: String,
-        dir_id: String,
-        files_json: String,
-    ) -> Result<u32>;
-
-    /// 活跃传输批清单（send + receive pending + pull 三表聚合投影，JSON）
-    async fn peer_active_transfers(&self, app: &tauri::AppHandle) -> Result<String>;
-
-    /// 发送源收集（`[{ path, size }]` JSON；无 app 依赖——纯元数据面）
-    async fn peer_collect_outgoing(&self, paths: Vec<String>) -> Result<String>;
 
     // ==================== platform / fs / config / db ====================
 
@@ -406,7 +287,7 @@ pub trait HostEnginePorts: Send + Sync {
 
 /// 系统选择器端口（`host-platform` 的 `pick-files` / `pick-folders` 端实现）
 ///
-/// 端差异落宿主（ADR 0052 D1「差异应该在各自的宿主侧」）：桌面 = 原生对话框
+/// 端差异落宿主（「差异应该在各自的宿主侧」）：桌面 = 原生对话框
 /// （宿主 `桌面宿主 src-tauri/src/plugin/platform_picker.rs`），移动 = SAF
 /// 选择器（经 [`EnginePortsPlatformPicker`] 适配本模块 `HostEnginePorts` 已有的两条
 /// SAF 端口）。内核只持共享机制——`fs:pick` 权限门 + 选择后 `authorize_picked`
@@ -551,157 +432,6 @@ impl HostEnginePorts for UnimplementedPorts {
         None
     }
 
-    async fn peer_dial_endpoint(
-        &self,
-        _app: &tauri::AppHandle,
-        _node_id: String,
-        _addr: String,
-        _port: u16,
-    ) -> Result<String> {
-        Err(port_err("peer_dial_endpoint"))
-    }
-
-    async fn peer_disconnect(&self, _app: &tauri::AppHandle, _node_id: String) -> Result<bool> {
-        Err(port_err("peer_disconnect"))
-    }
-
-    async fn peer_respond_consent(
-        &self,
-        _app: &tauri::AppHandle,
-        _request_id: String,
-        _accepted: bool,
-    ) -> Result<bool> {
-        Err(port_err("peer_respond_consent"))
-    }
-
-    async fn peer_list_trusted(&self, _app: &tauri::AppHandle) -> Result<String> {
-        Err(port_err("peer_list_trusted"))
-    }
-
-    async fn peer_revoke_trusted(&self, _app: &tauri::AppHandle, _node_id: String) -> Result<bool> {
-        Err(port_err("peer_revoke_trusted"))
-    }
-
-    async fn peer_set_shared_roots(
-        &self,
-        _app: &tauri::AppHandle,
-        _entries_json: String,
-    ) -> Result<()> {
-        Err(port_err("peer_set_shared_roots"))
-    }
-
-    async fn peer_start_node(&self, _app: &tauri::AppHandle, _caller: &str) -> Result<bool> {
-        Err(port_err("peer_start_node"))
-    }
-
-    async fn peer_stop_node(&self, _app: &tauri::AppHandle, _caller: &str) -> Result<bool> {
-        Err(port_err("peer_stop_node"))
-    }
-
-    async fn peer_cancel_transfer(
-        &self,
-        _app: &tauri::AppHandle,
-        _batch_id: String,
-    ) -> Result<bool> {
-        Err(port_err("peer_cancel_transfer"))
-    }
-
-    async fn peer_cancel_receiving(
-        &self,
-        _app: &tauri::AppHandle,
-        _batch_id: String,
-    ) -> Result<bool> {
-        Err(port_err("peer_cancel_receiving"))
-    }
-
-    async fn peer_send_files_with_policy(
-        &self,
-        _app: &tauri::AppHandle,
-        _node_id: String,
-        _paths: Vec<String>,
-        _force_encrypt: Option<bool>,
-    ) -> Result<String> {
-        Err(port_err("peer_send_files_with_policy"))
-    }
-
-    async fn peer_respond_transfer(
-        &self,
-        _app: &tauri::AppHandle,
-        _batch_id: String,
-        _accept: bool,
-    ) -> Result<()> {
-        Err(port_err("peer_respond_transfer"))
-    }
-
-    async fn peer_set_receive_policy(
-        &self,
-        _app: &tauri::AppHandle,
-        _mode: String,
-        _timeout_secs: u64,
-    ) -> Result<()> {
-        Err(port_err("peer_set_receive_policy"))
-    }
-
-    async fn peer_pause_transfer(
-        &self,
-        _app: &tauri::AppHandle,
-        _batch_id: String,
-    ) -> Result<bool> {
-        Err(port_err("peer_pause_transfer"))
-    }
-
-    async fn peer_resume_transfer(
-        &self,
-        _app: &tauri::AppHandle,
-        _batch_id: String,
-    ) -> Result<bool> {
-        Err(port_err("peer_resume_transfer"))
-    }
-
-    async fn peer_set_download_dir(
-        &self,
-        _app: &tauri::AppHandle,
-        _path: Option<String>,
-    ) -> Result<()> {
-        Err(port_err("peer_set_download_dir"))
-    }
-
-    async fn peer_list_shared_roots(
-        &self,
-        _app: &tauri::AppHandle,
-        _node_id: String,
-    ) -> Result<String> {
-        Err(port_err("peer_list_shared_roots"))
-    }
-
-    async fn peer_browse_directory(
-        &self,
-        _app: &tauri::AppHandle,
-        _node_id: String,
-        _dir_id: String,
-        _rel_path: String,
-    ) -> Result<String> {
-        Err(port_err("peer_browse_directory"))
-    }
-
-    async fn peer_pull_files(
-        &self,
-        _app: &tauri::AppHandle,
-        _node_id: String,
-        _dir_id: String,
-        _files_json: String,
-    ) -> Result<u32> {
-        Err(port_err("peer_pull_files"))
-    }
-
-    async fn peer_active_transfers(&self, _app: &tauri::AppHandle) -> Result<String> {
-        Err(port_err("peer_active_transfers"))
-    }
-
-    async fn peer_collect_outgoing(&self, _paths: Vec<String>) -> Result<String> {
-        Err(port_err("peer_collect_outgoing"))
-    }
-
     async fn platform_pick_files(&self, _app: &tauri::AppHandle) -> Result<Vec<String>> {
         Err(port_err("platform_pick_files"))
     }
@@ -814,10 +544,6 @@ mod tests {
         assert!(ports.global_token().is_empty());
         let (min_ms, max_ms) = ports.reconnect_bounds();
         assert!(min_ms > 0 && max_ms >= min_ms);
-        assert!(ports
-            .peer_collect_outgoing(vec!["/tmp/x".into()])
-            .await
-            .is_err());
         assert!(ports.platform_pick_shared_directory().await.is_err());
         assert!(ports.notify_show("t", "a", "b", true, true).await.is_err());
         // ABI v18：notify 域 4 个新增无 app 参数方法同属 fail-visible 断言面

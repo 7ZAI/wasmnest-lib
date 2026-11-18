@@ -25,17 +25,16 @@ use crate::module::HostModuleDesc;
 use crate::state::WasmPluginState;
 use crate::{HostKitError, Result};
 
-// ==================== 描述符零产品名词判据（ADR 0035 D4） ====================
+// ==================== 描述符零产品名词判据 ====================
 
 /// 描述符禁用词表：模块名 / 接口路径 / 权限位中不得出现的产品名词词段
 ///
 /// 判据规则（词段相等，非子串包含）见 [`ModuleRegistry::product_noun_violations`]。
 /// 这些词代表产品语义（会话 / 终端 / 配对 / 设备 / 传输 / 文件 / 对话 / AI / Agent /
-/// PTY 实例 / MCP）；一旦进入描述符，注册表就从「通用注册表与寻址」退化成业务容器
-/// （AGENTS §5.1 B1/B5）。
+/// PTY 实例 / MCP）；一旦进入描述符，注册表就从「通用注册表与寻址」退化成业务容器。
 ///
 /// **端独有扩展的例外不在这里**：豁免由各扫描点显式登记（例：移动 `mobile-terminal-stream`
-/// 是 ADR 0047 / ADR 0052 D4 保留的窄转发端扩展，命中 `terminal` 属端事实），
+/// 是保留的窄转发端扩展，命中 `terminal` 属端事实），
 /// 本表只定义「什么算命中」。
 pub const PRODUCT_NOUN_DENYLIST: &[&str] = &[
     "session",
@@ -172,7 +171,7 @@ impl ModuleRegistry {
         Err(HostKitError::WhitelistMismatch { unlisted, missing })
     }
 
-    /// 描述符产品名词命中（空 = 通过；AGENTS §5.1 B1/B5 红线）
+    /// 描述符产品名词命中（空 = 通过）
     ///
     /// **为什么在机制侧**：描述符是 [`crate::module::HostModuleDesc`] 的自报面，而
     /// `inventory` 收集按**测试二进制**隔离——某端宿主 adapter 自报的模块只有该端
@@ -180,11 +179,11 @@ impl ModuleRegistry {
     /// （wasm-core / 两端宿主）对自己的 `ModuleRegistry::collected()` 全量跑一次。
     ///
     /// **只返回原始命中、不做豁免**：端独有扩展可以合法携带端事实词汇（例：移动
-    /// `mobile-terminal-stream`，ADR 0047 / ADR 0052 D4 保留的窄转发端扩展），
+    /// `mobile-terminal-stream`，保留的窄转发端扩展），
     /// 豁免由各扫描点把期望命中集显式登记后比对（防「静默放过」）。
     ///
     /// 匹配粒度 = **词段相等**，不是子串包含：`database:main` 里的 `ai` 是 `main`
-    /// 的内部子串，不命中（票 08 实测修正，子串判据曾把纯机制权限位判成产品名词）。
+    /// 的内部子串，不命中（子串判据会把纯机制权限位误判成产品名词）。
     pub fn product_noun_violations(&self) -> Vec<DescriptorNounViolation> {
         let mut violations = Vec::new();
         for desc in self.descs() {
@@ -213,7 +212,7 @@ impl ModuleRegistry {
     ///
     /// **两遍装配**：先装正式实现（`fallback() == false`），再装 [`HostModule::fallback`]
     /// 自报的兜底/兼容桩，且**跳过接口已被正式实现占用的桩**。为什么必须这样：跨端同
-    /// 进程装配（`cross-end-tests`：桌面 lib 与移动 lib 同时链入）时，移动侧的桌面兼容桩
+    /// 进程装配（`wasmnest-test/cross-end-tests`：桌面 lib 与移动 lib 同时链入）时，移动侧的桌面兼容桩
     /// （`mobile-desktop-compat`：只为 import 闭合的 fail-visible 桩）会与桌面真实现
     /// 同名 interface 撞车；桩的语义本来就是「没有真实现时才填位」，跳过是正解。
     /// 单端装配下接口无竞争，两遍装配与单遍行为一致（桩照装）。
@@ -272,7 +271,7 @@ mod tests {
     #[test]
     fn descriptor_noun_matcher_keeps_compounds_and_drops_substrings() {
         assert!(descriptor_haystack_has_noun(
-            "wasmnest:plugin@0.0.1/host-session",
+            "wasmnest:plugin@0.0.2/host-session",
             "session"
         ));
         assert!(descriptor_haystack_has_noun("pty-instance", "pty-instance"));
@@ -282,7 +281,7 @@ mod tests {
         ));
         assert!(descriptor_haystack_has_noun("ai-chatbox", "ai"));
         assert!(descriptor_haystack_has_noun(
-            "wasmnest:plugin@0.0.1/host-session",
+            "wasmnest:plugin@0.0.2/host-session",
             "plugin"
         ));
         // 正例：分号 / 斜杠权限位与接口路径的词段照样命中

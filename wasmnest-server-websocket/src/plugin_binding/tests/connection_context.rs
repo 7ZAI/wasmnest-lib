@@ -1,4 +1,4 @@
-//! connection-context（脱敏上下文，v28 票 02）用例组（自 scaffold.rs 拆出，
+//! connection-context（脱敏上下文）用例组（自 scaffold.rs 拆出，
 //! 2026-10-04 OCR K-07：scaffold 只放跨组共享助手，真测试单独成组）
 //!
 //! `ws_connection_context` 查询「某端点下某客户端」的连接上下文：属主可查完整

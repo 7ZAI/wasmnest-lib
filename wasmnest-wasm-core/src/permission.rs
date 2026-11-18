@@ -12,8 +12,8 @@
 //! 是桌面端唯一的权限清单。打包 CLI（`bin/cli.js`）的列表是**生成物**，由 `cargo run
 //! --manifest-path rust/Cargo.toml --example gen_permission_vocabulary`（即 SDK 的
 //! `pnpm run gen:permissions`）重出，禁止手抄；两份（真源 + CLI 生成物）一致性由
-//! **平台仓**漂移锁断言（三仓拆分 L2/E2b 票 08 迁出本 crate：
-//! `cross-end-tests/tests/permission_vocabulary_lock.rs`——真源是本文件公开常量，
+//! **测试仓**漂移锁断言（三仓拆分时迁出本 crate：
+//! `wasmnest-test/cross-end-tests/tests/permission_vocabulary_lock.rs`——真源是本文件公开常量，
 //! 由平台测试经 wasm-core 公开面读取；能力仓不再读平台文件）。
 //!
 //! desktop-host-frontend-downsink（2026-10-17）：原「宿主前端生成物」
@@ -25,16 +25,16 @@ use std::collections::{HashMap, HashSet};
 /// 所有合法权限常量
 pub const PERMISSION_TERMINAL_INPUT: &str = "terminal:input";
 pub const PERMISSION_TERMINAL_OUTPUT: &str = "terminal:output";
-// v27 退役（会话引擎下沉票 10）：`terminal:observe`（提交输入行观察面，票 03 删派发点）
+// v27 退役（会话引擎下沉时）：`terminal:observe`（提交输入行观察面，此前已删派发点）
 // 与 `session:write`（宿主会话写原语，随 `host-session` 整 interface 删除）。
-/// 会话读取（前端 `session.*` 窗口原语面）：**票 10 起只剩宿主终端窗口事实**
+/// 会话读取（前端 `session.*` 窗口原语面）：**此后只剩宿主终端窗口事实**
 /// （预测初始网格 / 打开 / 关闭窗口 / 窗口在场查询）——会话数据面与事件面已分别
-/// 随票 08 / 09 退役（插件读会话走自家命令通道）。
+/// 随迁移退役（插件读会话走自家命令通道）。
 pub const PERMISSION_SESSION_READ: &str = "session:read";
-/// 宿主 server 在册连接清单读取（WIT `host-connection`，票 04，desktop 独有）：枚举宿主
+/// 宿主 server 在册连接清单读取（WIT `host-connection`，desktop 独有）：枚举宿主
 /// WS 连接注册表的原始条目（含 `fingerprint` 设备标识、未认证连接也在册）。
 ///
-/// **为什么单独立位**（票 04 裁决）：原挂 `session:read`，但那回答不了审计问题
+/// **为什么单独立位**（既定裁决）：原挂 `session:read`，但那回答不了审计问题
 /// 「谁能读到别人的连接清单」——连接在册与否与会话读写无关（会话真源已在插件登记域）。
 /// 域名与权限位同源：`host-connection` ↔ `connection:read`。
 pub const PERMISSION_CONNECTION_READ: &str = "connection:read";
@@ -70,7 +70,7 @@ pub const PERMISSION_FS_WRITE: &str = "fs:write";
 /// （那仍是 `fs:read` / `fs:write` 的门）。
 pub const PERMISSION_FS_PICK: &str = "fs:pick";
 pub const PERMISSION_BROADCAST: &str = "broadcast";
-/// 定时器：注册宿主周期回调（到点调用插件 command，见 ADR 0003）
+/// 定时器：注册宿主周期回调（到点调用插件 command）
 pub const PERMISSION_TIMER: &str = "timer:schedule";
 /// 进程执行：在桌面端进程内 spawn 外部命令/脚本（host-process，v8）
 ///
@@ -100,7 +100,7 @@ pub const PERMISSION_MDNS: &str = "mdns";
 ///
 /// 与 `ws:server` 分域：出站连接是 SSRF 面（插件可代宿主访问任意 `ws://` 地址），
 /// 入站端点是在局域网新增暴露面——单权限通吃会让「只需出站」的插件被动获得
-/// 入站监听能力（spec D6）
+/// 入站监听能力（既定的分域口径）
 pub const PERMISSION_WS_CLIENT: &str = "ws:client";
 /// WebSocket 服务端域（host-websocket 入站端点：注册 / 收发 / 广播 / 踢出 / 注销 / 清单）
 pub const PERMISSION_WS_SERVER: &str = "ws:server";
@@ -125,6 +125,13 @@ pub const PERMISSION_PTY_IO: &str = "pty:io";
 /// `fs:write` / `process:run` / `network:http`），仅授本权限不授域权限的插件所有
 /// 单元都会失败——并发能力与数据访问能力解耦授权、解耦审计。
 pub const PERMISSION_TASK_RUN: &str = "task:run";
+/// 内嵌 worker 调度域（host-worker，worker 机制）：`submit` / `cancel`
+///
+/// 「占用宿主并行资源」的准入门（一线程一 worker、per-plugin 并发 4 / 全局 8），
+/// 与 `task:run` 同款判据：并发能力与数据访问能力解耦授权。worker 本体是声明
+/// 插件的私属子资源（manifest `workers` 块 + 插件包 `worker/` 目录），经宿主
+/// 中介调用、终态经 `events-worker` 回调；submit / cancel 同门。
+pub const PERMISSION_WORKER_RUN: &str = "worker:run";
 /// 宿主加密引擎·AEAD 域（host-crypto，v26，desktop 独有双端偏离）：加解密 / 密钥 / nonce
 pub const PERMISSION_CRYPTO_AEAD: &str = "crypto:aead";
 /// 宿主加密引擎·非对称/密钥交换域（host-crypto，v26）：X25519（rsa 按需扩展）
@@ -140,20 +147,65 @@ pub const PERMISSION_CRYPTO_KDF: &str = "crypto:kdf";
 ///
 /// 数据面**只含计数与 plugin_id**，不含会话文本 / 文件内容 / 凭据。
 pub const PERMISSION_METRICS_READ: &str = "metrics:read";
-/// 系统通知与提醒反馈（共享域契约 `host-notify`，ADR 0052 D3）：通知 / 震动 / 声音
+/// 系统通知与提醒反馈（共享域契约 `host-notify`）：通知 / 震动 / 声音
 /// 是用户打扰面（高频弹通知或狂震会骚扰用户），独立成位、fail-closed。
 /// 无前端 API 面（WASM-only 权限，宿主在 host fn 层仲裁）。
 ///
-/// **双端口径**（批 2 自移动 SDK 收口上提，平台仓 issue #36）：移动宿主
-/// `plugin/notify.rs` 域函数入口为本位的门禁落点；桌面 host-notify 实现暂无
-/// 独立权限门（缺口已记录，随批 2 遗留跟进）。
+/// **双端口径**：移动宿主与桌面宿主的 `plugin/notify.rs` 域函数入口都是本位的
+/// 门禁落点（桌面侧此前自述的缺口已随 2026-11-02 安全审查 #46 补齐）。
 pub const PERMISSION_NOTIFY: &str = "notify";
+/// 系统剪贴板读取（共享域契约 `host-clipboard`）：读取剪贴板文本内容
+///
+/// 与 `clipboard:write` 分域：读是「获取其他应用放入剪贴板的数据」——用户隐私面
+/// （剪贴板可能含密码、令牌等敏感文本），写是「把数据放入剪贴板供其他应用消费」
+/// ——数据泄露面方向不同。分开授权让「只需粘贴」的插件不获得复制面，反之亦然。
+pub const PERMISSION_CLIPBOARD_READ: &str = "clipboard:read";
+/// 系统剪贴板写入（共享域契约 `host-clipboard`）：写入文本到剪贴板
+pub const PERMISSION_CLIPBOARD_WRITE: &str = "clipboard:write";
+/// 内网穿透·服务端：`host-tunnel` 的 expose / unexpose / issue-pairing-ticket
+///
+/// **为什么单独成位**（与 `tunnel:connect` 分域）：服务端是「在局域网/中继上新增
+/// 入站暴露面」，客户端是「把远端端口映射到本机回环」——两种权力方向相反。
+/// 合成一位会让「只想连别人」的应用被动获得对外暴露能力（与 `ws:client` /
+/// `ws:server` 同款判据，spec D6）。
+///
+/// 未声明本位的应用**永远 lan-only**：即使对端已匹配，也不能登记暴露规则。
+/// 本位不携带「允许外网」语义——`allowWan` 是应用设置经 `tunnel.configure` 写入
+/// 的通道配置，关闭它只关外网通道，不改变加密（加密永久强制）。
+pub const PERMISSION_TUNNEL_SERVE: &str = "tunnel:serve";
+/// 内网穿透·客户端（T06）：`host-tunnel` 的 connect / close
+///
+/// 客户端只在本机 `127.0.0.1` 起临时端口（不变量 1），但会把远端端口映射成
+/// 本机可访问面，且拨号可消耗中继带宽；故与应用侧配对语义分开授权。
+pub const PERMISSION_TUNNEL_CONNECT: &str = "tunnel:connect";
+/// 内网穿透·只读探测（T19）：`host-tunnel` 的 probe-relay
+///
+/// **为什么不复用 `tunnel:connect`**：connect 能把任意远端端口映射到本机回环，
+/// 那是比「测一下通不通」大得多的权力；配置中心（`servers/net-config`）只为一
+/// 个诊断按钮，不应获得端口映射能力。本位不蕴含任何写面：不建 reservation、
+/// 不登记 expose 规则、不写信任、不改配置。
+pub const PERMISSION_TUNNEL_PROBE: &str = "tunnel:probe";
+/// 通用应用调用桥（前端贡献面，无 WASM 宿主函数对应）：`AppControlAPI`
+///
+/// 允许插件前端调用**其他应用已声明**的应用命令（列应用 / 调声明工具 / 打开
+/// 应用），宿主做白名单与审计。**强权限**：持有者可代表用户触发目标应用的
+/// 已声明命令，审批文案必须写明这一点，不能弱化成「读取应用信息」。
+///
+/// 门禁落点：宿主桥实现（桌面 `AppControlAPI` 注入前的权限校验、移动插件
+/// 上下文注入处）；未声明本位的插件前端拿不到 `apps` 桥。
+pub const PERMISSION_APPS_CONTROL: &str = "apps:control";
+/// 全局入口贡献（纯前端贡献面，无 WASM 宿主函数对应）：manifest
+/// `contributes.globalEntries` 在壳的全局入口区登记入口
+///
+/// 入口只对「已安装、已启用、激活成功」的应用渲染；停用即消失。
+/// 门禁落点：宿主聚合 `globalEntries` 时按本位过滤。
+pub const PERMISSION_UI_GLOBAL_ENTRY: &str = "ui:globalEntry";
 
 /// 权限词汇反射表：`(常量标识符, 权限串)`
 ///
 /// 标识符由 `stringify!` 取自常量本身，与值同源、不可能漂移。有了这一列，宿主测试
 /// 就能把「源码里出现的 `PERMISSION_*` 引用」机械还原成权限串，从而断言
-/// 「每一条词汇都有真实门禁落点」（平台仓锁 `cross-end-tests/tests/permission_vocabulary_lock.rs`），
+/// 「每一条词汇都有真实门禁落点」（测试仓锁 `wasmnest-test/cross-end-tests/tests/permission_vocabulary_lock.rs`），
 /// 而不需要再手抄一份清单。
 pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
     (
@@ -201,19 +253,39 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
     (stringify!(PERMISSION_PTY_SPAWN), PERMISSION_PTY_SPAWN),
     (stringify!(PERMISSION_PTY_IO), PERMISSION_PTY_IO),
     (stringify!(PERMISSION_TASK_RUN), PERMISSION_TASK_RUN),
+    (stringify!(PERMISSION_WORKER_RUN), PERMISSION_WORKER_RUN),
     (stringify!(PERMISSION_CRYPTO_AEAD), PERMISSION_CRYPTO_AEAD),
     (stringify!(PERMISSION_CRYPTO_ASYM), PERMISSION_CRYPTO_ASYM),
     (stringify!(PERMISSION_CRYPTO_KDF), PERMISSION_CRYPTO_KDF),
     (stringify!(PERMISSION_METRICS_READ), PERMISSION_METRICS_READ),
     (stringify!(PERMISSION_NOTIFY), PERMISSION_NOTIFY),
+    (
+        stringify!(PERMISSION_CLIPBOARD_READ),
+        PERMISSION_CLIPBOARD_READ,
+    ),
+    (
+        stringify!(PERMISSION_CLIPBOARD_WRITE),
+        PERMISSION_CLIPBOARD_WRITE,
+    ),
+    (stringify!(PERMISSION_TUNNEL_SERVE), PERMISSION_TUNNEL_SERVE),
+    (
+        stringify!(PERMISSION_TUNNEL_CONNECT),
+        PERMISSION_TUNNEL_CONNECT,
+    ),
+    (stringify!(PERMISSION_TUNNEL_PROBE), PERMISSION_TUNNEL_PROBE),
+    (stringify!(PERMISSION_APPS_CONTROL), PERMISSION_APPS_CONTROL),
+    (
+        stringify!(PERMISSION_UI_GLOBAL_ENTRY),
+        PERMISSION_UI_GLOBAL_ENTRY,
+    ),
 ];
 
 /// 合法权限集合 — 桌面端权限词汇的**唯一真源**（由 [`PERMISSION_VOCABULARY`] 派生）
 ///
 /// 未列入本表的权限在 [`PermissionManager::grant_permissions`] 授权时被静默过滤，
-/// 因此 manifest 声明了这里没有的字段等于没声明（票 01 的词汇清零即为此而设）。
+/// 因此 manifest 声明了这里没有的字段等于没声明（词汇清零即为此而设）。
 /// 新增/拆分权限位只需在反射表加一行，再重跑生成器（见模块头），
-/// 否则平台仓词汇漂移锁转红（锁位见模块头）。
+/// 否则测试仓词汇漂移锁转红（锁位见模块头）。
 const fn valid_permissions() -> [&'static str; PERMISSION_VOCABULARY.len()] {
     let mut out = [""; PERMISSION_VOCABULARY.len()];
     let mut i = 0;
@@ -235,21 +307,21 @@ pub static VALID_PERMISSIONS: &[&str] = &valid_permissions();
 ///   实际门禁在宿主侧各域函数入口的 `check_permission`。
 ///
 /// 表内每个权限都必有一条门禁落点（宿主侧域函数入口 `check_permission`）
-/// ——无落点的权限位由平台仓词汇漂移锁拒绝
-///（`cross-end-tests/tests/permission_vocabulary_lock.rs`）。
+/// ——无落点的权限位由测试仓词汇漂移锁拒绝
+///（`wasmnest-test/cross-end-tests/tests/permission_vocabulary_lock.rs`）。
 pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
-    // 票 08：`terminal.sendInput` 随宿主输入通道（`plugin_terminal_send_input`）
+    // `terminal.sendInput` 随宿主输入通道（`plugin_terminal_send_input`）
     // 注销——插件写自家会话输入走自有命令通道（不受本表管辖）。
     (PERMISSION_TERMINAL_INPUT, &["terminal.onInput"]),
     (PERMISSION_TERMINAL_OUTPUT, &["terminal.onOutput"]),
     (
         PERMISSION_SESSION_READ,
         &[
-            // 票 08：`session.list` / `session.get` 随宿主会话数据命令面注销
+            // `session.list` / `session.get` 随宿主会话数据命令面注销
             // （插件读会话走自有命令通道 `session.list` / `session.get`）。
-            // 票 09：`session.onStatusChange` 随内核状态订阅转接通道注销。
+            // `session.onStatusChange` 随内核状态订阅转接通道注销。
             // 本表剩下的全是**宿主窗口事实**（窗口本体 / 字体测量在宿主，
-            // spec D3）：预测初始网格 / 打开 / 关闭宿主终端窗口 / 窗口在场查询。
+            // 既定口径：预测初始网格 / 打开 / 关闭宿主终端窗口 / 窗口在场查询。
             "session.predictTerminalSize",
             "session.openTerminal",
             "session.closeTerminal",
@@ -286,7 +358,7 @@ pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
             "storage.flush",
         ],
     ),
-    // 票 08（websocket 业务下沉）：`broadcast.sync` 随 host-events.broadcast-sync
+    // `broadcast.sync` 随 host-events.broadcast-sync
     // 退役（插件事件走 bus/emit）——PERMISSION_BROADCAST 不再映射任何宿主方法。
     // `broadcast` 位保留：前端 events.on/emit 仍经 manifest-gen FRONTEND_PERMISSION_RULES
     // 声明它（apiMap 空清单按 api_map_keys_must_be_known_permissions 约定省略条目）。
@@ -337,7 +409,7 @@ pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
             "peer.browseDirectory",
             "peer.pullFiles",
             "peer.pickFiles",
-            // ADR 0022 v2 新增原语
+            // 既定的 v2 新增原语
             "peer.dialEndpoint",
             "peer.close",
             "peer.setSharedRoots",
@@ -399,6 +471,40 @@ pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
     // 运行监控（WASM-only：宿主 `host-metrics.snapshot`，无前端调用点）。
     // 门禁落点 = `manager/runtime/core_binding.rs` 的 Host impl 首行。
     (PERMISSION_METRICS_READ, &["metrics.snapshot"]),
+    // 内嵌 worker 调度（WASM-only：宿主 `host-worker.submit/cancel`，无前端调用点）。
+    // 门禁落点 = `manager/runtime/core_binding.rs` 的 Host impl 首行（同 metrics 范式）。
+    (PERMISSION_WORKER_RUN, &["worker.submit", "worker.cancel"]),
+    // 系统剪贴板读写（WASM-only：宿主 `host-clipboard.read-text/write-text`，无前端调用点）。
+    // 门禁落点 = 各端 `src/plugin/clipboard.rs` 的 Host impl 首行（同 notify 范式）。
+    // 读 / 写分域授权：「只需粘贴」的插件不获得复制面，反之亦然（既定口径）。
+    (PERMISSION_CLIPBOARD_READ, &["clipboard.readText"]),
+    (PERMISSION_CLIPBOARD_WRITE, &["clipboard.writeText"]),
+    // 内网穿透（T06）：服务端 / 客户端分域授权。`status` 与 `configure` 允许
+    // 任一权限——它们是只读投影与通道配置，不单独构成暴露面，故不登记为某一位
+    // 专属的审计名（门禁在 `tunnel/plugin_binding.rs` 的 `require_either`）。
+    (
+        PERMISSION_TUNNEL_SERVE,
+        &[
+            "tunnel.expose",
+            "tunnel.unexpose",
+            "tunnel.issuePairingTicket",
+        ],
+    ),
+    (
+        PERMISSION_TUNNEL_CONNECT,
+        &["tunnel.connect", "tunnel.close"],
+    ),
+    // T19：只读连通性探测。与 serve / connect 都不共享——探测不持有任何隧道
+    // 资源，也不映射端口（门禁在 `tunnel/plugin_binding.rs::tunnel_probe_relay`）。
+    (PERMISSION_TUNNEL_PROBE, &["tunnel.probeRelay"]),
+    // 通用应用调用桥（前端贡献面）：`AppControlAPI` 的三个方法都是前端注入面，
+    // 无 WASM 宿主函数；门禁落点 = 宿主桥实现（注入前校验本位 + 白名单 + 审计）。
+    (
+        PERMISSION_APPS_CONTROL,
+        &["apps.list", "apps.invoke", "apps.open"],
+    ),
+    // `ui:globalEntry` 是纯 manifest 贡献面（contributes.globalEntries），无前端
+    // API 方法，按「无 API 方法的权限省略映射条目」约定不登记（同 `broadcast`）。
 ];
 
 /// 权限管理器
@@ -416,7 +522,7 @@ impl PermissionManager {
 
     /// 为插件授权（从 manifest permissions 字段解析，过滤非法权限）
     ///
-    /// 只授予 manifest 声明且在本表内的权限——**没有任何默认授予**（票 02：
+    /// 只授予 manifest 声明且在本表内的权限——**没有任何默认授予**：
     /// 旧形态在此无条件塞进 `storage`，使主库/私有库权限门恒过，
     /// 「manifest 声明即信任」变成了「不声明也有」）。
     /// 词汇表外的声明会被过滤，调用方（宿主激活路径）负责把被过滤项告警出来，
@@ -480,7 +586,7 @@ impl Default for PermissionManager {
 
 // ==================== 退役权限位（fail-visible 形态③） ====================
 
-/// 已退役权限位（票 2026-10-10 批次 C2；**移动壳**退役表）
+/// 已退役权限位（**移动壳**退役表）
 ///
 /// 宿主壳改纯 surface 形态后，`ui.registerToolboxPage` / `ui.registerNavTab` /
 /// `ui.registerTerminalToolbarItem` / `ui.registerTerminalView` 四个旧嵌入扩展点
@@ -491,7 +597,7 @@ impl Default for PermissionManager {
 /// 为什么必须显式登记而不是「从 VALID_PERMISSIONS 删掉就算」：权限位不在白名单时
 /// `grant_permissions` 会**静默丢弃**——旧插件声明了退役位却照常加载、只是能力
 /// 凭空消失，排查时看到的是「功能莫名不好使」而非「这个位已经没了」。
-/// 登记在此 + 装载期显式报错（§5.1.3 fail-visible 形态③），断链才可见。
+/// 登记在此 + 装载期显式报错（fail-visible 形态③），断链才可见。
 ///
 /// 批 2 自移动 SDK 收口上提（平台仓 issue #36）：机制归机制层；移动 SDK 侧副本
 /// 已删（guest 面本无此 API）。
@@ -529,7 +635,7 @@ mod retired_permissions_tests {
 
     #[test]
     fn retired_permissions_rejected_at_load() {
-        // 票 2026-10-10 C2 fail-visible 形态③：清单声明退役权限位必须装载期报错，
+        // 清单声明退役权限位必须装载期报错，
         // 而不是「不在白名单 → grant 静默丢弃 → 功能凭空消失」
         for (perm, _) in RETIRED_PERMISSIONS {
             let err = check_retired_permissions("p", &[perm.to_string()])
@@ -568,5 +674,81 @@ mod retired_permissions_tests {
         // 批 2 收口（issue #36）：notify 位进双端真源；门禁落点 = 移动宿主
         // notify.rs（跨端词汇锁扫描面已扩移动宿主源码）
         assert!(VALID_PERMISSIONS.contains(&PERMISSION_NOTIFY));
+    }
+
+    #[test]
+    fn worker_vocabulary_registered() {
+        // worker 机制契约面：worker:run 进双端真源，
+        // submit / cancel 同门；门禁落点 = `manager/runtime/core_binding.rs`
+        // 的 host-worker Host impl 首行（API 映射登记审计名 worker.submit/cancel）
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_WORKER_RUN));
+        let entry = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_WORKER_RUN)
+            .expect("worker:run 应在 API 映射表内");
+        assert_eq!(entry.1, &["worker.submit", "worker.cancel"][..]);
+    }
+
+    /// 内网穿透（T06）：服务端 / 客户端两位分域进双端真源；
+    /// `status` / `configure` 是共用面，不把任一位扩成「全通道」。
+    #[test]
+    fn tunnel_vocabulary_registered() {
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_TUNNEL_SERVE));
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_TUNNEL_CONNECT));
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_TUNNEL_PROBE));
+
+        let serve = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_TUNNEL_SERVE)
+            .expect("tunnel:serve 应在 API 映射表内");
+        assert_eq!(
+            serve.1,
+            &[
+                "tunnel.expose",
+                "tunnel.unexpose",
+                "tunnel.issuePairingTicket"
+            ][..]
+        );
+        let connect = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_TUNNEL_CONNECT)
+            .expect("tunnel:connect 应在 API 映射表内");
+        assert_eq!(connect.1, &["tunnel.connect", "tunnel.close"][..]);
+
+        // T19：探测是独立第三位，只登记只读原语
+        let probe = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_TUNNEL_PROBE)
+            .expect("tunnel:probe 应在 API 映射表内");
+        assert_eq!(probe.1, &["tunnel.probeRelay"][..]);
+
+        // 分域判据：只声明客户端位不获得 expose / issue 面
+        let pm = PermissionManager::new();
+        pm.grant_permissions(
+            "com.wasmnest.client-only",
+            &[PERMISSION_TUNNEL_CONNECT.to_string()],
+        );
+        assert!(pm.check_api("com.wasmnest.client-only", "tunnel.connect"));
+        assert!(!pm.check_api("com.wasmnest.client-only", "tunnel.expose"));
+        assert!(!pm.check("com.wasmnest.client-only", PERMISSION_TUNNEL_SERVE));
+    }
+
+    #[test]
+    fn clipboard_vocabulary_registered() {
+        // 剪贴板域：clipboard:read / clipboard:write 分域进双端真源，
+        // 门禁落点 = 各端 `src/plugin/clipboard.rs` 的 Host impl 首行。
+        // 读 / 写分域授权：「只需粘贴」的插件不获得复制面（API 映射登记审计名）
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_CLIPBOARD_READ));
+        assert!(VALID_PERMISSIONS.contains(&PERMISSION_CLIPBOARD_WRITE));
+        let read_entry = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_CLIPBOARD_READ)
+            .expect("clipboard:read 应在 API 映射表内");
+        assert_eq!(read_entry.1, &["clipboard.readText"][..]);
+        let write_entry = PERMISSION_API_MAP
+            .iter()
+            .find(|(perm, _)| *perm == PERMISSION_CLIPBOARD_WRITE)
+            .expect("clipboard:write 应在 API 映射表内");
+        assert_eq!(write_entry.1, &["clipboard.writeText"][..]);
     }
 }

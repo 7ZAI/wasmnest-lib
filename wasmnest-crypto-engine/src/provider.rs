@@ -3,18 +3,18 @@
 //! 定义宿主加密引擎各个能力域的**抽象 trait**（只约束「做什么、收什么、返回什么」，
 //! 不约束具体算法），并提供基于 [`crate`] 的算法实现作为注册素材。
 //!
-//! 本模块遵循裁剪线（ADR 0022）：只提供**无业务语义的中性算法原语**，绝不给
-//! 「认证编排 / 协商流程 / 密钥策略」等产品规则（AGENTS §8：认证链路只走既有 auth 模块）。
+//! 本模块遵循裁剪线：只提供**无业务语义的中性算法原语**，绝不给
+//! 「认证编排 / 协商流程 / 密钥策略」等产品规则（认证链路只走既有 auth 模块）。
 //!
-//! 首版落地三个能力域（对齐 spec O5 最小子集起步）：
+//! 首版落地三个能力域：
 //! - **AEAD**：`aes-256-gcm`、`chacha20-poly1305`
 //! - **KDF**：`hkdf-sha256`
 //! - **随机协商**：`x25519`
 //!
-//! `rsa` / `hybrid` 已作为白名单词保留，但 provider 实现留待按需扩展（spec O5）。
+//! `rsa` / `hybrid` 已作为白名单词保留，但 provider 实现留待按需扩展。
 
+use crate::error::{CryptoError, CryptoResult};
 use crate::{aes_gcm, chacha, kdf, x25519};
-use wasmnest_server_base::error::{AppError, Result};
 
 // ==================== 算法名（白名单词汇，单一真源） ====================
 
@@ -41,9 +41,9 @@ pub trait AeadProvider: Send + Sync {
     /// 生成随机 nonce（长度由实现定）
     fn generate_nonce(&self) -> Vec<u8>;
     /// 认证加密；密文与认证标签同返
-    fn encrypt(&self, key: &[u8], nonce: &[u8], plaintext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>>;
+    fn encrypt(&self, key: &[u8], nonce: &[u8], plaintext: &[u8], aad: Option<&[u8]>) -> CryptoResult<Vec<u8>>;
     /// 认证明文；完整性失败返回错误
-    fn decrypt(&self, key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>>;
+    fn decrypt(&self, key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: Option<&[u8]>) -> CryptoResult<Vec<u8>>;
 }
 
 /// AES-256-GCM 实现（包装 [`crate::aes_gcm`]）
@@ -59,9 +59,9 @@ impl AeadProvider for AesGcmProvider {
     fn generate_nonce(&self) -> Vec<u8> {
         aes_gcm::generate_nonce().to_vec()
     }
-    fn encrypt(&self, key: &[u8], nonce: &[u8], plaintext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>> {
+    fn encrypt(&self, key: &[u8], nonce: &[u8], plaintext: &[u8], aad: Option<&[u8]>) -> CryptoResult<Vec<u8>> {
         let key: [u8; aes_gcm::KEY_LEN] = key.try_into().map_err(|_| {
-            AppError::InvalidInput(format!(
+            CryptoError::invalid_key_length(format!(
                 "{}: 密钥长度必须为 {} 字节，收到 {}",
                 self.name(),
                 aes_gcm::KEY_LEN,
@@ -69,7 +69,7 @@ impl AeadProvider for AesGcmProvider {
             ))
         })?;
         let nonce: [u8; aes_gcm::NONCE_LEN] = nonce.try_into().map_err(|_| {
-            AppError::InvalidInput(format!(
+            CryptoError::invalid_nonce_length(format!(
                 "{}: nonce 长度必须为 {} 字节，收到 {}",
                 self.name(),
                 aes_gcm::NONCE_LEN,
@@ -78,9 +78,9 @@ impl AeadProvider for AesGcmProvider {
         })?;
         aes_gcm::encrypt(&key, &nonce, plaintext, aad)
     }
-    fn decrypt(&self, key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>> {
+    fn decrypt(&self, key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: Option<&[u8]>) -> CryptoResult<Vec<u8>> {
         let key: [u8; aes_gcm::KEY_LEN] = key.try_into().map_err(|_| {
-            AppError::InvalidInput(format!(
+            CryptoError::invalid_key_length(format!(
                 "{}: 密钥长度需为 {} 字节，收到 {}",
                 self.name(),
                 aes_gcm::KEY_LEN,
@@ -88,7 +88,7 @@ impl AeadProvider for AesGcmProvider {
             ))
         })?;
         let nonce: [u8; aes_gcm::NONCE_LEN] = nonce.try_into().map_err(|_| {
-            AppError::InvalidInput(format!(
+            CryptoError::invalid_nonce_length(format!(
                 "{}: nonce 长度需为 {} 字节，收到 {}",
                 self.name(),
                 aes_gcm::NONCE_LEN,
@@ -112,9 +112,9 @@ impl AeadProvider for ChaCha20Poly1305Provider {
     fn generate_nonce(&self) -> Vec<u8> {
         chacha::generate_nonce().to_vec()
     }
-    fn encrypt(&self, key: &[u8], nonce: &[u8], plaintext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>> {
+    fn encrypt(&self, key: &[u8], nonce: &[u8], plaintext: &[u8], aad: Option<&[u8]>) -> CryptoResult<Vec<u8>> {
         let key: [u8; chacha::KEY_LEN] = key.try_into().map_err(|_| {
-            AppError::InvalidInput(format!(
+            CryptoError::invalid_key_length(format!(
                 "{}: 密钥长度需为 {} 字节，收到 {}",
                 self.name(),
                 chacha::KEY_LEN,
@@ -122,7 +122,7 @@ impl AeadProvider for ChaCha20Poly1305Provider {
             ))
         })?;
         let nonce: [u8; chacha::NONCE_LEN] = nonce.try_into().map_err(|_| {
-            AppError::InvalidInput(format!(
+            CryptoError::invalid_nonce_length(format!(
                 "{}: nonce 长度需为 {} 字节，收到 {}",
                 self.name(),
                 chacha::NONCE_LEN,
@@ -131,9 +131,9 @@ impl AeadProvider for ChaCha20Poly1305Provider {
         })?;
         chacha::encrypt(&key, &nonce, plaintext, aad)
     }
-    fn decrypt(&self, key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>> {
+    fn decrypt(&self, key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: Option<&[u8]>) -> CryptoResult<Vec<u8>> {
         let key: [u8; chacha::KEY_LEN] = key.try_into().map_err(|_| {
-            AppError::InvalidInput(format!(
+            CryptoError::invalid_key_length(format!(
                 "{}: 密钥长度需为 {} 字节，收到 {}",
                 self.name(),
                 chacha::KEY_LEN,
@@ -141,7 +141,7 @@ impl AeadProvider for ChaCha20Poly1305Provider {
             ))
         })?;
         let nonce: [u8; chacha::NONCE_LEN] = nonce.try_into().map_err(|_| {
-            AppError::InvalidInput(format!(
+            CryptoError::invalid_nonce_length(format!(
                 "{}: nonce 长度需为 {} 字节，收到 {}",
                 self.name(),
                 chacha::NONCE_LEN,
@@ -159,7 +159,7 @@ pub trait KdfProvider: Send + Sync {
     /// 稳定算法名（白名单条目）
     fn name(&self) -> &'static str;
     /// 输入密钥材料派生指定长度密钥
-    fn derive(&self, salt: Option<&[u8]>, ikm: &[u8], info: &[u8], length: usize) -> Result<Vec<u8>>;
+    fn derive(&self, salt: Option<&[u8]>, ikm: &[u8], info: &[u8], length: usize) -> CryptoResult<Vec<u8>>;
 }
 
 /// HKDF-SHA256 实现（包装 [`crate::kdf`]）
@@ -169,7 +169,7 @@ impl KdfProvider for HkdfSha256Provider {
     fn name(&self) -> &'static str {
         KDF_HKDF_SHA256
     }
-    fn derive(&self, salt: Option<&[u8]>, ikm: &[u8], info: &[u8], length: usize) -> Result<Vec<u8>> {
+    fn derive(&self, salt: Option<&[u8]>, ikm: &[u8], info: &[u8], length: usize) -> CryptoResult<Vec<u8>> {
         kdf::hkdf_sha256(salt, ikm, info, length)
     }
 }
@@ -183,7 +183,7 @@ pub trait KeyAgreementProvider: Send + Sync {
     /// 生成临时密钥对，返回 (私钥, 公钥) 字节
     fn generate_keypair(&self) -> (Vec<u8>, Vec<u8>);
     /// 用本端私钥 + 对端公钥计算共享密钥
-    fn compute_shared(&self, local_private: &[u8], peer_public: &[u8]) -> Result<Vec<u8>>;
+    fn compute_shared(&self, local_private: &[u8], peer_public: &[u8]) -> CryptoResult<Vec<u8>>;
 }
 
 /// X25519 实现（包装 [`crate::x25519`]）
@@ -197,9 +197,9 @@ impl KeyAgreementProvider for X25519Provider {
         let kp = x25519::x25519_generate();
         (kp.private().to_vec(), kp.public().to_vec())
     }
-    fn compute_shared(&self, local_private: &[u8], peer_public: &[u8]) -> Result<Vec<u8>> {
+    fn compute_shared(&self, local_private: &[u8], peer_public: &[u8]) -> CryptoResult<Vec<u8>> {
         let privat_: [u8; x25519::KEY_LEN] = local_private.try_into().map_err(|_| {
-            AppError::InvalidInput(format!(
+            CryptoError::invalid_key_length(format!(
                 "{}: 私钥长度需为 {} 字节，收到 {}",
                 self.name(),
                 x25519::KEY_LEN,
@@ -207,7 +207,7 @@ impl KeyAgreementProvider for X25519Provider {
             ))
         })?;
         let pub_: [u8; x25519::KEY_LEN] = peer_public.try_into().map_err(|_| {
-            AppError::InvalidInput(format!(
+            CryptoError::invalid_key_length(format!(
                 "{}: 公钥长度需为 {} 字节，收到 {}",
                 self.name(),
                 x25519::KEY_LEN,

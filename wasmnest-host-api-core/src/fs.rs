@@ -1,7 +1,7 @@
-//! `host-fs` 双端交集 6 原语的**共享实现核**（wasm-core-mobile-purity 票 05）
+//! `host-fs` 双端交集 6 原语的**共享实现核**
 //!
 //! 自移动 wasm-core `runtime/bare/host_impl/fs.rs` 上移。**桌面侧不在本次抽范围内**
-//! （其 fs 实现体仍耦合 WSL 桥 / 任务单元两个消费者，抽取另票）——本模块不取代它，
+//! （其 fs 实现体仍耦合 WSL 桥 / 任务单元两个消费者，抽取另议）——本模块不取代它，
 //! 只把**双端共同的那一段**收敛成机制单点，后续桌面改用与否不影响本层成立。
 //!
 //! ## 抽取得失判据（为什么这一段可以抽）
@@ -18,7 +18,7 @@
 //! ## 顺序与形状纪律（看得见的语义，不许「顺手整理」）
 //!
 //! - 权限门恒在访问闸门**之前**：未声明权限的插件不得触达授权弹窗（探多少次也不弹）；
-//! - `exists` 的 debug 日志带 `exists` 结构化字段（AGENTS §8：字段不拼进消息串）；
+//! - `exists` 的 debug 日志带 `exists` 结构化字段（字段不拼进消息串）；
 //! - `request_auth` 空 `paths` 恒 `Ok(true)`：「无需授权」与「授权失败」是两件事，
 //!   合并会让 guest 拿不到 core ABI 需要的三态；
 //! - 错误文本逐字保留（guest 可见文案不自造：`permission denied: fs:*` /
@@ -26,8 +26,8 @@
 //!
 //! ## 依赖纪律
 //!
-//! 只依赖 std + serde_json + tracing（本 crate 头注 §边界判据，由
-//! `tests/boundary_lock.rs` 钉住）。**无 tokio**：异步驱动由各端 adapter 在本层
+//! 只依赖 std + serde_json + tracing（本 crate 头注「边界判据」，由
+//! `src/boundary_lock.rs` 钉住）。**无 tokio**：异步驱动由各端 adapter 在本层
 //! 之外完成——本层只见同步 bool。
 
 use std::path::Path;
@@ -55,11 +55,16 @@ pub enum FsOp {
 pub trait FsHostPorts: Send + Sync {
     /// 权限判定（`fs:read` / `fs:write`）
     ///
-    /// 返回 `false` 时**实现方**必须已按 AGENTS §8 落拒绝 warn（结构化字段
+    /// 返回 `false` 时**实现方**必须已落拒绝 `warn`（结构化字段
     /// `plugin_id` / `permission` / `api`），本层不重复落日志。
     fn check_permission(&self, plugin_id: &str, permission: &str, api: &str) -> bool;
 
     /// 单路径访问裁决（路径白名单 / 弹窗 / 持久授权的真源在宿主）
+    ///
+    /// # 信任边界（TOCTOU）
+    /// 返回 `true` 与本层随后的读写之间路径可被替换（符号链接 / 重命名）——本层只见
+    /// `bool`，不提供原子性。裁决与真实 IO 之间的窗口由宿主侧授权模型负责（fd 级
+    /// 授权 / `O_NOFOLLOW` 等）；不要因为「这里已判过」而把本层当成安全边界。
     fn check_access(&self, plugin_id: &str, path: &str, op: FsOp) -> bool;
 
     /// 批量路径访问裁决（`request-auth` 面；「全部同意」语义）

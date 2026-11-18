@@ -7,10 +7,10 @@
 //!   会话注册（`WsSessionRegistry`）与离线判定、优雅关闭（链路加密失败 4003）；
 //! - **通道级（[`ChannelHandler`]）**：收帧解析、关闭回调、认证通过回调、认证策略声明。
 //!
-//! 终态（websocket 业务下沉票 08）唯一通道实现是插件端点
+//! 终态唯一通道实现是插件端点
 //! （`crate::channel::plugin`，`/ws/plugin/{plugin_id}/{path}`）；旧终端/
 //! 事件通道（`/ws/terminal/session/{id}`、`/ws/event`）已随业务硬切删除。往宿主 WS
-//! 服务器挂新通道 = 新增一个实现 + 路由构造点，不再改本文件（spec §3.2 A1）。
+//! 服务器挂新通道 = 新增一个实现 + 路由构造点，不再改本文件。
 
 use actix::prelude::*;
 use actix_web_actors::ws;
@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::registry::{WsRegistration, WsSessionRegistry};
 use wasmnest_server_base::constants::{HEARTBEAT_INTERVAL_SECS, REMOTE_CLIENT_TIMEOUT_SECS, WS_AUTH_TIMEOUT_SECS};
+use wasmnest_server_base::face::RequestFace;
 use wasmnest_server_core::filter::{Direction, FilterContext, TrafficChannel, TrafficFilterChain};
 use wasmnest_server_core::link_crypto;
 
@@ -34,7 +35,7 @@ pub type ConnCtx = ws::WebsocketContext<WsConnBase>;
 
 /// 通道认证策略（骨架参数，非硬编码）
 ///
-/// 阶段 B 的插件端点 `auth:"none"` 依赖此声明避免回头改骨架（spec §3.2 A1 / §4.3）
+/// 阶段 B 的插件端点 `auth:"none"` 依赖此声明避免回头改骨架
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
     /// 首消息认证必需：连接建立后 `WS_AUTH_TIMEOUT_SECS` 内未认证 → 服务端关闭
@@ -58,9 +59,9 @@ pub trait ChannelHandler: Send {
 
     /// 认证超时的关闭码（`AuthMode::Required` 且窗口内未认证时使用）
     ///
-    /// `None`（默认）= 不发 Close 帧、直接断开——终端 / 事件通道既有行为逐字
+    /// `None`（默认）= 不发 Close 帧、直接断开——既有行为逐字
     /// 保持（阶段 A 行为零变化）；插件端点 `auth:"jwt"` 声明 `Some(4001)`
-    /// （spec D8：认证超时 / 失败统一 4001）
+    /// （认证超时 / 失败统一 4001）
     fn auth_timeout_close_code(&self) -> Option<u16> {
         None
     }
@@ -107,7 +108,7 @@ pub struct TerminateConnection;
 
 /// 服务端主动关闭本连接（踢出 / 端点注销 / 属主回收），可指定 close code 与原因
 ///
-/// 关闭理由语义（spec §4.5）：宿主踢出缺省 4004、端点注销 / 属主停用 4005
+/// 关闭理由语义：宿主踢出缺省 4004、端点注销 / 属主停用 4005
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct CloseConnection {
@@ -126,7 +127,7 @@ pub struct ChannelMessage(pub Box<dyn Any + Send>);
 /// 连接终止原因（骨架记录，通道在 `on_close` 中读取以上报断开事件）
 ///
 /// 语义区分 `peer_initiated`：对端 Close 帧 vs 宿主主动关闭（踢出 / 端点注销 /
-/// 属主停用 / 服务器停机）。`wasClean` 判定（spec D11 规则）只对前者成立
+/// 属主停用 / 服务器停机）。`wasClean` 判定规则只对前者成立
 #[derive(Debug, Clone)]
 pub(crate) struct CloseOutcome {
     /// 关闭码（对端 Close 未带码时为 `None`）
@@ -141,7 +142,7 @@ pub(crate) struct CloseOutcome {
 
 /// 连接级认证/身份状态（引擎事实，零业务派生字段）
 ///
-/// 终态（websocket 业务下沉票 08）只保留连接事实：对端地址 + JWT 验签后的主体身份
+/// 终态只保留连接事实：对端地址 + JWT 验签后的主体身份
 /// （sub / deviceName / fingerprint，连接上下文的脱敏来源）。旧 `subscribed_sessions`
 /// 多路订阅与产品会话关联已随会话/终端通道删除（订阅语义归插件）。
 #[derive(Debug, Clone)]
@@ -178,15 +179,18 @@ pub struct ConnSpec {
     pub owner: Option<String>,
     /// 端点标识（端点域寻址：列表 / 单发 / 广播 / 批量断开）
     pub endpoint_id: Option<String>,
+    /// 传输面标记（listener 注入）：帧级过滤链按面判定豁免，不看环回地址
+    pub face: RequestFace,
 }
 
 impl ConnSpec {
-    /// 最小构造：仅地址，属主 / 端点标识留空
+    /// 最小构造：仅地址，属主 / 端点标识留空，面标记为普通面
     pub fn new(addr: SocketAddr) -> Self {
         Self {
             addr,
             owner: None,
             endpoint_id: None,
+            face: RequestFace::local(),
         }
     }
 }
@@ -209,6 +213,8 @@ pub struct WsConnBase {
     /// 在 `stopping()` 之前写入，供通道在 `on_close` 中读取以上报断开事件
     /// （插件端点 `ws:client-disconnect` 的 code / reason / wasClean 来源）
     close_outcome: Option<CloseOutcome>,
+    /// 传输面标记（握手期由 listener 注入；帧级过滤链按面判豁免）
+    face: RequestFace,
     /// 通道处理器（构造时注入，连接存续期恒定存在）
     handler: Option<Box<dyn ChannelHandler>>,
     register_on_start: bool,
@@ -224,6 +230,7 @@ impl WsConnBase {
             hb: Instant::now(),
             owner: spec.owner,
             endpoint_id: spec.endpoint_id,
+            face: spec.face,
             close_outcome: None,
             handler: Some(handler),
             register_on_start: true,
@@ -329,14 +336,14 @@ impl WsConnBase {
 
     /// 本连接对应的流量通道类型
     ///
-    /// 终态（票 08）只有插件端点一类连接，恒为 `WsPlugin`；方法保留为
-    /// 过滤链通道标签的事实来源（`TrafficChannel` 仍是传输面分类词汇，
-    /// 链路加密配置按通道取档）
+    /// 终态只有插件端点一类连接，恒为 `WsPlugin`；方法保留为
+    /// 过滤链通道标签的事实来源。链路加密策略按「通道下限 ▸ 端点声明」裁决，
+    /// 端点身份（`owner` / `endpoint_id`）随上下文注入过滤链。
     fn traffic_channel(&self) -> TrafficChannel {
         TrafficChannel::WsPlugin
     }
 
-    /// 链路加密失败收尾：Close(4003) 并停止 actor（spec：WS 解密失败不丢帧，
+    /// 链路加密失败收尾：Close(4003) 并停止 actor（WS 解密失败不丢帧，
     /// TBv2 序列流丢帧会破坏 ack 环与渲染序，必须断连重建）
     fn close_link_crypto_failure(&self, reason: String, ctx: &mut ConnCtx) {
         tracing::warn!(addr = %self.session.addr, %reason, "link crypto failure, closing 4003");
@@ -355,10 +362,13 @@ impl WsConnBase {
         }
         let peer = self.session.addr.to_string();
         let mut fctx = FilterContext {
+            face: self.face.clone(),
             channel: self.traffic_channel(),
             direction: Direction::Inbound,
             peer: &peer,
             route: kind,
+            owner: self.owner.as_deref().unwrap_or(""),
+            endpoint: self.endpoint_id.as_deref().unwrap_or(""),
             negotiation: "",
             data,
             outbound_headers: Vec::new(),
@@ -396,10 +406,13 @@ impl WsConnBase {
         }
         let peer = self.session.addr.to_string();
         let mut fctx = FilterContext {
+            face: self.face.clone(),
             channel: self.traffic_channel(),
             direction: Direction::Outbound,
             peer: &peer,
             route: "text",
+            owner: self.owner.as_deref().unwrap_or(""),
+            endpoint: self.endpoint_id.as_deref().unwrap_or(""),
             negotiation: "",
             data: text.into_bytes(),
             outbound_headers: Vec::new(),
@@ -422,7 +435,7 @@ impl WsConnBase {
     }
 
     /// 出站二进制帧：经过滤链后写出（含 metrics 计数）；被拒 → 丢弃 + warn。
-    /// 承载 TB v3 终端输出流（spec §5.3），加密过滤器的主战场
+    /// 承载二进制终端输出流，加密过滤器的主战场
     pub(crate) fn send_binary_filtered(&self, data: Vec<u8>, ctx: &mut ConnCtx) {
         let chain = TrafficFilterChain::global();
         if chain.is_empty() {
@@ -432,10 +445,13 @@ impl WsConnBase {
         }
         let peer = self.session.addr.to_string();
         let mut fctx = FilterContext {
+            face: self.face.clone(),
             channel: self.traffic_channel(),
             direction: Direction::Outbound,
             peer: &peer,
             route: "binary",
+            owner: self.owner.as_deref().unwrap_or(""),
+            endpoint: self.endpoint_id.as_deref().unwrap_or(""),
             negotiation: "",
             data,
             outbound_headers: Vec::new(),
@@ -526,7 +542,7 @@ impl Actor for WsConnBase {
         self.dispatch_on_close();
 
         // 注销 WsSessionRegistry + 断连清理。
-        // 票 07：设备离线判定 / 认证记录 close / device 事件全部归插件
+        // 设备离线判定 / 认证记录 close / device 事件全部归插件
         // （`<owner>::ws:client-disconnect` → 插件自驱 touch/close + emit），
         // 宿主不再代做；本块只剩引擎事实清理（注册表摘除 + 链路加密密码表）。
         let client_id = self.session.addr.to_string();
@@ -534,7 +550,7 @@ impl Actor for WsConnBase {
             let registry = WsSessionRegistry::global();
             registry.unregister(&client_id).await;
 
-            // 断连清理：链路加密密码表（issue 04）——必须在连接标识失效前移除
+            // 断连清理：链路加密密码表——必须在连接标识失效前移除
             link_crypto::ws_remove_ciphers(&client_id);
         });
 
@@ -588,7 +604,7 @@ impl StreamHandler<Result<WsMessage, ProtocolError>> for WsConnBase {
                 }
             }
             WsMessage::Close(reason) => {
-                // 记录对端主动关闭（通道在 on_close 中据此判定 wasClean，spec D11）
+                // 记录对端主动关闭（通道在 on_close 中据此判定 wasClean）
                 self.close_outcome = Some(CloseOutcome {
                     code: reason.as_ref().map(|r| u16::from(r.code)),
                     reason: reason.as_ref().and_then(|r| r.description.clone()).unwrap_or_default(),
@@ -645,7 +661,7 @@ impl Handler<CloseConnection> for WsConnBase {
             "server closing websocket connection"
         );
         // 记录宿主主动关闭（踢出 4004 / 端点注销 / 属主停用 4005 / 停机 1001）：
-        // 通道在 on_close 中据此上报断开事件（wasClean 恒 false，spec §4.5）
+        // 通道在 on_close 中据此上报断开事件（wasClean 恒 false）
         self.close_outcome = Some(CloseOutcome {
             code: Some(msg.code),
             reason: msg.reason.clone(),

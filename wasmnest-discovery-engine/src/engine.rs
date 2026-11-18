@@ -5,7 +5,7 @@
 //! `owner: plugin_id`）。与 peer-net 引擎共享同一守护——消灭「双 daemon 同绑
 //! 5353 互抢多播包」的结构性病灶（真机实证：只发现自己、发现不了对端）。
 //!
-//! **listener 级不变量（ADR 0054）**：共享守护只是第一层——mdns-sd 对每个服务类型
+//! **listener 级不变量**：共享守护只是第一层——mdns-sd 对每个服务类型
 //! 只有**一个 listener 槽**且重复 `browse` 是「后到覆盖先到」，所以本进程对同一服务
 //! 类型的 `daemon.browse` / `stop_browse` **只能由类型中枢**
 //! （[`crate::type_hub`]）代持：任意数量的消费者（含 peer-net 与移动旧链路）在其中枢
@@ -117,7 +117,7 @@ fn daemon() -> &'static ServiceDaemon {
 
 /// 守护若已初始化则返回（stop/query 前预防性保护：单测表操作不触网）
 ///
-/// `pub`：双端宿主共享化后（spec M3）stop 路径需在不拉起守护的前提下取句柄
+/// `pub`：双端宿主共享化后 stop 路径需在不拉起守护的前提下取句柄
 /// （host_ports / 命令面 stop 分支）；clone 廉价（mdns-sd 守护句柄内部 Arc）
 pub fn daemon_if_initialized() -> Option<ServiceDaemon> {
     DAEMON.get().map(|d| d.clone())
@@ -128,6 +128,51 @@ pub fn daemon_if_initialized() -> Option<ServiceDaemon> {
 /// 身份广播续期由引擎自己的 re-announce 循环负责，本间隔只服务插件 advertise 句柄
 const REANNOUNCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
 
+/// 单插件同时存活的浏览句柄上限（与 ws 端点 / pty 会话同档的机制配额）
+///
+/// 每个句柄背后是一条常驻 fan-out 任务；服务类型还可不同（中枢按类型建查询）。
+pub const MAX_BROWSERS_PER_PLUGIN: usize = 16;
+
+/// 单插件同时存活的广播句柄上限
+///
+/// 每个句柄背后是一条 re-announce 循环任务。
+pub const MAX_ADVERTISES_PER_PLUGIN: usize = 16;
+
+/// 服务类型形状校验（RFC 6763 名称的保守子集）
+///
+/// 服务类型直接进入 mdns-sd 内部构造与查询键，必须限制长度与字符集；
+/// 只收 `[A-Za-z0-9._-]`，拒绝空白、斜杠与超长串（fail-visible，不静默 trim 后接受）。
+fn validate_service_type(kind: &str, service_type: &str) -> Result<(), String> {
+    if service_type.is_empty() {
+        return Err(format!("mdns {kind}: service type must not be empty"));
+    }
+    if service_type.len() > 255 {
+        return Err(format!(
+            "mdns {kind}: service type too long ({} > 255 bytes)",
+            service_type.len()
+        ));
+    }
+    if !service_type
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(format!(
+            "mdns {kind}: service type has invalid characters: {service_type:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// 属主配额判定（调用方已取出当前计数）
+fn check_owner_quota(kind: &str, current: usize, cap: usize) -> Result<(), String> {
+    if current >= cap {
+        return Err(format!(
+            "mdns {kind}: per-plugin handle limit reached ({current}/{cap})"
+        ));
+    }
+    Ok(())
+}
+
 // ==================== 句柄表 ====================
 
 /// 单条浏览订阅：服务类型 + 事件任务句柄 + 中枢退订守卫
@@ -137,7 +182,7 @@ struct BrowserEntry {
     task: Arc<dyn DiscoveryTask>,
     /// 类型中枢订阅守卫（不透明）：**条目移除即 Drop ⇒ 中枢退订**（该浏览通道关闭、
     /// 浏览任务 recv 断开退出）；同类型其他订阅者不受影响，归零则中枢自行
-    /// `stop_browse` 并移除（spec §2.1-④）。字段不读取，纯生命周期托管
+    /// `stop_browse` 并移除。字段不读取，纯生命周期托管
     _subscription: Box<dyn std::any::Any + Send + Sync>,
     /// 所属插件（停用时按属主回收全部句柄）
     owner: String,
@@ -175,7 +220,7 @@ const NOT_OWNER: &str = "not owner of mdns handle";
 ///
 /// **浏览侧另有一层不变量**：同一服务类型的 `daemon.browse` / `stop_browse` 只允许
 /// 类型中枢（[`crate::type_hub`]）调用——共享守护让 peer-net 与插件落到同一个
-/// listener 槽上，谁重复 `browse` 谁就把对方的事件流顶成死信道（ADR 0054）。
+/// listener 槽上，谁重复 `browse` 谁就把对方的事件流顶成死信道。
 /// 需要浏览事件请改用 [`crate::type_hub::subscribe_type`]。
 pub fn shared_daemon() -> ServiceDaemon {
     daemon().clone()
@@ -197,14 +242,25 @@ pub fn browse(
     if !ports.check_permission(plugin_id, "host_mdns_browse") {
         return Err(denied());
     }
-    // 能力路由：本能力由系统组件提供时转发到它的同形导出（票 09 扩表）；
+    // 能力路由：本能力由系统组件提供时转发到它的同形导出；
     // 无提供者才走本域引擎。位置与 kv 域一致：**权限门之后、引擎副作用之前**。
     if let Some(result) = ports.forward_mdns_browse(plugin_id, service_type) {
         return result;
     }
     let service_type = service_type.trim().to_string();
-    if service_type.is_empty() {
-        return Err("mdns browse: service type must not be empty".to_string());
+    validate_service_type("browse", &service_type)?;
+    {
+        // 配额在副作用（中枢订阅 + fan-out 任务）之前判定；插件调用面经 store
+        // 串行，检查与登记之间的窗口与 pty 同口径。
+        let browsers = BROWSERS.lock().expect("mdns browser table lock poisoned");
+        check_owner_quota(
+            "browse",
+            browsers
+                .values()
+                .filter(|entry| entry.owner == plugin_id)
+                .count(),
+            MAX_BROWSERS_PER_PLUGIN,
+        )?;
     }
     let (receiver, subscription_guard) =
         crate::type_hub::subscribe_type(&service_type)?.into_parts();
@@ -371,8 +427,19 @@ pub fn advertise(
     let config: AdvertiseConfig = serde_json::from_str(config_json)
         .map_err(|e| format!("mdns advertise: invalid config: {e}"))?;
     let service_type = config.service_type.trim().to_string();
-    if service_type.is_empty() {
-        return Err("mdns advertise: service type must not be empty".to_string());
+    validate_service_type("advertise", &service_type)?;
+    {
+        let advertisers = ADVERTISERS
+            .lock()
+            .expect("mdns advertiser table lock poisoned");
+        check_owner_quota(
+            "advertise",
+            advertisers
+                .values()
+                .filter(|entry| entry.owner == plugin_id)
+                .count(),
+            MAX_ADVERTISES_PER_PLUGIN,
+        )?;
     }
     let instance_name = match config.instance_name {
         // 显式实例名优先；空白视为缺省
@@ -649,18 +716,21 @@ fn publish_dir_event(
     ports.publish(&topic, payload);
 }
 
-/// 自播回显判定：browse 会收到本机自己的广播（TXT `id` == 本机节点 ID）。
+/// 自播回显判定：browse 会收到本机自己的广播（TXT `id` ∈ 本进程登记的广播身份集合）。
 ///
-/// 端口拿不到本机节点 ID（无宿主句柄的无头/测试环境，或节点未启动）时返回
-/// false——无法比对即不拦截，与引擎 `handle_browse_event` 的同口径过滤一致。
+/// per-app 身份后同一进程可能有多个 app 各自广播不同 node_id，过滤必须匹配
+/// 任一自己登记的广播。端口拿不到任何广播身份（无宿主句柄的无头/测试环境，
+/// 或节点未启动）时返回 false——无法比对即不拦截，与引擎 `handle_browse_event`
+/// 的同口径过滤一致。
 fn is_self_broadcast(
     ports: &dyn DiscoveryPorts,
     txt: &std::collections::BTreeMap<String, String>,
 ) -> bool {
-    let Some(own) = ports.local_node_id() else {
+    let Some(txt_id) = txt.get("id") else {
         return false;
     };
-    txt.get("id").map(|v| v.as_str()) == Some(own.as_str())
+    let advertised = ports.advertised_node_ids();
+    advertised.iter().any(|own| own == txt_id)
 }
 // ==================== Tests ====================
 
@@ -672,8 +742,10 @@ mod tests {
     struct FakePorts {
         /// 已授权 `network:mdns` 的属主
         granted: Vec<String>,
-        /// 本机节点 ID（自播回显过滤）
+        /// 本机节点 ID（自播回显过滤；`advertised_ids` 覆盖时此字段被忽略）
         node_id: Option<String>,
+        /// per-app 多身份：设置后覆盖 `advertised_node_ids()` 的默认单值回退
+        advertised_ids: Option<Vec<String>>,
         /// 捕获到的事件投递（topic, payload）
         published: Mutex<Vec<(String, serde_json::Value)>>,
         /// 「系统组件」代持 `host-mdns` 能力的属主（能力路由用例用）
@@ -688,6 +760,7 @@ mod tests {
             Self {
                 granted: vec![plugin_id.to_string()],
                 node_id: None,
+                advertised_ids: None,
                 published: Mutex::new(Vec::new()),
                 routed: Vec::new(),
                 routed_calls: Mutex::new(Vec::new()),
@@ -697,6 +770,7 @@ mod tests {
             Self {
                 granted: Vec::new(),
                 node_id: None,
+                advertised_ids: None,
                 published: Mutex::new(Vec::new()),
                 routed: Vec::new(),
                 routed_calls: Mutex::new(Vec::new()),
@@ -778,6 +852,11 @@ mod tests {
         }
         fn local_node_id(&self) -> Option<String> {
             self.node_id.clone()
+        }
+        fn advertised_node_ids(&self) -> Vec<String> {
+            self.advertised_ids
+                .clone()
+                .unwrap_or_else(|| self.local_node_id().into_iter().collect())
         }
         fn publish(&self, topic: &str, payload: serde_json::Value) {
             self.published
@@ -1057,6 +1136,26 @@ mod tests {
         assert!(!is_self_broadcast(p.as_ref(), &other), "peer TXT must pass");
     }
 
+    /// per-app 多身份：任一登记的广播 id 命中即判自播
+    #[test]
+    fn self_broadcast_filter_matches_any_advertised_id() {
+        let mut fp = FakePorts::deny_all();
+        fp.advertised_ids = Some(vec!["app-a-id".into(), "app-b-id".into()]);
+        let p = ports(fp);
+        let own_a = std::collections::BTreeMap::from([("id".to_string(), "app-a-id".to_string())]);
+        let own_b = std::collections::BTreeMap::from([("id".to_string(), "app-b-id".to_string())]);
+        let peer = std::collections::BTreeMap::from([("id".to_string(), "peer-x-id".to_string())]);
+        assert!(
+            is_self_broadcast(p.as_ref(), &own_a),
+            "app-a 的广播必须被过滤"
+        );
+        assert!(
+            is_self_broadcast(p.as_ref(), &own_b),
+            "app-b 的广播必须被过滤"
+        );
+        assert!(!is_self_broadcast(p.as_ref(), &peer), "外部 peer 必须放行");
+    }
+
     /// 定向事件 payload 增量字段：serviceType / browserId 追加，既有字段保留；
     /// topic 走属主私有命名空间（与 SDK 共用 owned_topic）
     #[test]
@@ -1307,5 +1406,47 @@ mod tests {
             "unauthorized caller must be rejected before routing"
         );
         assert!(fake.routed_calls().is_empty());
+    }
+
+    #[test]
+    fn service_type_shape_is_validated() {
+        for ok in ["_wasmnest._tcp.local.", "_my-app._udp", "A.b-c_1"] {
+            assert!(
+                validate_service_type("browse", ok).is_ok(),
+                "合法类型被拒: {ok}"
+            );
+        }
+        for bad in [
+            "",
+            "   ",
+            "_svc/../x",
+            "_svc tcp",
+            "服务._tcp",
+            &"x".repeat(256),
+        ] {
+            assert!(
+                validate_service_type("browse", bad).is_err(),
+                "非法类型被放行: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn per_plugin_handle_quota_is_enforced() {
+        assert!(check_owner_quota(
+            "browse",
+            MAX_BROWSERS_PER_PLUGIN - 1,
+            MAX_BROWSERS_PER_PLUGIN
+        )
+        .is_ok());
+        let err = check_owner_quota("browse", MAX_BROWSERS_PER_PLUGIN, MAX_BROWSERS_PER_PLUGIN)
+            .expect_err("到达上限必须拒绝");
+        assert!(err.contains("per-plugin handle limit"), "{err}");
+        assert!(check_owner_quota(
+            "advertise",
+            MAX_ADVERTISES_PER_PLUGIN,
+            MAX_ADVERTISES_PER_PLUGIN
+        )
+        .is_err());
     }
 }

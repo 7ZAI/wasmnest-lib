@@ -1,4 +1,4 @@
-//! 能力注册表与系统组件装配（core-plugin-manager，wasm-core 票据 06）
+//! 能力注册表与系统组件装配（core-plugin-manager）
 //!
 //! 能力模型：
 //! - 能力名 = WIT host-* 接口名（如 `host-storage`），应用插件经 manifest
@@ -16,10 +16,10 @@
 //! 提供者——其停用/trap 不造成能力**永久**缺失（能力随时可被重新激活的
 //! 组件再次装配）。
 //!
-//! 术语：本文件沿用的「系统组件」= ADR 0032 的 **L1 基础服务**（`type: basic-service`，
+//! 术语：本文件沿用的「系统组件」= 既定裁决的 **L1 基础服务**（`type: basic-service`，
 //! 旧拼写 `system` 仍按别名解析）。**不**承诺「只停不删」：按 kind 拒绝卸载的守卫尚未
 //! 实现（`uninstall_plugin` 只判「未启用」），要随第一个真实 L1 组件同批补
-//! （ADR 0032 §6 L1 清单第 3 项）——故此处不得再写「只停不删」。
+//! （既定的 L1 清单第 3 项）——故此处不得再写「只停不删」。
 //!
 //! 已知边界：能力提供链不成环（系统组件转发调用中再消费由另一系统组件
 //! 提供的同能力会因实例互斥锁重入而等待；fixture 期不检测环，部署约定
@@ -38,19 +38,19 @@ use wasmnest_host_kit::WasmPluginState;
 
 // ==================== 能力名与导出探测表 ====================
 
-/// host-storage 能力（WIT `wasmnest:plugin@0.0.1/host-storage`，装配框架首条路由能力）
+/// host-storage 能力（WIT `wasmnest:plugin@<version>/host-storage`，装配框架首条路由能力）
 ///
 /// 内建可路由行（见 [`routable_capabilities`] 与 [`storage_exports`]）：它的端口与真源都在内核/宿主内
 /// （`host_api/sqlite_ports.rs`），故词汇由内核自持。**能力域侧的能力一律自报**
-/// （`host-mdns` 见 `wasmnest-discovery-engine::routing`，票 02 批次 03）——内核不得
+/// （`host-mdns` 见 `wasmnest-discovery-engine::routing`，迁移后）——内核不得
 /// 再出现任何能力域的字面量。
 pub(crate) const CAP_HOST_STORAGE: &str = "host-storage";
 
-/// auth-policy 能力（票 12 C3，桌面独有——认证中心能力，双端偏离同 host-auth）：
+/// auth-policy 能力（桌面独有——认证中心能力，双端偏离同 host-auth）：
 /// 认证中心导出 `verify-device-token` 策略，宿主 server 中间件验签后取策略。
 /// 与其他路由能力不同，本能力**不进注册表路由**（消费方是宿主中间件而非
 /// 插件 import）——中间件按插件 ID 直查认证中心实例，见
-/// `PluginHost::call_auth_policy`（票 06：并入统一 guest 门面，不再直锁实例）。
+/// `PluginHost::call_auth_policy`（并入统一 guest 门面，不再直锁实例）。
 pub(crate) const CAP_AUTH_POLICY: &str = "auth-policy";
 
 /// 能力接口导出函数名（`ItemName` 路径语法 `ns:pkg/iface.func@version`——组件的接口
@@ -59,7 +59,7 @@ pub(crate) const CAP_AUTH_POLICY: &str = "auth-policy";
 ///
 /// **不设本地常量**：表项一律经 [`crate::contract::export_item`] 派生（版本后缀是
 /// 构造参数，真源在 `wasmnest-contract` crate 的 `PACKAGE_VERSION`）。写成 `const`
-/// 会把版本复制到第二处——那正是票 03 要消灭的散落字面量。
+/// 会把版本复制到第二处——那正是迁移时要消灭的散落字面量。
 
 /// `host-storage` 内建行的导出表（端口住宿主 `host_api/sqlite_ports.rs`）
 ///
@@ -80,7 +80,7 @@ fn storage_exports() -> &'static [&'static str] {
 /// `host-mdns` 五条原语的导出函数名（经 [`crate::contract::export_item`] 派生）
 ///
 /// **这是调用面的一半，不是词汇真源**：提供者**探测**用的导出表由该域自报
-/// （`wasmnest-discovery-engine::routing::EXPORTS`，票 02 批次 03 起）；而这组派生值是
+/// （`wasmnest-discovery-engine::routing::EXPORTS`，迁移后）；而这组派生值是
 /// **wasm 编译期具名调用面**的输入（`manager/host/owner.rs` 的 `OpKind::export`——
 /// 闭集 op 的依据见该文件「闭集而非泛型的依据」，泛型 erase 会退化成动态 `Val`
 /// 编解码）。两处是同一组字符串，由
@@ -109,7 +109,7 @@ pub(crate) const FORWARD_STORAGE: &str = "storage";
 /// 注册表启动即全量登记为宿主原语提供者：能力对依赖检查恒可用，
 /// 系统组件激活时可按名替换为 WASM 提供者。
 ///
-/// 计数口径（票 10 复核）：v26 清单为 23 组，票 10 删 **2 组**——`host-session`
+/// 计数口径（复核）：v26 清单为 23 组，随后删 **2 组**——`host-session`
 /// （会话原语域整 interface 退役）与 `host-terminal`（「宿主替插件往交互终端注入
 /// 按键」的最后一处业务面入口：零消费者，且实现 100% 依赖会话域）——为 **21 组**；
 /// 2026-10-09 主库收归再删 **1 组** `host-database`（主库由 wasm-core 管理、不给插件
@@ -152,7 +152,7 @@ const HOST_PRIMITIVE_CAPABILITIES: &[&str] = &[
 /// 只有「端口与真源都在内核/宿主内」的能力才有内建行（当前仅 `host-storage`——端口
 /// 住宿主 `host_api/sqlite_ports.rs`）。**能力域行一律自报**（`wasmnest-host-kit` 的
 /// 路由词汇自报面；`host-mdns` 见 `wasmnest-discovery-engine::routing`），故内核源码里
-/// 不再出现任何能力域的字面量（票 02 批次 03）。
+/// 不再出现任何能力域的字面量（迁移后）。
 
 /// 可路由能力表（**闭表**）：内建行 ∪ 能力域自报行（按能力名字典序）
 ///
@@ -166,7 +166,7 @@ const HOST_PRIMITIVE_CAPABILITIES: &[&str] = &[
 /// [`CapabilityTarget`] 的一组方法 + 能力域端口声明 `forward_<prefix>_*`；漏改任一层由
 /// [`tests::routable_capabilities_and_forward_methods_stay_in_sync`] 点名。
 ///
-/// 现状：内建 `host-storage` + 自报 `host-mdns`（票 09 随能力域 crate 化扩表；词汇在
+/// 现状：内建 `host-storage` + 自报 `host-mdns`（随能力域 crate 化扩表；词汇在
 /// 批次 03 迁该 crate 自持）。其余已迁出的能力域（peer / websocket / http / database）
 /// **有意不入表**：它们的真源按调用方 `plugin_id` 分区，而转发链路当前只传参数
 /// 不传调用方身份，路由过去会串命名空间——扩表须先修身份传递
@@ -365,7 +365,7 @@ impl CapabilityRegistry {
 
     /// 提供者形态（测试断言用）："host" / "system:<plugin_id>" / "none"
     // 无 cfg(test)：host_api::context::CapabilityProvider trait impl（非 test 构建
-    // 编译）委托它，不能随测试门控（票 04）
+    // 编译）委托它，不能随测试门控（既定裁决）
     pub(crate) fn provider_kind(&self, name: &str) -> String {
         let providers = self.providers.read().unwrap_or_else(|e| e.into_inner());
         match providers.get(name) {
@@ -378,13 +378,13 @@ impl CapabilityRegistry {
     }
 }
 
-/// 测试用能力注册表（host_api 测试构造宿主上下文用；host_api 不命名具体类型，票 04）
+/// 测试用能力注册表（host_api 测试构造宿主上下文用；host_api 不命名具体类型）
 #[cfg(test)]
 pub(crate) fn test_registry() -> Arc<CapabilityRegistry> {
     Arc::new(CapabilityRegistry::new())
 }
 
-/// host_api 侧能力消费端口实现（票 04 ISP 化）：`host_api::context::CapabilityProvider`
+/// host_api 侧能力消费端口实现（接口隔离）：`host_api::context::CapabilityProvider`
 /// 由本注册表实现——宿主上下文持有 `Arc<dyn CapabilityProvider>`，host_api 只经 trait
 /// 消费能力路由（`forward_*` 与访问器），不接触具体类型；manager 侧直连具体类型
 /// （方向合法）。
@@ -528,7 +528,7 @@ pub(crate) fn forward_storage_delete(
 ///
 /// `capability` 由**调用方**（宿主 adapter）取自词汇真源
 /// （`wasmnest_discovery_engine::routing::CAPABILITY`）——内核不自持该字面量
-/// （票 02 批次 03）。
+/// （迁移后）。
 ///
 /// 消费方在桌面装配面（`host_api.rs` mdns 再导出 → 桌面宿主 adapter）；移动形态
 /// 不消费（mdns 直连发现引擎），单形态共享故保留 + 按形态豁免
@@ -664,7 +664,7 @@ mod tests {
         // 未知/未接入路由的能力注册即拒绝（注册了也无人转发，属部署错误）。
         // （实例构造需真实 Store，门禁判定独立于实例，由 is_routable 单测覆盖）
         assert!(is_routable(CAP_HOST_STORAGE));
-        // 票 09 / 批次 03：能力域行的可路由性由该域**自报**决定（内核不再持字面量）。
+        // 批次 03：能力域行的可路由性由该域**自报**决定（内核不再持字面量）。
         // 内核测试二进制不链能力域 ⇒ 自报集为空，故此处只断言「自报即认」；
         // 「自报行真的到场」由宿主侧锁（`tests/mdns_wiring.rs`）断言。
         for route in wasmnest_host_kit::collected_routable_capabilities() {
@@ -674,14 +674,14 @@ mod tests {
                 route.capability
             );
         }
-        // 票 12：auth-policy 仅探测不路由（消费方是宿主中间件，注册为路由提供者
+        // auth-policy 仅探测不路由（消费方是宿主中间件，注册为路由提供者
         // 会让任意插件接管认证策略）——register 必须拒绝
         assert!(!is_routable(CAP_AUTH_POLICY));
         assert!(!is_routable("host-bus"));
         assert!(!is_routable("nonexistent-cap"));
     }
 
-    // ==================== 闭表锁（票 09） ====================
+    // ==================== 闭表锁 ====================
 
     /// 每个可路由能力声明的端口位置（相对 `src-tauri/`）
     ///
@@ -689,7 +689,7 @@ mod tests {
     /// 转发方法声明在哪」。路径入表后，端口文件改名 / 搬目录 / 删方法，本锁立刻红
     /// （而不是等到某个能力路由用例失败）。
     ///
-    /// ADR 0036 后两种归属并存：`host-storage` 的端口留在宿主内
+    /// 既定裁决后两种归属并存：`host-storage` 的端口留在宿主内
     /// （`host_api/sqlite_ports.rs`），`host-mdns` 的端口仍在能力域 crate
     /// （`wasmnest-discovery-engine/src/ports.rs`）——闭表锁按各自真实落点登记。
     const ROUTED_CAPABILITY_PORT_SOURCES: &[(&str, &str)] = &[
@@ -746,7 +746,7 @@ mod tests {
     ///    （拼错 ⇒ 探测永远不命中 ⇒ 能力静默不可路由）；
     /// 3. 表里每个能力前缀在 `CapabilityTarget` 里**不多不少**地有一族方法
     ///    （少的是调不到的声明，多的是没人转发的方法）；**反向**（方法 → 表）的孤儿
-    ///    判定在宿主侧锁——内核测试二进制看不到自报行（票 02 批次 03）；
+    ///    判定在宿主侧锁——内核测试二进制看不到自报行（迁移后）；
     /// 4. 每个能力域端口里的 `forward_<prefix>_*` 方法数 == 该能力的导出函数数
     ///    （一条导出对应一条转发方法，少一条即那条原语永远走宿主原语）。
     #[test]
@@ -832,7 +832,7 @@ mod tests {
         );
     }
 
-    /// 调用面词汇（内核经 `contract::export_item("host-mdns", …)` 派生，wasm 编译期
+    /// 调用面词汇（内核经 `contract::export_item_in(MDNS_PACKAGE, "host-mdns", …)` 派生，wasm 编译期
     /// 具名，机制）与域自报词汇（`wasmnest-discovery-engine::routing::EXPORTS` 的字面量）
     /// 必须**逐字一致**
     ///
@@ -880,7 +880,10 @@ mod tests {
         let domain_values = export_literals(&domain_src);
         let kernel_values: Vec<String> = kernel_funcs
             .iter()
-            .map(|func| crate::contract::export_item("host-mdns", func).to_string())
+            .map(|func| {
+                crate::contract::export_item_in(crate::contract::MDNS_PACKAGE, "host-mdns", func)
+                    .to_string()
+            })
             .collect();
         let mut domain_sorted = domain_values.clone();
         domain_sorted.sort();
@@ -894,7 +897,8 @@ mod tests {
 
     /// 抽出源码里**未转义**的 host-mdns 导出名字面量（去重排序）
     ///
-    /// 匹配前缀 `wasmnest:plugin/host-mdns.` 对**有版本 / 无版本**两种形态都成立
+    /// 匹配前缀 `wasmnest:mdns/host-mdns.`（拆包后 host-mdns 属能力域包）对**有版本 /
+    /// 无版本**两种形态都成立
     /// （版本在末尾），故本抽取对版本位置变化免疫；版本一致性由值层比对与
     /// `wit_package_version_lock.rs` 负责。
     ///
@@ -902,7 +906,7 @@ mod tests {
     /// 都不算——否则锁会把自己的模式串当成一条词汇（两条都踩过）。
     fn export_literals(src: &str) -> Vec<&str> {
         let mut out: Vec<&str> = src
-            .match_indices("\"wasmnest:plugin/host-mdns.")
+            .match_indices("\"wasmnest:mdns/host-mdns.")
             .filter(|(idx, _)| !src[..*idx].ends_with('\\'))
             .filter_map(|(idx, _)| {
                 let rest = &src[idx + 1..];
@@ -914,7 +918,7 @@ mod tests {
         out
     }
 
-    /// 抽源码里 `export_item("host-mdns", "<func>")` 形态的函数名（去重排序）
+    /// 抽源码里 `export_item_in(<pkg>, "host-mdns", "<func>")` 形态的函数名（去重排序）
     ///
     /// **逐行跳过注释**（`//` / `///` / `//!` 开头）：文档里的示例形态（如
     /// `"<func>"` 占位）不是词汇，不排掉锁会把自己的文档当成一条导出名。
@@ -925,18 +929,46 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let mut out: Vec<String> = Vec::new();
-        let needle = "export_item(\"host-mdns\", \"";
+        // 按 **调用** 解析而不是按形如 `"host-mdns", "` 的同行字面量匹配：
+        // rustfmt 会把超长行折成多行调用（参数各占一行），同行 needle 会让本锁
+        // 在纯格式化后误报「词汇缺失」——2026-11-09 审核 2.2 的 fmt 修复实测踩到。
         let mut rest = code.as_str();
-        while let Some(idx) = rest.find(needle) {
-            let after = &rest[idx + needle.len()..];
-            let end = after
-                .find('"')
-                .unwrap_or_else(|| panic!("export_item 调用缺右引号：{after}"));
-            out.push(after[..end].to_string());
-            rest = &after[end..];
+        while let Some(idx) = rest.find("export_item") {
+            let tail = &rest[idx..];
+            let Some(open) = tail.find('(') else {
+                rest = &tail[1..];
+                continue;
+            };
+            let after_open = &tail[open + 1..];
+            let Some(close) = after_open.find(')') else {
+                rest = after_open;
+                continue;
+            };
+            let lits = quoted_literals(&after_open[..close]);
+            // [iface, func]：接口名是 `export_item` 的第一参、`export_item_in` 的第二参；
+            // 包常量不是字面量，故两种形态下「倒数第二个字面量 = 接口名」恒成立。
+            if lits.len() >= 2 && lits[lits.len() - 2] == "host-mdns" {
+                out.push(lits[lits.len() - 1].clone());
+            }
+            rest = &after_open[close..];
         }
         out.sort();
         out.dedup();
+        out
+    }
+
+    /// 抽一段源码里的字符串字面量（不处理转义：本锁只读接口 / 函数名词汇）
+    fn quoted_literals(src: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = src;
+        while let Some(start) = rest.find('"') {
+            let after = &rest[start + 1..];
+            let Some(end) = after.find('"') else {
+                break;
+            };
+            out.push(after[..end].to_string());
+            rest = &after[end + 1..];
+        }
         out
     }
 
@@ -945,7 +977,7 @@ mod tests {
         let mut out: Vec<String> = export_literals(src)
             .into_iter()
             .map(|lit| {
-                // 先剥版本段（`…browse@0.0.1` → `…browse`），再取点号后的函数名；
+                // 先剥版本段（`…browse@<version>` → `…browse`），再取点号后的函数名；
                 // 顺序反了会被版本的点号（`0.2.0`）切成 `0`
                 let without_version = lit.split('@').next().expect("字面量非空");
                 without_version

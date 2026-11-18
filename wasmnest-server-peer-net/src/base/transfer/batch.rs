@@ -101,7 +101,7 @@ pub enum RejectReason {
     /// 「不存在」与「越界」，不向对端泄露目录结构信息）
     #[serde(rename = "not-found")]
     NotFound,
-    /// 共享目录条目存在但读取失败（IO/授权失效等，issue 07 服务端读路径）
+    /// 共享目录条目存在但读取失败（IO/授权失效等，服务端读路径）
     #[serde(rename = "read-failed")]
     ReadFailed,
 }
@@ -137,7 +137,7 @@ pub struct TransferBatch {
     pub created_at: Instant,
 }
 
-/// 接收策略（spec Decision 10：全局单开关粒度，不区分对端；与信任层正交）
+/// 接收策略（全局单开关粒度，不区分对端；与信任层正交）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReceivePolicy {
     /// 每次询问（默认）：批进入 pending 等待宿主应答，超时自动拒

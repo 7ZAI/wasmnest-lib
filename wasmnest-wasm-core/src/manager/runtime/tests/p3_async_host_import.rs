@@ -16,13 +16,13 @@
 //! 4. 一次性失败路径返回结构化错误，之后 Store 仍可执行下一次调用；
 //! 5. 生产 WIT 真源零污染（扫能力仓全部 `wit/*.wit`，见用例内断言）。
 //!
-//! 夹具 = 能力仓自持 `fixtures/p3-async-host-import-test`（票 08 批次三自平台仓
+//! 夹具 = 能力仓自持 `fixtures/p3-async-host-import-test`（批次三自平台仓
 //! 迁入；自持 WIT + wit-bindgen，零 SDK 依赖）。
 //!
 //! 工具链：wasmtime 48 + `wasm32-wasip3`（`WASIP3_NIGHTLY`）+ wit-bindgen 0.60，
-//! 详见 `docs/knowledge/wasip3-toolchain.md` 与 issue 01 `## Findings`。
+//! 详见 `docs/knowledge/wasip3-toolchain.md`。
 //!
-//! ## 第二、三用例：实例级门 + 属主停摆（2026-09-27，插件并发模型 spec §12）
+//! ## 第二、三用例：实例级门 + 属主停摆（2026-09-27，插件并发模型）
 //!
 //! `test_p3_async_import_pending_second_explicit_call_same_instance`（生产属主形态，无人工锁）：
 //! import 挂起期间同实例第二条显式调用**被推迟**——#2 的宿主实现直到 #1 放行那一刻才被进入
@@ -32,8 +32,8 @@
 //! ——闭包内 `sleep(20ms)` 实测到放行时刻（600 ms）才完成。
 //!
 //! ⇒ 「把 host import 改成宿主实现侧 async」既不能解除同实例串行（实例级门），也不给 event-loop
-//! 属主循环留下服务其它请求的机会（属主停摆），据此退役票 08。两条断言即边界锁：转红 = 运行时
-//! 行为已变，需重评 spec §12 与票 08。写法注意：**释放/唤醒驱动必须放在属主闭包之外**，否则自锁。
+//! 属主循环留下服务其它请求的机会（属主停摆），据此退役该方案。两条断言即边界锁：转红 = 运行时
+//! 行为已变，需重新评估该方案的收益口径。写法注意：**释放/唤醒驱动必须放在属主闭包之外**，否则自锁。
 
 use super::{wasip3_toolchain_ready, WASIP3_NIGHTLY};
 use std::fs;
@@ -262,7 +262,7 @@ fn build_p3_async_host_import_component() -> Vec<u8> {
     );
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // 夹具随能力仓自持（票 08 批次三）：`<crate>/fixtures/p3-async-host-import-test`
+    // 夹具随能力仓自持（批次三）：`<crate>/fixtures/p3-async-host-import-test`
     let fixture_dir = manifest_dir.join("fixtures/p3-async-host-import-test");
     let module_path = crate::manager::runtime::fixture_target::artifact(
         "wasm32-wasip3",
@@ -355,7 +355,7 @@ async fn test_p3_async_host_import_yields_runtime() {
     let _watchdog = HangWatchdog::start("test_p3_async_host_import_yields_runtime", 20);
     let component_bytes = build_p3_async_host_import_component();
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // 探针隔离断言（仓内自持版，票 08 批次三）：探针 world 不得出现在任何生产 WIT
+    // 探针隔离断言（仓内自持版，批次三）：探针 world 不得出现在任何生产 WIT
     // 真源中——原版读桌面 SDK 生成物（跨仓），现扫描能力仓自己的 WIT 真源：本 crate
     // 的 `wit/core.wit` + 各能力域 crate 的 `wit/<domain>.wit`。
     let mut production_wit_files = vec![manifest_dir.join("wit/core.wit")];
@@ -570,7 +570,7 @@ async fn setup_gate_probe(
 
 /// 实测：fiber 挂起在宿主 async import 上时，属主闭包是否还会被调度
 ///
-/// 用途（插件并发模型 spec §12）：若挂起期间属主闭包停摆，则「把 host import 改成
+/// 用途（插件并发模型）：若挂起期间属主闭包停摆，则「把 host import 改成
 /// 宿主实现侧 async」对 event-loop 模型同样**不产生**「属主继续服务其它请求」的机会
 /// ——这是 P3 收益不成立的第二重证据（第一重 = 实例级门推迟同实例调用）。
 ///
@@ -617,7 +617,7 @@ async fn test_p3_async_import_suspension_stalls_owner_closure() {
     assert!(
         first_tick_ms >= RELEASE_AFTER_MS as u128 - 100,
         "属主闭包在 fiber 挂起期间仍被调度（sleep(20ms) 实测 {first_tick_ms}ms 完成）——\
-         「属主停摆」边界已变，需重评 spec §12 与票 08 的收益口径"
+         「属主停摆」边界已变，需重新评估该方案的收益口径"
     );
     assert_eq!(
         reply,
@@ -634,8 +634,8 @@ async fn test_p3_async_import_suspension_stalls_owner_closure() {
 /// （常驻 `run_concurrent` + 显式 `start_call_concurrent`，见
 /// `manager/host/owner.rs`）启动第二条调用，**不设任何人工锁**。
 ///
-/// 结论直接决定「把 `host-http.fetch` 改成宿主实现侧 async」（并发模型 spec §4.3
-/// 候选 ① / 票 08）能否解除「慢 HTTP 堵死同插件其它交互」——若第二条调用在 #1
+/// 结论直接决定「把 `host-http.fetch` 改成宿主实现侧 async」（并发模型
+/// 候选 ①）能否解除「慢 HTTP 堵死同插件其它交互」——若第二条调用在 #1
 /// 挂起期间拿不到执行权，则 async 化只让出宿主线程、不改变同实例串行，收益口径
 /// 必须按后者如实记录。
 #[tokio::test(flavor = "multi_thread")]
@@ -736,11 +736,11 @@ async fn test_p3_async_import_pending_second_explicit_call_same_instance() {
     // 直到 #1 放行那一刻才被进入（释放 1200ms，实测进入时刻 1202ms、结算同刻）。
     // ⇒ 同实例串行由 wasmtime 实例级门保证，**不因 host import 变成 async 而放开**；
     // 「慢 HTTP 堵死同插件其它命令」因此**无法**用宿主实现侧 async 化解决（并发模型
-    // spec 票 08 据此退役）。本断言转红 = 运行时行为已变（实例级并发进入可用），
-    // 届时需重评该票。
+    // 据此退役）。本断言转红 = 运行时行为已变（实例级并发进入可用），
+    // 届时需重新评估该方案。
     assert!(
         outcome.second_elapsed_ms >= RELEASE_AFTER_MS as u128 - 200,
-        "同实例第二条调用在 import 挂起期间**推进了**（{}ms）——wasmtime 行为已变，需重评票 08",
+        "同实例第二条调用在 import 挂起期间**推进了**（{}ms）——wasmtime 行为已变，需重新评估",
         outcome.second_elapsed_ms
     );
     assert_eq!(

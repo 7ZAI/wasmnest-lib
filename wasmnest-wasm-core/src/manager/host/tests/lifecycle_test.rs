@@ -100,6 +100,7 @@ async fn test_deactivate_plugin_flow() {
                 id: "test.cmd".into(),
                 title: "T".into(),
                 icon: None,
+                cli: None,
             }],
         )
         .await;
@@ -178,7 +179,7 @@ async fn test_auto_activate_from_persisted_state() {
     assert_eq!(persisted.get(TEST_PLUGIN_ID), Some(&true));
 }
 
-/// 退出路径必须覆盖 Degraded 实例（审计票 09）：Degraded 是活实例（前端模块已加载、
+/// 退出路径必须覆盖 Degraded 实例：Degraded 是活实例（前端模块已加载、
 /// 扩展点已注册、持久化态按「启用」计，见 `get_activated_state`），只收 Activated
 /// 会让它在应用关闭时被静默跳过、收不到 `on_shutdown`。
 #[tokio::test(flavor = "multi_thread")]
@@ -219,7 +220,7 @@ async fn test_deactivate_all_covers_degraded() {
     );
 }
 
-/// 重复激活去重（审计票 09）：`Activating` 是瞬时态，此时再请求激活必须**幂等返回**
+/// 重复激活去重：`Activating` 是瞬时态，此时再请求激活必须**幂等返回**
 /// 且不推进状态机——此前它落进 `_ =>` 分支，第二次调用会把 guest `activate()` 跑第二遍
 /// （实例锁只保证串行、不保证去重）。
 #[tokio::test(flavor = "multi_thread")]
@@ -269,14 +270,14 @@ async fn declared_ws_endpoint_follows_activation_lifecycle() {
     wasmnest_server_websocket::endpoint::purge_for_plugin(plugin_id);
 }
 
-// ==================== 授权记录 / 策略的生命周期（spec §8.3 · 票 09 防回接锁） ====================
+// ==================== 授权记录 / 策略的生命周期（防回接锁） ====================
 
-/// 授权记录与策略的生命周期：**停用保留 / 卸载清空**（spec §8.3 防回接锁）
+/// 授权记录与策略的生命周期：**停用保留 / 卸载清空**（防回接锁）
 ///
 /// 两者语义不同，合并即错：
 /// - **停用**是运行期开关，用户停了又开是常事。清授权记录等于让「停用」变成不可逆
 ///   操作——重启后所有目录/地址都要重新弹一遍窗。
-/// - **卸载**清空（重装即全新授权，与 ADR 0020 内容哈希钉扎同调）。
+/// - **卸载**清空（重装即全新授权，与内容哈希钉扎同调）。
 ///
 /// 这条锁存在的理由就是「容易被后人顺手统一」：两处都是 `plugin_id` 维度的删除，
 /// 看起来像同一件事。变异判据：① 停用路径加 purge ⇒ 后半段转红；② 卸载去掉 purge
@@ -360,6 +361,123 @@ async fn auth_records_survive_deactivate_and_are_purged_on_uninstall() {
             .all(|s| s.strategy == AuthStrategy::Default.as_str()),
         "卸载必须清空策略档位（重装回到默认档）"
     );
+}
+
+// ==================== 卸载数据保留策略（2026-11-06） ====================
+
+/// keep_data=true：用户安装插件只删代码，保留 `plugin.db` 与主库 KV
+#[tokio::test(flavor = "multi_thread")]
+async fn uninstall_keep_data_preserves_private_db_and_storage() {
+    let host = setup_host().await;
+    let id = "com.wasmnest.test.uninstall-keep";
+    let plugin_dir = host.user_plugins_dir.join(id);
+    let _ = std::fs::remove_dir_all(&plugin_dir);
+    std::fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+    std::fs::write(plugin_dir.join("plugin.json"), r#"{"id":"x"}"#).expect("manifest");
+    std::fs::write(plugin_dir.join("index.js"), b"code").expect("code");
+    std::fs::write(plugin_dir.join("plugin.db"), b"db").expect("private db");
+
+    let mut plugin = make_plugin(id, PluginSource::UserInstalled, PluginState::Loaded);
+    plugin.extension_path = plugin_dir.to_string_lossy().to_string();
+    host.plugins.write().await.insert(id.to_string(), plugin);
+    host.storage()
+        .set(id, "note", serde_json::json!("keep-me"))
+        .await
+        .expect("seed storage");
+
+    host.uninstall_plugin_with_options(
+        id,
+        UninstallOptions {
+            keep_data: true,
+            keep_install_dir: false,
+        },
+    )
+    .await
+    .expect("uninstall keep data");
+
+    assert!(host.get_plugin(id).await.is_none(), "运行时记录已移除");
+    assert!(plugin_dir.join("plugin.db").exists(), "私有库保留");
+    assert!(!plugin_dir.join("plugin.json").exists(), "代码文件已删除");
+    assert!(!plugin_dir.join("index.js").exists(), "前端产物已删除");
+    assert_eq!(
+        host.storage().get(id, "note").await.expect("read storage"),
+        Some(serde_json::json!("keep-me")),
+        "插件 KV 保留"
+    );
+}
+
+/// keep_data=false：目录与 KV 一起删除（旧行为不回退）
+#[tokio::test(flavor = "multi_thread")]
+async fn uninstall_delete_data_removes_dir_and_storage() {
+    let host = setup_host().await;
+    let id = "com.wasmnest.test.uninstall-delete";
+    let plugin_dir = host.user_plugins_dir.join(id);
+    let _ = std::fs::remove_dir_all(&plugin_dir);
+    std::fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+    std::fs::write(plugin_dir.join("plugin.json"), r#"{"id":"x"}"#).expect("manifest");
+    std::fs::write(plugin_dir.join("plugin.db"), b"db").expect("private db");
+
+    let mut plugin = make_plugin(id, PluginSource::UserInstalled, PluginState::Loaded);
+    plugin.extension_path = plugin_dir.to_string_lossy().to_string();
+    host.plugins.write().await.insert(id.to_string(), plugin);
+    host.storage()
+        .set(id, "note", serde_json::json!("delete-me"))
+        .await
+        .expect("seed storage");
+
+    host.uninstall_plugin(id).await.expect("uninstall");
+
+    assert!(!plugin_dir.exists(), "安装目录删除");
+    assert_eq!(
+        host.storage().get(id, "note").await.expect("read storage"),
+        None,
+        "插件 KV 已清空"
+    );
+}
+
+/// has_retained_data：私有库（目录判据）或主库 KV 任一存在即 true
+#[tokio::test(flavor = "multi_thread")]
+async fn has_retained_data_tracks_kv_and_private_db() {
+    let host = setup_host().await;
+    let id = "com.wasmnest.test.retained-data";
+    assert!(!host.has_retained_data(id).await.unwrap(), "空 = 无旧数据");
+
+    host.storage()
+        .set(id, "note", serde_json::json!("keep"))
+        .await
+        .expect("seed kv");
+    assert!(host.has_retained_data(id).await.unwrap(), "KV 也算旧数据");
+    host.storage().clear_all(id).await.expect("clear kv");
+
+    // 目录判据（无头宿主没有 AppHandle，plugin_data_dir 不可用，直接测判定函数）
+    let dir = tempfile::tempdir().unwrap();
+    assert!(!super::super::install::dir_has_private_db(dir.path()).unwrap());
+    std::fs::write(dir.path().join("plugin.db-wal"), b"x").unwrap();
+    assert!(super::super::install::dir_has_private_db(dir.path()).unwrap());
+    std::fs::remove_file(dir.path().join("plugin.db-wal")).unwrap();
+    std::fs::write(dir.path().join("plugin.db"), b"x").unwrap();
+    assert!(super::super::install::dir_has_private_db(dir.path()).unwrap());
+    std::fs::write(dir.path().join("other.txt"), b"x").unwrap();
+    std::fs::remove_file(dir.path().join("plugin.db")).unwrap();
+    assert!(!super::super::install::dir_has_private_db(dir.path()).unwrap());
+}
+
+/// L1/L2 系统服务不提供卸载面（判据 = manifest kind）
+#[tokio::test(flavor = "multi_thread")]
+async fn uninstall_rejects_system_service() {
+    let host = setup_host().await;
+    let id = "com.wasmnest.test.uninstall-service";
+    let mut plugin = make_plugin(id, PluginSource::UserInstalled, PluginState::Loaded);
+    plugin.manifest.kind = PluginKind::InternalBusiness;
+    host.plugins.write().await.insert(id.to_string(), plugin);
+
+    let err = host.uninstall_plugin(id).await.expect_err("service reject");
+    assert!(
+        err.to_string()
+            .contains("System service cannot be uninstalled"),
+        "err: {err}"
+    );
+    assert!(host.get_plugin(id).await.is_some(), "拒绝后记录保留");
 }
 
 // ==================== 应用作用域服务租约的生命周期回收 ====================
@@ -557,7 +675,7 @@ async fn test_background_transport_lease_follows_activation_not_surface() {
     wasmnest_server_websocket::endpoint::purge_for_plugin(TEST_PLUGIN_ID);
 }
 
-/// 内核生命周期只经通用服务租约释放，不再点名 peer 域（service-leases §4.2）。
+/// 内核生命周期只经通用服务租约释放，不再点名 peer 域。
 #[test]
 fn kernel_lifecycle_owns_no_peer_owner_hooks() {
     for (name, src) in [

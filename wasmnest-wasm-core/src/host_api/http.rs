@@ -1,9 +1,9 @@
 //! host-http 内核侧残余：任务单元执行器（`http.fetch`）
 //!
-//! **本文件只剩一件事**（wasm-core 纯净性收口票 02 批次 03）：[`HttpUnitExecutor`]
+//! **本文件只剩一件事**（纯净性收口批次 03）：[`HttpUnitExecutor`]
 //! —— 它是内核 host-task 面的执行器（注册进留 core 的任务引擎 `manager::task`，
 //! 注册点必须与引擎同侧），不属「端口 adapter」范畴，故不随 adapter 迁宿主；最终
-//! 去向随 host-task 面（票 02 批次 05）统一处置，见票面「第 3 步」裁决。
+//! 去向随 host-task 面（批次 05）统一处置。
 //!
 //! 原 adapter（`HostHttpPorts` / `install` / `AppHandleEventSink` / 白名单常量）已迁
 //! 宿主 `src-tauri/src/plugin/http.rs`（与 pty / mdns / peer / ws 同款「四件同处」）。
@@ -30,7 +30,7 @@ use crate::host_api::unit_executor::UnitExecutor;
 
 // ==================== 任务单元执行器（注册点留宿主） ====================
 
-/// 执行器自报（票 02 批次 05）：内核装配点经 `collected_unit_executors` 遍历注册
+/// 执行器自报（批次 05）：内核装配点经 `collected_unit_executors` 遍历注册
 /// ——manager 不点名本域；本执行器留内核（批次 03 裁决：注册点与引擎同侧），
 /// 自报静态随之常编译。
 fn make_http_executor() -> Arc<dyn UnitExecutor> {

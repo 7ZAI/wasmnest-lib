@@ -31,7 +31,7 @@ use self::owner::{
     dispatch_mutex_op, spawn_owner, GuestCallFailure, OwnerFailureSink, OwnerHandle,
     OwnerStatsSnapshot, ShutdownReport,
 };
-// 属主任务调用面 re-export（票 05b）：lib 集成测试（system_component_test 的
+// 属主任务调用面 re-export：lib 集成测试（system_component_test 的
 // 能力转发断言）需要 GuestOp / GuestReply——`owner` 模块保持 pub(crate)（其
 // 内部句柄/属主任务实现不外露），调用面经 host.rs 顶层公开。
 pub use owner::{GuestOp, GuestReply};
@@ -50,9 +50,9 @@ const PLUGIN_AUTO_RELOAD_MIN_INTERVAL_SECS: u64 = 30;
 /// 连发异常场景下只弹一次 toast，日志始终记录全量错误。
 const PLUGIN_RUNTIME_ERROR_NOTIFY_INTERVAL_SECS: u64 = 15;
 
-// ==================== 装配条目（票 06 §5.1） ====================
+// ==================== 装配条目 ====================
 
-/// 能力转发超时（票 03 §5.4 ③）
+/// 能力转发超时
 ///
 /// 能力转发 / 互调是「guest 栈内嵌套调另一实例」：目标实例若是环依赖的一端，
 /// 嵌套等待**今天就会死锁**（双方各自占住自己的实例）。P1 给转发加超时兜底，
@@ -352,7 +352,7 @@ async fn call_mutex_blocking(
     }
 }
 
-/// 属主实例级失败回报端口（`event-loop` 模型，票 06 §5.5）
+/// 属主实例级失败回报端口（`event-loop` 模型）
 ///
 /// 持 `Weak<PluginHost>`（装配完成后经 [`HostOwnerFailureSink::bind`] 注入）：
 /// 避免「PluginHost 持 `Arc<dyn OwnerFailureSink>`」构成自引用强环（宿主永不释放）。
@@ -436,7 +436,7 @@ pub struct PluginHost {
     wasm_host_ctx: Arc<WasmHostContext>,
     /// 消息总线
     message_bus: Arc<crate::bus::MessageBus>,
-    /// 插件定时器（plugin_id → tokio 任务句柄，v6 ADR 0003）
+    /// 插件定时器（plugin_id → tokio 任务句柄，v6）
     ///
     /// 重复注册替换旧句柄；插件停用/应用关闭时中止。
     /// 用 std Mutex：仅短时间的 map 操作，不跨 await 持锁
@@ -456,7 +456,7 @@ pub struct PluginHost {
     shutting_down: Arc<std::sync::atomic::AtomicBool>,
     /// 用户插件目录（zip 安装目标，dev 合入）：卸载与 zip 安装均以此目录为落点
     user_plugins_dir: PathBuf,
-    /// 前端插件通道身份（审计票 06 / P0-5）：loader 会话密钥 + 插件令牌 →
+    /// 前端插件通道身份（审计：loader 会话密钥 + 插件令牌 →
     /// 身份解析，堵住「前端 `plugin_*` 命令自报 plugin_id」这条通道
     frontend_channel: Arc<crate::security::frontend_channel::FrontendChannelRegistry>,
 }
@@ -475,7 +475,8 @@ impl PluginHost {
     /// * `abi` - 组件形态规格（[`crate::manager::runtime::AbiPolicy`]，端事实：
     ///   桌面 `wasmnest_plugin_api::form::FORM_COMPONENT`；宿主装配时显式注入，
     ///   wasm-core 零端 ABI 知识。**只管 `abi-form`**，整数 ABI 版本协商已随
-    ///   wit 包版本化退役——ADR 0051 D2）
+    ///   wit 包版本化退役——整数 ABI 版本协商已随
+    ///   wit 包版本化退役）
     /// * `host_facts` - 宿主端事实（平台标识 / 入站服务器端口；
     ///   [`crate::host_api::ports::HostFactsPort`]）——端差异实现住各端宿主
     ///   （桌面 `plugin/host_facts.rs`），内核零端名；在实例化 / 激活**之前**
@@ -495,10 +496,10 @@ impl PluginHost {
         // Option 化：无头/测试上下文无 AppHandle（与 WasmRuntime/WasmHostContext 同策略），
         // 依赖前端事件的宿主能力在调用处降级
         app_handle: Option<Arc<tauri::AppHandle>>,
-        // 对等网络上下文装配端口（整核抽出 §3.3 唯一端口）：lib 实现
+        // 对等网络上下文装配端口（整核抽出的唯一端口）：lib 实现
         // `peer_net_cmds::peer_ctx`，无头/测试传 None → HEADLESS_UNAVAILABLE 语义不变
         peer_ctx_provider: Option<Arc<crate::host_api::context::PeerCtxProvider>>,
-        // 第一方免弹窗归属清单（票 08/P0-2：宿主装配时注入——产品数据出厂 lib，
+        // 第一方免弹窗归属清单（宿主装配时注入——产品数据出厂 lib，
         // 判定逻辑留 wasm-core；空表 = 无免弹窗项，无头/测试语义逐字不变）
         first_party_dirs: Vec<(&'static str, Vec<crate::security::fs_auth::TrustedDir>)>,
         // ABI 规格（端事实，宿主注入；见 [`crate::manager::runtime::AbiPolicy`]）
@@ -508,7 +509,7 @@ impl PluginHost {
         host_facts: Arc<dyn crate::host_api::ports::HostFactsPort>,
         // 平台选择器（同上：端差异实现住宿主；None = 未装配，插件调用点 fail-visible）
         platform_picker: Option<Arc<dyn crate::host_api::ports::PlatformPickerPort>>,
-        // 应用作用域共享服务注册表（宿主机制；service-leases §4.3）：必须在
+        // 应用作用域共享服务注册表（宿主机制）：必须在
         // `new` 内**任何激活之前**写入——L1/L2 角色驱动组件在 `new` 内激活，
         // 激活期可能请求 peer 节点服务（acquire），内核生命周期回收也经它。
         // 传输面的端点注册只预登记路由，不 acquire（启动信号 = 应用界面打开）。
@@ -564,11 +565,11 @@ impl PluginHost {
         // `new` 内激活；激活期的端点注册会 acquire 传输面）
         wasm_host_ctx.set_service_registry(service_registry);
         wasm_host_ctx.security().set_monitor(wasm_runtime.monitor());
-        // 授权记录容量丢弃计数（spec §8.2）：同一处两阶段注入（计数在落账点）
+        // 授权记录容量丢弃计数：同一处两阶段注入（计数在落账点）
         wasm_runtime.fs_auth().set_monitor(wasm_runtime.monitor());
-        // 网络侧同一机制（票 06：「始终允许」档下网络记录按 origin 累积）
+        // 网络侧同一机制（「始终允许」档下网络记录按 origin 累积）
         wasm_host_ctx.net_auth().set_monitor(wasm_runtime.monitor());
-        // 对等网络上下文装配端口（整核抽出 §3.3）：与 monitor 同构的两阶段注入
+        // 对等网络上下文装配端口（整核抽出）：与 monitor 同构的两阶段注入
         wasm_host_ctx.set_peer_ctx_provider(peer_ctx_provider);
 
         // 1. 收集静态注册的 Rust 插件
@@ -582,10 +583,10 @@ impl PluginHost {
         );
 
         // 2. 扫描文件系统的 TS-only 和 WASM 插件：随包内置目录 + 用户插件目录
-        // （zip 安装，可卸载），共用同一套加载与 WASM 实例化逻辑。**去重状态跨
-        // 两次扫描共享**（内置先到先得）：同 id 的用户副本被拒绝，不得顶替内置
-        // 条目——分开两次 load_all 各持一份 seen_ids，用户副本会静默覆盖内置记录，
-        // 随包插件随即被降级为 UserInstalled 而卡在审批门禁（拒绝激活）
+        // （zip 安装，可卸载），共用同一套加载与 WASM 实例化逻辑。同 id 冲突由
+        // `load_builtin_and_user` 显式裁决：默认内置胜出；唯一例外是「用户副本
+        // 声明同一更新源且版本严格更新」的应用更新覆盖（该副本随后走
+        // UserInstalled 审批门禁，新代码必须重新授权）。
         let (file_plugins, user_plugins) =
             PluginLoader::load_builtin_and_user(plugins_dir, user_plugins_dir, &permission);
         tracing::info!(
@@ -603,12 +604,12 @@ impl PluginHost {
         // 添加静态注册的 Rust 插件
         for entry in static_plugins {
             // 静态注册的 Rust 插件经 inventory 登记 SDK manifest（绑定面词汇）；
-            // 进机制前 JSON 往返转中性形态（票 02 M4，from_sdk_json）
+            // 进机制前 JSON 往返转中性形态（from_sdk_json）
             let sdk_manifest = (entry.create_manifest)();
             let plugin_id = sdk_manifest.id.clone();
 
             // 授权结果只落在 PermissionManager（唯一真源）；LoadedPlugin 不再镜像
-            // 一份 granted 列表（票 11 第 4 项：镜像字段只写不读）
+            // 一份 granted 列表（镜像字段只写不读）
             permission.grant_permissions(&plugin_id, &sdk_manifest.permissions);
             let manifest: crate::manifest::PluginManifest =
                 crate::manifest::from_sdk_json(&sdk_manifest);
@@ -666,7 +667,7 @@ impl PluginHost {
         // 属主失败回报端口绑定：必须早于任何实例化（属主任务在 trap 时回用它）
         host.owner_sink.bind(&host);
 
-        // WASM 实例化收为一条路径（票 11 第 2 项）：声明了 `rust_library` 的插件
+        // WASM 实例化收为一条路径：声明了 `rust_library` 的插件
         // 按同一函数实例化，未声明的纯前端插件走它的空分支（无实例、原记录入表）；
         // 文件缺失 / 加载失败 → Error 态入表（manifest 仍注册，列表可见可诊断）
         host.instantiate_scanned_wasm_plugins().await;
@@ -683,14 +684,14 @@ impl PluginHost {
                 host.wasm_host_ctx().clone(),
             )))
             .await;
-        // 能力域端口装配（wasm-core-lib-split 票 03/04/05/06）：mDNS / WS / peer-net /
+        // 能力域端口装配（wasm-core 拆 lib 后）：mDNS / WS / peer-net /
         // HTTP 四域的实现已迁进 `packages/` 能力 crate，其 `impl Host for WasmPluginState`
         // 经进程级端口反取宿主实现。**必须早于任何插件激活**——guest 一调该域原语就取
         // 端口，取不到直接 panic（fail-visible，不静默空转）。单一入口见
         // `host_api::install_capability_domain_ports`（两个测试夹具共用同一条链，
         // 免得再出现「只在生产装了」的漏装）。
         crate::host_api::install_capability_domain_ports(host.wasm_host_ctx());
-        // 任务单元执行器（票 02 批次 05）：域实现 `submit_unit_executor!` 自报
+        // 任务单元执行器：域实现 `submit_unit_executor!` 自报
         // （fs / http 在内核域文件，process 随 host-process 域住宿主
         // `src/plugin/process.rs`），装配点遍历注册——本处不点名任何执行器，
         // 宿主侧执行器迁入后零改动。幂等去重按具体类型（与测试装配共用注册表）。
@@ -707,7 +708,7 @@ impl PluginHost {
         // 注册 Rust 插件的 terminal handlers（inventory 静态注册）
         host.register_rust_terminal_handlers().await;
 
-        // 4. 角色驱动层优先激活（core-plugin-manager · ADR 0032）：L1 基础服务
+        // 4. 角色驱动层优先激活（core-plugin-manager）：L1 基础服务
         // → L2 内部统一业务应用，均由 manifest `type` 驱动、先于 L3 业务应用——
         // L1 的能力注册表装配必须先于消费方的依赖检查，L2 的裁决面须先于业务面就绪
         host.activate_role_driven_components().await;
@@ -754,7 +755,7 @@ impl PluginHost {
         &self.wasm_host_ctx
     }
 
-    // ==================== 统一 guest 调用门面（票 06 §5.4） ====================
+    // ==================== 统一 guest 调用门面 ====================
 
     /// 取插件实例装配条目（宿主侧实例的唯一入口）
     pub async fn get_instance(&self, plugin_id: &str) -> Option<Arc<WasmInstanceEntry>> {
@@ -855,13 +856,13 @@ impl PluginHost {
     ///
     /// 当前消费者是两模型对照用例（生产侧无读点）。保留访问器而不删：它是
     /// 「停用即丢 store ⇒ guest 清理被跳过」这条语义差异唯一的可断言面
-    /// （spec §8 A1 的 I3③ 证据）；写入点见 `deactivate_plugin_inner`。
+    /// （既定的 I3③ 证据）；写入点见 `deactivate_plugin_inner`。
     #[allow(dead_code)]
     pub(crate) fn owner_cleanup_skipped(&self) -> u64 {
         self.owner_cleanup_skipped.load(Ordering::Relaxed)
     }
 
-    /// 调用认证中心插件的 `auth-policy.verify-device-token`（票 12 C3：宿主
+    /// 调用认证中心插件的 `auth-policy.verify-device-token`（宿主
     /// server 中间件取策略）
     ///
     /// 取代改造前的 `call_plugin_capability_export`（泛型直锁实例）：属主化后
@@ -907,7 +908,7 @@ impl PluginHost {
     }
 
     /// 扫描导出 `auth-policy` 能力的激活插件（认证中心角色发现，HTTP 路由代码注册
-    /// 下沉专项阶段 3，已删——v32 ADR 0031 起角色发现改查注册表，见
+    /// 下沉专项阶段 3，已删——角色发现改查注册表，见
     /// `utils/auth/auth_center.rs::enforce_connection_policy`）。
 
     pub fn registry(&self) -> &Arc<PluginRegistry> {
@@ -924,7 +925,7 @@ impl PluginHost {
 
     /// 已加载插件记录表（plugin_id → LoadedPlugin 记录）——测试装配便捷访问器
     ///
-    /// pub（wasm-core 纯净性收口票 05b 迁移 system_component_test）：lib 集成
+    /// pub（wasm-core 纯净性收口后迁移 system_component_test）：lib 集成
     /// 测试经此注入/改写 LoadedPlugin 记录（字段保持私有）；生产路径经
     /// `PluginHost::new` 的扫描装配写入同一张表。
     pub fn plugins(&self) -> &Arc<RwLock<HashMap<String, LoadedPlugin>>> {
@@ -933,7 +934,7 @@ impl PluginHost {
 
     /// WASM 实例装配表（plugin_id → 装配条目）——测试装配便捷访问器
     ///
-    /// pub（票 05b）：lib 集成测试经此模拟实例消失（移除条目 = fail-closed
+    /// pub：lib 集成测试经此模拟实例消失（移除条目 = fail-closed
     /// 的 unavailable 分支）；字段保持私有。
     pub fn wasm_plugins(&self) -> &Arc<RwLock<HashMap<String, Arc<WasmInstanceEntry>>>> {
         &self.wasm_plugins
@@ -1023,7 +1024,9 @@ mod boot;
 mod commands;
 mod errors;
 mod install;
-// 票 06 P1：插件实例属主任务（`event-loop` 调用模型）——装配条目
+// 卸载 / 安装策略类型随 `PluginHost` 一并公开（宿主层做数据保留选择）
+pub use install::{InstallOptions, UninstallOptions};
+// P1 的插件实例属主任务（`event-loop` 调用模型）——装配条目
 // （`WasmInstanceEntry`）在 `event-loop` 分支消费它
 // （`pub(crate)`：属主测试在 `manager::runtime::tests::owner_e2e` 直接驱动句柄）
 pub(crate) mod owner;
@@ -1032,7 +1035,7 @@ mod register;
 mod services;
 mod wasm;
 // 保持原导出路径（crate::manager::host::PluginLifecycleListener 等）
-// 票 03：插件侧会话生命周期 / 输入行监听器实现（原 `listeners` 模块）已删除——
+// 插件侧会话生命周期 / 输入行监听器实现（原 `listeners` 模块）已删除——
 // 宿主不再派发这两类回调，注册面与派发点同批退役。
 // preauth 域（P2 拆分后 re-export 保持 host:: 路径兼容）
 pub use preauth::register_preauth_provider;
@@ -1057,10 +1060,10 @@ mod tests {
 
     /// 测试用插件 ID（非 WASM 插件）
     const TEST_PLUGIN_ID: &str = "com.wasmnest.test";
-    // 组件形态 WASM 夹具 id（`com.wasmnest.sdk-test`，原 TEST_WASM_PLUGIN_ID）随票 04
+    // 组件形态 WASM 夹具 id（`com.wasmnest.sdk-test`，原 TEST_WASM_PLUGIN_ID）
     // 夹具用例迁宿主一并删除——宿主 `src-tauri/tests/support/mod.rs` 自持同值常量。
 
-    // 用例与脚手架按域拆分（票 11 第 7 项）：内联块只留 imports / 测试常量 / 子模块声明。
+    // 用例与脚手架按域拆分（第 7 项的既定分工）：内联块只留 imports / 测试常量 / 子模块声明。
     // 模块树 `host::tests::<文件>` 与内联形态等价；各域文件经 `use super::*;` 拿到宿主项
     // 与测试常量，跨文件复用的脚手架另按需显式引入（顶层项已标 `pub(super)`）。
     mod approval_test;
@@ -1068,7 +1071,7 @@ mod tests {
     mod contributions_test;
     mod host_api_test;
     mod instance_call_model_test;
-    // l2_gating_test（L2 反向依赖红线锁）随票 08 批次三迁桌面宿主测试面
+    // l2_gating_test（L2 反向依赖红线锁）已迁桌面宿主测试面
     // （`src-tauri/tests/l2_gating_lock.rs`）——它扫宿主源码，属平台侧判据。
     mod lifecycle_test;
     mod runtime_preauth_test;

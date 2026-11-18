@@ -9,12 +9,12 @@
 //! 本模块把两者拆开：能力 crate 用 `inventory::submit!` 自报，宿主一次收集后遍历
 //! 装配。**加一个能力域 = 加一个 crate 依赖 + 一行白名单**，宿主装配代码不动。
 //!
-//! ## 描述符红线（AGENTS §5.1 B1/B5）
+//! ## 描述符红线
 //!
 //! [`HostModuleDesc`] 只允许三类机制属性：**接口路径 / 权限位 / ABI 下界**。
 //! 任何产品名词（会话 / 终端 / 配对 / 设备 / 传输任务 / AI…）都不得进入描述符，
-//! 否则模块注册表从「通用注册表」退化成业务容器（AGENTS §5.1.3 明列的宿主允许薄壳
-//! 之一是「通用注册表与寻址」）。
+//! 否则模块注册表从「通用注册表」退化成业务容器（宿主允许的薄壳之一是
+//! 「通用注册表与寻址」）。
 
 use wasmtime::component::Linker;
 
@@ -25,7 +25,7 @@ use crate::state::WasmPluginState;
 pub struct HostModuleDesc {
     /// 模块名（白名单键；全局唯一，小写下划线风格，如 `sqlite` / `discovery`）
     pub name: &'static str,
-    /// 本模块提供的 guest interface 路径（如 `wasmnest:plugin@0.0.1/host-plugin-database`；
+    /// 本模块提供的 guest interface 路径（如 `wasmnest:plugin@<version>/host-plugin-database` / 拆包后 `wasmnest:pty@<version>/host-pty`；
     /// 版本化契约下为全名，运行期匹配不吃它——`verify_whitelist` 只比 `name`）
     pub interfaces: &'static [&'static str],
     /// 本模块读写的权限位（如 `database:query`）——用于装载期一致性核对

@@ -1,9 +1,9 @@
-//! 假插件端点夹具（专项票 01 P0：基线与假插件端点夹具；spec §3.2/§3.3）
+//! 假插件端点夹具（基线与假插件端点夹具）
 //!
 //! 本地 WS server，模拟桌面插件 `com.wasmnest.bedcode` 的两个 WS 端点：
 //! `session-control`（常驻事件通道）与 `terminal`（终端流）。在不依赖真实桌面的
 //! 前提下复现两端点的帧协议，供移动端 Rust 单测（crate 内 `#[path]` 引入）与
-//! `src-tauri/tests/` 集成测试复用（票 03 事件通道 / 票 05 终端流 / 票 07 闭环）。
+//! `src-tauri/tests/` 集成测试复用（事件通道 / 终端流 / 闭环场景）。
 //!
 //! ## 帧形状锚点（对齐桌面 wire，勿凭 spec 印象改字段名——字段名漂移即测试红）
 //!
@@ -12,9 +12,9 @@
 //! 但键名必须逐字一致：
 //!
 //! - 认证首帧（两端点）：`{"type":"auth","token":"<jwt>"}`；宿主安全边界，
-//!   坏 token / 未认证 → close 4001（survey §握手证据）。
+//!   坏 token / 未认证 → close 4001（握手证据）。
 //! - 事件帧（session-control，7 类业务事件）：`{"type":"event","event":"<name>","payload":{...}}`
-//!   顶层仅 `type`/`event`/`payload` 三键；事件名与载荷键为 snake_case（spec §3.1 表）。
+//!   顶层仅 `type`/`event`/`payload` 三键；事件名与载荷键为 snake_case。
 //! - 终端文本帧（客户端→插件）：`subscribe`（`sessionId`/`mode`，mode 缺省 live）、
 //!   `unsubscribe`、`ack`（`offset`）、`resync`（`offset`）、`input`（`data`，UTF-8 文本）、`poll`。
 //!   注意 `sessionId` 为 camelCase（桌面 `TerminalFrame` serde 形状锁，两端协议事实）。
@@ -53,19 +53,19 @@ use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
 /// 桌面插件 ID（契约恒定，移动端 URL 常量独一出处见 system/constants/connection.rs 跟进）
 pub const PLUGIN_ID: &str = "com.wasmnest.bedcode";
 
-/// `session-control` 端点（常驻事件通道；spec §3.2）
+/// `session-control` 端点（常驻事件通道）
 pub const ENDPOINT_SESSION_CONTROL: &str = "session-control";
 
-/// `terminal` 端点（终端流；spec §3.3）
+/// `terminal` 端点（终端流）
 pub const ENDPOINT_TERMINAL: &str = "terminal";
 
 /// 插件端点 URL 基础路径（与桌面宿主路由 `/ws/plugin/{plugin-id}/{path}` 一致）
 pub const WS_BASE_PATH: &str = "/ws/plugin/com.wasmnest.bedcode";
 
-/// 认证首帧 type（spec §3.2/§3.3 握手；送审时首帧必须为此形状）
+/// 认证首帧 type（握手；送审时首帧必须为此形状）
 pub const TYPE_AUTH: &str = "auth";
 
-/// 事件帧 type（session-control 广播帧壳，spec §3.2）
+/// 事件帧 type（session-control 广播帧壳）
 pub const TYPE_EVENT: &str = "event";
 
 // ---- 终端文本帧 type（客户端 → 插件；桌面 ws_terminal.rs 词表） ----
@@ -83,7 +83,7 @@ pub const TERM_RING_RESYNC: &str = "ring_resync";
 pub const TERM_SESSION_STOPPED: &str = "session_stopped";
 pub const TERM_ERROR: &str = "error";
 
-/// 7 类业务事件名（spec §3.1 表，逐字不可漂移；载荷键 snake_case 自足）
+/// 7 类业务事件名（逐字不可漂移；载荷键 snake_case 自足）
 pub const EVENT_SESSION_CREATED: &str = "session:created";
 pub const EVENT_SESSION_STOPPED: &str = "session:stopped";
 pub const EVENT_SESSION_REMOVED: &str = "session:removed";
@@ -92,7 +92,7 @@ pub const EVENT_SESSION_MODE_CHANGED: &str = "session:mode-changed";
 pub const EVENT_TASK_QUEUE_CHANGED: &str = "task:queue-changed";
 pub const EVENT_TASK_SCHEDULED_CHANGED: &str = "task:scheduled-changed";
 
-/// 全部业务事件名（校验「7 类」完备性用；次序与 spec §3.1 表一致）
+/// 全部业务事件名（校验「7 类」完备性用；次序与事件名定义一致）
 pub const ALL_BUSINESS_EVENTS: [&str; 7] = [
     EVENT_SESSION_CREATED,
     EVENT_SESSION_STOPPED,
@@ -103,7 +103,7 @@ pub const ALL_BUSINESS_EVENTS: [&str; 7] = [
     EVENT_TASK_SCHEDULED_CHANGED,
 ];
 
-/// 认证失败关闭码（对齐桌面宿主：坏 token / 未认证 → close 4001，survey §握手证据）
+/// 认证失败关闭码（对齐桌面宿主：坏 token / 未认证 → close 4001，握手证据）
 pub const AUTH_REJECT_CLOSE_CODE: u16 = 4001;
 
 /// 未知端点关闭码（夹具行为：握手成功后立即 close，模拟路由 404 语义）

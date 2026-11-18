@@ -26,17 +26,17 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use tokio::sync::{broadcast, Mutex};
 
-/// PTY slave fd 生命周期策略（票 3 已统一为 `ReleaseOnSpawn`，枚举退役）
+/// PTY slave fd 生命周期策略（已统一为 spawn 后立即释放）
 ///
 /// **为什么统一释放**：父进程只要还持有 slave fd，内核就不会让 master 侧读返回 EOF——
 /// 「子进程自然退出」因此在读线程上是不可观测的（读线程会永久阻塞在 `read()`，
 /// 每会话泄漏一条线程）。释放 slave 后，子进程一退出就读到 EOF，
-/// 「读线程关闭」才成为可靠的输出终结信号（实证见 2026-09-19 票 01 记录）。
+/// 「读线程关闭」才成为可靠的输出终结信号（旧 `Hold` 策略下实测不可观测）。
 ///
 /// 业务线曾用 `Hold`（终态事件只在 kill/销毁时到达），压制了既有的终态处理链
 /// （`session_manager` 订阅任务收到 PtyTerminated → 置 Stopped + 状态事件），导致
 /// 会话自然退出时状态滞留 Running、任务域「意外退出兜底」永不触发（插件
-/// `task/state.rs` 注释明证会永久卡在运行中）。票 3 统一为释放：自然退出 → EOF →
+/// `task/state.rs` 注释明证会永久卡在运行中）。统一为释放：自然退出 → EOF →
 /// 终态事件 → 既有处理链解锁（翻 Stopped + 状态事件 + 生命周期 Stopped）。
 
 /// PTY 会话内部状态
@@ -92,8 +92,8 @@ impl PtySession {
     /// 引擎唯一构造入口：调用方算好的 argv + 输出汇 + 引擎级配置
     ///
     /// `command` 必须已由调用方构造完毕（argv 数组 + cwd + env）——本层不做任何命令
-    /// 加工，只负责 openpty / spawn / 读线程 / 终态门。spawn 后释放 slave fd（票 3
-    /// 统一）：自然退出 → EOF → 终态事件 → 既有处理链翻 Stopped。
+    /// 加工，只负责 openpty / spawn / 读线程 / 终态门。spawn 后释放 slave fd
+    /// （统一语义）：自然退出 → EOF → 终态事件 → 既有处理链翻 Stopped。
     ///
     /// `config` 是引擎消费的宿主配置快照（[`PtyEngineConfig`]：生命周期广播容量 /
     /// 输出读缓冲大小），原读 `AppConfig::global()`（wasm-core-purity E1/D5 参数化）
@@ -230,7 +230,7 @@ impl PtySession {
 
         // 拆分 pair：master 常驻（resize / 读取端来源）；slave 统一立即释放——
         // 丢掉 slave 即关闭父进程侧 slave fd：子进程一退出 master 读即 EOF，
-        // 终态门（读线程关闭 + 回收齐备）得以触发（票 3 统一语义）
+        // 终态门（读线程关闭 + 回收齐备）得以触发
         let PtyPair { slave, master } = pair;
         {
             let mut state = self.state.lock().await;
@@ -472,23 +472,37 @@ impl Drop for PtySession {
             self.kill_requested.store(true, Ordering::SeqCst);
 
             // 尝试终止进程（同步方式，因为 Drop 不能是 async）
-            if let Ok(state) = self.state.try_lock() {
-                if let Some(pid) = state.process_id {
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = create_command("cmd")
-                            .args(["/C", &format!("taskkill /F /T /PID {}", pid)])
-                            .output();
+            match self.state.try_lock() {
+                Ok(state) => {
+                    if let Some(pid) = state.process_id {
+                        #[cfg(target_os = "windows")]
+                        {
+                            let _ = create_command("cmd")
+                                .args(["/C", &format!("taskkill /F /T /PID {}", pid)])
+                                .output();
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            let _ = std::process::Command::new("kill")
+                                .args(["-9", &pid.to_string()])
+                                .output();
+                        }
+                        tracing::info!(session_id = %self.id, pid = %pid, "PTY session killed on drop");
                     }
-                    #[cfg(not(target_os = "windows"))]
-                    {
-                        let _ = std::process::Command::new("kill")
-                            .args(["-9", &pid.to_string()])
-                            .output();
-                    }
-                    tracing::info!(session_id = %self.id, pid = %pid, "PTY session killed on drop");
                 }
+                // 锁被占用时无法兜底 kill：必须留下可查事件（否则「会话回收了但进程还在」
+                // 会变成不可诊断的静默泄漏）
+                Err(_) => tracing::error!(
+                    session_id = %self.id,
+                    "PTY session dropped while state lock was busy; process may leak"
+                ),
             }
+        } else {
+            tracing::debug!(
+                session_id = %self.id,
+                refs = Arc::strong_count(&self.state),
+                "PTY session dropped with outstanding state clone; deferring kill to the last owner"
+            );
         }
     }
 }
@@ -543,7 +557,7 @@ mod tests {
         assert!(!session.is_running());
     }
 
-    /// Linux 命令（真实 PTY spawn 往返，票据 03）：`bash -c <脚本>`
+    /// Linux 命令（真实 PTY spawn 往返）：`bash -c <脚本>`
     ///
     /// 引擎面已收 argv（宿主不再做 shell 包装）：测试自己给出 `bash -c` 形态，
     /// 与业务层 `session_manager::launch_command` 的产物同形。
@@ -576,7 +590,7 @@ mod tests {
         new_session_with_id(unique_sid("itest-pty"), script)
     }
 
-    /// 真实 PTY：start 后 is_running + kill 后停止（票据 03）
+    /// 真实 PTY：start 后 is_running + kill 后停止
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn start_spawns_real_process_and_reports_running() {
@@ -591,7 +605,7 @@ mod tests {
         assert!(!session.is_running());
     }
 
-    /// 真实 PTY：write_str 写入命令，输出落入会话环（票据 03 + 拉取模型）
+    /// 真实 PTY：write_str 写入命令，输出落入会话环（拉取模型）
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn write_str_reaches_process_output() {
@@ -605,8 +619,7 @@ mod tests {
                 .as_nanos()
         );
         let marker = format!("WASMNEST_PTY_WRITE_{sid}");
-        // 票 11：输出汇 = **引擎环**（`PtyRingSink` 的配对环）——业务会话环随
-        // `session/` 目录删除，引擎环是唯一输出环
+        // 输出汇 = **引擎环**（`PtyRingSink` 的配对环）——引擎环是唯一输出环
         let (sink, ring) = PtyRingSink::paired(1024 * 1024);
         let session = PtySession::with_command(
             sid.clone(),
@@ -646,7 +659,7 @@ mod tests {
         session.kill().await.expect("kill");
     }
 
-    /// resize 不 panic 且写入后仍可 kill（票据 03）
+    /// resize 不 panic 且写入后仍可 kill
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn resize_after_start_does_not_panic() {
@@ -661,7 +674,7 @@ mod tests {
         session.kill().await.expect("kill");
     }
 
-    /// send_special_key：非法 key 报错（票据 03）
+    /// send_special_key：非法 key 报错
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn send_special_key_invalid_key_errors() {
@@ -675,7 +688,7 @@ mod tests {
         session.kill().await.expect("kill");
     }
 
-    /// 8KB 大负载分块写入不失败（票据 03：CHUNK_SIZE=4000 分块约束）
+    /// 8KB 大负载分块写入不失败（CHUNK_SIZE=4000 分块约束）
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn write_large_payload_chunks_without_failure() {
@@ -726,7 +739,7 @@ mod tests {
             .expect("终态事件不得丢失")
     }
 
-    /// 真 PTY 自然退出（释放 slave fd）：退出码随终态事件带出（票据 01 地基能力 ①）
+    /// 真 PTY 自然退出（释放 slave fd）：退出码随终态事件带出
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn natural_exit_reports_exit_code_in_termination_event() {
@@ -761,10 +774,9 @@ mod tests {
         assert_eq!(recv_termination(&mut lifecycle_rx).await.exit_code, Some(0));
     }
 
-    /// 真 PTY + 自备 sink（票据 01 地基能力 ②）：输出投递到调用方给的缓冲
+    /// 真 PTY + 自备 sink：输出投递到调用方给的缓冲
     ///
-    /// 票 11：原用例还断言「业务会话总线未注册」——该总线随 `session/` 目录删除，
-    /// 「宿主业务线零感知」现在是结构事实（输出面只有引擎环，且它只由
+    /// 「宿主业务线零感知」是结构事实（输出面只有引擎环，且它只由
     /// `PtyRingSink` 持有者看到）。
     #[cfg(target_os = "linux")]
     #[tokio::test]
@@ -806,8 +818,7 @@ mod tests {
         );
     }
 
-    /// 业务会话线（`Hold`）现役语义回归锁：子进程自然退出**不产生**终态事件
-    /// 业务会话自然退出（票 3 统一 ReleaseOnSpawn）：EOF 可观测 → 终态事件自动到达，
+    /// 业务会话自然退出（统一 ReleaseOnSpawn）：EOF 可观测 → 终态事件自动到达，
     /// 既有处理链（session_manager 订阅任务）据此翻 Stopped——修复 Hold 下状态滞留
     /// Running / 任务域「意外退出兜底」永不触发的问题。
     #[cfg(target_os = "linux")]

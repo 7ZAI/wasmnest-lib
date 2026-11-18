@@ -1,6 +1,6 @@
 //! `host-storage` 实现层（插件键值存储，3 条原语，按 `plugin_id` 隔离）
 //!
-//! 自桌面 `packages/wasmnest-wasm-core/src/host_api/storage.rs` 上移（票 18 批次 1），
+//! 自桌面 `packages/wasmnest-wasm-core/src/host_api/storage.rs` 上移，
 //! 机制语义逐字保留：**权限门 → 系统空间纵深守卫 → 能力路由（转发命中短路宿主原语）
 //! → 宿主键值原语**。各端 adapter 把本端宿主服务接到 [`StoragePorts`] 上：
 //!
@@ -10,7 +10,7 @@
 //!
 //! ## 真源说明
 //!
-//! [`SYSTEM_PLUGIN_ID`] 真源随实现层上移到本模块（原双端各持一份，票 18 起单点）；
+//! [`SYSTEM_PLUGIN_ID`] 真源随实现层上移到本模块（原双端各持一份，现为单点）；
 //! 双端 `storage.rs` 经再导出保既有路径（`crate::storage::SYSTEM_PLUGIN_ID` 照旧可用，
 //! 激活状态写入方不感知迁移）。
 //!
@@ -39,7 +39,7 @@ pub use crate::gate::PermissionGate;
 /// dyn 兼容：域函数收 `&dyn StoragePorts`，实现方 = 各端 adapter；实现应当轻——
 /// 每条原语调用都要经它。
 pub trait StoragePorts: Send + Sync {
-    /// 权限判定。返回 `false` 时**实现方**必须已按 AGENTS §8 落拒绝 warn（结构化
+    /// 权限判定。返回 `false` 时**实现方**必须已落拒绝 `warn`（结构化
     /// 字段 `plugin_id` / `permission` / `api`），本层不重复落日志；无权限管理器的
     /// 上下文（无头 / 测试）必须返回 `false`（fail-safe）。
     fn check_permission(&self, plugin_id: &str, permission: &str, api: &str) -> bool;

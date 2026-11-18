@@ -8,7 +8,7 @@ impl PluginHost {
     /// 将所有已加载插件的 manifest contributes 注册到 registry
     ///
     /// 只负责取 id 清单，逐个委派给 [`Self::register_plugin_contributions`]——**单条注册
-    /// 是唯一实现**（票 11 第 3 项）：启动期全量 / zip 安装单条 / 热重载三条路径共用它，
+    /// 是唯一实现**：启动期全量 / zip 安装单条 / 热重载三条路径共用它，
     /// 避免同一份六项注册被手抄三遍（历史上一次 contributes 演进要同改三处）。
     ///
     /// 读数与注册分离：id 清单在读锁内收集后立即释放，注册本身 `await`（还会回调宿主），
@@ -96,7 +96,7 @@ impl PluginHost {
             .await;
     }
 
-    /// 登记 manifest 声明的 WS 端点（票 09a，contributes.wsEndpoints）
+    /// 登记 manifest 声明的 WS 端点（contributes.wsEndpoints）
     ///
     /// 与 HTTP 端点的**登记时机不同**：httpEndpoints 在 load 期经
     /// `register_plugin_contributions` 一次性登记进 registry（生命周期随 load），而

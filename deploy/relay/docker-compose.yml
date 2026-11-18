@@ -1,0 +1,53 @@
+# ==================== 一键起 relay（Docker Compose） ====================
+# 用法（在 deploy/relay 目录）：
+#   1) 首次生成身份与配置（身份丢了 = PeerId 变 = 所有客户端要重新导入）：
+#      docker compose run --rm relay init --dir /data --advertise relay.example.com
+#   2) 起服务：
+#      docker compose up -d
+#   3) 取客户端导入用的地址：
+#      docker compose exec relay wasmnest-relay print-addrs --config /data/config.toml
+#
+# 生产建议把 image 换成 digest 钉住的形式：
+#   image: ghcr.io/7zai/wasmnest-relay:0.1.0@sha256:<digest>
+services:
+  relay:
+    build:
+      # 构建上下文是能力仓根（Dockerfile 只复制 wasmnest-relay/）
+      context: ../..
+      dockerfile: deploy/relay/Dockerfile
+    image: ghcr.io/7zai/wasmnest-relay:0.0.1
+    container_name: wasmnest-relay
+    restart: unless-stopped
+    command: ["run", "--config", "/data/config.toml"]
+    ports:
+      # 只放行 TCP 4001；v1 不启用 UDP（QUIC 属后续评估）
+      - "4001:4001/tcp"
+      # 指标/健康端点 **不发布端口**：relay 在容器内只绑 127.0.0.1:9090，Docker 端口映射
+      # 指向容器 eth0，映射上去也连不通（实测 curl 被 reset）。
+      # 本地取数（推荐）：
+      #   docker compose exec relay wget -qO- http://127.0.0.1:9090/metrics
+      # 要从宿主/监控系统抓取：把 config.toml 的 metrics.listen 改成 "0.0.0.0:9090" 并显式
+      # expose_public = true（这是「容器内所有网卡」的语义，不是对公网开放），再解开下一行；
+      # 宿主侧仍只发布到回环，不要改成 0.0.0.0:9090:9090。
+      # - "127.0.0.1:9090:9090/tcp"
+    volumes:
+      # 身份 / 配置 / token 表 / 已 enrollment 白名单都在这个卷里
+      - relay-data:/data
+    environment:
+      WASMNEST_RELAY_LOG: info
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # 只转发密文，不需要特权或额外 capability
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+volumes:
+  relay-data:

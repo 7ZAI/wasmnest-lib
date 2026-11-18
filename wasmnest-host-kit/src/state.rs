@@ -3,12 +3,12 @@
 //! ## 归属说明
 //!
 //! 本类型住在 `wasmnest-host-kit` 而非宿主 bin crate，**不是风格选择而是结构必需**：
-//! `wasmnest::plugin::host_*::add_to_linker::<S, D>` 的 `S` 是单态类型参数，能力 crate
+//! `wasmnest::<pkg>::host_*::add_to_linker::<S, D>` 的 `S` 是单态类型参数，能力 crate
 //! 必须能命名它（否则要么退回宿主侧逐接口硬编码，要么与宿主构成 Cargo 环）。
 //!
 //! 字段只有**机制属性**：实例身份、WASI 上下文、资源上限快照、指标句柄、可选导出
 //! 探测句柄。宿主子系统引用一律经 [`HostPorts`]（[`crate::ports`]）——**本结构不
-//! 持有任何产品语义**（AGENTS §5.1 B1/B3）。
+//! 持有任何产品语义**。
 //!
 //! 可选导出句柄是**机制层探测**（native `TypedFunc`，不经 WIT 绑定）：接口形状随端
 //! cap 演进（`events-ws` / `events-task` 目前只在桌面 cap 声明，移动侧恒探测为
@@ -43,7 +43,7 @@ pub type OnTaskEventExport = TypedFunc<(String,), ()>;
 /// 实例化一个插件 Store 所需的全部配置与埋点句柄
 ///
 /// 由宿主 `core-config` × `core-monitor` 交汇产出；本 crate 只收结构不收来源。
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct StoreSpec {
     /// Store 资源上限快照
     pub limits: StoreLimits,

@@ -32,13 +32,14 @@ pub mod defaults {
     /// - 纯 guest 死循环持续烧燃料，必然耗尽被 trap（确定性，不受宿主负载影响）
     /// - 每次导出调用前重置燃料，预算只约束单次调用内 guest 计算量，
     ///   与宿主延迟彻底解耦
-    ///   64G 指令 ≈ 数十秒纯 guest 计算（wasm32 release 约 1-3G 指令/秒），
+    ///   32G 指令 ≈ 十余秒纯 guest 计算（wasm32 release 约 1-3G 指令/秒），
     ///   覆盖大 JSON 解析等重活；死循环最迟烧完被 trap。
     ///   **2026-10-22 实测**：开发机上 64G 死循环约 133s（≈0.5G 指令/秒，
-    ///   见移动 e2e `test_component_fuel_trap`）——预算偏宽；需要更快的看门狗
-    ///   反应时经 `wasm-core.json` 的 `store.fuel_per_call` 调低（debug 模式另有
-    ///   [`FUEL_DEBUG_MULTIPLIER`] 放大，反应时间同比例拉长）
-    pub const FUEL_PER_CALL: u64 = 64_000_000_000;
+    ///   见移动 e2e `test_component_fuel_trap`）——预算偏宽；**2026-11-07 随内存
+    ///   硬顶 128MiB → 64MiB 同步减半到 32G**（同一死循环约 66s）。需要更快的
+    ///   看门狗反应时经 `wasm-core.json` 的 `store.fuel_per_call` 调低（debug
+    ///   模式另有 [`FUEL_DEBUG_MULTIPLIER`] 放大，反应时间同比例拉长）
+    pub const FUEL_PER_CALL: u64 = 32_000_000_000;
     /// 插件调试模式（`WASMNEST_PLUGIN_DEBUG=1`）下燃料预算放大倍率
     ///
     /// debug profile 的 wasm 产物不做优化，指令数与体积相对 release 成倍膨胀
@@ -56,11 +57,12 @@ pub mod defaults {
     /// 两处必须严格一致：预留小于上限会让合法增长退化为搬移路径，
     /// 大于上限则白白放大 VA 占用。
     ///
-    /// 2026-10-22 由 256MiB 收紧到 128MiB：移动端单进程可用物理内存有限，
-    /// 桌面按「单插件常驻峰值」实测也远低于 128MiB。插件若在单次调用内需要更大
-    /// 工作集，应改成分片处理（逐片读→处理→释放），而不是抬高硬顶；宿主
-    /// `ResourceLimiter` 拒绝增长时 guest 拿到 `memory allocation failed` trap
-    pub const MAX_PLUGIN_MEMORY_BYTES: usize = 128 * 1024 * 1024;
+    /// 2026-10-22 由 256MiB 收紧到 128MiB；**2026-11-07 用户裁决进一步收紧到
+    /// 64MiB**（与燃料预算同步减半）：移动端单进程可用物理内存有限，插件若在
+    /// 单次调用内需要更大工作集，应改成分片处理（逐片读→处理→释放），而不是
+    /// 抬高硬顶；宿主 `ResourceLimiter` 拒绝增长时 guest 拿到
+    /// `memory allocation failed` trap
+    pub const MAX_PLUGIN_MEMORY_BYTES: usize = 64 * 1024 * 1024;
     /// 单插件表元素上限
     pub const MAX_PLUGIN_TABLE_ENTRIES: usize = 1_000_000;
     /// Wasm 执行栈深度上限（字节）——guest 深度递归超限即确定性栈溢出 trap

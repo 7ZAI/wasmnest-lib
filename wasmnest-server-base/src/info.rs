@@ -1,7 +1,14 @@
 //! System Information
 //!
 //! 全局系统基本信息（OS / 设备名称 / IP 地址），启动时采集一次，
-//! 挂载到 AppContext 供全局引用（AppContext::global().system_info()）
+//! 挂载到 AppContext 供全局引用（AppContext::global().system_info()）。
+//!
+//! **feature 边界（2026-11-08，P0 默认形态依赖边界）**：DTO 与 [`SystemInfoPort`]
+//! （`ports`）常编译——端口消费者只需要形状；**采集实现**（`sysinfo` /
+//! `local-ip-address`）受 `system-info` feature 门控。不采集系统信息的宿主
+//! （无头 / 第三方）不必为此编译整条系统信息依赖链，可自行实现 `SystemInfoPort`。
+//!
+//! [`SystemInfoPort`]: crate::ports::SystemInfoPort
 
 use serde::Serialize;
 
@@ -23,6 +30,7 @@ pub struct SystemInfo {
     pub app_version: String,
 }
 
+#[cfg(feature = "system-info")]
 impl SystemInfo {
     /// 采集当前系统信息
     ///
@@ -44,6 +52,7 @@ impl SystemInfo {
 /// Windows 读 COMPUTERNAME 环境变量（即控制面板中的电脑名，用户可修改）；
 /// 其余平台取系统 hostname（macOS/Linux 系统设置中可修改）；
 /// 均获取不到时回退 `{os}-{ip}` 组合名
+#[cfg(feature = "system-info")]
 fn desktop_device_name() -> String {
     #[cfg(target_os = "windows")]
     {
@@ -65,6 +74,7 @@ fn desktop_device_name() -> String {
 }
 
 /// 兜底设备名：`{os}-{首个IPv4}`，无可用 IP 时回退默认常量
+#[cfg(feature = "system-info")]
 fn fallback_os_ip_name() -> String {
     let ips = local_ipv4_addresses();
     match ips.first() {
@@ -79,6 +89,7 @@ fn fallback_os_ip_name() -> String {
 /// 的 `session.network.info`，其下是 ABI v19 原语 `host-platform.local-ipv4-addresses`）；
 /// 本函数只服务宿主引擎自身：设备名兜底、启动提示与 [`SystemInfo`] 采集。
 /// 口径与 `host_impl/platform.rs::platform_local_ipv4_addresses` 一致。
+#[cfg(feature = "system-info")]
 pub fn local_ipv4_addresses() -> Vec<String> {
     local_ip_address::list_afinet_netifas()
         .map(|interfaces| {
@@ -98,6 +109,7 @@ pub fn local_ipv4_addresses() -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "system-info")]
     #[test]
     fn test_system_info_collect() {
         let info = SystemInfo::collect();

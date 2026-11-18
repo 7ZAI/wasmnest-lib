@@ -3,7 +3,7 @@
 //! 桌面端插件类型 — 仅保留桌面端特有的内部模型
 //! 共享类型（PluginManifest, PluginContributes, PluginState 等）迁移到 wasmnest-plugin-api
 
-// 中性词汇（票 02 M4）：机制层不再按形态引用 SDK——清单/状态/类型词汇
+// 中性词汇（M4）：机制层不再按形态引用 SDK——清单/状态/类型词汇
 // 统一取自 crate::manifest（超集；双端绑定层转换）
 use crate::manifest::{PluginContributes, PluginKind, PluginManifest, PluginState, PluginType};
 use chrono::{DateTime, Utc};
@@ -48,10 +48,10 @@ impl PluginSource {
     ///
     /// 内置 wasm 插件恒真；用户 zip 安装（`UserInstalled`）仅当 manifest 声明
     /// `rust_library` 时有 wasm 实例。区分意义：激活/停用/热重载的 guest 调用
-    /// 必须以「有实例」为准，否则用户安装的 rust-ts 插件会在**未运行 guest
+    /// 必须以「有实例」为准，否则用户安装的 full 形态插件会在**未运行 guest
     /// activate** 的实例上执行命令——guest 侧 OnceLock 激活态（数据目录等）
     /// 永不初始化，典型报错 `activate incomplete`（agent-hub 票据复现）。
-    /// TS-only 用户插件无实例，维持原语义（跳过 guest 生命周期）。
+    /// 纯前端（frontend）用户插件无实例，维持原语义（跳过 guest 生命周期）。
     pub fn has_wasm_backend(&self, rust_library: &str) -> bool {
         match self {
             Self::Wasm => true,
@@ -84,7 +84,13 @@ pub struct HostPluginInfo {
     /// 缺省 `false` 不写入前端投影（与既有 wire 形状逐字一致）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub background_transport: bool,
-    /// WASM 模块文件名（仅 rust-ts 类型插件使用）
+    /// 应用更新源声明（manifest `update` 原样透传；缺省 = 不参与更新检查）
+    ///
+    /// 宿主壳据此决定是否给该应用渲染「检查更新」入口。缺省不写入前端投影
+    /// （与既有 wire 形状逐字一致）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<crate::app_update::PluginUpdateDecl>,
+    /// WASM 模块文件名（携带 wasm 后端的形态使用：backend / full；键名暂保留历史拼写，见 wasmnest-apps#21 键位子决策）
     pub rust_library: String,
     pub permissions: Vec<String>,
     pub state: PluginState,
@@ -119,6 +125,7 @@ impl From<&LoadedPlugin> for HostPluginInfo {
             plugin_type: p.manifest.plugin_type.clone(),
             kind: p.manifest.kind,
             background_transport: p.manifest.background_transport,
+            update: p.manifest.update.clone(),
             rust_library: p.manifest.rust_library.clone(),
             permissions: p.manifest.permissions.clone(),
             state: p.state.clone(),
@@ -169,13 +176,13 @@ fn manifest_installed_at(extension_path: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // 中性词汇（票 02 M4）：测试段同机制层口径
+    // 中性词汇（M4）：测试段同机制层口径
     use crate::manifest::{PluginKind, PluginManifest, PluginState, PluginType};
 
     /// 构造带完整字段的测试 manifest
     ///
     /// 只列本用例真正断言的字段，其余走 `Default`——SDK 追加可选字段时不必回来补格子
-    /// （会话引擎下沉票 14：`pty_quota` 追加时六处字面量漏了一处，宿主 `--lib` 红 6 项）。
+    /// （会话引擎下沉时 `pty_quota` 追加时六处字面量漏了一处，宿主 `--lib` 红 6 项）。
     fn sample_manifest() -> PluginManifest {
         PluginManifest {
             id: "com.wasmnest.test".to_string(),
@@ -185,7 +192,7 @@ mod tests {
             author: "tester".to_string(),
             main: "index.ts".to_string(),
             permissions: vec!["broadcast".to_string(), "storage".to_string()],
-            plugin_type: PluginType::RustTs,
+            plugin_type: PluginType::Full,
             rust_library: "wasmnest_test.wasm".to_string(),
             ..Default::default()
         }
@@ -222,7 +229,7 @@ mod tests {
         assert_eq!(info.description, "descriptive text");
         assert_eq!(info.author, "tester");
         assert_eq!(info.main, "index.ts");
-        assert_eq!(info.plugin_type, PluginType::RustTs);
+        assert_eq!(info.plugin_type, PluginType::Full);
         assert_eq!(info.kind, PluginKind::BusinessApp);
         assert!(
             !info.background_transport,
@@ -246,8 +253,8 @@ mod tests {
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["source"], "scanned");
         assert_eq!(
-            json["pluginType"], "rust-ts",
-            "PluginType 序列化为 kebab-case"
+            json["pluginType"], "full",
+            "PluginType 序列化为 lowercase 形态值"
         );
         assert!(json.get("icon").is_none(), "icon=None 时应省略字段");
         assert!(json.get("installedAt").is_none());
@@ -354,9 +361,9 @@ mod tests {
     }
 }
 
-// ==================== 移动装配面事件（fork 迁入，票 06 批次 03） ====================
+// ==================== 移动装配面事件（fork 迁入，批次 03） ====================
 
-/// 插件生命周期事件（票 02 M4 常编译：中性纯枚举——移动装配面
+/// 插件生命周期事件（M4 常编译：中性纯枚举——移动装配面
 /// `dispatch_lifecycle_event` 消费；桌面无消费方但保持编译，不留形态分叉）
 ///
 /// 统一的事件枚举，供 PluginManager::dispatch_lifecycle_event() 使用。

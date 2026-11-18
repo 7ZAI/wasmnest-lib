@@ -1,4 +1,4 @@
-//! host 测试共享脚手架（自 `manager/host.rs` 内联 `mod tests` 拆出，票 11 第 7 项）。
+//! host 测试共享脚手架（自 `manager/host.rs` 内联 `mod tests` 拆出）。
 //!
 //! 跨文件复用，故顶层项标 `pub(super)`（可见于 `host::tests` 及其后代）。
 
@@ -65,9 +65,9 @@ pub(super) async fn setup_host() -> PluginHost {
     ));
 
     wasm_host_ctx.security().set_monitor(wasm_runtime.monitor());
-    // 与生产同形：授权记录容量丢弃计数（spec §8.2）也注入，无头用例可断言该计数
+    // 与生产同形：授权记录容量丢弃计数也注入，无头用例可断言该计数
     wasm_runtime.fs_auth().set_monitor(wasm_runtime.monitor());
-    // 网络侧同一机制（票 06）：与生产同形注入，无头用例可断言网络记录的容量计数
+    // 网络侧同一机制：与生产同形注入，无头用例可断言网络记录的容量计数
     wasm_host_ctx.net_auth().set_monitor(wasm_runtime.monitor());
     // v24 认证记录下沉：认证中心（bedcode）配对/历史真源在插件私有库。
     // 无头测试无 AppHandle，注入进程级临时根使激活建表/播种/断言可达私有库
@@ -77,7 +77,7 @@ pub(super) async fn setup_host() -> PluginHost {
         std::process::id()
     ))));
 
-    // 能力域端口（wasm-core-lib-split 票 03 / 04 / 05 / 06）：迁出 `wasm_core` 的能力域
+    // 能力域端口（lib-split 分批迁出）：迁出 `wasm_core` 的能力域
     // （mdns / ws / peer-net / http）经端口取宿主能力，生产在 `PluginHost::new` 的装配链里装；
     // 本 harness 直接拼 `PluginHost` 结构体字面量，**必须**做同一件事，否则停用
     // 路径上的属主回收（`activation.rs`）会因「端口未装配」而 panic（fail-visible
@@ -109,7 +109,7 @@ pub(super) async fn setup_host() -> PluginHost {
     }
 }
 
-// `setup_host_shared`（`Arc<PluginHost>` + 手工 `owner_sink.bind`）随票 04 夹具用例
+// `setup_host_shared`（`Arc<PluginHost>` + 手工 `owner_sink.bind`）随夹具用例
 // 迁宿主一并删除：宿主侧经 `PluginHost::new` 真实装配路径构造（该路径本身已按生产
 // 顺序绑定属主失败端口），不再需要结构体字面量 scaffold。
 
@@ -122,8 +122,8 @@ pub(super) fn make_plugin(id: &str, source: PluginSource, state: PluginState) ->
             version: "1.0.0".to_string(),
             main: "index.ts".to_string(),
             permissions: vec!["storage".to_string(), "terminal:input".to_string()],
-            plugin_type: PluginType::TsOnly,
-            // 余下字段取 Default，避免 SDK 追加可选字段时本夹具编译红（票 14）
+            plugin_type: PluginType::Frontend,
+            // 余下字段取 Default，避免 SDK 追加可选字段时本夹具编译红
             ..Default::default()
         },
         state,
@@ -150,8 +150,8 @@ fn synthetic_manifest() -> wasmnest_plugin_api::PluginManifest {
         id: SYNTHETIC_STATIC_ID.to_string(),
         name: "Synthetic Static".to_string(),
         version: "0.1.0".to_string(),
-        plugin_type: wasmnest_plugin_api::PluginType::Rust,
-        // 余下字段取 Default，避免 SDK 追加可选字段时本夹具编译红（票 14）
+        // plugin_type 同取 Default：本夹具对 SDK 词汇保持中性（registry 副本与
+        // 工作树副本的词汇档位可不同，同款口径）
         ..Default::default()
     }
 }

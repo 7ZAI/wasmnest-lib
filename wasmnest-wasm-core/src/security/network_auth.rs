@@ -1,15 +1,15 @@
-//! 网络出站（`host-http.fetch`）的授权判定与询问（授权策略增强 · 票 05）
+//! 网络出站（`host-http.fetch`）的授权判定与询问（授权策略增强）
 //!
 //! 与文件侧的 [`super::fs_auth`] 同构：判定链 + 弹窗应答通道，但**目标形态**不同
 //! （网络是归一化 origin，文件是规范路径前缀），所以本模块自带归一化与匹配。
 //!
-//! ## 判定管线（spec §6.1，网络侧）
+//! ## 判定管线（网络侧）
 //!
 //! ```text
 //! 0. manifest 声明门（network:http）        —— 硬闸门，在 host-http 端口权限门上一层
-//!    （端口 adapter 已迁宿主 `src-tauri/src/plugin/http.rs`，票 02 批次 03）
+//!    （端口 adapter 已迁宿主 `src-tauri/src/plugin/http.rs`）
 //! 1. 硬拒绝记录（deny 命中）               —— 硬闸门，优先于一切放行路径
-//! 2. 策略层（三档，共用 super::strategy）    —— 票 06 起三档全部接线
+//! 2. 策略层（三档，共用 super::strategy）    —— 三档全部接线
 //! 3. 授权记录命中（origin + path 前缀段边界）—— 仅「默认」档读记录
 //! 4. 询问用户（新事件 + 新命令，三态决定）
 //! ```
@@ -17,11 +17,11 @@
 //! 档位语义与文件侧**逐字同源**（共用 [`super::strategy`] 的档位映射与顺序）：
 //! 「总是询问」跳过全部 allow 记录（deny 记录仍在第 1 步拦住）、「始终允许」
 //! 免询问放行并以 `source='always_allow'` 留痕。两处各写一遍必然漂移，而漂移的
-//! 形态是安全语义级的（spec §12.2 的变异清单里有一条就是「两档语义不同」）。
+//! 形态是安全语义级的（两档语义不同的变异正是要防的形态）。
 //!
 //! 硬闸门的位置与本模块**正交**：SSRF 防护（`redirect_decision`：公网 → 私网/回环/
 //! 链路本地重定向阻断，锁在 `wasmnest-server-http` 自己的用例里）留在请求执行期，授权层
-//! 放行不改变它——「记录命中」从来不是「越过网络栈的安全裁决」（spec §6.4 / §4.2）。
+//! 放行不改变它——「记录命中」从来不是「越过网络栈的安全裁决」。
 //!
 //! ## 为什么询问走「新事件 + 新命令」而不是复用 fs 那套双布尔
 //!
@@ -29,11 +29,11 @@
 //! 网络侧的询问粒度**就是 origin**，用户点头的语义是「这个地址可以访问」，不存在
 //! 「只这一次、别记」的中间档——若把 `allow_once` 实现成不落账，默认档下每次访问
 //! 同一 origin 都会重新弹窗（agent-hub 一次刷新几十个请求 → 策略在实践中等于不可用），
-//! 且与 spec §4.1「default 档：新命中经用户确认后落 allow」直接冲突。故本票固定三态
-//! （spec §6.4 定的枚举）：`allow_once` / `deny` / `deny_always`——「允许」按 origin
+//! 且与「default 档：新命中经用户确认后落 allow」的既定语义直接冲突。故固定三态
+//! （既定枚举）：`allow_once` / `deny` / `deny_always`——「允许」按 origin
 //! 落 allow 记录（`source='user'`），「以后都拒绝」落 deny 记录。
 //!
-//! **「总是询问」档是这套语义的唯一例外**（票 06）：该档不读 allow 记录，落一条
+//! **「总是询问」档是这套语义的唯一例外**：该档不读 allow 记录，落一条
 //! 没人会读的记录等于在管理界面里谎称「用户已授权」。因此该档下「允许」只放行本批、
 //! **不落账**（与 fs 侧同档不提供「记住」按钮同源，见 [`NetworkAuthChecker::prompt`]）。
 //! 「以后都拒绝」仍落 deny 记录——deny 在第 1 步生效，任何档位都尊重用户说过的拒绝。
@@ -44,7 +44,7 @@
 //! 池槽位最长 30s，且用户在错误的时机看到问题）。[`NetworkAuthChecker::is_granted`]
 //! 只认记录、未记录即拒绝，由调用方 fail-visible 报错。
 //!
-//! ## 归属（ADR 0022 §5.1.3）
+//! ## 归属
 //!
 //! 安全闸门：只回答「这个出站地址要不要问用户 / 有没有问过」，不含任何业务语义
 //! （不判断地址属于哪个服务、不解释重定向链上的业务含义）。
@@ -60,17 +60,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 use tokio::sync::{oneshot, Mutex};
-// db 锁统一为 std Mutex（单形态票 02 M11，与 storage.rs / auth_policy.rs 同款裁决：
+// db 锁统一为 std Mutex（单形态收口，与 storage.rs / auth_policy.rs 同款裁决：
 // 同步锁 + 短临界区，guard 非 Send 编译器强制无跨 await 持锁）；
 // prompts 锁恒 tokio（本模块内部请求队列状态，双端一致，不在 db 锁收敛范围）
 use std::sync::Mutex as DbMutex;
 
 /// 出站询问的等待上限（与 fs 侧一致）
 ///
-/// **超时按拒绝**（AGENTS §8 fail-safe 默认「无应答即拒」）：不落任何记录。
+/// **超时按拒绝**（fail-safe 默认「无应答即拒」）：不落任何记录。
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 同 origin 询问的合并窗口（票 05 固定常量）
+/// 同 origin 询问的合并窗口（固定常量）
 ///
 /// 作用是让「同一波请求」只打扰用户一次：① 弹窗在途时并入同一询问；② 用户答完后
 /// 窗口内到达的请求（agent-hub 一次刷新里排在后面的那些）复用同一决定。
@@ -86,7 +86,7 @@ pub const NETWORK_AUTH_REQUEST_EVENT: &str = "plugin:network-auth-request";
 ///
 /// 抽成注入点而不是在测试里硬塞 AppHandle：tao 事件循环不允许在测试线程建
 /// `AppHandle`，而「同 origin 只弹一次」「应答后落账」这些契约必须在**真实判定链**上
-/// 验证（只测纯函数的变异教训见 spec §12.2）。生产语义与 fs 侧一致：`None` = 无头
+/// 验证（只测纯函数的变异教训：契约必须在真实判定链上验）。生产语义与 fs 侧一致：`None` = 无头
 /// 上下文 ⇒ 询问层不可用 ⇒ 拒绝。
 type PromptEmitter = Arc<dyn Fn(&str, serde_json::Value) -> Result<(), String> + Send + Sync>;
 
@@ -104,7 +104,7 @@ pub struct NormalizedTarget {
 
 /// 归一化出站 URL
 ///
-/// **query / fragment / userinfo 绝不进入结果**（AGENTS §8 凭据红线：token 不得落库、
+/// **query / fragment / userinfo 绝不进入结果**（凭据红线：token 不得落库、
 /// 不得进错误串、不得进日志）——只取 scheme / host / port / path 四段，URL 里的
 /// `?token=…`、`#…`、`user:pass@` 天然被排除在外。
 /// 无法解析（无 scheme / 无 host / 无端口可定）返回 `None`，由调用方 fail-visible
@@ -165,7 +165,7 @@ pub fn record_covers(record: &AuthRecordMatch, target: &NormalizedTarget) -> boo
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// 出站询问的应答决定（票 05 固定三态，wire 值即命令参数）
+/// 出站询问的应答决定（固定三态，wire 值即命令参数）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkDecision {
     /// 允许本次询问覆盖的那批请求，并按 origin 落 allow 记录
@@ -188,7 +188,7 @@ impl NetworkDecision {
     /// 解析 wire 值；**未知值返回 `None`**（调用方显性报错）
     ///
     /// 不得给未知值兜底成「允许」：命令参数来自前端，兜底放行等于把应答通道变成一个
-    /// 可猜测的绕过口（AGENTS §8 fail-visible）。
+    /// 可猜测的绕过口（fail-visible）。
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "allow_once" => Some(Self::AllowOnce),
@@ -255,7 +255,7 @@ struct OriginPrompt {
     decision: Option<(NetworkDecision, Instant)>,
     /// 弹出时档位**是否读授权记录** ⇒ 应答「允许」要不要落 allow 记录
     ///
-    /// 在**弹出时**固定（spec §8.1）：等待应答期间用户改了档位，这个弹窗仍按旧口径
+    /// 在**弹出时**固定：等待应答期间用户改了档位，这个弹窗仍按旧口径
     /// 走完——落不落账跟着弹出时的档位走，与 fs 侧 `PendingRequest::offers_remember`
     /// 同一原则（用户看到的按钮与实际落账必须一致）。
     lands_allow_record: bool,
@@ -314,7 +314,7 @@ impl NetworkAuthChecker {
         }
     }
 
-    /// 注入 core-monitor 句柄（授权记录容量丢弃计数；spec §8.2）
+    /// 注入 core-monitor 句柄（授权记录容量丢弃计数）
     ///
     /// 与 `fs_auth::FsAuthChecker::set_monitor` 同一形态（两阶段注入：monitor 生于
     /// `WasmRuntime`，晚于宿主上下文构建）。不注入时容量丢弃**静默发生**——网络侧
@@ -326,7 +326,9 @@ impl NetworkAuthChecker {
     /// 弹窗面判定：可询问用户
     ///
     /// `Err` 是 fail-visible 的两类情况：URL 不可归一化、库读失败——都不降级放行
-    /// （spec §4.2 硬闸门 3：规范化失败即拒）。
+    /// （硬闸门：规范化失败即拒）。
+    ///
+    /// `Err` 是 fail-visible 的两类情况：URL 不可归一化、库读失败——都不降级放行
     pub async fn authorize_outbound(
         &self,
         plugin_id: &str,
@@ -344,7 +346,7 @@ impl NetworkAuthChecker {
             .records_for_match(plugin_id, AuthResource::Network)
             .await?;
 
-        // 第 1 步：硬拒绝记录优先于一切放行路径（spec §6.1）
+        // 第 1 步：硬拒绝记录优先于一切放行路径
         if records
             .iter()
             .any(|row| row.effect == AUTH_EFFECT_DENY && record_covers(row, &target))
@@ -439,7 +441,7 @@ impl NetworkAuthChecker {
     /// 与 [`Self::authorize_outbound`] 的第 1、2、3 步判据**逐字同源**（deny 优先 +
     /// 档位 + 记录命中 + 始终允许档的留痕），差别只在第 4 步：这里没有弹窗，直接拒绝。
     /// **两处判据必须同源**，否则「任务单元里能过、命令面里被拒」这类双答案永远
-    /// 无法解释——而双答案正是票 05 显性接线策略守卫的理由（那时代码只有默认档）。
+    /// 无法解释——而双答案正是显性接线策略守卫的理由（早期代码只有默认档）。
     pub async fn is_granted(&self, plugin_id: &str, url: &str) -> bool {
         self.authorize_outbound_quiet(plugin_id, url)
             .await
@@ -502,7 +504,7 @@ impl NetworkAuthChecker {
         })
     }
 
-    /// 策略层求值（**判定时实时读取**，不缓存、不做激活期快照——spec §8.1）
+    /// 策略层求值（**判定时实时读取**，不缓存、不做激活期快照）
     ///
     /// 共用 [`strategy::evaluate`]：档位→动作的映射与「先判档位还是先读记录」的顺序
     /// 只有一处真源（网络侧若自己拼一次 `match`，与文件侧的差异从代码上看两边都自洽）。
@@ -529,7 +531,7 @@ impl NetworkAuthChecker {
         }
     }
 
-    /// 「始终允许」档的免询问放行留痕（spec §4.1 第 2 档：不问，但必须落账）
+    /// 「始终允许」档的免询问放行留痕（不问，但必须落账）
     ///
     /// 落账粒度 = 本次归一化 origin（`prefix_match=0`，整站）：询问粒度本就是 origin，
     /// 落更细的 path 会在界面上出现「用户授权的明明是 `/v1`、库里却是整站」这类
@@ -574,7 +576,7 @@ impl NetworkAuthChecker {
     /// **落账只在这里发生一次**（而不是每个等待者各落一次）：合并批次里的 N 个请求共用
     /// 一次询问、一次落账。`allow_once` 落 allow（`source='user'`），
     /// `deny_always` 落 deny（`source='user_deny'`），`deny` 不落账。
-    /// 「总是询问」档（票 06）下 `allow_once` **不落账**：该档不读记录，落一条
+    /// 「总是询问」档下 `allow_once` **不落账**：该档不读记录，落一条
     /// 永远不会被命中的 allow 记录只会让管理界面显示一条假的「用户已授权」。
     /// 返回 `false` = 未知 / 已作答的 request_id（重复应答、超时后迟到）：只记 warn。
     pub async fn respond(&self, request_id: &str, decision: NetworkDecision) -> bool {
@@ -607,8 +609,8 @@ impl NetworkAuthChecker {
             }
             entry.decision = Some((decision, Instant::now()));
             let waiters = std::mem::take(&mut entry.waiters);
-            // 落账口径随**弹出时**的档位一起取走（票 06）：用户点「允许」时改档，
-            // 已在途的这个弹窗仍按旧口径走完（spec §8.1）
+            // 落账口径随**弹出时**的档位一起取走：用户点「允许」时改档，
+            // 已在途的这个弹窗仍按旧口径走完
             let lands_allow_record = entry.lands_allow_record;
             (key, waiters, lands_allow_record)
         };
@@ -678,9 +680,9 @@ impl NetworkAuthChecker {
 
     /// 询问用户（合并同 origin 的并发 / 紧邻请求）
     ///
-    /// `lands_allow_record` = 弹出时档位是否读授权记录（票 06）：「总是询问」档传
+    /// `lands_allow_record` = 弹出时档位是否读授权记录：「总是询问」档传
     /// 假 ⇒ 应答「允许」只放行本批、不落账（那条记录没人会读，落了等于在管理界面
-    /// 谎称「用户已授权」）。合并窗口在**所有档位**下都生效（票 06 第二条）——否则
+    /// 谎称「用户已授权」）。合并窗口在**所有档位**下都生效——否则
     /// 「总是询问」在 agent-hub 一次几十个请求的刷新里会变成几十次弹窗。
     async fn prompt(
         &self,
@@ -769,7 +771,7 @@ impl NetworkAuthChecker {
                     "requestId": request_id,
                     "pluginId": plugin_id,
                     "origin": target.origin,
-                    // 「允许」会不会落成授权记录（= 弹出时档位是否读记录，票 06）。
+                    // 「允许」会不会落成授权记录（= 弹出时档位是否读记录）。
                     // 前端据此换文案：说「以后不再询问」而在「总是询问」档下实际不记，
                     // 就是在骗用户（弹窗解释与实际行为必须同源）
                     "remembers": lands_allow_record,

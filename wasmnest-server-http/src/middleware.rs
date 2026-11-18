@@ -4,3 +4,5 @@
 
 pub mod auth_gateway;
 pub mod http_filter;
+/// 请求完成事件的秒级聚合计数（成功完成日志降为 trace 后的可见性兜底）
+pub mod http_stats;

@@ -1,4 +1,4 @@
-//! crate 边界锁共享面（wasm-core-whole-crate 票 05 落点：登记表唯一化）
+//! crate 边界锁共享面（整 crate 拆分落点：登记表唯一化）
 //!
 //! 原 `SPLIT_CRATES` / `server_lib_src_roots()` 定义在 lib `server/crate_boundary_lock.rs`，
 //! 被 wasm_core 的两把退役面锁（`api_bridge.rs` / `wasm_flow_test.rs`）与 lib 侧的
@@ -21,8 +21,8 @@
 /// 含 `wasmnest-wasm-core` 自身：整核抽出后它也是拆分产物（宿主 bin → 可复用 crate），
 /// 登记进来让 lib 侧全图断言（断言① 无横向边 / 断言③ 宿主清单声明全部拆分产物）
 /// 把它一并纳入检查——否则本 crate 的依赖清单不受边界锁管辖。
-/// 含 `wasmnest-pty-engine`：wasm-core 纯净性收口票 02 从本 crate 迁出的 PTY
-/// 引擎面（票 02 批次 02 起宿主**直接**依赖它：端口 adapter / 强制引用行 /
+/// 含 `wasmnest-pty-engine`：纯净性收口时从本 crate 迁出的 PTY
+/// 引擎面（批次 02 起宿主**直接**依赖它：端口 adapter / 强制引用行 /
 /// 白名单条目同落 `src-tauri/src/plugin/pty.rs`，本 crate 与它的依赖边已摘——
 /// lib 侧 ALLOWED_DOWNWARD_EDGES / REQUIRED_DOWNWARD_EDGES 同步摘除）。
 pub const SPLIT_CRATES: &[(&str, &str)] = &[
@@ -31,17 +31,20 @@ pub const SPLIT_CRATES: &[(&str, &str)] = &[
     ("wasmnest-server-http", "wasmnest-server-http"),
     ("wasmnest-server-websocket", "wasmnest-server-websocket"),
     ("wasmnest-server-peer-net", "wasmnest-server-peer-net"),
+    // libp2p 机制引擎（P1 传输栈换轨引入，peer-net 的传输底座）：纯机制、
+    // 零产品语义、零内部 crate 依赖；入表即纳入本锁的退役面扫描面。
+    ("wasmnest-p2p-engine", "wasmnest-p2p-engine"),
     ("wasmnest-crypto-engine", "wasmnest-crypto-engine"),
     ("wasmnest-host-kit", "wasmnest-host-kit"),
-    // 组播发现能力域：票 02 批次 03 起宿主直接依赖（adapter 在
+    // 组播发现能力域：批次 03 起宿主直接依赖（adapter 在
     // `src-tauri/src/plugin/mdns.rs`），本 crate 与它已无边。
     ("wasmnest-discovery-engine", "wasmnest-discovery-engine"),
-    // host-pty 能力域（票 02 迁引擎体 → ADR 0039 整面迁出）：引擎面 + WIT 接线 +
+    // host-pty 能力域（迁引擎体后整面迁出）：引擎面 + WIT 接线 +
     // 域机制全在 wasmnest-pty-engine（自带 `bindgen!` + `HostModule` 自报，不依赖本
-    // crate）；端口 adapter 自票 02 批次 02 起住宿主
+    // crate）；端口 adapter 自批次 02 起住宿主
     // `src-tauri/src/plugin/pty.rs`（宿主直接依赖，本 crate 与它已无边）。
     ("wasmnest-pty-engine", "wasmnest-pty-engine"),
-    // 本 crate 自身（wasm-core-whole-crate 票 05：拆分产物清单含整核抽出本体）
+    // 本 crate 自身（整 crate 拆分：拆分产物清单含整核抽出本体）
     ("wasmnest-wasm-core", "wasmnest-wasm-core"),
 ];
 

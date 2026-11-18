@@ -1,4 +1,4 @@
-//! 共享目录浏览/拉取会话（issue 07）：注册表 + 服务端分发 + 客户端 API。
+//! 共享目录浏览/拉取会话：注册表 + 服务端分发 + 客户端 API。
 //!
 //! ## 会话形态（与 push 传输同一连接协议族）
 //!
@@ -8,7 +8,7 @@
 //! 浏览: A ── BrowseRequest{dir_id,rel} ──▶ B   校验信任(闸门已保证)→路径安全→列目录
 //!       A ◀── BrowseResponse{entries} ─── B   条目已按「目录优先、按名排序」排好
 //! 拉取: A ── PullRequest{dir_id,rel} ───▶ B   解析文件 → 以该文件发标准 Offer
-//!       (后续 StartFile/Data/FileDone/BatchDone 与 issue 05 push 完全同构，
+//!       (后续 StartFile/Data/FileDone/BatchDone 与 push 完全同构，
 //!        B=发送角色、A=接收角色；A 端策略恒放行——拉取是用户主动获取)
 //! ```
 //!
@@ -28,7 +28,7 @@ pub mod registry;
 pub use registry::{resolve_rel_path, sort_entries, SharedDirEntry, SharedDirRoot, SharedDirStore};
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -43,6 +43,40 @@ use crate::base::NodeId;
 
 /// 首帧与会话级等待超时（镜像 transfer 的 OFFER_TIMEOUT：信任放行后对端应立即发起请求）
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 本机配置快照句柄（插件写入、对端按需拉取；不透明 JSON 字符串）
+///
+/// 与共享目录同款「独立于运行时存活」：节点重启不清空，插件激活时重新写入。
+pub type SharedConfigSnapshot = Arc<Mutex<Option<String>>>;
+
+/// 配置快照上限（16 KiB）：只承载接入元数据（relay 地址 / 空间码 / 策略），
+/// 超过即拒绝写入——防止插件把业务数据塞进对端可读通道。
+pub const MAX_CONFIG_SNAPSHOT_LEN: usize = 16 * 1024;
+
+/// 校验配置快照：必须是 JSON **对象**且不超过上限（纯函数，native 直测）。
+///
+/// 能力域不解析字段语义（那是插件契约），只守两道结构性边界。
+pub fn validate_config_snapshot(snapshot_json: &str) -> crate::base::Result<()> {
+    if snapshot_json.len() > MAX_CONFIG_SNAPSHOT_LEN {
+        return Err(crate::base::error::PeerNetError::TransferProtocol {
+            role: "config",
+            detail: format!("config snapshot exceeds {MAX_CONFIG_SNAPSHOT_LEN} bytes"),
+        });
+    }
+    let value: serde_json::Value = serde_json::from_str(snapshot_json).map_err(|e| {
+        crate::base::error::PeerNetError::TransferProtocol {
+            role: "config",
+            detail: format!("config snapshot is not valid json: {e}"),
+        }
+    })?;
+    if !value.is_object() {
+        return Err(crate::base::error::PeerNetError::TransferProtocol {
+            role: "config",
+            detail: "config snapshot must be a json object".to_string(),
+        });
+    }
+    Ok(())
+}
 
 // ==================== SAF 访问缝 ====================
 
@@ -89,7 +123,7 @@ pub trait SharedSafAccess: Send + Sync {
     /// 打开 rel 指向的文件为顺序读取源（不存在/是目录以 [`saf_not_found`] 报告）
     fn open_read(&self, tree_uri: &str, rel: &str) -> crate::base::Result<Arc<dyn SeqReader>>;
 
-    /// 列目录结果可能因本端存储权限被过滤的提示位（issue 11）
+    /// 列目录结果可能因本端存储权限被过滤的提示位
     ///
     /// 默认 false；移动端宿主在未授予「所有文件访问权限」等受限态覆写为 true，
     /// 服务端仅在空列表场景把该提示随 BrowseResponse 告知浏览方（沿用既有
@@ -103,7 +137,7 @@ pub trait SharedSafAccess: Send + Sync {
 
 /// 共享目录 + push 接收的复合连接处理器（两端宿主的统一装配形状）
 ///
-/// 首帧分流：`Offer` → issue 05/06 接收管线（策略门 + 数据面）；
+/// 首帧分流：`Offer` → 接收管线（策略门 + 数据面）；
 /// `BrowseRequest` / `PullRequest` → 本模块 serve 流程；其余首帧按协议违规
 /// 结束。终态事件沿用 [`TransferEvent::Terminal`] 上报（浏览无批语义，
 /// batch_id 用请求的 dir_id 承载便于日志关联）。
@@ -121,7 +155,7 @@ pub struct SharedDirHandler {
 
 /// [`SharedDirHandler`] 的跨会话共享状态
 struct SharedHandlerInner {
-    /// 传输配置（RwLock：宿主可在节点运行中热更新策略/落点，issue 10；
+    /// 传输配置（RwLock：宿主可在节点运行中热更新策略/落点；
     /// 每条连接建立时取一次快照，在途会话不受后续变更影响）
     transfer: std::sync::RwLock<TransferConfig>,
     /// 全局急停令牌：触发即取消当前与未来全部会话
@@ -141,6 +175,8 @@ struct SharedHandlerInner {
     /// 会话生命周期与急停使用），本表以**服务批 ID** 登记，供宿主按传输任务
     /// 行取消——两者寻址空间不同，合表会让宿主按 batch_id 取消时静默落空。
     serve_cancels: Arc<std::sync::Mutex<HashMap<String, CancelToken>>>,
+    /// 本机配置快照（ConfigRequest 服务端只读；插件写入的最新增量）
+    config_snapshot: SharedConfigSnapshot,
 }
 
 impl SharedDirHandler {
@@ -152,6 +188,7 @@ impl SharedDirHandler {
         transfer: TransferConfig,
         events: mpsc::Sender<TransferEvent>,
         serve_events: mpsc::Sender<TransferEvent>,
+        config_snapshot: SharedConfigSnapshot,
     ) -> Self {
         Self {
             store,
@@ -163,13 +200,14 @@ impl SharedDirHandler {
                 pauses: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 receive_pauses: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 serve_cancels: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                config_snapshot: Arc::clone(&config_snapshot),
             }),
             events,
             serve_events,
         }
     }
 
-    /// 引擎事件通道发送端句柄（issue 11）：宿主客户端拉取会话经同一通道
+    /// 引擎事件通道发送端句柄：宿主客户端拉取会话经同一通道
     /// 入账接收任务表，进度/终态与 push 接收共用既有事件管线。
     pub fn event_sender(&self) -> mpsc::Sender<TransferEvent> {
         self.events.clone()
@@ -181,7 +219,7 @@ impl SharedDirHandler {
     }
 
     /// 热更新传输配置（接收策略 / 落点目录）：设置面变更后调用，下一条
-    /// 进入的连接即按新配置分流（issue 10「即时生效」）
+    /// 进入的连接即按新配置分流（「即时生效」）
     pub fn update_transfer_config(&self, transfer: TransferConfig) {
         if let Ok(mut guard) = self.inner.transfer.write() {
             *guard = transfer;
@@ -473,6 +511,19 @@ impl ConnectionHandler for SharedDirHandler {
                             }
                         }
                     }
+                    TransferFrame::ConfigRequest { protocol_version } => {
+                        batch_slot = Some("config".to_string());
+                        match serve_config(conn, &inner.config_snapshot, protocol_version).await {
+                            Ok(served) => {
+                                tracing::info!(served, "peer config snapshot served to peer");
+                                TerminalState::Completed
+                            }
+                            Err(e) => {
+                                tracing::warn!("config session failed: {e}");
+                                TerminalState::Failed { detail: e.to_string() }
+                            }
+                        }
+                    }
                     other => {
                         let _ = message::write_control(
                             &mut conn,
@@ -554,7 +605,7 @@ async fn serve_browse(
         Err(ListError::Engine(e)) => return Err(e),
     };
 
-    // 空列表 + 宿主提示可能被权限过滤：置提示位随应答告知浏览方（issue 11）
+    // 空列表 + 宿主提示可能被权限过滤：置提示位随应答告知浏览方
     let filtered = entries.is_empty() && saf.is_some_and(|saf| saf.may_hide_entries());
     message::write_control(
         &mut conn,
@@ -593,6 +644,29 @@ async fn serve_roots(mut conn: Connection, store: &SharedDirStore, protocol_vers
         .await
         .map_err(|e| sess_io(ROLE, e))?;
     Ok(())
+}
+
+/// 配置快照读取服务流程：校验版本 → 返回本机快照（None = 未设置）
+///
+/// 返回 `true` = 携带了快照，`false` = 本机没有可同步配置（调用方日志用）。
+async fn serve_config(
+    mut conn: Connection,
+    snapshot: &SharedConfigSnapshot,
+    protocol_version: u32,
+) -> crate::base::Result<bool> {
+    const ROLE: &str = "config";
+    if let Err(e) = check_version(protocol_version) {
+        return Err(e);
+    }
+    let value = snapshot
+        .lock()
+        .expect("shared config snapshot lock poisoned")
+        .clone();
+    let served = value.is_some();
+    message::write_control(&mut conn, &TransferFrame::ConfigResponse { snapshot: value })
+        .await
+        .map_err(|e| sess_io(ROLE, e))?;
+    Ok(served)
 }
 
 /// 解析共享目录条目并列出子项（Fs 走 tokio fs；Saf 走宿主缝）
@@ -1186,7 +1260,7 @@ pub struct SharedRootMeta {
     pub name: String,
 }
 
-/// 列可信对端暴露中的共享根清单（单请求会话；issue 11）
+/// 列可信对端暴露中的共享根清单（单请求会话）
 ///
 /// 浏览方先取此清单获得 dir_id，再逐根 [`browse_shared_dir`] 下钻。
 pub async fn list_shared_roots(mut conn: Connection) -> crate::base::Result<Vec<SharedRootMeta>> {
@@ -1218,7 +1292,51 @@ pub async fn list_shared_roots(mut conn: Connection) -> crate::base::Result<Vec<
     }
 }
 
-/// 浏览应答（issue 11）：条目 + 「可能被权限过滤」提示位
+/// 拉取可信对端的穿透配置快照（单请求会话）
+///
+/// 返回 `None` = 对端未设置 / 不提供；`Some(json)` = 对端插件写入的不透明快照。
+/// 协议版本不匹配、超时、畸形应答均显性报错——不把「读不到」伪装成「没有配置」。
+pub async fn fetch_shared_config(mut conn: Connection) -> crate::base::Result<Option<String>> {
+    const ROLE: &str = "config";
+
+    message::write_control(
+        &mut conn,
+        &TransferFrame::ConfigRequest {
+            protocol_version: TRANSFER_PROTOCOL_VERSION,
+        },
+    )
+    .await
+    .map_err(|e| sess_io(ROLE, e))?;
+
+    let reply = tokio::time::timeout(REQUEST_TIMEOUT, message::read_control(&mut conn))
+        .await
+        .map_err(|_| proto_violation(ROLE, "timed out waiting for config response"))?
+        .map_err(|e| sess_io(ROLE, e))?;
+
+    match reply {
+        TransferFrame::ConfigResponse { snapshot } => {
+            let _ = tokio::io::AsyncWriteExt::shutdown(&mut conn).await;
+            Ok(snapshot)
+        }
+        TransferFrame::Decision {
+            accepted: false,
+            reason,
+            ..
+        } => Err(proto_violation(
+            ROLE,
+            format!(
+                "config request rejected: {}",
+                reason.unwrap_or(crate::base::transfer::RejectReason::PolicyDenied).as_str()
+            ),
+        )),
+        other => Err(proto_violation(
+            ROLE,
+            format!("unexpected reply to config request: {other:?}"),
+        )),
+    }
+}
+
+/// 浏览应答：条目 + 「可能被权限过滤」提示位
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowseListing {
     /// 子条目（已按「目录优先、按名排序」排好）
@@ -1281,7 +1399,7 @@ pub async fn browse_shared_dir(
 /// 免协商：用户主动获取即放行（不走接收策略询问）。落位钩子（config.landing）、
 /// 断点续传与 push 接收完全同构。终态同时经 `events` 上报与返回值给出。
 ///
-/// `batch_id` 由调用方指定（issue 11）：宿主需在会话发起前以同 ID 预登记
+/// `batch_id` 由调用方指定：宿主需在会话发起前以同 ID 预登记
 /// 接收任务行，使 Progress/Terminal 事件与按批取消能命中既有任务表。
 pub async fn pull_shared_file(
     conn: Connection,
@@ -1446,5 +1564,24 @@ mod tests {
         assert!(check_version(TRANSFER_PROTOCOL_VERSION).is_ok());
         assert!(check_version(1).is_ok());
         assert!(check_version(TRANSFER_PROTOCOL_VERSION + 1).is_err());
+    }
+}
+
+#[cfg(test)]
+mod config_snapshot_tests {
+    use super::{validate_config_snapshot, MAX_CONFIG_SNAPSHOT_LEN};
+
+    #[test]
+    fn accepts_json_object_within_limit() {
+        assert!(validate_config_snapshot(r#"{"v":1,"relayAddrs":[]}"#).is_ok());
+    }
+
+    #[test]
+    fn rejects_non_object_invalid_and_oversized_snapshots() {
+        assert!(validate_config_snapshot("[]").is_err(), "array must be rejected");
+        assert!(validate_config_snapshot(r#""text""#).is_err(), "string must be rejected");
+        assert!(validate_config_snapshot("not-json").is_err(), "invalid json must be rejected");
+        let oversized = format!(r#"{{"v":1,"pad":"{}"}}"#, "a".repeat(MAX_CONFIG_SNAPSHOT_LEN));
+        assert!(validate_config_snapshot(&oversized).is_err(), "oversized must be rejected");
     }
 }

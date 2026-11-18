@@ -1,4 +1,4 @@
-//! 插件互调 api 注册表（ADR-0017 层 1 门禁）
+//! 插件互调 api 注册表（层 1 门禁）
 //!
 //! 插件激活时登记 manifest `api` 声明的全限定 api 名（如
 //! `com.wasmnest.scheduler.add`），停用时注销。`bus_publish` 对
@@ -6,18 +6,18 @@
 //! 否则拒绝 —— 「注册即声明，未声明不可调」由宿主强制。
 //!
 //! 注册表同时是「api → 声明属主」的解析入口（[`ApiRegistry::owner_of`]）：
-//! 互调回复道据此校验回复 `sender`（票 05），与门禁判定读同一张表，
+//! 互调回复道据此校验回复 `sender`，与门禁判定读同一张表，
 //! 不存在「门禁放行但属主解析不一致」的漂移。**属主解析统一走
 //! [`ApiRegistry::gate`]**（单读锁内同时返回存在性与属主），避免
 //! contains→owner_of 两次独立加锁间被 register/unregister 插缝。
 //!
 //! 注册表只存「目标 api 是否存在」（层 1），不校验调用方身份、不做
-//! 版本化（ADR-0017 已决）；激活态插件的 api 才在表中，因此「已注册」
+//! 版本化已定；激活态插件的 api 才在表中，因此「已注册」
 //! 等价于「目标插件已激活」。
 //!
 //! **登记 fail-closed**：api 已被**其它**插件声明时拒绝（[`Self::register`]
 //! 返回 Err）——后激活插件不得抢占他人声明的 api 名（抢占后其回复会
-//! 被回复道校验当作原属主接受，正是票 05 要挡的劫持形态）。
+//! 被回复道校验当作原属主接受，正是要挡的劫持形态）。
 
 use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
@@ -78,7 +78,7 @@ impl ApiRegistry {
         map.contains_key(api)
     }
 
-    /// 声明该 api 的插件 ID（票 05 回复道 sender 校验依据）
+    /// 声明该 api 的插件 ID（回复道 sender 校验依据）
     ///
     /// 与 [`Self::contains`] 同表同语义：未登记（未声明 / 已停用注销）→ `None`。
     pub fn owner_of(&self, api: &str) -> Option<String> {
@@ -225,7 +225,7 @@ mod tests {
     }
 
     /// `owner_of` 与 `contains` 同表同语义：命中返回声明方，未命中返回 None
-    /// （票 05 回复道 sender 校验依据——门禁放行与属主解析不得漂移）
+    /// （回复道 sender 校验依据——门禁放行与属主解析不得漂移）
     #[test]
     fn owner_of_matches_contains_semantics() {
         let reg = ApiRegistry::new();

@@ -28,7 +28,7 @@ pub struct ServerMetrics {
     pub cpu_usage_percent: f64,
     /// 内存占用（字节）
     pub memory_usage_bytes: u64,
-    /// 链路加密成功处理帧/请求累计（issue 08；HTTP 信封与 WS 帧合并计数）
+    /// 链路加密成功处理帧/请求累计（HTTP 信封与 WS 帧合并计数）
     pub encrypted_frames: u64,
     /// 链路加密解密失败累计（fail-closed 拒绝路径，含篡改/重放/密钥不匹配）
     pub decrypt_failures: u64,
@@ -91,9 +91,9 @@ struct MetricsInner {
     ws_sent: std::sync::atomic::AtomicU64,
     /// WS 接收消息计数
     ws_received: std::sync::atomic::AtomicU64,
-    /// 链路加密成功帧计数（issue 08）
+    /// 链路加密成功帧计数
     encrypted_frames: std::sync::atomic::AtomicU64,
-    /// 链路加密解密失败计数（issue 08）
+    /// 链路加密解密失败计数
     decrypt_failures: std::sync::atomic::AtomicU64,
     /// 出站响应密钥未命中缓存计数（入站已协商但取 key 失败 → 明文降级响应）
     response_key_miss: std::sync::atomic::AtomicU64,
@@ -118,7 +118,7 @@ impl MetricsCollector {
     ///
     /// 全局单例在 lib test binary 内跨模块共享同一实例，`link_crypto` 等
     /// 模块的测试经真实代码路径写入计数器会污染依赖 `global()` 的测试
-    /// （metrics flaky，票据 14）。独立实例使测试与并行调度解耦。
+    /// （计数器被并行测试污染会直接影响断言）。独立实例使测试与并行调度解耦。
     pub fn new() -> Self {
         Self {
             inner: std::sync::Arc::new(MetricsInner::default()),
@@ -144,14 +144,14 @@ impl MetricsCollector {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// 递增链路加密成功帧计数（issue 08：HTTP 信封与 WS 帧、收发两向均计）
+    /// 递增链路加密成功帧计数（HTTP 信封与 WS 帧、收发两向均计）
     pub fn inc_encrypted_frame(&self) {
         self.inner
             .encrypted_frames
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// 递增链路加密解密失败计数（issue 08：fail-closed 拒绝路径）
+    /// 递增链路加密解密失败计数（fail-closed 拒绝路径）
     pub fn inc_decrypt_failure(&self) {
         self.inner
             .decrypt_failures
@@ -253,7 +253,7 @@ impl MetricsCollector {
 mod tests {
     use super::*;
 
-    /// MetricsCollector 支持 `new()` 构造独立实例（票据 14）：测试用独立实例
+    /// MetricsCollector 支持 `new()` 构造独立实例：测试用独立实例
     /// 而非全局单例，避免 link_crypto 等模块经真实链路污染计数器。
     #[test]
     fn reset_and_sample_report_totals_and_sliding_window_rates() {
@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(m2.cpu_usage_percent, 50.0);
         assert_eq!(m2.memory_usage_bytes, 8192);
 
-        // 链路加密计数器（issue 08）：成功/失败路径独立累计，快照可观测
+        // 链路加密计数器：成功/失败路径独立累计，快照可观测
         collector.inc_encrypted_frame();
         collector.inc_encrypted_frame();
         collector.inc_decrypt_failure();

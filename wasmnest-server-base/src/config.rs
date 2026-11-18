@@ -89,7 +89,7 @@ pub fn default_metrics_enabled() -> bool {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            port: 8765,
+            port: crate::constants::DEFAULT_SERVER_PORT,
             auto_start: true,
             prevent_sleep: true,
             workers: 0,

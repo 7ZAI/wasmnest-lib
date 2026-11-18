@@ -57,3 +57,37 @@ fn handshake_interop_and_frame_roundtrip() {
         .open_text("ws-event", &serde_json::to_string(&tampered).unwrap())
         .is_err());
 }
+
+/// 会话密钥类型的 Debug 必须屏蔽 `key`（凭据不得进日志）
+#[test]
+fn direction_cipher_debug_redacts_session_key() {
+    let cipher = WsDirectionCipher {
+        key: [0xAB; 32],
+        nonce_prefix: [1, 2, 3, 4],
+    };
+    let rendered = format!("{cipher:?}");
+    assert!(
+        !rendered.contains("abababab"),
+        "Debug 不得输出密钥字节: {rendered}"
+    );
+    assert!(
+        !rendered.contains("171"),
+        "Debug 不得输出密钥字节: {rendered}"
+    );
+    assert!(
+        rendered.contains("nonce_prefix"),
+        "保留可诊断的非机密字段: {rendered}"
+    );
+
+    let hs = ServerHandshake {
+        server_ek_b64: "pub".into(),
+        client_to_server: cipher.clone(),
+        server_to_client: cipher,
+    };
+    let rendered = format!("{hs:?}");
+    assert!(rendered.contains("server_ek_b64"), "{rendered}");
+    assert!(
+        !rendered.contains("abababab"),
+        "握手产物不得泄漏密钥: {rendered}"
+    );
+}

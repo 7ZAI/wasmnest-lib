@@ -1,7 +1,7 @@
-//! HTTP 面的组合装配实现（server-lib-split 票 03 的 `TransportFace` 契约，票 04 随面下沉）
+//! HTTP 面的组合装配实现（`TransportFace` 契约）
 //!
-//! 票 03 时 face 适配器住在宿主组合根 `server/composition.rs` 里（http 面当时还是宿主
-//! 模块）；本票把实现收进本 crate，宿主壳此后只做「把 faces 交给 `core::app::serve`」，
+//! 实现收进本 crate 之前，face 适配器住在宿主组合根 `server/composition.rs` 里
+//! （http 面当时还是宿主模块）；此后宿主壳只做「把 faces 交给 `core::app::serve`」，
 //! 不再认识面内类型（`TrafficFilter` 等）。
 
 use actix_service::boxed::BoxService;
@@ -35,6 +35,14 @@ impl TransportFace for HttpTransportFace {
             .now_or_never()
             .and_then(|result| result.ok())
             .expect("TrafficFilter 中间件装配失败（new_transform 契约为 Ready + InitError=()）");
-        actix_service::boxed::service(service)
+        let service = actix_service::boxed::service(service);
+        // 配对窗口路径闸门挂最外层：被拒请求不进入缓冲/过滤链。
+        // 普通面与已匹配 peer 面的 `pairing=false`，零介入。
+        let guarded = actix_web::middleware::from_fn(crate::peer_face::peer_face_guard)
+            .new_transform(service)
+            .now_or_never()
+            .and_then(|result| result.ok())
+            .expect("peer face guard 中间件装配失败（new_transform 契约为 Ready + InitError=()）");
+        actix_service::boxed::service(guarded)
     }
 }

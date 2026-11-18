@@ -98,11 +98,17 @@ pub(super) fn denied() -> String {
 pub(super) fn entry(node: &str) -> super::SessionEntry {
     super::SessionEntry {
         node_id: node.to_string(),
-        addr: "192.168.1.5".to_string(),
-        port: 47821,
+        addrs: vec!["/ip4/192.168.1.5/tcp/47821".to_string()],
         owner: "com.wasmnest.owner-a".to_string(),
     }
 }
+
+/// 合法的 relay 拨号地址（PeerId 必须是合法 base58 multihash 形态，否则
+/// multiaddr 解析会在句柄/数据面层先报错）
+pub(super) const RELAY_DIAL_ADDR: &str = concat!(
+    "/ip4/203.0.113.9/tcp/4001/p2p/12D3KooWPbYEEfpRvnRKk2YLu43F28fLZgU22wic2M5m6Spkv9ZA",
+    "/p2p-circuit/p2p/12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA"
+);
 
 /// 经进程级句柄表铸造一条会话（域内唯一入口，返回 `sess-<uuid>` 句柄）
 pub(super) fn mint(node: &str) -> String {

@@ -8,8 +8,8 @@
 //!
 //! | 方法 | 为什么需要它 |
 //! | --- | --- |
-//! | [`HttpPorts::check_permission`] | 权限门（`network:http`）是**宿主安全闸门**（AGENTS §5.1.3 四类薄壳之二），不该可插拔 ⇒ 留宿主，本域只问结果（拒绝文案与 warn 落宿主侧） |
-//! | [`HttpPorts::authorize_outbound`] | 出站授权裁决（弹窗询问 / 网络授权记录 / 档位策略）**整条链留在宿主**（票 06 验收项；闸门不应可插拔），本域只消费三态结果 |
+//! | [`HttpPorts::check_permission`] | 权限门（`network:http`）是**宿主安全闸门**，不该可插拔 ⇒ 留宿主，本域只问结果（拒绝文案与 warn 落宿主侧） |
+//! | [`HttpPorts::authorize_outbound`] | 出站授权裁决（弹窗询问 / 网络授权记录 / 档位策略）**整条链留在宿主**（闸门不应可插拔），本域只消费三态结果 |
 //! | [`HttpPorts::event_sink`] | 流式推送的前端事件通道（宿主才有前端事件面）。**必须能表达「缺席」**——无头上下文的流式请求要显性报错，不得静默丢弃 chunk |
 //! | [`HttpPorts::block_on_any`] | 同步↔异步桥：guest 侧的 host function 是同步的，而 HTTP 客户端是 async。**桥的实现在宿主**（含 wasmtime-wasi ambient runtime 与 actix `current_thread` 自锁规避），本域不复制第二份 |
 //!
@@ -49,6 +49,26 @@ pub trait HttpEventSink: Send + Sync {
     fn emit(&self, event: &str, payload: serde_json::Value);
 }
 
+/// 出站链路信封（宿主能力；`None` = 本宿主无链路加密概念）
+///
+/// 与 WS 帧加密同源裁决（移动端主开关 + 已 pin + 目标是已配对桌面），但走 HTTP
+/// 信封协议（`X-WasmNest-Crypto` + 请求/响应双向密钥派生）。能力域只负责在请求
+/// 发出前 / 响应读完后**各调一次**，协议实现与策略裁决全留宿主。
+///
+/// 失败一律上抛（`http error: ...`）：信封密钥不匹配时继续明文回给 guest 会把
+/// 密文当业务 JSON，产生误导性业务码（与入站过滤器同一条 fail-visible 教训）。
+pub trait OutboundEnvelope: Send + Sync {
+    /// 密封请求：可追加/覆盖请求头，返回加密后的 body（`None` = 无 body）
+    fn seal_request(
+        &self,
+        headers: &mut Vec<(String, String)>,
+        body: Option<Vec<u8>>,
+    ) -> Result<Option<Vec<u8>>, String>;
+
+    /// 解密响应体（仅当请求已密封；`headers` 为响应头原文）
+    fn open_response(&self, headers: &[(String, String)], body: Vec<u8>) -> Result<Vec<u8>, String>;
+}
+
 /// 出站授权裁决三态（与宿主授权层的判定一一对应，**刻意不复用**宿主类型）
 ///
 /// 刻意不复用：宿主那份裁决类型住在安全闸门模块内（含业务化的 reason 词汇），
@@ -57,7 +77,7 @@ pub trait HttpEventSink: Send + Sync {
 pub enum OutboundAuth {
     /// 放行（`origin` = 归一化后的 origin，进 debug 日志）
     Allowed {
-        /// 归一化 origin（不含 path / query——AGENTS §8 凭据红线）
+        /// 归一化 origin（不含 path / query——凭据不落错误串）
         origin: String,
     },
     /// 拒绝（携带 reason 词汇与归一化 origin，供错误串逐字复原）
@@ -74,11 +94,11 @@ pub enum OutboundAuth {
 /// 宿主能力端口
 ///
 /// 实现方是各端宿主的适配器（桌面端见宿主 adapter `src-tauri/src/plugin/http.rs`
-/// 的 `HostHttpPorts`——票 02 批次 03 自 `wasm_core::host_api::http` 迁出）。
+/// 的 `HostHttpPorts`——原本住 `wasm_core::host_api::http`，整域迁出）。
 pub trait HttpPorts: Send + Sync + 'static {
     /// 权限判定（`network:http`）
     ///
-    /// 返回 `false` 时**宿主侧**必须已按 AGENTS §8 落 `warn`（结构化字段
+    /// 返回 `false` 时**宿主侧**必须已落 `warn`（结构化字段
     /// `plugin_id` / `permission` / `api`）；本域不重复落日志。宿主侧也拿不到
     /// 权限管理器时（无头 / 测试）**必须返回 false**（fail-safe）。
     fn check_permission(&self, plugin_id: &str, permission: &str, api: &str) -> bool;
@@ -103,6 +123,14 @@ pub trait HttpPorts: Send + Sync + 'static {
     ///   晚失败不如早失败，**禁止**静默降级为匿名请求）。
     fn jwt_auth_token(&self, _plugin_id: &str) -> Result<Option<String>, String> {
         Ok(None)
+    }
+
+    /// 本次出站的链路信封；`None` = 明文（默认：本宿主无链路加密概念）
+    ///
+    /// 裁决（本机开关 / 信任锚 / 是否已配对桌面目标）归宿主，能力域只消费结果。
+    /// 流式请求不走信封（SSE chunk 级加密尚未实现）；`required` 端点会显性 400。
+    fn outbound_envelope(&self, _plugin_id: &str, _url: &str) -> Option<Arc<dyn OutboundEnvelope>> {
+        None
     }
 
     /// 在宿主运行时上**同步驱动**一段异步计算（guest host function 是同步的）

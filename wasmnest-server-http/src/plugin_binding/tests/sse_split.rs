@@ -1,4 +1,4 @@
-//! 通用 SSE 切分用例组（宿主零业务语义，票据 02）
+//! 通用 SSE 切分用例组（宿主零业务语义）
 
 use crate::plugin_binding::egress::extract_sse_data_lines;
 
@@ -28,7 +28,7 @@ fn sse_extract_ignores_events_without_data() {
     assert_eq!(extract_sse_data_lines(&mut buf), ["ok"]);
 }
 
-/// 供应商标记（如 [DONE]）按 data 原文透传，宿主不做任何供应商语义解析（票据 02）
+/// 供应商标记（如 [DONE]）按 data 原文透传，宿主不做任何供应商语义解析
 #[test]
 fn sse_extract_passes_through_vendor_markers_raw() {
     let mut buf = "data: [DONE]\n\n".to_string();

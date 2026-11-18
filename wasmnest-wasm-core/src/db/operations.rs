@@ -1,6 +1,7 @@
 //! Database operations
 
 use super::{Database, Setting};
+use crate::error::DbResultExt;
 use crate::Result;
 use chrono::{DateTime, Utc};
 
@@ -31,17 +32,20 @@ impl Database {
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        self.conn().execute(
-            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![key, value, now],
-        )?;
+        self.conn()
+            .execute(
+                "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![key, value, now],
+            )
+            .db()?;
         Ok(())
     }
 
     pub fn get_all_settings(&self) -> Result<Vec<Setting>> {
         let mut stmt = self
             .conn()
-            .prepare("SELECT key, value, updated_at FROM settings ORDER BY key")?;
+            .prepare("SELECT key, value, updated_at FROM settings ORDER BY key")
+            .db()?;
 
         let settings = stmt
             .query_map([], |row| {
@@ -50,8 +54,10 @@ impl Database {
                     value: row.get(1)?,
                     updated_at: parse_datetime_sql(&row.get::<_, String>(2)?, "updated_at")?,
                 })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            })
+            .db()?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .db()?;
 
         Ok(settings)
     }

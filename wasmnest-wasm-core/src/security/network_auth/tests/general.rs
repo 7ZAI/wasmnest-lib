@@ -16,7 +16,7 @@ fn normalize_target_makes_equivalent_urls_one_target() {
     assert_eq!(b.path, "/v1/models");
 }
 
-/// C6 反例（凭据红线 AGENTS §8）：query / fragment / userinfo 绝不进 target
+/// C6 反例（凭据红线）：query / fragment / userinfo 绝不进 target
 #[test]
 fn normalize_target_never_carries_query_fragment_or_userinfo() {
     let t = normalize_target("https://user:pw@api.x.com:443/v1?access_token=SECRET#frag")

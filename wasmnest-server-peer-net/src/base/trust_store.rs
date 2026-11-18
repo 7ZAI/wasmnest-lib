@@ -8,9 +8,10 @@
 //! 属安全语义回退，宁可启动失败让人工介入。
 //!
 //! 并发形态：accept 循环的多个连接任务并发查询 [`contains`]，宿主/拨号侧经
-//! [`add`] / [`remove`] 写入——内部 `RwLock<BTreeMap>` 支撑读多写少；临界区
-//! 只含内存集合操作与单个小文件落盘（< 数 KB），用同步锁避免 tokio 异步锁的
-//! 持有跨 await 复杂度。实例本身经调用方 `Arc` 共享，内部不再嵌套 Arc。
+//! [`add`] / [`remove`] 写入——内部 `RwLock<BTreeMap>` 支撑读多写少；`peers` 临界区
+//! 只含内存集合操作，落盘由独立 `persist` 锁串行化（快照 + 写盘同一事务），
+//! 用同步锁避免 tokio 异步锁的持有跨 await 复杂度。实例本身经调用方 `Arc` 共享，
+//! 内部不再嵌套 Arc。
 //!
 //! ## 展示元数据（ticket 04）
 //!
@@ -24,7 +25,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -114,6 +115,11 @@ pub struct TrustStore {
     /// 持久化文件完整路径；内存态实例为 None（无落盘）
     path: Option<PathBuf>,
     peers: RwLock<BTreeMap<NodeId, PeerMeta>>,
+    /// 落盘串行化：内存快照与文件写必须是同一事务
+    ///
+    /// 没有这把锁时，两个并发变更会「各取快照、先后 rename」——后落盘者的旧快照
+    /// 可以让已撤销的节点在重启后复活（AC#5），固定 `.tmp` 名还会交错损坏。
+    persist: Mutex<()>,
 }
 
 impl TrustStore {
@@ -134,11 +140,13 @@ impl TrustStore {
             Ok(Self {
                 path: Some(path),
                 peers: RwLock::new(peers),
+                persist: Mutex::new(()),
             })
         } else {
             let store = Self {
                 path: Some(path.clone()),
                 peers: RwLock::new(BTreeMap::new()),
+                persist: Mutex::new(()),
             };
             // 首启显式落一个空表：让「存储已初始化」在磁盘上可见，排查时
             // 能区分「从未初始化」与「初始化后被清空」
@@ -156,6 +164,7 @@ impl TrustStore {
         Self {
             path: None,
             peers: RwLock::new(BTreeMap::new()),
+            persist: Mutex::new(()),
         }
     }
 
@@ -182,6 +191,9 @@ impl TrustStore {
     /// - 补注：仅在既有条目缺名且本次带名时填充（已有名不覆盖——首次确认时
     ///   用户看到的名字即为准）。
     pub fn add_with_metadata(&self, node_id: &NodeId, display_name: Option<&str>) -> Result<bool> {
+        // 整个「读-改-写盘」事务串行化：并发 add/remove 不能交错快照，
+        // 落盘失败的回滚也不会压掉别人的新状态。
+        let _txn = self.persist.lock().unwrap_or_else(|e| e.into_inner());
         let name = display_name.map(str::to_string).filter(|s| !s.is_empty());
         let mut inserted = false;
         let mut annotated = false;
@@ -208,7 +220,7 @@ impl TrustStore {
             }
         }
         if inserted || annotated {
-            if let Err(e) = self.persist_snapshot() {
+            if let Err(e) = self.persist_snapshot_locked() {
                 // 落盘失败则回滚内存变更，保证「contains 为真 ⇒ 已落库」不变量
                 let mut guard = self.peers.write().expect("trust store lock poisoned");
                 if inserted {
@@ -226,11 +238,12 @@ impl TrustStore {
 
     /// 从可信集撤销指定节点（AC#5 的 API 面），返回该节点原本是否存在
     pub fn remove(&self, node_id: &NodeId) -> Result<bool> {
+        let _txn = self.persist.lock().unwrap_or_else(|e| e.into_inner());
         let removed_meta = self.peers.write().expect("trust store lock poisoned").remove(node_id);
         let Some(meta) = removed_meta else {
             return Ok(false);
         };
-        if let Err(e) = self.persist_snapshot() {
+        if let Err(e) = self.persist_snapshot_locked() {
             // 与 add 对称：落盘失败原样放回，撤销不会「看似生效实则未落库」
             self.peers
                 .write()
@@ -347,8 +360,12 @@ impl TrustStore {
         Ok(peers)
     }
 
-    /// 把当前内存集合快照原子写入磁盘（调用方需已持有写锁或处于单线程变更点）
-    fn persist_snapshot(&self) -> Result<()> {
+    /// 把当前内存集合快照原子写入磁盘（**调用方必须持有 `persist` 事务锁**，
+    /// 且已释放 `peers` 写锁）
+    ///
+    /// 事务锁覆盖「内存变更 + 取快照 + 写盘」全程：并发变更不会交错出旧快照，
+    /// 后写者也不会用旧状态覆盖新状态。
+    fn persist_snapshot_locked(&self) -> Result<()> {
         let guard = self.peers.read().expect("trust store lock poisoned");
         let file = TrustedNodesFile {
             version: TRUSTED_NODES_FORMAT_VERSION,
@@ -510,6 +527,43 @@ mod tests {
 
         let err = TrustStore::load_or_create(dir.path()).expect_err("must fail fast");
         assert!(matches!(err, PeerNetError::TrustStoreCorrupted { .. }));
+    }
+
+    #[test]
+    fn concurrent_mutations_persist_the_final_state() {
+        // 回归（2026-11-09 审核 Should fix）：内存变更与落盘不在同一事务时，
+        // 后落盘者的旧快照会让已撤销条目在磁盘上复活。
+        let dir = fresh_dir();
+        let store = std::sync::Arc::new(TrustStore::load_or_create(dir.path()).expect("store"));
+        let a = sample_node_id(0x51);
+        let b = sample_node_id(0x52);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+
+        let mut handles = Vec::new();
+        for (id, rounds) in [(a.clone(), 40usize), (b.clone(), 40usize)] {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..rounds {
+                    store.add(&id).expect("add");
+                    store.remove(&id).expect("remove");
+                }
+            }));
+        }
+        barrier.wait();
+        for handle in handles {
+            handle.join().expect("worker");
+        }
+
+        assert!(!store.contains(&a));
+        assert!(!store.contains(&b));
+        let reloaded = TrustStore::load_or_create(dir.path()).expect("reload");
+        assert_eq!(
+            reloaded.list(),
+            store.list(),
+            "落盘结果必须等于最终内存状态（已撤销条目不得复活）"
+        );
     }
 
     #[test]

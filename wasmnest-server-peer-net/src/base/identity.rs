@@ -111,7 +111,8 @@ impl NodeIdentity {
     /// 加载或创建节点身份——crate 管完整 load/generate/save，宿主只注入目录（决策 D3）
     ///
     /// - `{dir}/node_identity.json` 存在 → 读出种子重建密钥并校验自洽；
-    /// - 不存在 → OsRng 纯随机生成并原子写入（unix 下收紧为 0600）；
+    /// - 不存在 → OsRng 纯随机生成并**原子抢占创建**（unix 下收紧为 0600）；
+    ///   并发的首启只有胜者写盘，输家回退加载胜者密钥（内存与磁盘不会错位）；
     /// - 文件损坏 → 返回 [`PeerNetError`] 快速失败（理由见模块文档 D3 段）。
     pub fn load_or_create(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).map_err(|e| PeerNetError::CreateDir {
@@ -125,7 +126,10 @@ impl NodeIdentity {
         } else {
             // 首启：纯随机生成——无任何设备标识输入是「重装即新身份」的核心（D2）
             let identity = Self::generate();
-            identity.save_to_file(&path)?;
+            if !identity.create_new_file(&path)? {
+                // 并发初始化已有人写盘：加载既有身份，丢弃本次生成
+                return Self::load_from_file(&path);
+            }
             tracing::info!(
                 node_id = %identity.node_id,
                 short_fingerprint = %identity.node_id.short_fingerprint(),
@@ -147,8 +151,8 @@ impl NodeIdentity {
 
     /// 签名密钥种子（32 字节）
     ///
-    /// crate 内部供 cert.rs 构造 rcgen 密钥对；后续 TLS 栈（ticket 02）复用同一
-    /// 密钥时再评估是否提升可见性，当前保持最小暴露面。
+    /// P1 起 crate 内部供 `transport` 构造 libp2p NodeKey（同一把密钥派生
+    /// PeerId，node_id ↔ PeerId 互验）；保持 crate 内可见，不扩大暴露面。
     pub(crate) fn seed_bytes(&self) -> [u8; 32] {
         self.signing_key.to_bytes()
     }
@@ -206,11 +210,13 @@ impl NodeIdentity {
         Ok(derived)
     }
 
-    /// 原子写入身份文件：同目录临时文件 + rename
+    /// 原子抢占创建身份文件：返回 `false` = 已存在（并发首启）
     ///
-    /// 进程中途被杀只会留下完整的 tmp 或旧版正式文件，绝不产生半截 JSON——
-    /// 半截文件按 D3 会永久锁死身份加载，宁可多一步也不能让它出现。
-    fn save_to_file(&self, path: &PathBuf) -> Result<()> {
+    /// 「不覆盖既有文件」与「读者看不到半截 JSON」两个约束由
+    /// [`wasmnest_server_base::private_file::create_private_file_exclusive`] 承担：
+    /// 写同目录 tmp 再发布，目标已存在即让位；发布步在 Android 上避开被 SELinux
+    /// 拒绝的 `hard_link`（详见该原语的模块文档，2026-11-11 移动端首启崩溃的根因）。
+    fn create_new_file(&self, path: &Path) -> Result<bool> {
         let file = IdentityFile {
             version: IDENTITY_FORMAT_VERSION,
             secret_seed_hex: hex::encode(self.seed_bytes()),
@@ -218,33 +224,16 @@ impl NodeIdentity {
         };
         let content = serde_json::to_string_pretty(&file).map_err(|e| PeerNetError::IdentitySerialize { source: e })?;
 
-        // 同目录保证 rename 在同一文件系统内原子生效
-        let tmp_path = path.with_extension("tmp");
-        std::fs::write(&tmp_path, content).map_err(|e| PeerNetError::IdentityWriteTemp {
-            path: tmp_path.clone(),
-            source: e,
-        })?;
-
-        // unix 下收紧权限：私钥材料不应被同机其他用户读取（Windows ACL 由用户
-        // 目录隔离兜底，无需等价处理）
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
-                PeerNetError::IdentityPermissions {
-                    path: tmp_path.clone(),
-                    source: e,
-                }
+        let outcome = wasmnest_server_base::private_file::create_private_file_exclusive(path, content.as_bytes())
+            .map_err(|source| PeerNetError::IdentityCreate {
+                path: path.to_path_buf(),
+                source,
             })?;
+        let created = outcome == wasmnest_server_base::private_file::CreateOutcome::Created;
+        if created {
+            tracing::debug!("saved peer-net node identity to {}", path.display());
         }
-
-        std::fs::rename(&tmp_path, path).map_err(|e| PeerNetError::IdentityRename {
-            from: tmp_path,
-            to: path.clone(),
-            source: e,
-        })?;
-        tracing::debug!("saved peer-net node identity to {}", path.display());
-        Ok(())
+        Ok(created)
     }
 }
 
@@ -279,7 +268,39 @@ mod tests {
 
         // 文件确实落盘且内容自洽
         assert!(dir.path().join(IDENTITY_FILE).exists());
-        assert!(!dir.path().join(IDENTITY_FILE).with_extension("tmp").exists());
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .map(|e| e.expect("entry").file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "遗留 tmp: {leftovers:?}");
+    }
+
+    /// 并发首启只产生一份身份：所有线程必须拿到同一 node_id（不覆盖既有文件）
+    #[test]
+    fn concurrent_first_start_converges_on_one_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let path = dir.path().to_path_buf();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                NodeIdentity::load_or_create(&path)
+                    .expect("load_or_create")
+                    .node_id()
+                    .as_str()
+                    .to_string()
+            }));
+        }
+        let ids: Vec<String> = handles.into_iter().map(|h| h.join().expect("join")).collect();
+        assert!(
+            ids.windows(2).all(|pair| pair[0] == pair[1]),
+            "并发首启出现了不同身份: {ids:?}"
+        );
+        let reloaded = NodeIdentity::load_or_create(dir.path()).expect("reload");
+        assert_eq!(reloaded.node_id().as_str(), ids[0]);
     }
 
     #[test]

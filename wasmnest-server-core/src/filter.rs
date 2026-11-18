@@ -57,10 +57,17 @@
 
 use std::sync::{Arc, RwLock};
 
+use wasmnest_server_base::face::RequestFace;
+
 // ==================== 类型定义 ====================
 
 /// 流量通道类型（过滤器可据此选择性处理）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// 参与序列化的唯一理由：审计/日志要能表达「这条流量属于哪条通道」；wire 字面量
+/// 与日志字段同源（[`TrafficChannel::as_str`]）。链路加密策略按应用（owner）
+/// 裁决，与通道无关。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum TrafficChannel {
     /// HTTP REST API（含插件动态端点 /api/plugin/*）
     Http,
@@ -70,9 +77,9 @@ pub enum TrafficChannel {
     WsEvent,
     /// WS 插件端点通道（`/ws/plugin/{plugin_id}/{path}`，插件入站端点帧）
     ///
-    /// 参与流量过滤链（帧级 inbound / outbound），但不参与链路加密
-    /// （`LinkEncryptionFilter::should_process` 对本品恒 `false`）——链路加密是
-    /// 移动端配对设备专用协商协议，插件端点的第三方客户端不参与
+    /// 参与流量过滤链（帧级 inbound / outbound）。是否进链路加密由**应用策略**
+    /// 决定（`link_crypto::app_policy(owner)`）：`required` 要求连接已有协商密码
+    /// （未配对客户端在握手前被拒），`preferred` 机会主义，`off` 明文。
     WsPlugin,
 }
 
@@ -110,9 +117,18 @@ pub struct FilterContext<'a> {
     pub peer: &'a str,
     /// 路由提示：HTTP = 请求 path，WS = 帧类别（"text" / "binary"）
     pub route: &'a str,
+    /// 属主插件 id（**由宿主端点注册表注入**，不解析 URL 猜、不接受客户端自报）
+    ///
+    /// 空串 = 宿主自有面（健康检查 / 配对引导 / 未注册路径），没有应用语义。
+    /// 按应用策略裁决时以本字段为身份真源（owner 来自宿主注册表，不接受对端自报）。
+    pub owner: &'a str,
+    /// 端点标识（注册记录端点句柄 `http-*` / `wse-*`；空串 = 无端点维度）
+    ///
+    /// 与 `owner` 同源注入：HTTP 由请求路径反查注册表，WS 由握手反查端点表。
+    pub endpoint: &'a str,
     /// 协商信号（链路加密）：HTTP = 请求头 `X-WasmNest-Crypto` 原始值
     /// （如 "v1 <ek_b64>"），无协商为空串；WS 不用此字段（握手态由
-    /// link_crypto 的连接密码表按 peer 查询）。issue 02 引入。
+    /// link_crypto 的连接密码表按 peer 查询）。
     pub negotiation: &'a str,
     /// 当前载荷（可原地替换实现加解密）
     pub data: Vec<u8>,
@@ -120,6 +136,9 @@ pub struct FilterContext<'a> {
     /// （如响应加密标记 `X-WasmNest-Crypto: v1`），由 http_filter 重建
     /// 响应时注入；WS 通道不消费此字段。
     pub outbound_headers: Vec<(String, String)>,
+    /// 传输面标记（listener 注入，内网穿透 T04）：peer 面的 loopback 只是
+    /// 隧道入口，不得按 `peer` 的环回地址享受本地豁免（不变量 15）。
+    pub face: RequestFace,
 }
 
 /// 过滤器裁决
@@ -252,7 +271,7 @@ impl TrafficFilterChain {
     /// 某名称的过滤器是否在链上（接线点按名判定「本端是否参与」；无分配）
     ///
     /// 供 HTTP 接线点做 fail-visible 裁决：请求带加密协商头、而本端对应能力
-    /// **未参与**（`trafficEncryption.enabled=false` ⇒ 过滤器未注册）时必须显性
+    /// **未参与**（没有任何应用启用链路加密 ⇒ 过滤器未注册）时必须显性
     /// 拒绝，而不是把密文原样透给下游业务解析（那会回出误导性业务码）。
     pub fn contains(&self, name: &str) -> bool {
         match self.inner.filters.read() {
@@ -389,10 +408,13 @@ mod tests {
     /// 构造入站 HTTP 过滤上下文（peer 用空串占位即可满足生命周期）
     fn http_ctx(route: &'static str, data: &[u8]) -> FilterContext<'static> {
         FilterContext {
+            face: RequestFace::default(),
             channel: TrafficChannel::Http,
             direction: Direction::Inbound,
             peer: "",
             route,
+            owner: "",
+            endpoint: "",
             negotiation: "",
             data: data.to_vec(),
             outbound_headers: Vec::new(),
@@ -411,7 +433,7 @@ mod tests {
     }
 
     /// 插件端点通道（`TrafficChannel::WsPlugin`）参与帧级过滤链：inbound / outbound
-    /// 均执行（spec §4.6 / 票 05 checklist），且通道名稳定（日志字段）
+    /// 均执行，且通道名稳定（日志字段）
     #[test]
     fn ws_plugin_channel_runs_both_directions() {
         assert_eq!(TrafficChannel::WsPlugin.as_str(), "ws-plugin");
@@ -421,10 +443,13 @@ mod tests {
         chain.register(observer.clone());
 
         let mut in_ctx = FilterContext {
+            face: RequestFace::default(),
             channel: TrafficChannel::WsPlugin,
             direction: Direction::Inbound,
             peer: "192.168.1.42:5001",
             route: "text",
+            owner: "com.example.plugin",
+            endpoint: "wse-0000",
             negotiation: "",
             data: b"hello".to_vec(),
             outbound_headers: Vec::new(),
@@ -434,10 +459,13 @@ mod tests {
         assert_eq!(observer.inbound_calls(), 1, "插件端点入站帧必须过链");
 
         let mut out_ctx = FilterContext {
+            face: RequestFace::default(),
             channel: TrafficChannel::WsPlugin,
             direction: Direction::Outbound,
             peer: "192.168.1.42:5001",
             route: "binary",
+            owner: "com.example.plugin",
+            endpoint: "wse-0000",
             negotiation: "",
             data: b"hello".to_vec(),
             outbound_headers: Vec::new(),
@@ -473,10 +501,13 @@ mod tests {
 
         // 出站：+1 还原
         let mut out_ctx = FilterContext {
+            face: RequestFace::default(),
             channel: TrafficChannel::WsTerminal,
             direction: Direction::Outbound,
             peer: "127.0.0.1:5000",
             route: "text",
+            owner: "",
+            endpoint: "",
             negotiation: "",
             data: b"bbb".to_vec(),
             outbound_headers: Vec::new(),

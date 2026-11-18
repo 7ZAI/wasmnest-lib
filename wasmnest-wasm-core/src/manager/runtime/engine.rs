@@ -5,9 +5,9 @@
 //!
 //! ## 这份为什么能合一、绑定层为什么不能
 //!
-//! wasm-core 自 2026-10-13 起是**单一形态**（runtime-single-form 收口，ADR 0049）：
+//! wasm-core 自 2026-10-13 起是**单一形态**（runtime-single-form 收口）：
 //! 无 `common-host` / `bare-host` 之分，运行时壳双端共用一份（桌面形态）；WIT 绑定
-//! 与端差异全部在两端宿主（`HostModule` 自报汇入同一 Linker，票 04/05 绑定归位）。
+//! 与端差异全部在两端宿主（`HostModule` 自报汇入同一 Linker，绑定归位）。
 //! 插件产物静态 import 的是**本端 world 全集**，宿主必须按本端 world 生成绑定并全量
 //! 注册，所以「一份绑定服务两个 world」在工具链层就不成立——绑定层的固有分叉。
 //! 但**加载与实例化机制本身与 WIT 无关**：编译产物、AOT 缓存、Store 装配、资源限制、
@@ -238,7 +238,7 @@ pub(crate) enum InstantiateMode {
 /// **返回 `wasmtime::Error` 而非 [`crate::AppError`]**：错误文案是形态语境的一部分
 /// （桌面要在失败时拼「该产物按旧版插件 SDK 构建，请用当前 SDK 重建」的指引，移动
 /// 形态不带该指引）。构造带操作描述的 [`crate::AppError`] 是调用方的责任
-/// （AGENTS §6：错误构造 / 转换处必须带操作描述）。
+/// （错误构造 / 转换处必须带操作描述）。
 pub(crate) fn instantiate(
     store: &mut Store<WasmPluginState>,
     linker: &Linker<WasmPluginState>,
@@ -282,7 +282,7 @@ pub(crate) fn log_instance_dropped(plugin_id: &str, lifetime: Duration) {
 // ==================== Engine 构建（配置面 → wasmtime 原语） ====================
 //
 // 「配置面到 wasmtime 原语的唯一映射点」双端只有这一份，**`CoreConfig` 是唯一
-// 真源**（ADR 0045 D5：能力域不得自带配置面）。故本段属机制（不是端差异）：
+// 真源**（能力域不得自带配置面）。故本段属机制（不是端差异）：
 // 移动宿主消费同一份构建函数，与桌面逐值对齐（consume_fuel / 内存预留 / 栈深度 /
 // 内存不搬移 / 编译缓存 / backtrace 帧数皆取同一份配置——单形态收口前两壳各钉
 // 一份字面量的历史已消除：移动侧此前硬编码，且漏掉了 backtrace 帧数与
@@ -298,7 +298,7 @@ pub(crate) fn build_engine_config(core_config: &CoreConfig, debug_mode: bool) ->
     let engine = &core_config.engine;
     let tuning = engine.tuning.resolve(debug_mode);
     let mut config = Config::new();
-    // 票 02 宿主 async 化门禁：CM_ASYNC 引擎级异步支持（wasmtime 46+ 默认
+    // 宿主 async 化门禁：CM_ASYNC 引擎级异步支持（wasmtime 46+ 默认
     // 编译进 runtime，此处开启 wasm 特性）。wasip3 组件导入 async wasi 0.3
     // 函数，实例化后 Store 为 async-required；既有同步插件不受影响
     // （/tmp/wasip3-probe 场景 4 实证：同步组件 sync/async 双路径均可用）。
@@ -329,7 +329,7 @@ pub(crate) fn build_engine_config(core_config: &CoreConfig, debug_mode: bool) ->
     }
     config.wasm_backtrace_details(wasmtime_backtrace_details(tuning.backtrace_details));
     // 线性内存预留 = 估算的最大线性内存（与 limiter 上限严格一致，见
-    // MAX_PLUGIN_MEMORY_BYTES）：实例化时一次性预留 128MiB 虚拟地址空间，
+    // MAX_PLUGIN_MEMORY_BYTES）：实例化时一次性预留 64MiB 虚拟地址空间，
     // 增长零系统调用、基址恒定；相比 64-bit 默认（4GiB 预留 + 32MiB guard/
     // 内存）大幅降低 VA 占用。GC 堆未显式配置时沿用同值（wasmtime 语义：
     // gc_heap_* 缺省继承 memory_* 配置）
@@ -783,7 +783,7 @@ mod tests {
                 assert!(
                     !src.contains(needle),
                     "运行时壳 `{file}` 重新自持机制 `{needle}`——机制真源在 \
-                     `manager/runtime/engine.rs`，运行时壳只做接线（ADR 0045 D6）"
+                     `manager/runtime/engine.rs`，运行时壳只做接线"
                 );
             }
         }

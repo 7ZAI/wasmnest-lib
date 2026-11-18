@@ -88,7 +88,7 @@ impl Default for ServerSupervisor {
 impl ServerSupervisor {
     /// 创建独立实例（测试隔离用；生产代码应使用 [`global`]）
     ///
-    /// 全局单例在 lib test binary 内跨模块共享（票据 14/16 规范）：
+    /// 全局单例在 lib test binary 内跨模块共享：
     /// 需要隔离状态的测试应构造独立实例，避免并行调度下状态污染。
     pub fn new() -> Self {
         Self {
@@ -126,19 +126,18 @@ impl ServerSupervisor {
     /// 启动服务器（主进程内 Actix Web；已运行 → 幂等 `Ok`）
     pub async fn start(&self, port: u16) -> Result<()> {
         {
-            let inner = self.inner.read().await;
-            if inner.status == ServerStatus::Running {
-                return Ok(());
-            }
-            if inner.status == ServerStatus::Starting {
-                return Err(AppError::WebSocket("Server already starting".to_string()));
-            }
-        }
-
-        {
+            // 检查与置位必须在同一把写锁内：跨读/写两把锁的 check-then-act
+            // 会让两个并发 start 都通过检查（生产主路径靠 ServiceRegistry
+            // 串行化，restart() 可绕开）。
             let mut inner = self.inner.write().await;
-            inner.status = ServerStatus::Starting;
-            inner.port = port;
+            match inner.status {
+                ServerStatus::Running => return Ok(()),
+                ServerStatus::Starting => return Err(AppError::WebSocket("Server already starting".to_string())),
+                ServerStatus::Stopped => {
+                    inner.status = ServerStatus::Starting;
+                    inner.port = port;
+                }
+            }
         }
 
         // 委托宿主壳注入的 ServerLifecyclePort 启动 Actix Web（拆 lib 后

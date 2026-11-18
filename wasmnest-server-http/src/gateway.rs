@@ -14,7 +14,7 @@
 //! 1. **形状不变**：对外 URL、方法、响应 JSON 与迁移前逐字节一致。URL 别名由
 //!    插件注册声明（含 `{id}` 模板段），网关按注册表精确/模板匹配，模板捕获值
 //!    经 `params` 字段传给插件；响应形状契约锁在本文件测试段。
-//! 2. **认证在网关之外**：认证裁决下沉认证中心插件（v33 / ADR 0033，宿主不再持有
+//! 2. **认证在网关之外**：认证裁决下沉认证中心插件（宿主不再持有
 //!    任何设备 JWT 密码学），网关只挂在认证闸门（`middleware/auth_gateway`）**之后**；
 //!    转发只透传认证中心交回的连接身份派生的设备标识与 `caller` 三档调用方身份，
 //!    **凭证本体与指纹不出宿主**。档位判定统一在网关（只有网关看得见注册表档位）：
@@ -41,7 +41,7 @@ use actix_web::{web, Error, FromRequest, HttpResponse};
 use serde_json::Value;
 
 use crate::controllers::plugin_controller::{
-    caller_identity, filter_plugin_request_headers, forward_to_plugin, HttpCaller, PluginHttpRequest,
+    caller_identity, filter_plugin_request_headers, forward_to_plugin, request_face, PluginHttpRequest,
 };
 use crate::dtos::{ApiResponse, CODE_INVALID_REQUEST, CODE_PLUGIN_AUTH_FAILED};
 use crate::registry;
@@ -167,10 +167,12 @@ where
     };
     let entry = host_match.entry.clone();
 
-    // 调用方身份（票 08）：device 档 = 宿主 JWT 中间件已验签并注入 claims。
+    // 调用方身份：device 档 = 宿主 JWT 中间件已验签并注入 claims。
     // 环回 / 匿名两档只在插件把该端点显式注册成 `auth: "none"` 时才可能走到转发。
     let (caller, device) = caller_identity(req.request());
-    let verified = matches!(caller, HttpCaller::Device);
+    // peer 面上 caller 恒为 Peer（不能当 localhost），故「已验签」只看宿主注入的
+    // 设备上下文，不再由 caller 档位反推（带 JWT 的请求不受影响）。
+    let verified = device.is_some();
     // 无端口（无头 / 库级测试 / 初始化中间态）= 插件面不可判定 → 交回链条，
     // 绝不凭注册表就把请求递给不存在的插件
     let decision = match wasmnest_server_base::ports::get() {
@@ -235,6 +237,7 @@ where
                 params,
                 caller,
                 device,
+                face: request_face(&http_req),
             };
             let resp = forward_to_plugin(&entry.owner, &request).await;
             Ok(ServiceResponse::new(http_req, resp))

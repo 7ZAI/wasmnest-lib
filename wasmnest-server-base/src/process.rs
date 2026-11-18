@@ -1,4 +1,4 @@
-//! 进程创建工具（wasm-core 纯净性收口票 03 / E2-D4：`create_command` 下沉）
+//! 进程创建工具（`create_command` 下沉）
 //!
 //! 原住 `wasm_core::system::process`（Windows 专用进程创建包装）。下沉到基础层
 //! 的原因：它被**两个 crate** 消费（`wasmnest-wasm-core` 的 `wsl_fs` / `wsl`
@@ -13,7 +13,9 @@ use std::process::Command;
 /// Windows 上自动添加 `CREATE_NO_WINDOW` 标志，避免控制台窗口闪现。
 /// 其他平台等同于 `Command::new(program)`。
 pub fn create_command(program: &str) -> Command {
-    let cmd = Command::new(program);
+    // `mut` 只在 Windows 分支用得上；非 Windows 下加 allow 免得 unused_mut
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

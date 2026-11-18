@@ -1,25 +1,25 @@
-//! 认证中心注册表与组合式认证原语（ADR 0031，票 01）— 单中心角色的唯一性仲裁 + 句柄登记 + 停用回收
+//! 认证中心注册表与组合式认证原语：单中心角色的唯一性仲裁 + 句柄登记 + 停用回收
 //!
-//! 认证中心 ≡ 微服务架构的 auth server，但**没有也不需要服务发现**（用户裁定，
-//! ADR 0031 §「为什么没有也不需要服务发现」）：注册表就是宿主进程内的发现协议
+//! 认证中心 ≡ 微服务架构的 auth server，但**没有也不需要服务发现**——
+//! 注册表就是宿主进程内的发现协议
 //! ——插件在 activate 期调 [`register`]（K1），宿主只做唯一性仲裁（K4 单中心：
 //! 第二个注册者显式拒绝并点名在册属主）+ 句柄登记（`authc-<uuid>`）+ 停用回收
 //! （[`purge_for_plugin`]，只碰本人）。
 //!
-//! **组合式认证原语（[`invoke_auth_method`]）——wasm-core 纯净性收口票 05 并入**：
+//! **组合式认证原语（[`invoke_auth_method`]）——纯净性收口时并入**：
 //! 原住 `utils/auth/auth_center.rs`（K6 零解析窄转发，host-auth WIT 原语
-//! `auth-method-invoke` 的实现链，被 `host_api/auth.rs:329` 生产调用）。票 05
-//! 把 `session_active` / `enforce_connection_policy`（宿主薄壳）回迁 lib；本函数
+//! `auth-method-invoke` 的实现链，被 `host_api/auth.rs:329` 生产调用）。
+//! 收口时把 `session_active` / `enforce_connection_policy`（宿主薄壳）回迁 lib；本函数
 //! 随 WIT 绑定面留在 wasm-core（机制），并入本模块保持「注册表 + 认证调用面
 //! 同侧」。lib 侧测试夹具（`src-tauri/src/utils/auth/test_tokens.rs`）经
 //! `wasmnest_wasm_core::host_api::auth_center::invoke_auth_method` 消费（pub）。
 //!
-//! 边界（ADR 0022 归属三问）：
-//! - **通用注册表与寻址**（§5.1.3 允许的四类薄壳之一）：methods 是**声明式列表**，
+//! 边界归属：
+//! - **通用注册表与寻址**（宿主允许的四类薄壳之一）：methods 是**声明式列表**，
 //!   宿主不解释每个 method 的业务语义（B1 不命中）；认证记录真源在中心私有库
 //!   （host-auth 只管密钥托管 / 验签执行，B3 不命中）
 //! - **安全闸门**：无中心 / 调用失败一律拒绝（K3 fail-closed），唯一性仲裁（K4）
-//! - 宿主**只转发不解释**（K6 / ADR 0032 L2 红线③）：`auth-method-invoke` 零解析
+//! - 宿主**只转发不解释**（零解析红线）：`auth-method-invoke` 零解析
 //!   窄转发到中心的 `auth-grant` 互调 api，返回值原样透回
 //!
 //! 实现：单中心 desk = `Option<AuthCenterEntry>`；核心状态机是**纯函数**
@@ -158,7 +158,7 @@ pub fn is_registered() -> bool {
 }
 
 /// 停用回收（只碰本人）：属主停用时其中心角色一并回收——认证面随之 fail-closed
-/// （无中心 = 拒绝，ADR 0031 K3），而不是静默降级成「无认证放行」
+/// （无中心 = 拒绝），而不是静默降级成「无认证放行」
 pub fn purge_for_plugin(plugin_id: &str) {
     let mut guard = match lock() {
         Ok(g) => g,
@@ -180,11 +180,13 @@ pub fn purge_for_plugin(plugin_id: &str) {
 
 /// 测试闸门：清空注册表（重置单中心 desk，闭环用例互斥清台用）。
 ///
-/// **常编译 pub**（wasm-core 纯净性收口票 05b 上提）：lib 集成测试
+/// **常编译 pub**（纯净性收口时上提）：lib 集成测试
 /// （session_e2e / system_component_test）与 wasm-core 内部测试都经
 /// `crate::test_support::reset` 消费（test_support re-export）。
 pub fn reset() {
-    *registry().lock().expect("registry lock") = None;
+    *registry()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
 /// 测试闸门：串行化使用全局注册表的集成用例（单中心 desk 天然独占，并行测试
@@ -200,13 +202,13 @@ pub fn reset() {
 /// `a03_p1b` / `ws_e2e` ×3 / `perf_ws_terminal_output_throughput` 的 deactivate 曾把
 /// 多候选锁的裁决打成 `no_center`，而它们自己全绿）。
 ///
-/// **常编译 pub**（票 05b 上提）：经 `crate::test_support` re-export 统一入口。
+/// **常编译 pub**（收口时上提）：经 `crate::test_support` re-export 统一入口。
 #[allow(dead_code)]
 static REGISTRY_GATE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
 
 /// 测试闸门入口：获取全局单中心 desk 的信号量（`REGISTRY_GATE`，见上）
 ///
-/// **常编译 pub**（票 05b 上提）：经 `crate::test_support` re-export 统一入口。
+/// **常编译 pub**（收口时上提）：经 `crate::test_support` re-export 统一入口。
 pub fn registry_gate() -> &'static tokio::sync::Semaphore {
     REGISTRY_GATE.get_or_init(|| tokio::sync::Semaphore::new(1))
 }
@@ -214,7 +216,7 @@ pub fn registry_gate() -> &'static tokio::sync::Semaphore {
 /// 异步用例取闸门 permit（**持到变量 drop**）：只包住写表的那几行，别包整个测试
 /// 体——`perf_ws_terminal_output_throughput` 这类用例长达一分钟，包住会把其它用例排队。
 ///
-/// **常编译 pub**（票 05b 上提）：经 `crate::test_support` re-export 统一入口。
+/// **常编译 pub**（收口时上提）：经 `crate::test_support` re-export 统一入口。
 pub async fn hold_registry_desk() -> tokio::sync::SemaphorePermit<'static> {
     registry_gate()
         .acquire()
@@ -222,19 +224,19 @@ pub async fn hold_registry_desk() -> tokio::sync::SemaphorePermit<'static> {
         .expect("auth center registry test gate")
 }
 
-// ==================== 组合式认证原语（K6，票 05 从 utils/auth/ 并入） ====================
+// ==================== 组合式认证原语：从 utils/auth/ 并入 ====================
 
 /// 经认证中心执行一次认证方式调用（K6 零解析窄转发）
 ///
 /// 宿主不拆 `params`、不解释 `method` 的业务语义（B1 不命中），只校验「method 在
-/// 注册表内」（安全闸门判据）后把调用转发到中心 `auth-grant` 互调 api（ADR 0017
+/// 注册表内」（安全闸门判据）后把调用转发到中心 `auth-grant` 互调 api
 /// JSON-RPC 2.0 over host-bus），并把 result 序列化回串原样透回。
 ///
-/// 边界（spec §4.3.1 矩阵）：无中心 → fail-closed；method 不在注册表 → 点名 method
+/// 边界：无中心 → fail-closed；method 不在注册表 → 点名 method
 /// 与在册列表（不猜、不回退到"试试别的"）；传输失败 → `auth center unavailable:
 /// <原因>`；中心返回错误信封 → **原样透传**（业务拒绝不吞成宿主错误）。
 ///
-/// **可见性**（wasm-core 纯净性收口票 05）：本函数是 host-auth WIT 原语
+/// **可见性**（纯净性收口）：本函数是 host-auth WIT 原语
 /// `auth-method-invoke` 的实现链（宿主侧 `src-tauri/src/plugin/auth.rs` 的
 /// `auth_method_invoke` 生产调用），属机制面，留在 wasm-core；`pub` 供 lib 侧
 /// 测试夹具（`src-tauri/src/utils/auth/test_tokens.rs`）经
@@ -284,7 +286,7 @@ pub fn invoke_auth_method(
     let reply: serde_json::Value = serde_json::from_str(&reply_json)
         .map_err(|e| format!("auth center unavailable (invalid reply): {e}"))?;
     if let Some(err) = reply.get("error") {
-        // 中心返回错误信封：业务拒绝原样透传（ADR 0030 错误码由中心自持）
+        // 中心返回错误信封：业务拒绝原样透传（错误码由中心自持）
         let message = err
             .get("message")
             .and_then(|v| v.as_str())

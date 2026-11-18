@@ -7,7 +7,7 @@
 //! （[`crate::manager::runtime::WasmRuntime::set_config`]，
 //! 只影响覆盖后新建立的 Store——Engine 参数在构建期固化）。
 //!
-//! 单插件资源覆盖的「请求 + 安全上限钳制」在票据 04（安全模块）落地；
+//! 单插件资源覆盖的「请求 + 安全上限钳制」在安全模块落地；
 //! 本模块提供钳制机制 [`StoreLimits::clamped_within`]。
 //!
 //! wasmtime 定制面（票 wasmtime-engine-config A 面）：写死与走默认的 knob 全部
@@ -17,7 +17,7 @@
 
 // ==================== 资源覆盖声明（纯钳制数据，中性单份） ====================
 
-/// 单插件资源上限覆盖请求（票 02 M4 单份化：原桌面 SDK 类型逐字 fork 与移动
+/// 单插件资源上限覆盖请求（单份化：原桌面 SDK 类型逐字 fork 与移动
 /// 自持副本合一，本模块为唯一真源——与 WIT 无关的纯 serde 数据，属安全钳制
 /// 机制的一部分；移动 manifest 现无 `resourceOverrides` 声明面，机制保留供
 /// 宿主与未来 manifest 演进复用。绑定层在入口把 SDK 形状 JSON 往返转成本类型）
@@ -45,7 +45,7 @@ use std::path::Path;
 
 // ==================== 编译期默认值 ====================
 
-/// 编译期默认值（转发）：真源在 `wasmnest-host-kit`（wasm-core-lib-split 票 03 搬迁）。
+/// 编译期默认值（转发）：真源在 `wasmnest-host-kit`（lib-split 时搬迁）。
 ///
 /// 可见性由 kit 的 `pub mod` 收窄为 `pub(crate)`，使既有 `config::defaults::X`
 /// 引用路径逐字不变——本仓库无根 workspace，改路径需连带 fixture 与
@@ -97,7 +97,7 @@ pub struct CoreConfig {
     pub engine: EngineConfig,
     /// Store 资源上限（每次建立 Store 时读取快照，运行时覆盖即时生效）
     pub store: StoreLimits,
-    /// 插件实例调用模型（票 06 P1 灰度开关；实例级快照——实例创建/重建时读一次，
+    /// 插件实例调用模型（P1 灰度开关；实例级快照——实例创建/重建时读一次，
     /// 已运行实例不随开关热切，见 [`CallModel`]）
     pub call_model: CallModel,
     /// WASI 面开关（双端共享，见 [`WasiConfig`]）
@@ -109,7 +109,7 @@ pub struct CoreConfig {
 /// **用户裁决（2026-10-12）**：WASI 装配面住内核（`manager::runtime::wasi`）、
 /// 双端都可用且 **默认全开**；开 / 关交外部配置（宿主配置文件 / `set_config`），
 /// 不再用形态 feature 表达「桌面有、移动无」。目的：将来 worker 类别插件
-/// （ADR 0034 L3.b）双端都要跑 wasm，接线必须双端同源。
+/// 双端都要跑 wasm，接线必须双端同源。
 ///
 /// 语义（与 [`EngineConfig`] 同类：**运行时构建期固化**）：
 /// - 注册发生在构建 `WasmRuntime` 时（一次装进 linker），`set_config` 的运行期
@@ -139,7 +139,7 @@ impl Default for WasiConfig {
     }
 }
 
-/// 插件实例调用模型（`.scratch/2026-09-26-plugin-concurrency-model/` 票 06 P1）
+/// 插件实例调用模型（P1 灰度开关）
 ///
 /// - [`CallModel::Mutex`]：现状——每实例一把 `Arc<Mutex<LoadedWasmPlugin>>`，
 ///   调用 = 抢锁 + `spawn_blocking` + `block_on_async`（锁持有到 guest 返回）
@@ -242,7 +242,7 @@ pub enum Profiling {
 ///    上游默认，防止锁版升级时默认值漂移。
 /// 2. **跟随默认组**（其余全部 `Option`）：内核从未触碰这些 knob，`None` 表示
 ///    **不调用该 API**，逐字继承 wasmtime 默认。这样把「可覆盖」开放出去的同时，
-///    不把上游默认值变成我们的隐性依赖——升级（ADR 0019 双端锁版）时不会出现
+///    不把上游默认值变成我们的隐性依赖——升级（双端锁版）时不会出现
 ///    「没人配过却行为变了」。
 ///
 /// 不含 `target` / `allocation_strategy(pooling)`：两者改地址空间布局与 target
@@ -351,7 +351,7 @@ impl EngineTuning {
     }
 }
 
-/// Store 资源上限（转发）：真源在 `wasmnest-host-kit`（wasm-core-lib-split 票 03 搬迁）。
+/// Store 资源上限（转发）：真源在 `wasmnest-host-kit`（lib-split 时搬迁）。
 ///
 /// 为什么整型搬走、覆盖合并留在本模块：上限值对象是**机制**——ResourceLimiter 与
 /// 燃料注入点直接消费它，且它随 `WasmPluginState` 一起住在机制内核里；而
@@ -457,8 +457,7 @@ impl Default for CoreConfig {
         Self {
             engine: EngineConfig::default(),
             store: StoreLimits::default(),
-            // 默认 mutex：P1（票 06）验收通过前保持现状行为（回退窗口），
-            // 见 spec §6 灰度说明
+            // 默认 mutex：P1 验收通过前保持现状行为（回退窗口），
             call_model: CallModel::default(),
             // 默认全开：WASI 面是双端常态能力（用户裁决 2026-10-12），
             // 关它是运维/宿主显式动作，不是缺省
@@ -587,9 +586,9 @@ mod tests {
     #[test]
     fn defaults_match_legacy_constants() {
         let cfg = CoreConfig::default();
-        assert_eq!(cfg.store.fuel_per_call, 64_000_000_000);
+        assert_eq!(cfg.store.fuel_per_call, 32_000_000_000);
         assert_eq!(cfg.store.fuel_debug_multiplier, 32);
-        assert_eq!(cfg.store.max_memory_bytes, 128 * 1024 * 1024);
+        assert_eq!(cfg.store.max_memory_bytes, 64 * 1024 * 1024);
         assert_eq!(cfg.store.max_table_entries, 1_000_000);
         assert_eq!(cfg.store.max_wasm_stack_bytes, 512 * 1024);
         assert_eq!(cfg.store.max_instances, 8);
@@ -597,7 +596,7 @@ mod tests {
         assert_eq!(cfg.store.max_tables, 16);
         assert!(cfg.engine.consume_fuel);
         assert_eq!(cfg.engine.wasm_backtrace_max_frames, 32);
-        assert_eq!(cfg.engine.memory_reservation_bytes, 128 * 1024 * 1024);
+        assert_eq!(cfg.engine.memory_reservation_bytes, 64 * 1024 * 1024);
         assert!(cfg.engine.compile_cache);
         cfg.validate().expect("默认配置必须合法");
     }
@@ -796,7 +795,7 @@ mod tests {
         assert!(err.contains("wasip3"), "错误须说明后果: {err}");
     }
 
-    /// 票 06 P1：调用模型开关——默认 mutex（回退窗口）；配置文件按 kebab-case
+    /// P1：调用模型开关——默认 mutex（回退窗口）；配置文件按 kebab-case
     /// 取值覆盖；非法取值必须报错（灰度开关写错不得静默回落）
     #[test]
     fn call_model_defaults_to_mutex_and_parses_from_config_file() {
@@ -864,7 +863,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 票据 02 验收：配置文件含非法值（fuel=0）→ 加载报错且带操作上下文；
+    /// 验收：配置文件含非法值（fuel=0）→ 加载报错且带操作上下文；
     /// 同一文件里的合法字段不掩盖错误（整体拒绝，不静默回落）
     #[test]
     fn load_invalid_value_reports_context() {
@@ -881,7 +880,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 票据 02 验收：调试模式燃料放大倍率可配置——debug 模式按倍率放大、
+    /// 验收：调试模式燃料放大倍率可配置——debug 模式按倍率放大、
     /// 非 debug 原样返回（纯逻辑分支，不依赖进程环境变量）
     #[test]
     fn fuel_budget_for_applies_debug_multiplier() {
@@ -904,7 +903,7 @@ mod tests {
         assert_eq!(no_op.fuel_budget_for(true), no_op.fuel_per_call);
     }
 
-    /// 票据 07：插件覆盖请求的合并语义——`Some` 字段取请求值、`None` 字段继承配置；
+    /// 插件覆盖请求的合并语义——`Some` 字段取请求值、`None` 字段继承配置；
     /// `max_wasm_stack_bytes` 不在请求面（Engine 构建期参数）恒继承
     #[test]
     fn apply_overrides_takes_request_and_inherits_unset_fields() {

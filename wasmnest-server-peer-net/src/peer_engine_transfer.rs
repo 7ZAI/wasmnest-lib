@@ -1,6 +1,6 @@
-//! 对等网络发送侧引擎接入（传输编排下沉票 3 终态：纯句柄表 + 引擎事件桥）。
+//! 对等网络发送侧引擎接入（传输编排下沉终态：纯句柄表 + 引擎事件桥）。
 //!
-//! **口径（票 3 修正）**：本模块不再持有任何任务状态机——旧版所持的活跃任务
+//! **口径（传输编排下沉后）**：本模块不再持有任何任务状态机——旧版所持的活跃任务
 //! 表、并发闸门（1..=8 默认 3）、历史封顶（200）、peer_name 解析、原因码映射、
 //! serve 供流记账与「两端各自展示同一次传输」的产品编排，已随传输编排整体
 //! 下沉 `file-transfer` 插件（事件归约状态机，真源在其私有库）。宿主只保留
@@ -8,7 +8,7 @@
 //!
 //! - **会话句柄表** `batch_id → SendSessionHandle`：CancelToken（取消）、
 //!   PauseSlot（wire Pause/Resume 门控）、epoch（陈旧会话防护）、sources
-//!   （redial 续传必需的源清单，spec §4.4）、寻址与加密参数、字节记账
+//!   （redial 续传必需的源清单，会话重启必需）、寻址与加密参数、字节记账
 //!   （active-transfers 投影用）；
 //! - **send-files 收窄**：一次调用 = 一个会话立即发起（并发节流归调用方，
 //!   插件侧闸门自控——见 `wasm-apps/file-transfer/rust/src/peer.rs`）；
@@ -17,16 +17,16 @@
 //!   不经任何状态机加工（原因码/终态判定归插件归约）。
 //!
 //! 防回接锁 `retired_peer_transfer_orchestration_is_not_reintroduced`
-//! 钉住本口径：谁把任务状态表/并发闸门/封顶加回来，谁就要先推翻票 3 裁决。
+//! 钉住本口径：谁把任务状态表/并发闸门/封顶加回来，谁就要先推翻当时的裁决。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::base::{
-    CancelToken, Connection, DiscoveredPeerRecord, OutgoingFile, PauseCmd, PauseSlot, PeerNetNode, TerminalState,
-    TransferEvent,
+    CancelToken, Connection, OutgoingFile, PauseCmd, PauseSlot, PeerNetNode, TerminalState, TransferEvent,
 };
 use tokio::sync::mpsc;
+use wasmnest_p2p_engine::Multiaddr;
 use wasmnest_server_base::error::AppError;
 use wasmnest_server_base::error::Result as PeerResult;
 
@@ -43,13 +43,16 @@ const PROGRESS_EMIT_INTERVAL: std::time::Duration = std::time::Duration::from_mi
 
 /// 发送会话句柄（纯引擎控制面）：取消 / 暂停 / 代次 / 源清单 / 寻址。
 /// `sources` 必须随句柄表保留——resume 的 redial 分支按它重拨续传
-/// （spec §4.4：会话重启必需，非业务态）。
+/// （会话重启必需，非业务态）。
 pub(crate) struct SendSessionHandle {
     pub cancel_token: CancelToken,
     pub epoch: u64,
     pub pause_slot: Arc<PauseSlot>,
     pub sources: Vec<OutgoingFile>,
     pub node_id: String,
+    /// 句柄记忆的有序候选地址（resume 的 redial 分支）：按同一策略顺序
+    /// 重拨，不查 mDNS 发现缓存
+    pub addrs: Vec<Multiaddr>,
     pub encrypt: bool,
     pub total_bytes: u64,
     /// 最新已传字节（事件循环记账；active-transfers 投影用，纯引擎进度事实）
@@ -73,6 +76,7 @@ impl PeerTransferState {
         batch_id: &str,
         sources: Vec<OutgoingFile>,
         node_id: String,
+        addrs: Vec<Multiaddr>,
         encrypt: bool,
         total_bytes: u64,
     ) -> u64 {
@@ -86,6 +90,7 @@ impl PeerTransferState {
                 pause_slot: PauseSlot::new(),
                 sources,
                 node_id,
+                addrs,
                 encrypt,
                 total_bytes,
                 transferred_bytes: 0,
@@ -180,7 +185,7 @@ fn send_handle_row(batch_id: &str, handle: &SendSessionHandle) -> serde_json::Va
     })
 }
 
-/// 发送源收集原语（host-peer `collect-outgoing`，票 1）：目录递归展开 + 批内
+/// 发送源收集原语（host-peer `collect-outgoing`）：目录递归展开 + 批内
 /// 同名去重 → `[{ path, size }]` JSON。纯文件系统事实枚举（仅元数据），
 /// 潜在阻塞 IO 移出异步上下文；路径应来自 pick-* 用户选择（选择即授权）
 pub(crate) async fn collect_outgoing_for_plugin(paths: Vec<String>) -> PeerResult<String> {
@@ -286,7 +291,7 @@ pub async fn resume_peer_transfer(ctx: Arc<PeerCtx>, batch_id: String) -> PeerRe
         return Ok(true);
     }
     // 会话已死（slot 命令通道关闭）：以句柄表记忆的源清单重新拨号
-    let (sources, node_id, encrypt, total_bytes) = {
+    let (sources, node_id, addrs, encrypt, total_bytes) = {
         let mut guard = state.sessions.lock().expect("peer transfer sessions poisoned");
         let Some(handle) = guard.get_mut(&batch_id) else {
             return Ok(false);
@@ -295,6 +300,7 @@ pub async fn resume_peer_transfer(ctx: Arc<PeerCtx>, batch_id: String) -> PeerRe
         (
             handle.sources.clone(),
             handle.node_id.clone(),
+            handle.addrs.clone(),
             handle.encrypt,
             handle.total_bytes,
         )
@@ -304,7 +310,7 @@ pub async fn resume_peer_transfer(ctx: Arc<PeerCtx>, batch_id: String) -> PeerRe
             "resume transfer: batch {batch_id} has no remembered sources"
         )));
     }
-    drive_redialed_session(ctx.clone(), batch_id, node_id, sources, encrypt, total_bytes).await;
+    drive_redialed_session(ctx.clone(), batch_id, node_id, addrs, sources, encrypt, total_bytes).await;
     Ok(true)
 }
 
@@ -315,33 +321,32 @@ async fn drive_redialed_session(
     ctx: Arc<PeerCtx>,
     batch_id: String,
     node_id: String,
+    addrs: Vec<Multiaddr>,
     sources: Vec<OutgoingFile>,
     encrypt: bool,
     total_bytes: u64,
 ) {
-    let Some((node, cache)) = super::runtime_snapshot(&ctx).await else {
+    let Some((node, _cache)) = super::runtime_snapshot(&ctx).await else {
         settle_failed(&ctx, &batch_id, "peer transfer resume failed: node not started").await;
         return;
     };
-    let parsed = match super::parse_node_id(&node_id) {
-        Ok(p) => p,
-        Err(e) => {
-            settle_failed(&ctx, &batch_id, &format!("peer id invalid: {e}")).await;
-            return;
-        }
-    };
-    let Some(record) = cache.get(&parsed) else {
+    if let Err(e) = super::parse_node_id(&node_id) {
+        settle_failed(&ctx, &batch_id, &format!("peer id invalid: {e}")).await;
+        return;
+    }
+    if addrs.is_empty() {
         settle_failed(
             &ctx,
             &batch_id,
-            "peer transfer resume failed: peer not in discovery cache (offline or unknown)",
+            "peer transfer resume failed: no remembered peer addresses",
         )
         .await;
         return;
-    };
+    }
     let state = &ctx.transfer;
-    let _epoch = state.register_session(&batch_id, sources, node_id, encrypt, total_bytes);
-    drive_send_session(ctx.clone(), node, record, batch_id.clone());
+    let _epoch = state.register_session(&batch_id, sources, node_id.clone(), addrs.clone(), encrypt, total_bytes);
+    // 拨号目标必须是对端 node id（批 id 是 UUID，不能充当 node id）
+    drive_send_session(ctx.clone(), node, node_id, addrs, batch_id.clone());
     tracing::debug!(batch_id = %batch_id, "peer transfer session redialed for resume");
 }
 
@@ -356,7 +361,7 @@ async fn cancel_serve_session(ctx: &PeerCtx, batch_id: &str) -> bool {
 
 // ==================== 发送入口（v31 收窄：即发即会话） ====================
 
-/// 发送入口（传输编排下沉票 3 收窄）：一次调用 = 一个会话立即发起——目录
+/// 发送入口（传输编排下沉后收窄）：一次调用 = 一个会话立即发起——目录
 /// 递归收集源清单后直接拨号启动，不再有宿主并发闸门排队（旧 pending 态
 /// 删除）；发送方向并发节流由调用方在调用前自控。返回传输句柄（batch-id）。
 ///
@@ -365,24 +370,28 @@ async fn cancel_serve_session(ctx: &PeerCtx, batch_id: &str) -> bool {
 pub(crate) async fn send_files_to_peer(
     ctx: Arc<PeerCtx>,
     node_id: String,
+    addrs: Vec<Multiaddr>,
     paths: Vec<String>,
     encrypt_override: Option<bool>,
 ) -> PeerResult<String> {
     let parsed = super::parse_node_id(&node_id)?;
+    if addrs.is_empty() {
+        return Err(AppError::InvalidInput(
+            "send_files_to_peer: peer addrs must not be empty".to_string(),
+        ));
+    }
     if paths.is_empty() || paths.iter().all(|p| p.trim().is_empty()) {
         return Err(AppError::InvalidInput(
             "send_files_to_peer: paths must not be empty".to_string(),
         ));
     }
-    // `node` 仅用于确认节点已启动（runtime_snapshot 的可用性即启动判据）
-    let Some((node, cache)) = super::runtime_snapshot(&ctx).await else {
+    // `node` 仅用于确认节点已启动（runtime_snapshot 的可用性即启动判据）；
+    // 寻址完全来自会话句柄记忆的候选表（T11：不要求对端在发现缓存里）
+    let Some((node, _cache)) = super::runtime_snapshot(&ctx).await else {
         return Err(AppError::Internal(
             "peer transfer send failed: node not started".to_string(),
         ));
     };
-    let record = cache.get(&parsed).ok_or_else(|| {
-        AppError::Internal("peer transfer send failed: peer not in discovery cache (offline or unknown)".to_string())
-    })?;
 
     // 目录递归是潜在阻塞 IO：移出异步上下文（上限保护在收集函数内）
     let trimmed = paths.into_iter().map(|p| p.trim().to_string()).collect::<Vec<_>>();
@@ -395,15 +404,24 @@ pub(crate) async fn send_files_to_peer(
     let total_bytes = collected.total_bytes;
     let sources = collected.sources;
     let state = &ctx.transfer;
-    let _epoch = state.register_session(&batch_id, sources, parsed.to_string(), encrypt, total_bytes);
+    let dial_node_id = parsed.to_string();
+    let _epoch = state.register_session(
+        &batch_id,
+        sources,
+        dial_node_id.clone(),
+        addrs.clone(),
+        encrypt,
+        total_bytes,
+    );
 
     tracing::info!(
         batch_id = %batch_id,
         node_id = %node_id,
+        candidates = addrs.len(),
         total = total_bytes,
         "peer transfer send session started (no host-side queue, v31)"
     );
-    drive_send_session(ctx.clone(), node, record, batch_id.clone());
+    drive_send_session(ctx.clone(), node, dial_node_id, addrs, batch_id.clone());
     Ok(batch_id)
 }
 
@@ -414,7 +432,7 @@ pub(crate) async fn send_files_to_peer(
 /// 会话句柄须已登记（send_files_to_peer / resume 的 redial 分支先行
 /// register_session）。`epoch` 是陈旧会话防护：redial 递增代次，旧会话
 /// 迟到的终态事件按代次丢弃，不直推（防止插件归约误结算新一轮）。
-fn drive_send_session(ctx: Arc<PeerCtx>, node: PeerNetNode, record: DiscoveredPeerRecord, batch_id: String) {
+fn drive_send_session(ctx: Arc<PeerCtx>, node: PeerNetNode, node_id: String, addrs: Vec<Multiaddr>, batch_id: String) {
     let state = &ctx.transfer;
     let Some((epoch, pause_slot)) = ({
         let guard = state.sessions.lock().expect("peer transfer sessions poisoned");
@@ -432,7 +450,7 @@ fn drive_send_session(ctx: Arc<PeerCtx>, node: PeerNetNode, record: DiscoveredPe
         let session_batch_id = batch_id.clone();
         let session_ctx = ctx.clone();
         let session = tokio::spawn(async move {
-            let conn: Connection = match dial_for_send(&node, &record).await {
+            let conn: Connection = match dial_for_send(&node, &node_id, &addrs).await {
                 Ok(conn) => conn,
                 Err(detail) => {
                     // 拨号前置失败：直推 failed 终态事件（插件归约结算）；
@@ -460,7 +478,7 @@ fn drive_send_session(ctx: Arc<PeerCtx>, node: PeerNetNode, record: DiscoveredPe
         });
 
         // 事件直推循环：Progress 节流（纯性能），Terminal/Paused/Resumed 直推；
-        // 宿主零状态机加工（原因码/终态判定归插件归约，票 3）
+        // 宿主零状态机加工（原因码/终态判定归插件归约）
         let mut last_emit = tokio::time::Instant::now() - PROGRESS_EMIT_INTERVAL;
         while let Some(event) = events_rx.recv().await {
             match event {
@@ -551,12 +569,32 @@ impl PeerTransferState {
             .get(batch_id)
             .map(|h| h.encrypt)
     }
+
+    /// 会话记忆的候选地址表（T11：resume redial 的寻址真源；测试断言用）
+    #[cfg(test)]
+    fn addrs_of(&self, batch_id: &str) -> Option<Vec<Multiaddr>> {
+        self.sessions
+            .lock()
+            .expect("peer transfer sessions poisoned")
+            .get(batch_id)
+            .map(|h| h.addrs.clone())
+    }
 }
 
-/// 发送专用拨号（每次会话独立握手）：可信对端静默放行；拒绝/不可达归一为
-/// 失败明细（业务文案由前端按状态渲染）
-async fn dial_for_send(node: &PeerNetNode, record: &DiscoveredPeerRecord) -> Result<Connection, String> {
-    match node.dial(&record.to_static_peer_record()).await {
+/// 发送专用拨号（每次会话独立握手）：按会话句柄记忆的有序候选逐条尝试
+/// （T11：不再查发现缓存）；可信对端静默放行，拒绝/不可达归一为失败明细
+/// （业务文案由前端按状态渲染）
+async fn dial_for_send(node: &PeerNetNode, node_id: &str, addrs: &[Multiaddr]) -> Result<Connection, String> {
+    let parsed = super::parse_node_id(node_id).map_err(|e| format!("peer id invalid: {e}"))?;
+    match node
+        .dial_addrs_with(
+            &parsed,
+            addrs,
+            crate::DIAL_PER_ADDR_TIMEOUT,
+            wasmnest_p2p_engine::stream_proto::TRANSFER,
+        )
+        .await
+    {
         Ok(conn) => Ok(conn),
         Err(crate::base::PeerNetError::DialDeniedByPeer { .. }) => {
             Err("dial denied by peer (trust revoked or first-connect pending)".to_string())
@@ -583,7 +621,7 @@ async fn settle_failed(ctx: &PeerCtx, batch_id: &str, detail: &str) {
 /// 服务侧拉取会话事件消费（纯直推）：本端作为拉取源为对端供流时，引擎经
 /// 独立 serve 通道上报 PullServed/Progress/Terminal——逐条直推
 /// `peer:transfer-event`，供流记账任务行由插件收 `pull-served` 事件自建
-/// （票 3：宿主不再代记 send 任务）。Progress 复用 150ms 节流窗口。
+/// （宿主不再代记 send 任务）。Progress 复用 150ms 节流窗口。
 pub(crate) async fn drive_serve_events(ctx: Arc<PeerCtx>, mut rx: mpsc::Receiver<TransferEvent>) {
     let mut last_emit = tokio::time::Instant::now() - PROGRESS_EMIT_INTERVAL;
     while let Some(event) = rx.recv().await {
@@ -660,6 +698,19 @@ mod tests {
         (0..n).map(|i| OutgoingFile::new(format!("C:/f-{i}.bin"))).collect()
     }
 
+    /// 候选地址表夹具：LAN 在前、relay 在后（调用方策略顺序）
+    fn addrs() -> Vec<Multiaddr> {
+        vec![
+            "/ip4/192.168.1.5/tcp/47821".parse().expect("lan multiaddr"),
+            concat!(
+                "/ip4/203.0.113.9/tcp/4001/p2p/12D3KooWPbYEEfpRvnRKk2YLu43F28fLZgU22wic2M5m6Spkv9ZA",
+                "/p2p-circuit/p2p/12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA"
+            )
+            .parse()
+            .expect("relay multiaddr"),
+        ]
+    }
+
     // ==================== 暂停/恢复的四表路由（方向不可判时的回退契约） ====================
     //
     // 一个 pause/resume 原语入口管四个方向，批 id 落在哪张表由传输方向决定：
@@ -699,7 +750,7 @@ mod tests {
     async fn resume_live_send_session_clears_pause_gate() {
         let ctx = headless_ctx();
         ctx.transfer
-            .register_session("send-1", sources(1), "n".into(), false, 8);
+            .register_session("send-1", sources(1), "n".into(), addrs(), false, 8);
         let slot = ctx.transfer.pause_slot_of("send-1").expect("在册会话必有暂停句柄");
 
         assert!(pause_peer_transfer(ctx.clone(), "send-1".to_string())
@@ -734,7 +785,7 @@ mod tests {
     async fn resume_live_send_session_with_empty_remembered_sources_still_succeeds() {
         let ctx = headless_ctx();
         ctx.transfer
-            .register_session("send-2", Vec::new(), "n".into(), false, 0);
+            .register_session("send-2", Vec::new(), "n".into(), addrs(), false, 0);
 
         assert!(
             resume_peer_transfer(ctx.clone(), "send-2".to_string())
@@ -752,7 +803,7 @@ mod tests {
     async fn registered_send_session_wins_over_serve_registry_lookup() {
         let ctx = headless_ctx();
         ctx.transfer
-            .register_session("send-3", sources(1), "n".into(), false, 4);
+            .register_session("send-3", sources(1), "n".into(), addrs(), false, 4);
         assert!(resume_peer_transfer(ctx, "send-3".to_string())
             .await
             .expect("发送会话优先命中"));
@@ -792,29 +843,69 @@ mod tests {
         );
     }
 
-    // ==================== 会话句柄表（票 3 终态） ====================
+    // ==================== 会话句柄表（终态） ====================
 
     /// 登记与代次：同批重复登记递增 epoch（redial 陈旧事件防护）
     #[test]
     fn register_session_increments_epoch_per_batch() {
         let state = PeerTransferState::default();
-        assert_eq!(state.register_session("b", sources(1), "n".into(), false, 1), 0);
-        assert_eq!(state.register_session("b", sources(1), "n".into(), false, 1), 1);
-        assert_eq!(state.register_session("other", sources(1), "n".into(), false, 1), 0);
+        assert_eq!(
+            state.register_session("b", sources(1), "n".into(), addrs(), false, 1),
+            0
+        );
+        assert_eq!(
+            state.register_session("b", sources(1), "n".into(), addrs(), false, 1),
+            1
+        );
+        assert_eq!(
+            state.register_session("other", sources(1), "n".into(), addrs(), false, 1),
+            0
+        );
         assert!(state.session_is_current("b", 1));
         assert!(!state.session_is_current("b", 0), "旧代次事件必须被判陈旧");
+    }
+
+    /// 回归锁（2026-11-16 双端实测）：发送拨号的第二参数必须是**对端 node id**。
+    ///
+    /// 批 id 由 `uuid::Uuid::new_v4()` 铸造，而 node id 只接受 64 位小写 hex；
+    /// 把批 id 传进 `dial_for_send` 会让 `parse_node_id` 立刻失败，任务一发起
+    /// 就落 failed（双端各自复现：`peer-net invalid node id '<batch-uuid>'`）。
+    /// 无头夹具起不了两节点，拨号入参只能靠源码结构钉住（同
+    /// `serve_registry_entry_is_shared_by_pause_and_resume` 的锁法）。
+    #[test]
+    fn send_dial_target_is_peer_node_id_not_batch_id() {
+        let src = include_str!("peer_engine_transfer.rs");
+        // 只统计生产段（`include_str!` 含本用例自身，不切分则自指）
+        let (production, _tests) = src
+            .split_once("// ==================== 测试 ====================")
+            .expect("生产代码与测试模块的分界注释必须保留");
+        assert_eq!(
+            production.matches("dial_for_send(&node, &node_id, &addrs)").count(),
+            1,
+            "发送拨号必须传对端 node id"
+        );
+        assert_eq!(
+            production.matches("dial_for_send(&node, &session_batch_id").count(),
+            0,
+            "批 id 不是 node id，禁止流入拨号（发送会一发起就 peer id invalid）"
+        );
     }
 
     /// 取消/暂停/进度记账走句柄表；终态摘除后全部查询落空
     #[test]
     fn handle_table_lifecycle_register_to_unregister() {
         let state = PeerTransferState::default();
-        state.register_session("b", sources(2), "n".into(), true, 10);
+        state.register_session("b", sources(2), "n".into(), addrs(), true, 10);
         assert!(state.has_session("b"));
         assert!(state.cancel_token_of("b").is_some());
         assert!(state.pause_slot_of("b").is_some());
         assert_eq!(state.sources_of("b").map(|s| s.len()), Some(2));
         assert_eq!(state.encrypt_of("b"), Some(true));
+        assert_eq!(
+            state.addrs_of("b").as_deref(),
+            Some(addrs().as_slice()),
+            "候选表必须入句柄（resume redial 寻址真源）"
+        );
 
         state.record_progress("b", 7);
         state.set_paused("b", true);
@@ -837,6 +928,7 @@ mod tests {
         assert!(state.pause_slot_of("never-registered").is_none());
         assert!(state.sources_of("never-registered").is_none());
         assert!(state.encrypt_of("never-registered").is_none());
+        assert!(state.addrs_of("never-registered").is_none());
         assert!(!state.session_is_current("never-registered", 0));
     }
 
@@ -853,6 +945,7 @@ mod tests {
             pause_slot: PauseSlot::new(),
             sources: sources(2),
             node_id: "n".to_string(),
+            addrs: addrs(),
             encrypt: true,
             total_bytes: 3,
             transferred_bytes: 3,

@@ -116,8 +116,8 @@ fn a03_p1a_sync_host_impl_under_async_store() {
     }
 
     // 同实例其余导出在 async store 下可用：二进制事件回调 / manifest
-    // （v27/票 10：终端 hooks 导出已删，不再断言；
-    //  票 04：字符串事件回调 `on_message` 走宿主注入的派发器，而内核测试二进制
+    // （v27：终端 hooks 导出已删，不再断言；
+    //  字符串事件回调 `on_message` 走宿主注入的派发器，而内核测试二进制
     //  已无替身实现（缺省 `UnwiredGuestEvents` 派发即 fail-visible）——这里改探
     //  原生 `TypedFunc` 探测路径的 `on_message_binary`（同属「可选导出在 async
     //  store 下可调」性质，无派发器依赖）；`on_message` 的 async store 覆盖由宿主
@@ -143,13 +143,13 @@ fn a03_p1a_sync_host_impl_under_async_store() {
 /// P1-b：现有 session 插件 wasip3 产物在 async store 下
 /// `activate → invoke_command(session.status) → 终端 hooks → get_manifest → deactivate`
 /// 全链路。产物缺失（未跑插件构建）时跳过。
-// ==================== P1-c · 生产产物在 async store 下零回归（已随票 05c 迁宿主侧） ====================
+// ==================== P1-c · 生产产物在 async store 下零回归（已迁宿主侧） ====================
 
 /// P1-c 机制实证：bindgen `exports: { default: async }` 下同步 `call` 在 async store
 /// 上按文档报错（“requires that `*_async` functions are used”）——统一 async 路径是
 /// 唯一调用面，不存在 sync/async 双路径分叉风险。打印实际错误（不设断言：wasmtime
 /// 报错文案随版本可能漂移，机制由宿主侧 `tests/a03_probe_products.rs`（原 P1-c 全量
-/// 加载，票 05c 迁出）+ 既有套件共同锁定）。
+/// 加载，迁出）+ 既有套件共同锁定）。
 #[test]
 fn a03_p1c_sync_call_under_async_store_mechanism() {
     let (wasm_runtime, host_ctx) = setup_wasm_runtime();
@@ -275,7 +275,7 @@ fn a03_p2_fuel_async_semantics() {
 }
 
 /// P2 内存：ResourceLimiter 在 async store 下仍强制生效——紧内存上限实例（经
-/// ResourceOverrides 请求，自我收紧合法）无法完成探针命令，对照实例（默认 128MiB）
+/// ResourceOverrides 请求，自我收紧合法）无法完成探针命令，对照实例（默认 64MiB）
 /// 成功；失败形态（实例化被拒 or 调用期 memory_growing 拒绝 trap）如实记录。
 #[test]
 fn a03_p2_resource_limiter_async_semantics() {
@@ -291,7 +291,7 @@ fn a03_p2_resource_limiter_async_semantics() {
         .instantiate_component(&component, A03_PLUGIN_ID, Arc::clone(&host_ctx), &[], None)
         .expect("对照实例必须实例化成功");
     let v = run_command(&mut control, CMD_HOST_LOG, "{}");
-    assert_eq!(v["ok"], true, "对照实例（默认 128MiB 上限）必须成功: {v}");
+    assert_eq!(v["ok"], true, "对照实例（默认 64MiB 上限）必须成功: {v}");
 
     // 紧内存实例：请求 64KiB（= 1 wasm 页）上限——自我收紧，仲裁合法放行。
     // 本 fixture 声明最小内存 17 页（~1.1MiB）> 上限 → 实例化阶段即被拒
@@ -414,7 +414,7 @@ fn call_time_memory_denial(
 fn a03_p5_short_call_overhead_microbench() {
     // 默认 5_000：抑制探针自身 CPU 占用（wasm_runtime 集成测试族在并行负载下
     // 有既有时序 flake（实测基线即存在），探针保持轻量不加剧）；完整曲线用
-    // `A03_PERF_N=50000 cargo test` 采集（50k 数据已贴档 report.md §4）
+    // `A03_PERF_N=50000 cargo test` 采集（50k 数据已贴档）
     let n: usize = std::env::var("A03_PERF_N")
         .ok()
         .and_then(|s| s.parse().ok())

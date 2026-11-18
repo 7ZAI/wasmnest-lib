@@ -9,7 +9,7 @@
 //!
 //! | 方法 | 为什么需要它 |
 //! | --- | --- |
-//! | [`WsClientPorts::check_permission`] | 权限门（`ws:client`）是**宿主安全闸门**（AGENTS §5.1.3 四类薄壳之二），不该可插拔 ⇒ 留宿主，本 crate 只问结果（出站是 SSRF 面，fail-closed） |
+//! | [`WsClientPorts::check_permission`] | 权限门（`ws:client`）是**宿主安全闸门**，不该可插拔 ⇒ 留宿主，本 crate 只问结果（出站是 SSRF 面，fail-closed） |
 //! | [`WsClientPorts::publish`] / `publish_binary` | 事件（JSON）与入站帧（二进制信封）都走**已拼好的完整 topic**；总线订阅方隔离在宿主侧。帧必须走二进制通道：零 JSON 编解码是性能红线（大块终端输出禁止经 JSON 搬运） |
 //! | [`WsClientPorts::spawn`] | reader / writer / 重连都是后台任务，**必须挂在宿主运行时上**（宿主调用栈不保证处于 runtime 上下文：wasmtime 的 fiber 内直接 `tokio::spawn` 会 panic） |
 //! | [`WsClientPorts::global_token`] | `jwt-auth` 首帧代发要宿主认证状态里的 token（凭据不落插件，C4）；宿主只交出「代发时那一刻的 token 值」 |
@@ -41,7 +41,38 @@ pub trait WsTask: Send + Sync + 'static {
     fn cancel(&self);
 }
 
-/// WS 自动重连的退避策略面（票 12 R1）
+/// 单条连接的链路帧编解码器（宿主注入；引擎不解释协议字节）
+///
+/// 方向纪律：writer 任务只调用 `seal_*`（出站），reader 任务只调用 `open_*`（入站）——
+/// 两个方向的序号/密钥状态由宿主实现自行隔离（同一对象可同时被两侧调用）。
+/// 错误一律显性上抛：引擎据此断开连接并发布 `ws:error`，绝不静默丢帧。
+pub trait WsFrameCrypto: Send + Sync {
+    /// 加密一条出站文本帧（返回线协议信封/密文）
+    fn seal_text(&self, text: String) -> Result<String, String>;
+    /// 加密一条出站二进制帧
+    fn seal_binary(&self, payload: Vec<u8>) -> Result<Vec<u8>, String>;
+    /// 解密一条入站文本帧
+    fn open_text(&self, text: String) -> Result<String, String>;
+    /// 解密一条入站二进制帧
+    fn open_binary(&self, payload: Vec<u8>) -> Result<Vec<u8>, String>;
+}
+
+/// 一次连接的帧加密握手工厂（宿主注入；`None` = 明文连接）
+///
+/// 生命周期与 `connect` 尝试一致：每次建连/重连新造一个（临时密钥、序号从零开始）。
+/// 引擎只负责在升级请求上追加 [`Self::request_headers`] 并在收到响应头后调用
+/// [`Self::complete`]；协议细节（头名、策略横幅、密钥派生、strict 裁决）全归宿主。
+pub trait WsFrameCryptoFactory: Send + Sync {
+    /// 追加到升级请求的头（同名覆盖插件自带头：传输面头不允许被业务覆盖）
+    fn request_headers(&self) -> Vec<(String, String)>;
+    /// 用 101 响应头完成握手；`Ok(None)` = 服务端未接受/不需要加密（明文继续）
+    fn complete(
+        &self,
+        response_headers: &[(String, String)],
+    ) -> Result<Option<Arc<dyn WsFrameCrypto>>, String>;
+}
+
+/// WS 自动重连的退避策略面
 ///
 /// 策略对象由宿主实现（真源 = 宿主全局退避：指数退避 + 抖动 + 下限钳制）；
 /// 本 crate 只按「排期 → 等延迟 → 重建连接 → 成功回报」推进循环。
@@ -64,13 +95,13 @@ pub trait WsClientPorts: Send + Sync + 'static {
     /// 权限判定：出站连接是 SSRF 面（插件可代宿主访问任意 `ws://` 地址），
     /// 权限位独立且 **fail-closed**（未在 manifest 声明即拒）。
     ///
-    /// 返回 `false` 时**宿主侧**应已按 AGENTS §8 落 `warn`（结构化字段
+    /// 返回 `false` 时**宿主侧**应已落结构化 `warn`（字段
     /// `plugin_id` / `permission` / `api`）；本 crate 只负责把拒绝转成统一错误文案。
     fn check_permission(&self, plugin_id: &str) -> bool;
 
     /// 全局 JWT token（`jwt-auth` 首帧代发用）；未认证时空串。
     ///
-    /// 只记长度不落明文（AGENTS §8 凭据红线），本 crate 侧也不打印其值。
+    /// 凭据只记长度不落明文，本 crate 侧也不打印其值。
     fn global_token(&self) -> String;
 
     /// 重连退避钳制边界 `(min_delay_ms, max_delay_ms)`（宿主全局常量的投影；
@@ -100,4 +131,11 @@ pub trait WsClientPorts: Send + Sync + 'static {
     /// `task_name` 供宿主侧错误边界 / 日志标识任务（如 `ws_client_writer`）。
     /// 宿主实现应包上 panic 错误边界（任务 panic 不得静默终止，也不得污染宿主状态）。
     fn spawn(&self, task_name: &'static str, task: BoxedTask) -> Arc<dyn WsTask>;
+
+    /// 本次连接的链路帧加密工厂；`None` = 明文连接（默认：本宿主无链路加密概念）
+    ///
+    /// 宿主按“本机开关 + 信任锚 + 目标是否已配对”自行裁决；引擎只消费结果。
+    fn frame_crypto(&self, _plugin_id: &str, _url: &str) -> Option<Arc<dyn WsFrameCryptoFactory>> {
+        None
+    }
 }

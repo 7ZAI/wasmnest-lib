@@ -1,6 +1,6 @@
 //! host-peer 能力域的宿主端口（边界层）
 //!
-//! ## 设计依据（ws 域的同名边界层同款，票 05 沿用票 04 在 ws 域跑通的形态）
+//! ## 设计依据
 //!
 //! 消费方（本 crate）声明端口，宿主实现。本 crate **不依赖 tauri、不依赖宿主
 //! bin crate**（由 [`crate::dependency_direction_lock`] 以依赖清单 + 源码前缀
@@ -9,8 +9,8 @@
 //!
 //! | 方法 | 为什么需要它 |
 //! | --- | --- |
-//! | [`PeerPorts::check_permission`] | 权限门（`peer`）是**宿主安全闸门**（AGENTS §5.1.3 四类薄壳之二），不该可插拔 ⇒ 留宿主，本域只问结果（拒绝文案与 warn 落宿主侧） |
-//! | [`PeerPorts::peer_ctx`] | **本票要解除的反向耦合**：迁移前绑定层有 20 处靠「从宿主组装面取引擎上下文」拿引擎状态（宿主的引擎上下文装配函数），那要求本 crate 反向认识宿主 `AppHandle` 与宿主 state 表。经端口要「已装配好的 [`PeerCtx`]」后，绑定层对宿主组装面的引用降到 **0** |
+//! | [`PeerPorts::check_permission`] | 权限门（`peer`）是**宿主安全闸门**，不该可插拔 ⇒ 留宿主，本域只问结果（拒绝文案与 warn 落宿主侧） |
+//! | [`PeerPorts::peer_ctx`] | **要解除的反向耦合**：迁移前绑定层有 20 处靠「从宿主组装面取引擎上下文」拿引擎状态（宿主的引擎上下文装配函数），那要求本 crate 反向认识宿主 `AppHandle` 与宿主 state 表。经端口要「已装配好的 [`PeerCtx`]」后，绑定层对宿主组装面的引用降到 **0** |
 //! | [`PeerPorts::block_on_any`] | 同步↔异步桥：WASM host function 是同步的，本域要驱动 async 引擎入口。**桥的实现在宿主**（含 ambient runtime 与 actix `current_thread` 自锁规避，见宿主 `runtime_util` 模块头），本域不复制第二份 |
 //!
 //! ## 为什么 `peer_ctx()` 返回 `Result` 而不是 `Option`
@@ -34,6 +34,19 @@ use std::sync::Arc;
 
 use crate::PeerCtx;
 
+/// per-app 节点启动配置（内部形态；WIT 边界层做类型转换）
+///
+/// 与 WIT `peer-node-config` record 同形，但本结构不依赖 `bindgen!` 生成物，
+/// 故可在 `common-host` feature 未开启时编译（纯引擎形态 / 无头测试）。
+pub struct NodeStartConfig {
+    /// 节点数据目录
+    pub data_dir: String,
+    /// 人类可读设备名
+    pub device_name: String,
+    /// TCP 监听端口（0 = OS 分配）
+    pub listen_port: u16,
+}
+
 /// 类型擦除的「同步驱动异步」入参（[`PeerPorts::block_on_any`]）
 pub type BoxedBlocked = Pin<Box<dyn Future<Output = Box<dyn Any + Send>> + Send>>;
 
@@ -49,7 +62,7 @@ pub const HEADLESS_UNAVAILABLE: &str = "peer-net unavailable in headless context
 pub trait PeerPorts: Send + Sync + 'static {
     /// 权限判定（`peer`）
     ///
-    /// 返回 `false` 时**宿主侧**必须已按 AGENTS §8 落 `warn`（结构化字段
+    /// 返回 `false` 时**宿主侧**必须已落 `warn`（结构化字段
     /// `plugin_id` / `permission` / `api`）；本域不重复落日志。宿主侧也拿不到
     /// 权限管理器时（无头 / 测试）**必须返回 false**（fail-safe，与既有
     /// `host_api::check_permission` 同向）。
@@ -70,7 +83,7 @@ pub trait PeerPorts: Send + Sync + 'static {
     /// runtime 语义是实测产物）。
     fn block_on_any(&self, fut: BoxedBlocked) -> Box<dyn Any + Send>;
 
-    /// 应用作用域服务注册表（宿主机制；service-leases §4.1）。
+    /// 应用作用域服务注册表（宿主机制）。
     ///
     /// `None` = 无头 / 测试装配，绑定层退化为直接调引擎（不记账）并落一条
     /// `warn` 说明「无租约装配」。生产桌面 / 移动必须返回 `Some`（有装配锁）。

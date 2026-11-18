@@ -6,7 +6,7 @@
 //! 类型只有**一个 listener 槽**，重复 `browse` 是「后到覆盖先到」（库里对非重传命令
 //! 直接 `insert`）；且旧 listener 的 sender 被指数重传链永久保活——旧 receiver 从此
 //! 收不到任何事件、不报错、也不会 `browse loop exited`。共享守护（一个进程一个
-//! `ServiceDaemon`，ADR 0042）把 peer-net 的「每 30s 重查再 browse」与各插件的
+//! `ServiceDaemon`）把 peer-net 的「每 30s 重查再 browse」与各插件的
 //! browse 放进同一守护后，peer-net 每次重查都会静默杀死插件的事件流（真机现场：
 //! 插件 browse 建立 2ms 后即死亡，且全程零日志）。
 //!
@@ -46,13 +46,19 @@ use crate::ports::{BoxedTask, DiscoveryTask};
 
 // ==================== 常量 ====================
 
-/// 订阅者通道容量（spec §2.3-D2）：不小于 mdns-sd 自身 listener 通道（bounded(10)）。
+/// 订阅者通道容量：不小于 mdns-sd 自身 listener 通道（bounded(10)）。
 /// 满 → 丢弃该条 + 限频 debug：mDNS 事件可重放（重查 / 缓存重放兜底），丢弃只延迟
 /// 可见性，不是数据丢失
 const SUBSCRIBER_CHANNEL_CAPACITY: usize = 64;
 
-/// 重查合并窗（spec §2.3-D3）：周期 / 即时重查前缘吞并；新订阅者加入后缘补齐
+/// 重查合并窗：周期 / 即时重查前缘吞并；新订阅者加入后缘补齐
 const MERGE_WINDOW: Duration = Duration::from_millis(100);
+
+/// 进程内同时存在的服务类型上限（每个类型一条常驻 `daemon.browse` + 泵任务）
+///
+/// 类型完全由调用方定义；没有上限时持有 mdns 权限的插件可用无限新类型把
+/// mdns-sd 的查询表与宿主任务堆满。上限与插件句柄配额（引擎侧）叠加生效。
+pub const MAX_ACTIVE_TYPES: usize = 32;
 
 /// 控制通道容量：只承载「唤醒」语义（Join / Requery / Shutdown），满即吞并
 /// （请求本身不带业务数据，重复请求等价于一次唤醒）
@@ -118,7 +124,7 @@ impl TaskSpawner for PortsSpawner {
 /// 类型中枢订阅句柄（值形态；与 `wasmnest-server-base::ports::MdnsTypeSubscription`
 /// 逐字对齐：私有字段 + [`new`](Self::new) / [`into_parts`](Self::into_parts)）。
 ///
-/// **生命周期不可脱钩（spec §2.3 硬性要求）**：receiver 与退订守卫同处一个句柄，
+/// **生命周期不可脱钩**：receiver 与退订守卫同处一个句柄，
 /// 不实现 `Clone`，也不提供「只取一方」的访问器——只留 receiver 而丢弃守卫会造成
 /// 退订泄漏（订阅者永远留在中枢表里，类型 browse 永不归零）。
 pub struct MdnsBrowseSubscription {
@@ -140,7 +146,7 @@ impl MdnsBrowseSubscription {
     /// 解构为 `(receiver, 守卫)`：双方**同时**移交，新持有者必须成对持有 / 释放。
     ///
     /// `engine::browse` 在此消费（receiver 交给浏览事件循环，守卫进 `BrowserEntry`）；
-    /// 票 04 的宿主 glue 也把双方移交给 peer-net 的值形态 `PeerMdnsBrowse`。
+    /// 宿主 glue 也把双方移交给 peer-net 的值形态 `PeerMdnsBrowse`。
     pub fn into_parts(
         self,
     ) -> (
@@ -154,7 +160,7 @@ impl MdnsBrowseSubscription {
 /// 订阅退订守卫：Drop ⇒ 在所属注册表移除本订阅；该类型订阅归零则**立即**拆除中枢
 /// （`stop_browse` + 注册表行移除）。
 ///
-/// **为什么 Drop 里同步做**（而不是给泵任务投递退订消息）：spec §2.1-④ 要求归零
+/// **为什么 Drop 里同步做**（而不是给泵任务投递退订消息）：订阅归零要
 /// **立即** `stop_browse`；同步完成既满足该不变量，也避免「泵任务已死 → 退订永不
 /// 生效」的依赖倒挂。守卫只持注册表 + 服务类型 + 订阅号，**不持** `Arc<Hub>`——
 /// 否则守卫会把中枢的控制端一并保活，泵任务永不退出。
@@ -239,6 +245,8 @@ pub struct TypeHubSet {
     /// 重查合并窗（生产 = [`MERGE_WINDOW`]；单测注入短窗，免真实等待）
     window: Duration,
     hubs: Mutex<HashMap<String, Arc<Hub>>>,
+    /// 同时存在的服务类型上限（生产 = [`MAX_ACTIVE_TYPES`]；单测可注入小值）
+    max_types: usize,
     next_hub_id: AtomicU64,
     next_subscriber_id: AtomicU64,
 }
@@ -250,11 +258,22 @@ impl TypeHubSet {
         spawner: Arc<dyn TaskSpawner>,
         window: Duration,
     ) -> Self {
+        Self::with_parts_and_cap(daemon, spawner, window, MAX_ACTIVE_TYPES)
+    }
+
+    /// 同 [`Self::with_parts`]，但显式指定服务类型上限（单测验配额用）
+    pub fn with_parts_and_cap(
+        daemon: Arc<dyn TypeDaemon>,
+        spawner: Arc<dyn TaskSpawner>,
+        window: Duration,
+        max_types: usize,
+    ) -> Self {
         Self {
             daemon,
             spawner,
             window,
             hubs: Mutex::new(HashMap::new()),
+            max_types,
             next_hub_id: AtomicU64::new(1),
             next_subscriber_id: AtomicU64::new(1),
         }
@@ -300,6 +319,14 @@ impl TypeHubSet {
                 // 唤醒泵重读后缘补齐窗口（命令不带数据；通道满 = 已有待处理唤醒，等价）
                 let _ = hub.control.try_send(HubCmd::Join);
                 return Ok(subscription);
+            }
+            // 建档前检查全局类型配额：新类型会新建一条常驻 browse + 泵任务
+            if hubs.len() >= self.max_types {
+                return Err(format!(
+                    "mdns type hub: active service type limit reached ({}/{})",
+                    hubs.len(),
+                    self.max_types
+                ));
             }
             // 建档：唯一 browse。**持注册表锁调用**（理由见结构体文档），
             // 失败原样上报调用方（首个订阅者拿得到错误，不静默）
@@ -376,7 +403,7 @@ impl TypeHubSet {
     }
 
     /// 退订（守卫 Drop 路径）：移除订阅者；该类型订阅归零则立即拆除中枢
-    /// （`stop_browse` + 注册表行移除，无 linger——spec §2.1-④ / D4）
+    /// （`stop_browse` + 注册表行移除，无 linger）
     fn unsubscribe(&self, service_type: &str, subscriber_id: u64) {
         let mut hubs = self.hubs.lock().expect(REGISTRY_LOCK);
         // 该代已拆除 / 已被换代（旧守卫晚到）：无事可做，幂等
@@ -405,7 +432,7 @@ impl TypeHubSet {
         self.stop_listener_and_log(hub);
     }
 
-    /// 泵自检订阅归零（惰性剔除后无人订阅）⇒ 拆除中枢（spec §2.1-④）
+    /// 泵自检订阅归零（惰性剔除后无人订阅）⇒ 拆除中枢
     ///
     /// 与守卫退订同语义，但调用方是泵自身：不再投递 Shutdown（自己 break 退出）。
     fn drain_from_pump(&self, hub: &Hub) {
@@ -465,8 +492,7 @@ impl TypeHubSet {
     /// `arm_join_window`：
     /// - 建档者 = `false`（它的缓存重放来自建档那次 browse，无需再补）；
     /// - 后续加入者 = `true`（后缘补齐：到期时刻推到「最后一次加入 + 合并窗」，
-    ///   窗口内多次加入合并为一次 browse——保证每个新订阅者都拿到自己的缓存重放，
-    ///   spec §2.1-⑤「不缩水的立即重放」）。
+    ///   窗口内多次加入合并为一次 browse——保证每个新订阅者都拿到自己的缓存重放）。
     fn attach_locked(
         self: &Arc<Self>,
         state: &mut HubState,
@@ -498,7 +524,7 @@ impl TypeHubSet {
     /// 把一条 daemon 事件 fan-out 给该类型全部订阅者。
     ///
     /// - 通道满（`Full`）⇒ 丢弃该订阅者的这一条 + 限频 debug（见 [`DROP_LOG_INTERVAL`]）；
-    /// - 通道断开（`Disconnected`）⇒ **惰性剔除**：守卫丢失路径的兜底（spec D4）；
+    /// - 通道断开（`Disconnected`）⇒ **惰性剔除**：守卫丢失路径的兜底；
     /// - 剔除后订阅归零 ⇒ 返回 [`FanOut::Drained`]，由调用方按 drained 同路径拆除。
     fn fan_out(&self, hub: &Hub, event: &ServiceEvent) -> FanOut {
         let mut state = lock_state(&hub.state);
@@ -696,7 +722,7 @@ async fn run_hub(
             Wake::Cmd(Ok(HubCmd::Join)) => {}
             Wake::Cmd(Ok(HubCmd::Requery)) => {
                 // 前缘吞并：距上次 browse 不足一个合并窗的请求丢弃（与上次共享同一次
-                // 缓存重放，spec §2.3-D3）
+                // 缓存重放）
                 let since = lock_state(&hub.state).last_browse.elapsed();
                 if since < hubs.window {
                     tracing::debug!(
@@ -745,7 +771,7 @@ async fn run_hub(
             }
             Wake::JoinWindow => {
                 // 后缘补齐到期：清标记后重发 browse（缓存重放由新 listener 独享 →
-                // 广播全员，spec §2.1-⑤）
+                // 广播全员）
                 let due = lock_state(&hub.state).join_deadline.take().is_some();
                 if !due {
                     // 已被新加入者推后 / 已被上一轮 browse 满足：无事可做
@@ -778,7 +804,7 @@ static HUBS: LazyLock<Arc<TypeHubSet>> = LazyLock::new(|| {
     ))
 });
 
-/// 订阅某服务类型的中枢 fan-out（spec §2.3 接口形态）。
+/// 订阅某服务类型的中枢 fan-out。
 ///
 /// 首个订阅者触发该类型**唯一**一次 `daemon.browse`；其后每个订阅者只挂表并触发一次
 /// 「后缘补齐」合并重查（约一个合并窗后重发 browse + 缓存重放广播全员），保证新订阅者
@@ -802,7 +828,7 @@ mod tests {
 
     // ==================== 夹具 ====================
 
-    /// 假 daemon：模拟 mdns-sd 的**单 listener 槽 + 后到覆盖**语义（spec §0.2）。
+    /// 假 daemon：模拟 mdns-sd 的**单 listener 槽 + 后到覆盖**语义。
     ///
     /// - `browse`：新建通道并**覆盖**该类型的槽位（旧 sender 随之释放——真实库靠指数
     ///   重传链把旧 sender 保活，这里取更严格的「覆盖即断」形态，正中「每订阅者各自
@@ -1355,6 +1381,41 @@ mod tests {
         assert!(daemon.browse_calls().is_empty(), "拒绝路径不得触碰 daemon");
         assert!(!hubs.is_active(""), "被拒绝的订阅不得留下注册表行");
         assert_eq!(hubs.subscriber_count(""), 0);
+    }
+
+    /// 契约：服务类型总数达上限时，新类型必须在触网前拒绝（已有类型仍可复用）
+    #[tokio::test]
+    async fn active_service_type_limit_is_enforced_before_browse() {
+        let daemon = Arc::new(FakeDaemon::new(false));
+        let spawner = Arc::new(TestSpawner::default());
+        let hubs = Arc::new(TypeHubSet::with_parts_and_cap(
+            daemon.clone(),
+            spawner,
+            Duration::from_secs(60),
+            1,
+        ));
+
+        let (_rx_a, guard_a) = hubs
+            .subscribe("_hub-a._tcp.local.")
+            .expect("首个类型建档")
+            .into_parts();
+        let err = hubs
+            .subscribe("_hub-b._tcp.local.")
+            .err()
+            .expect("超过类型上限必须拒绝");
+        assert!(err.contains("type limit reached"), "{err}");
+        assert_eq!(
+            daemon.browse_calls(),
+            vec!["_hub-a._tcp.local.".to_string()],
+            "被配额拒绝的类型不得触发 browse"
+        );
+        // 已有类型复用不受上限影响
+        let (_rx_a2, guard_a2) = hubs
+            .subscribe("_hub-a._tcp.local.")
+            .expect("已有类型可复用")
+            .into_parts();
+        drop(guard_a);
+        drop(guard_a2);
     }
 
     /// 附加（R1 / D2）：订阅者通道满 ⇒ 只丢该订阅者的事件，不阻塞也不剔除；其他订阅者照常

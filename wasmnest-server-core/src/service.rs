@@ -1,4 +1,4 @@
-//! `net.transport` 应用作用域服务（service-leases spec §3.4）
+//! `net.transport` 应用作用域服务
 //!
 //! 把 [`ServerSupervisor`] 的生命周期映射到
 //! [`wasmnest_server_base::service::ScopedService`]：0→1 启动 Actix（WS + HTTP
@@ -42,7 +42,7 @@ impl TransportService {
 
 #[async_trait]
 impl ScopedService for TransportService {
-    fn key(&self) -> &'static str {
+    fn key(&self) -> &str {
         TRANSPORT_SERVICE_KEY
     }
 
@@ -61,9 +61,21 @@ impl ScopedService for TransportService {
 mod tests {
     use super::*;
 
+    /// 服务键必须是机制词汇（前缀 = 机制域，后缀 = 调用方身份或无）
+    ///
+    /// per-app 实例后键可能形如 `"net.transport:<plugin-id>"`，但前缀段
+    /// （`:` 前）必须是机制词汇，不得直接是产品名。
     #[test]
     fn key_is_mechanism_vocabulary() {
         assert_eq!(TRANSPORT_SERVICE_KEY, "net.transport");
+        let prefix = TRANSPORT_SERVICE_KEY.split(':').next().unwrap();
+        let domain = prefix.split('.').next().unwrap();
+        let allowed_domains = ["net", "io", "compute", "storage"];
+        assert!(
+            allowed_domains.contains(&domain),
+            "服务键前缀必须是机制域词汇 ({allowed_domains:?})，实际: {domain:?}"
+        );
+        // 动态键不得把产品名词硬编码进本模块（交由注册表按调用方拼装）
         let source = include_str!("service.rs");
         let production = source.split("#[cfg(test)]").next().unwrap_or(source);
         for forbidden in ["file-transfer", "bedcode", "com.wasmnest", "FILE_TRANSFER"] {

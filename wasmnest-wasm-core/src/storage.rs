@@ -4,18 +4,18 @@
 //! 按 plugin_id 隔离，插件只能读写自己的空间
 //! 同时存储系统级数据（如插件激活状态）
 //!
-//! **位置纪律（票 03：wasm_core 依赖单向化）**：原定义在
+//! **位置纪律（wasm_core 依赖单向化）**：原定义在
 //! `crate::manager::storage`，使 `security` / `host_api` 只为用它就
 //! 反向依赖 manager（见 `.scratch/2026-09-24-wasm-core-decouple/spec.md` C6）。
-//! 归位到本中立层后只依赖 `crate::db`（SQLite 引擎，同在宿主内——ADR 0036 撤销
-//! 票 07/08 的 crate 化），可被 `manager` / `host_api` / `security` 任意引用，
+//! 归位到本中立层后只依赖 `crate::db`（SQLite 引擎，同在宿主内——此前的 crate 化已撤销），可被 `manager` / `host_api` / `security` 任意引用，
 //! 自身不依赖任何 wasm_core 兄弟模块。
 
 use crate::db::Database;
+use crate::error::DbResultExt;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
-// db 锁形态统一为 std Mutex（单形态票 02 M1）：方法体内锁获取后只有**同步**
+// db 锁形态统一为 std Mutex（单形态）：方法体内锁获取后只有**同步**
 // rusqlite 操作、无跨锁 await（guard 非 Send，编译器强制），std 锁免
 // block_on 绕行（移动同步 host fn 直锁；桌面 async fn 内同步持锁同样安全）。
 // 与 auth_policy.rs / context.rs / sqlite_ports 同款裁决（锁收敛为同步锁 +
@@ -25,8 +25,8 @@ use std::sync::Mutex;
 /// 系统级 plugin_id，用于存储非插件私有的全局数据
 ///
 /// **真源随 host-storage 实现层上移共享核**（`wasmnest-host-api-core::storage`，
-/// 票 18 起双端单点，fail-closed 消费方 `ensure_not_system_space` 同侧）；本模块仍是
-/// 系统级数据的写入方（激活状态等），经再导出保既有路径（ADR 0037 垫片先例）。
+/// 双端单点，fail-closed 消费方 `ensure_not_system_space` 同侧）；本模块仍是
+/// 系统级数据的写入方（激活状态等），经再导出保既有路径（垫片先例）。
 pub(crate) use wasmnest_host_api_core::storage::SYSTEM_PLUGIN_ID;
 /// 插件激活状态持久化 key
 const ACTIVATION_STATE_KEY: &str = "activation_state";
@@ -44,7 +44,7 @@ impl PluginStorage {
     /// 测试构造（内存库 + 生产 schema 初始化）——跨模块测试共用夹具
     /// （迁移自宿主 plugin/storage.rs 同名函数；底库 = crate Database）。
     /// 可见性 = crate 测试 + 宿主 test-support feature（下游 dev-dependencies）。
-    /// 常编译（单形态票 02）：共享测试夹具——`bare-host` / `common-host` 形态
+    /// 常编译（单形态）：共享测试夹具——`bare-host` / `common-host` 形态
     /// feature 已于 2026-10-13 收口退休，本夹具双端共用，不再有任何门控。
     pub fn test_storage() -> Arc<PluginStorage> {
         let db = Arc::new(Mutex::new({
@@ -75,10 +75,14 @@ impl PluginStorage {
         plugin_id: &str,
         key: &str,
     ) -> crate::Result<Option<serde_json::Value>> {
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let conn = db.conn();
-        let mut stmt =
-            conn.prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")?;
+        let mut stmt = conn
+            .prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")
+            .db()?;
 
         let result = stmt.query_row(rusqlite::params![plugin_id, key], |row| {
             row.get::<_, String>(0)
@@ -90,7 +94,7 @@ impl PluginStorage {
                 Ok(Some(value))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(crate::AppError::Database(e)),
+            Err(e) => Err(crate::AppError::Database(e.to_string())),
         }
     }
 
@@ -101,27 +105,37 @@ impl PluginStorage {
         key: &str,
         value: serde_json::Value,
     ) -> crate::Result<()> {
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let json_str = serde_json::to_string(&value)?;
         let now = Utc::now().to_rfc3339();
 
-        db.conn().execute(
-            "INSERT INTO plugin_storage (plugin_id, key, value, updated_at) \
+        db.conn()
+            .execute(
+                "INSERT INTO plugin_storage (plugin_id, key, value, updated_at) \
              VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(plugin_id, key) DO UPDATE SET value = ?3, updated_at = ?4",
-            rusqlite::params![plugin_id, key, json_str, now],
-        )?;
+                rusqlite::params![plugin_id, key, json_str, now],
+            )
+            .db()?;
 
         Ok(())
     }
 
     /// 删除插件存储值
     pub async fn delete(&self, plugin_id: &str, key: &str) -> crate::Result<()> {
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
-        db.conn().execute(
-            "DELETE FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
-            rusqlite::params![plugin_id, key],
-        )?;
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        db.conn()
+            .execute(
+                "DELETE FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
+                rusqlite::params![plugin_id, key],
+            )
+            .db()?;
         Ok(())
     }
 
@@ -138,17 +152,21 @@ impl PluginStorage {
     where
         F: FnOnce(Option<serde_json::Value>) -> crate::Result<serde_json::Value>,
     {
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let conn = db.conn();
         let previous = {
-            let mut stmt =
-                conn.prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")?;
+            let mut stmt = conn
+                .prepare("SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2")
+                .db()?;
             match stmt.query_row(rusqlite::params![plugin_id, key], |row| {
                 row.get::<_, String>(0)
             }) {
                 Ok(json_str) => Some(serde_json::from_str::<serde_json::Value>(&json_str)?),
                 Err(rusqlite::Error::QueryReturnedNoRows) => None,
-                Err(e) => return Err(crate::AppError::Database(e)),
+                Err(e) => return Err(crate::AppError::Database(e.to_string())),
             }
         };
         let next = f(previous)?;
@@ -159,17 +177,42 @@ impl PluginStorage {
              VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(plugin_id, key) DO UPDATE SET value = ?3, updated_at = ?4",
             rusqlite::params![plugin_id, key, json_str, now],
-        )?;
+        )
+        .db()?;
         Ok(())
+    }
+
+    /// 插件是否还有任何存储行（重装前置：判断是否存在可恢复的旧 KV）
+    ///
+    /// 只读判定，与 [`Self::clear_all`] 同一张表：keep_data 卸载后主库 KV 行仍在，
+    /// 重装时由壳层据此提示「是否恢复旧应用数据」。
+    pub async fn has_any(&self, plugin_id: &str) -> crate::Result<bool> {
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT EXISTS(SELECT 1 FROM plugin_storage WHERE plugin_id = ?1)")
+            .db()?;
+        let exists: i64 = stmt
+            .query_row(rusqlite::params![plugin_id], |row| row.get(0))
+            .db()?;
+        Ok(exists != 0)
     }
 
     /// 清空插件所有存储（插件卸载时使用）
     pub async fn clear_all(&self, plugin_id: &str) -> crate::Result<()> {
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
-        db.conn().execute(
-            "DELETE FROM plugin_storage WHERE plugin_id = ?1",
-            rusqlite::params![plugin_id],
-        )?;
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        db.conn()
+            .execute(
+                "DELETE FROM plugin_storage WHERE plugin_id = ?1",
+                rusqlite::params![plugin_id],
+            )
+            .db()?;
         Ok(())
     }
 
@@ -210,9 +253,9 @@ impl PluginStorage {
             None => Ok(HashMap::new()),
         }
     }
-    // ==================== 旧 JSON 文件存储迁移（移动装配面，fork 迁入，票 06 批次 03） ====================
+    // ==================== 旧 JSON 文件存储迁移（移动装配面，fork 迁入，批次 03） ====================
     //
-    // 常编译（单形态票 02 M1）：移动宿主 lib.rs 启动迁移仍在消费（旧 JSON 文件存储
+    // 常编译（单形态）：移动宿主 lib.rs 启动迁移仍在消费（旧 JSON 文件存储
     // 存量数据 → 主库）；桌面宿主永不调用。绑定归位（T-05）时随移动宿主收口或退役。
 
     /// 旧版 JSON 文件存储 → 主库一次性迁移（批次 2b 自宿主 plugin/storage.rs 迁入；
@@ -229,7 +272,10 @@ impl PluginStorage {
         if !plugins_dir.exists() {
             return Ok(());
         }
-        let db = self.db.lock().expect("plugin storage db lock poisoned");
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entries = match std::fs::read_dir(&plugins_dir) {
             Ok(entries) => entries,
             Err(e) => {
@@ -271,11 +317,13 @@ impl PluginStorage {
             let now = chrono::Utc::now().to_rfc3339();
             for (key, value) in &map {
                 let json_str = serde_json::to_string(value)?;
-                db.conn().execute(
-                    "INSERT OR IGNORE INTO plugin_storage (plugin_id, key, value, updated_at) \
+                db.conn()
+                    .execute(
+                        "INSERT OR IGNORE INTO plugin_storage (plugin_id, key, value, updated_at) \
                      VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![plugin_id, key, json_str, now],
-                )?;
+                        rusqlite::params![plugin_id, key, json_str, now],
+                    )
+                    .db()?;
             }
             // 全部成功导入后才删除旧文件（旧读路径彻底移除，fail-visible ①）
             if let Err(e) = std::fs::remove_file(&path) {
@@ -320,6 +368,29 @@ mod tests {
 
         storage.delete("plugin-1", "key1").await.unwrap();
         assert!(storage.get("plugin-1", "key1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_storage_has_any_tracks_retained_kv() {
+        let db = test_db().await;
+        let storage = PluginStorage::new(db);
+
+        assert!(
+            !storage.has_any("plugin-1").await.unwrap(),
+            "空表 = 无旧数据"
+        );
+        storage
+            .set("plugin-1", "key1", serde_json::json!("v"))
+            .await
+            .unwrap();
+        assert!(storage.has_any("plugin-1").await.unwrap());
+        assert!(
+            !storage.has_any("plugin-2").await.unwrap(),
+            "判据必须按插件隔离"
+        );
+
+        storage.clear_all("plugin-1").await.unwrap();
+        assert!(!storage.has_any("plugin-1").await.unwrap());
     }
 
     #[tokio::test]

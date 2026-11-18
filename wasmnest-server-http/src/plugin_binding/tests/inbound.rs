@@ -105,3 +105,29 @@ fn purge_for_plugin_touches_only_owner_endpoints() {
 
     purge_for_plugin(&bystander);
 }
+
+// ==================== 链路加密契约（按应用策略，端点不声明） ====================
+
+/// 旧的端点级 `encryption` 字段必须显性拒绝，不得被静默忽略
+///
+/// 链路加密策略属于应用（`link_crypto::set_app_policy`），覆盖该应用全部端点。
+/// 应用若仍按旧契约在注册配置里写 `encryption`，严格解析必须报错——静默忽略会
+/// 让「应用以为端点已加密、实际按应用策略（默认明文）执行」。
+#[test]
+fn register_endpoint_rejects_legacy_encryption_field() {
+    let ports = granting();
+    let plugin = test_plugin(&format!("enc-legacy-{}", uuid::Uuid::new_v4()));
+
+    let err = http_register_endpoint(
+        &as_ports(&ports),
+        &plugin,
+        r#"{"path":"monitor","encryption":"required"}"#,
+    )
+    .expect_err("端点级 encryption 字段已退役，必须显性拒绝");
+    assert!(err.contains("encryption"), "文案须点名未知字段: {err}");
+    assert_eq!(registry::count_by_owner(&plugin), 0, "拒绝不得留下端点");
+    assert!(
+        crate::registry::find_by_internal(&format!("/api/plugin/{plugin}/monitor")).is_none(),
+        "拒绝不得留下内部路径"
+    );
+}

@@ -1,24 +1,23 @@
 //! host-websocket 能力域 —— WS 基础能力服务（ABI v14）
 //!
-//! spec：`.scratch/2026-09-18-ws-base-service/spec.md`；票据 04（客户端域闭环）；
-//! wasm-core-lib-split 票 04（自宿主 `src-tauri/src/plugin/ws.rs` 整体迁入本 crate）。
+//! 本模块原本住宿主 `src-tauri/src/plugin/ws.rs`，整体迁入本 crate。
 //!
-//! **零业务代码红线（D1）**：本模块只做引擎原语——连接生命周期、帧收发、句柄
+//! **零业务代码红线**：本模块只做引擎原语——连接生命周期、帧收发、句柄
 //! 登记、属主仲裁、按属主回收、事件定向投递；不拼装、不解读任何业务字段
 //! （消息格式 / 房间 / 协议 / 重连策略一律由插件构造编排）。
 //!
 //! - **客户端域（出站）**：`LazyLock` 全局连接表（每条带 `owner`），复用
-//!   `tokio-tungstenite 0.24`。`connect` 同步阻塞至握手完成（ABI v14 D4），
+//!   `tokio-tungstenite 0.24`。`connect` 同步阻塞至握手完成（ABI v14），
 //!   成功返回句柄并发布 `<owner>::ws:open`，失败只回 Err 不发事件；
-//!   **不自动重连**（编排归插件）；**不启用 TLS**（`wss://` 显式拒绝，D7）；
-//! - **服务端域（入站）**：插件在宿主 WS 服务器上挂载端点（`/ws/plugin/<owner>/<path>`，
-//!   spec D5）。端点表见 [`crate::endpoint`]，连接侧通道见 [`crate::channel::plugin`]——
+//!   **不自动重连**（编排归插件）；**不启用 TLS**（`wss://` 显式拒绝）；
+//! - **服务端域（入站）**：插件在宿主 WS 服务器上挂载端点（`/ws/plugin/<owner>/<path>`）。
+//!   端点表见 [`crate::endpoint`]，连接侧通道见 [`crate::channel::plugin`]——
 //!   宿主只做引擎级动作（命名空间注入、认证策略执行、帧转发、按属主回收），
 //!   **业务语义完全归插件**；
-//! - **事件**：状态事件走消息总线属主私有 topic（票 05 命名空间）
-//!   （`<owner>::ws:open|error|close`、`<owner>::ws:client-connect|client-disconnect`，
-//!   标识在 payload；非属主订阅被总线门禁拒绝）；消息帧经可选导出 `events-ws` 回调，未导出则丢弃 +
-//!   首次 `warn!` + 计数（宿主不缓存，spec §2.2）；
+//! - **事件**：状态事件走消息总线属主私有 topic（`<owner>::ws:open|error|close`、
+//!   `<owner>::ws:client-connect|client-disconnect`，标识在 payload；非属主订阅被
+//!   总线门禁拒绝）；消息帧经可选导出 `events-ws` 回调，未导出则丢弃 +
+//!   首次 `warn!` + 计数（宿主不缓存）；
 //! - **回收**：插件停用 → [`purge_for_plugin`] 关闭并摘除其全部出站连接与入站端点
 //!   （只碰本人）。
 //!
@@ -77,7 +76,7 @@ const STATE_OPEN: u8 = 1;
 /// 连接已关闭（对端 Close / 传输错误 / 宿主回收）
 const STATE_CLOSED: u8 = 0;
 
-/// 非属主操作的统一拒绝文案（属主仲裁，spec §2.3）
+/// 非属主操作的统一拒绝文案（属主仲裁）
 const NOT_OWNER: &str = "not owner of ws handle";
 
 /// 非属主端点的统一拒绝文案（服务端域属主仲裁）
@@ -157,9 +156,13 @@ struct CloseConfig {
     reason: Option<String>,
 }
 
-/// 插件端点注册 config-json 契约（服务端域；本票只做形状校验的预留定义）
+/// 插件端点注册 config-json 契约（服务端域）
+///
+/// **严格解析**（`deny_unknown_fields`）：未知字段一律注册失败——静默忽略会让
+/// 「应用以为某项设置生效了、实际没有」。链路加密策略属于应用
+/// （`link_crypto::set_app_policy`），不由端点注册声明。
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EndpointConfig {
     path: String,
     #[serde(default)]
@@ -172,7 +175,7 @@ struct EndpointConfig {
 
 // ==================== 客户端域原语 ====================
 
-/// 建立出站 WS 连接（同步阻塞至握手完成，spec D4）
+/// 建立出站 WS 连接（同步阻塞至握手完成）
 ///
 /// 成功 → 返回句柄 `wsc-<uuid>` 并发布 `<owner>::ws:open`；
 /// 失败 → 错误上抛且**不发布任何事件**（无句柄可寻址）
@@ -194,7 +197,7 @@ pub fn ws_connect(ports: &Arc<dyn WsPorts>, plugin_id: &str, config_json: &str) 
             url
         ));
     }
-    // 连接数上限（spec §4.4）：超限直接 Err，不产生任何副作用
+    // 连接数上限：超限直接 Err，不产生任何副作用
     //
     // 首检是廉价快路；**插入时锁内复查**（H-07）兜住握手窗口的并发——
     // 表锁读数→放锁→阻塞握手→再插入 的窗口里，同插件并行 ws_connect 可
@@ -231,7 +234,7 @@ pub fn ws_connect(ports: &Arc<dyn WsPorts>, plugin_id: &str, config_json: &str) 
         );
     }
 
-    // 超时上限截断为常量（spec §4.4「上限截断为常量」）
+    // 超时上限截断为常量：插件传入的超时值只能收紧，不能放宽
     let timeout_secs = config
         .connect_timeout_secs
         .unwrap_or(PLUGIN_WS_CONNECT_TIMEOUT_SECS)
@@ -336,7 +339,7 @@ pub fn ws_send_binary(ports: &Arc<dyn WsPorts>, plugin_id: &str, handle: &str, p
 /// 主动关闭连接：返回是否命中（幂等：未知句柄 false）
 ///
 /// 关闭命令入队后由写任务发出 Close 帧并结束；对端回 Close → 读任务上报
-/// `<owner>::ws:close`（`wasClean` 按对端回帧 code 判定，spec D11）
+/// `<owner>::ws:close`（`wasClean` 按对端回帧 code 判定）
 pub fn ws_close(ports: &Arc<dyn WsPorts>, plugin_id: &str, handle: &str, close_json: &str) -> Result<bool, String> {
     if !ports.check_permission(plugin_id, PERMISSION_WS_CLIENT, "host_websocket_close") {
         return Err(denied_client());
@@ -414,10 +417,10 @@ fn enqueue(plugin_id: &str, handle: &str, frame: OutboundFrame) -> Result<(), St
     }
 }
 
-// ==================== 服务端域原语（插件入站端点，spec §2.4 / 票据 05） ====================
+// ==================== 服务端域原语（插件入站端点） ====================
 //
 // 宿主只做引擎级动作：路径命名空间注入、认证策略执行、帧转发、按属主回收。
-// 业务语义（消息格式 / 房间 / 协议 / 重连策略）完全归插件（D1）。
+// 业务语义（消息格式 / 房间 / 协议 / 重连策略）完全归插件。
 
 /// 端点域属主仲裁：未注册 / 非属主 → `Err`（跨插件不可互操作）
 fn owned_endpoint(endpoint_id: &str, plugin_id: &str) -> Result<crate::endpoint::EndpointEntry, String> {
@@ -455,7 +458,6 @@ pub fn ws_register_endpoint(ports: &Arc<dyn WsPorts>, plugin_id: &str, config_js
     // 缺省档 = none（WS 历史行为）；未定义取值报错，绝不静默降级为较宽档位
     let auth = EndpointAuth::parse_with(config.auth.as_deref(), EndpointAuth::None)
         .map_err(|e| format!("ws register-endpoint: {e}"))?;
-
     let entry = crate::endpoint::register(
         plugin_id,
         path,
@@ -516,7 +518,7 @@ pub fn ws_send_binary_to_client(
 
 /// 向端点全部客户端广播文本帧 → 成功入队客户端数
 ///
-/// 部分失败不回滚（失败明细记 debug，成功数供调用方判定，spec D10）
+/// 部分失败不回滚（失败明细记 debug，成功数供调用方判定）
 pub fn ws_broadcast_text(
     ports: &Arc<dyn WsPorts>,
     plugin_id: &str,
@@ -573,7 +575,7 @@ pub fn ws_close_client(
     owned_endpoint(endpoint_id, plugin_id)?;
     let close: CloseConfig =
         serde_json::from_str(close_json).map_err(|e| format!("ws close-client: invalid close-json: {e}"))?;
-    // 踢出缺省 4004（spec §4.5 关闭理由语义）
+    // 踢出缺省 4004（关闭理由语义）
     let code = close.code.unwrap_or(4004);
     let reason = close.reason.unwrap_or_else(|| "kicked by plugin".to_string());
     let endpoint = endpoint_id.to_string();
@@ -618,7 +620,7 @@ pub fn ws_unregister_endpoint(ports: &Arc<dyn WsPorts>, plugin_id: &str, endpoin
 /// 端点在线的客户端清单 → JSON 数组
 ///
 /// `[{ clientId, addr, authenticated, connectedAt }]`（camelCase）——丢弃
-/// `client-connect` 事件后的自愈入口（spec D3）；仅属主可查
+/// `client-connect` 事件后的自愈入口；仅属主可查
 pub fn ws_list_clients(ports: &Arc<dyn WsPorts>, plugin_id: &str, endpoint_id: &str) -> Result<String, String> {
     if !ports.check_permission(plugin_id, PERMISSION_WS_SERVER, "host_websocket_list_clients") {
         return Err(denied_server());
@@ -665,15 +667,15 @@ pub fn ws_list_endpoints(ports: &Arc<dyn WsPorts>, plugin_id: &str) -> Result<St
     serde_json::to_string(&list).map_err(|e| format!("ws list-endpoints: serialization failed: {e}"))
 }
 
-/// 查询端点指定客户端的**已脱敏**连接/认证上下文（websocket 业务下沉专项票 02）
+/// 查询端点指定客户端的**已脱敏**连接/认证上下文
 ///
-/// 只返回连接/认证**事实**（spec §3.1）：`clientId` / `endpointId` / `owner` /
+/// 只返回连接/认证**事实**：`clientId` / `endpointId` / `owner` /
 /// `addr` / `authenticated` / `connectedAt` / `authContext?{subject, deviceName,
 /// fingerprint}`。约束：
 /// - 仅**端点属主**可调（权限 `ws:server` + 属主仲裁，跨插件查询显式拒绝）；
 /// - 客户端不存在/不在该端点名下 → `Err`（fail-visible，不返回「成功但无数据」）；
-/// - **永不返回 JWT、token、公钥、私钥或配对记录**（凭据红线，AGENTS §8——
-///   本函数只组装注册表内已脱敏字段，不触碰任何凭据存储）；
+/// - **永不返回 JWT、token、公钥、私钥或配对记录**（凭据红线
+///   ——本函数只组装注册表内已脱敏字段，不触碰任何凭据存储）；
 /// - `auth: "none"` 连接 `authenticated=false`，`authContext` 省略（不伪造身份）。
 pub fn ws_connection_context(
     ports: &Arc<dyn WsPorts>,
@@ -733,7 +735,7 @@ pub fn ws_connection_context(
 /// 两侧一并回收，且**只碰本人**（`owner` 比对）：
 /// - 客户端域（出站连接）：close 4005 并摘除句柄；
 /// - 服务端域（入站端点）：先摘端点（后续握手立即 404），再下线其全部在线
-///   客户端（close 4005，spec §4.5 属主停用语义）。
+///   客户端（close 4005，属主停用语义）。
 ///
 /// 返回被回收的连接数（出站 + 入站在线客户端）
 pub fn purge_for_plugin(plugin_id: &str, ports: &Arc<dyn WsPorts>) -> usize {
@@ -792,7 +794,7 @@ fn purge_one(owner: &str, handle: &str) -> bool {
         }
         entry
     };
-    // 属主停用回收：close code 4005（spec §4.5），wasClean=false
+    // 属主停用回收：close code 4005，wasClean=false
     match entry.tx.try_send(OutboundFrame::Close {
         code: 4005,
         reason: "plugin deactivated".to_string(),
@@ -847,8 +849,8 @@ async fn run_writer(mut write: WsWrite, mut rx: mpsc::Receiver<OutboundFrame>) {
 /// 读任务：帧回灌插件（可选导出）+ 关闭事件上报（恰好一次）
 ///
 /// `<owner>::ws:close` 的 `wasClean` 仅当**对端主动发送 Close 帧**且 code ∈
-/// {1000, 1001} 时为 true（spec D11）；异常断开 / 传输错误 → 省略 code + false。
-/// 同一连接内帧按到达序投递（保序，spec §2.2 D2）
+/// {1000, 1001} 时为 true；异常断开 / 传输错误 → 省略 code + false。
+/// 同一连接内帧按到达序投递（保序）
 async fn run_reader(mut read: WsRead, handle: String, owner: String, state: Arc<AtomicU8>, ports: Arc<dyn WsPorts>) {
     // 关闭事件恰好一次（对端 Close 与后续收尾共用同一守卫）
     let close_reported = Arc::new(AtomicBool::new(false));
@@ -890,7 +892,7 @@ async fn run_reader(mut read: WsRead, handle: String, owner: String, state: Arc<
         }
     }
 
-    // 先置关闭态再上报：上报后 `is-connected` 立即为 false（spec D3 同款时序）
+    // 先置关闭态再上报：上报后 `is-connected` 立即为 false（同款时序）
     state.store(STATE_CLOSED, Ordering::SeqCst);
     if let Some((code, reason, clean)) = close_frame {
         // 已在 Close 分支上报过（守卫防御性再调一次，不会重复投递）
@@ -912,7 +914,7 @@ async fn run_reader(mut read: WsRead, handle: String, owner: String, state: Arc<
     tracing::debug!(plugin_id = %owner, handle = %handle, "ws client reader exited");
 }
 
-/// close code → `wasClean`（spec D11）：仅对端主动 Close 且 code ∈ {1000,1001} 为 true
+/// close code → `wasClean`：仅对端主动 Close 且 code ∈ {1000,1001} 为 true
 fn close_was_clean(code: Option<u16>) -> bool {
     matches!(code, Some(1000) | Some(1001))
 }
@@ -951,7 +953,7 @@ async fn deliver_frame(ports: &Arc<dyn WsPorts>, plugin_id: &str, handle: &str, 
 /// 服务端域帧投递（插件端点入站帧；标识为 `endpoint_id/client_id`）
 ///
 /// 与客户端域同源同语义（同一降级路径）：由端点通道的单条投递任务串行调用，
-/// 因此**同一连接内的帧按到达序投递**（保序，spec §2.2 D2）
+/// 因此**同一连接内的帧按到达序投递**（保序）
 pub async fn deliver_endpoint_frame(
     ports: &Arc<dyn WsPorts>,
     plugin_id: &str,
@@ -1004,7 +1006,7 @@ async fn dispatch_frame(
     }
 }
 
-/// 未导出 `events-ws`：丢弃 + 首次 `warn!` + 计数（宿主不缓存，spec §2.2）
+/// 未导出 `events-ws`：丢弃 + 首次 `warn!` + 计数（宿主不缓存）
 fn record_dropped_frame(plugin_id: &str, handle: &str) {
     let total = {
         let mut counters = WS_FRAMES_DROPPED.lock().unwrap_or_else(|e| e.into_inner());
@@ -1016,7 +1018,7 @@ fn record_dropped_frame(plugin_id: &str, handle: &str) {
         let mut warned = WS_DROP_WARNED.lock().unwrap_or_else(|e| e.into_inner());
         warned.insert(plugin_id.to_string())
     };
-    // 结构化字段按 AGENTS §8：plugin_id 为字段而非消息拼接
+    // 结构化字段：plugin_id 为字段而非消息拼接
     if first {
         tracing::warn!(
             plugin_id = %plugin_id,
@@ -1059,31 +1061,30 @@ fn max_message_bytes() -> usize {
     crate::routes::ws_frame_limit().clamp(1, PLUGIN_WS_MAX_MESSAGE_BYTES)
 }
 
-// ==================== 能力模块装配（wasm-core-lib-split 票 04） ====================
+// ==================== 能力模块装配 ====================
 //
 // 宿主侧对应物：`src-tauri/src/plugin/ws.rs`（adapter + 开机装配）与
 // `component.rs` 的 `HOST_MODULES` 白名单 + 强制引用行。
 
 /// 能力模块名（宿主白名单键 = 装载期日志与错误文案里的模块名）
 ///
-/// **常编译 pub**（票 02 批次 03）：adapter 迁宿主后白名单条目
+/// **常编译 pub**：adapter 迁宿主后白名单条目
 /// （`expect_host_module!`）与装载期一致性核对改在宿主侧引用本常量。
 pub const MODULE_NAME: &str = "websocket";
 
 /// 本域提供的 WIT 接口（必须与拼装 package 逐字一致；改错即 guest import 失配）
 ///
-/// ADR 0052 D2/D4：客户端域 `host-websocket`（双端交集）契约真源在
 /// `wasmnest-ws-client-engine/wit/ws.wit`，本 crate 的 `common-host` 绑定暂留客户端实现
-/// （Q4 裁决；双轨收敛另行立项）；服务端域 `host-websocket-server`（桌面扩展）的
+/// （双端契约各自演进；双轨收敛另行立项）；服务端域 `host-websocket-server`（桌面扩展）的
 /// WIT 声明与 `impl Host` 已归桌面宿主（本模块不再注册/声明它）。
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.1/host-websocket"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:ws@0.0.1/host-websocket"];
 
 /// 本域的权限位（必须与 WIT / SDK 权限表逐字一致）
 ///
 /// 服务端域 `ws:server` 随 `impl Host` 一同归桌面宿主模块（`ws-server`）声明。
 pub const MODULE_PERMISSIONS: &[&str] = &["ws:client"];
 
-/// 能力模块描述符（只描述机制，禁带产品名词——AGENTS §5.1 B1/B5）
+/// 能力模块描述符（只描述机制，禁带产品名词）
 #[cfg(feature = "common-host")]
 const DESC: HostModuleDesc = HostModuleDesc {
     name: MODULE_NAME,
@@ -1103,7 +1104,7 @@ impl HostModule for WebsocketModule {
     }
 
     fn register(&self, linker: &mut Linker<WasmPluginState>) -> wasmtime::Result<()> {
-        wasmnest::plugin::host_websocket::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
+        wasmnest::ws::host_websocket::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
     }
 }
 
@@ -1150,10 +1151,10 @@ fn on_plugin_purge(plugin_id: &str) {
     );
 }
 
-/// 生命周期钩子自报（票 02 批次 01 机制，批次 03 本域接入）
+/// 生命周期钩子自报
 ///
 /// 接入后内核 `manager/host/activation.rs` 不再直调本域回收入口——这是内核摘掉本域
-/// adapter 的前提之一（另一处是 `bus.rs` 的帧投递窄端口，见票面「ws / http 实测」节）。
+/// adapter 的前提之一（另一处是 `bus.rs` 的帧投递窄端口）。
 #[cfg(feature = "common-host")]
 pub static HOOKS: wasmnest_host_kit::DomainHooks = wasmnest_host_kit::DomainHooks {
     name: MODULE_NAME,
@@ -1200,24 +1201,22 @@ pub fn ports_for(state: &WasmPluginState) -> Arc<dyn WsPorts> {
 
 #[cfg(feature = "common-host")]
 bindgen!({
-    // provider 侧绑定：spec D8「能力 crate 不自带 generate!」的前提在本 crate
-    // 不成立——宿主自己的 `wasmnest` 模块是 **guest 视角**（import 是调用函数，
-    // 不是 `Host` trait + `add_to_linker`）。能力 crate 要自己装配就必须生成
-    // provider 侧。
+    // provider 侧绑定：本 crate 要自己装配 WIT，就必须生成 provider 侧
+    // （guest 视角的调用面靠它提供）。
     //
     // ⚠️ 由此产生的**硬约束**：本 crate 与宿主各自生成的
-    // `wasmnest::plugin::host_websocket::Host` 是**同名但不同类型**的 trait。宿主必须
+    // `wasmnest::ws::host_websocket::Host` 是**同名但不同类型**的 trait。宿主必须
     // 同时删掉自己的 ws `Host` impl 与 `add_to_linker` 行，否则同一个 interface
     // 被注册两次 → 装配期 `defined twice`。
-    // 票 05 / ADR 0052 D2：契约面脱端——客户端域契约真源住能力域 crate
+    // 契约面脱端：客户端域契约真源住能力域 crate
     // `wasmnest-ws-client-engine/wit/ws.wit`（world cap-ws 只 import `host-websocket`），
     // 本 crate 的 provider 侧 bindgen 直接指向它（桌面客户端实现暂留本 crate 的
-    // common-host 绑定，Q4 裁决；本 crate 原有 `wit/ws.wit` 已删，不再持第二份副本）。
+    // common-host 绑定；本 crate 原有 `wit/ws.wit` 已删，不再持第二份副本）。
     // 服务端域 `host-websocket-server` 的声明在桌面 wit-src、impl 在桌面宿主。
     path: "../wasmnest-ws-client-engine/wit/ws.wit",
     world: "cap-ws",
     // 与宿主同款：全部导出绑定生成 async 变体（wasmtime async store 要求）。
-    // cap-ws 无 export 成员，此配置无生效对象（实测编译绿，票 05 实施记录）
+    // cap-ws 无 export 成员，此配置无生效对象（实测编译绿）
     exports: { default: async },
 });
 
@@ -1227,7 +1226,7 @@ bindgen!({
 // 经端口问宿主结果），此层只做「取端口 → 转调 → 按 WIT `result` 形状返回」。
 
 #[cfg(feature = "common-host")]
-impl wasmnest::plugin::host_websocket::Host for WasmPluginState {
+impl wasmnest::ws::host_websocket::Host for WasmPluginState {
     // ==================== 客户端域（出站） ====================
 
     fn connect(&mut self, config_json: String) -> Result<String, String> {
@@ -1251,7 +1250,7 @@ impl wasmnest::plugin::host_websocket::Host for WasmPluginState {
     }
 }
 
-/// v36/v37 / ADR 0052 D4：`host-websocket-server`（桌面扩展服务端域）的 `impl Host`
+/// `host-websocket-server`（桌面扩展服务端域）的 `impl Host`
 /// 已迁桌面宿主 `src-tauri/src/plugin/ws.rs`（路径 B 模块 `ws-server`）——
 /// 本模块不再生成/实现该 trait；引擎 API（`ws_*` 域函数）仍住本 crate，
 /// 被服务器自身（`conn` / `websocket_manager` / 路由）与宿主 e2e 消费。

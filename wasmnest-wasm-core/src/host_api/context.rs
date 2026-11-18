@@ -1,19 +1,18 @@
-//! 宿主上下文（host-api 消费方家园，spec 票 04）
+//! 宿主上下文（host-api 消费方家园）
 //!
 //! `WasmHostContext`（宿主子系统引用聚合）、`PluginServices`（插件宿主服务抽象，
 //! 两阶段注入解 PluginHost 互引）、`ProcessRegistry` / `kill_process_group`
 //! （host-process 进程注册/终止，v8）原定义于 `crate::manager::runtime`，
-//! 迁入本模块使 host_api 消费方不再反向 import manager（见
-//! `.scratch/2026-09-24-wasm-core-decouple/spec.md` C1/C5）。
+//! 迁入本模块使 host_api 消费方不再反向 import manager（机制拆分的既定方向）。
 //!
-//! **capability 端口（票 04）**：宿主上下文对 manager 的类型依赖经
+//! **capability 端口**：宿主上下文对 manager 的类型依赖经
 //! [`CapabilityProvider`] + [`CapabilityTarget`] 两个 trait 消除——WasmHostContext
 //! 持有 `Arc<dyn CapabilityProvider>`，host_api 只经 trait 消费能力路由；具体实现
 //! （manager::capability 的注册表 / manager::host 的装配条目）在 manager 侧直连
-//! （方向合法）。票 06 起本模块**不再引用任何 manager 类型**（原先的
+//! （方向合法）。此后本模块**不再引用任何 manager 类型**（原先的
 //! `LoadedWasmPlugin` 引用随转发端口窄化消除）。
 //!
-//! **票 02 B5 上下文合一（单形态,已收敛）**：本模块是双端唯一宿主上下文（原移动
+//! **上下文合一（已收敛）**：本模块是双端唯一宿主上下文（原移动
 //! `bare_context::WasmHostContext` 已并入超集删除）。`fs_auth` 槽为**桌面原样
 //! `Arc<FsAuthChecker>`**（用户新裁决 2026-10-11「wasm-core 机制全部以桌面端为准
 //! 收敛一套」：fs 授权统一到桌面判定链，移动自实现已退役）——判定链 / 授权记录 /
@@ -33,7 +32,7 @@ use tokio::sync::RwLock;
 
 use wasmnest_host_kit::state::WasmPluginState;
 
-/// 对等网络上下文装配端口（整核抽出 §3.3 唯一端口）：lib 实现 `peer_ctx(&AppHandle)`
+/// 对等网络上下文装配端口（整核抽出的唯一端口）：lib 实现 `peer_ctx(&AppHandle)`
 /// 构造 `Arc<PeerCtx>`（读 tauri managed state + server 端口装配）；无头/测试传 `None`
 /// → `HEADLESS_UNAVAILABLE` 语义不变。
 pub type PeerCtxProvider =
@@ -58,9 +57,9 @@ use tauri::Manager;
 /// 而 PluginHost 持有 WasmHostContext —— 通过 trait 对象 + 两阶段注入打破类型互引：
 /// 本模块只依赖此 trait，`PluginHost` 在 `wasm_core::manager::host` 模块中实现它
 pub trait PluginServices: Send + Sync + 'static {
-    // 票 03 删除的两条注册面（`register_session_lifecycle_listener` /
+    // 已删除的两条注册面（`register_session_lifecycle_listener` /
     // `register_session_input_listener`）：宿主侧观察注册表与派发点一并退役，
-    // 见 `session/session_manager.rs` 的「观察面（票 03 已退役）」节。
+    // 见 `session/session_manager.rs` 的「观察面（已退役）」节。
 
     /// 标记插件为错误状态
     ///
@@ -69,7 +68,7 @@ pub trait PluginServices: Send + Sync + 'static {
     /// 配置失败（如 hooks 脚本拷贝失败）时调用。
     fn mark_plugin_error(&self, plugin_id: String, error: String);
 
-    /// 为指定插件注册宿主周期定时器（v6，ADR 0003）
+    /// 为指定插件注册宿主周期定时器（v6）
     ///
     /// 宿主按 interval_secs 到点调用插件的 command（附当前时间参数），
     /// 幂等判断归插件。重复注册替换该插件已有定时器。
@@ -149,16 +148,16 @@ pub trait PluginServices: Send + Sync + 'static {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
 }
 
-/// 能力查询/路由端口（票 04 ISP 化）
+/// 能力查询/路由端口
 ///
 /// host_api 侧只经本 trait 消费能力路由（`manager::capability::forward_*` 与宿主
 /// 上下文访问器），不接触注册表具体类型；具体注册表在 manager 侧实现本 trait。
 /// 系统组件装配（register_system_component 等）仍以具体注册表在 manager
 /// 侧直连（方向合法）。
 ///
-/// **转发目标经窄端口 [`CapabilityTarget`]**（票 06）：trait 签名不再引用任何
-/// manager 类型——host_api 对 manager 的类型依赖至此清零（票 04 遗留的
-/// `LoadedWasmPlugin` 引用随装配域下沉一并消除）。
+/// **转发目标经窄端口 [`CapabilityTarget`]**：trait 签名不再引用任何
+/// manager 类型——host_api 对 manager 的类型依赖至此清零（装配域下沉后
+/// `LoadedWasmPlugin` 引用一并消除）。
 pub trait CapabilityProvider: Send + Sync {
     /// 能力是否已有提供者（依赖检查用；未知能力名 = 无提供者）
     fn is_available(&self, name: &str) -> bool;
@@ -185,14 +184,14 @@ pub trait CapabilityProvider: Send + Sync {
     fn provider_kind(&self, name: &str) -> String;
 }
 
-/// 能力转发目标（系统组件实例句柄的**窄端口**，票 06）
+/// 能力转发目标（系统组件实例句柄的**窄端口**）
 ///
 /// 转发方（manager::capability）只经本 trait 触达提供者实例，**不知道调用模型**
 /// ——`mutex`（实例锁）与 `event-loop`（属主队列）在实现内部分派。
 /// 实现由 `manager::host::WasmInstanceEntry` 提供（超时兜底也在实现内）。
 ///
 /// **闭表**：方法按能力分组，组名 = `manager::capability::routable_capabilities()`
-/// 里的「路由方法前缀」（内建行内核自持；能力域行的词汇由该域自报，票 02 批次 03）。
+/// 里的「路由方法前缀」（内建行内核自持；能力域行的词汇由该域自报）。
 /// 新增可路由能力时在此加一组方法（与那张表同步），
 /// 漏加/多加由 `capability::tests::routable_capabilities_and_forward_methods_stay_in_sync`
 /// 点名（该锁在两个方向都断言：表里有而此处没有 ⇒ 红；此处有而表里没有 ⇒ 红）。
@@ -251,7 +250,7 @@ pub trait CapabilityTarget: Send + Sync + 'static {
 pub trait TaskEngine: Send + Sync + 'static {
     /// 同步批（`execute-batch`）：扇出 → join → 一次性返回全部单元结果
     ///
-    /// **不再收 `host_ctx`**（wasm-core-lib-split 票 03）：任务登记表需要**拥有**
+    /// **不再收 `host_ctx`**（wasm-core 拆 lib 时）：任务登记表需要**拥有**
     /// 一份宿主上下文强引用（任务在异步执行期间须独立于插件实例存活），而
     /// `WasmPluginState` 的宿主字段搬进机制内核后是 `Arc<dyn HostPorts>`，拿不回
     /// 具体 `Arc<WasmHostContext>`。改为**注入时捕获**——`set_task_engine` 本就是在
@@ -281,11 +280,11 @@ pub struct WasmHostContext {
     /// 插件独立数据库池 — 每插件一个独立 .db 文件和连接
     ///
     /// `pub`：移动宿主 adapter（`plugin/host_domains/db.rs`，插件私有库按移动布局
-    /// `plugins/<id 去点划>.db` 懒开 + 缓存）直读字段——票 05 绑定归位后域 adapter
+    /// `plugins/<id 去点划>.db` 懒开 + 缓存）直读字段——绑定归位后域 adapter
     /// 住宿主，内核侧无第二读者（内核自己的 `get_or_create_plugin_db` 走另一布局）。
     pub plugin_dbs: Arc<Mutex<HashMap<String, Arc<Mutex<Database>>>>>,
     /// `pub`：移动宿主 adapter（`plugin/host_domains/storage.rs`）直读字段
-    /// （票 05 绑定归位后域逻辑住宿主，与 `ports` / `plugin_dbs` 同侧先例）。
+    /// （绑定归位后域逻辑住宿主，与 `ports` / `plugin_dbs` 同侧先例）。
     pub storage: Arc<PluginStorage>,
     /// 密钥托管读缓存（v15 host-auth）：read-through（get 命中直接返回，
     /// set/delete 失效对应键）；真源为主库 plugin_secrets 表（重启后一致）
@@ -294,14 +293,14 @@ pub struct WasmHostContext {
     /// Tauri AppHandle（无头/测试上下文为 None，emit/路径类宿主能力降级）
     ///
     /// `pub`：移动宿主 adapter（`plugin/host_domains/{http,mdns,db,event,platform}.rs`）
-    /// 直接克隆 `Option<Arc<AppHandle>>` 交给端口/任务持有（票 05 绑定归位后域逻辑
+    /// 直接克隆 `Option<Arc<AppHandle>>` 交给端口/任务持有（绑定归位后域逻辑
     /// 住宿主）；`app_handle()` 访问器只借出 `&AppHandle`，不满足「持有」场景。
     pub app_handle: Option<Arc<tauri::AppHandle>>,
     /// 插件私有库根目录覆盖（布局 `<root>/<plugin_id>/plugin.db`）
     ///
     /// 生产为 `None`：走 `app_handle` 的 `app_data_dir()/plugins/<plugin_id>`；
     /// 无头测试经 [`Self::set_plugin_db_root`] 注入（tao 事件循环不允许在测试
-    /// 线程建 AppHandle，故测试只能经注入点拿到真实私有库——票 08 的 S1 闭环
+    /// 线程建 AppHandle，故测试只能经注入点拿到真实私有库——闭环测试
     /// 需要它）。
     plugin_db_root: Arc<std::sync::RwLock<Option<PathBuf>>>,
     pub(crate) permission: Arc<PermissionManager>,
@@ -310,7 +309,7 @@ pub struct WasmHostContext {
     /// 弹窗 / 策略档位单一实现在本 crate，双端共用同一实例类型。
     /// `first_party_dirs` 桌面由宿主注入、移动传空表（无 first-party 概念）。
     pub(crate) fs_auth: Arc<FsAuthChecker>,
-    /// 网络出站授权校验器（票 05：`host-http.fetch` 的出站询问与网络授权记录）
+    /// 网络出站授权校验器（`host-http.fetch` 的出站询问与网络授权记录）
     ///
     /// 与 `fs_auth` 同一形态（持 db 句柄 + AppHandle），判定入口分别是
     /// `authorize_outbound`（弹窗面）与 `is_granted`（任务单元无询问面）。
@@ -327,21 +326,21 @@ pub struct WasmHostContext {
     /// 宿主侧 process 域实现（桌面 `src-tauri/src/plugin/process.rs`，
     /// 移动 `host_domains/` 内）注册/移除；kill（超时/取消）经此查找句柄。
     process_registry: Arc<ProcessRegistry>,
-    /// 插件互调 api 注册表（ADR-0017）：激活登记 / 停用注销，
+    /// 插件互调 api 注册表：激活登记 / 停用注销，
     /// `bus_publish` 对 `wasmnest.api.*` 请求 topic 做目标校验
     api_registry: Arc<crate::security::api_registry::ApiRegistry>,
     /// 统一授权框架（core-security）：三段决策管线 + 仲裁器注册表
     ///
-    /// 票 02 B5 改 `Arc`：宿主上下文（含历史逐插件派生，`for_plugin` 已于 2026-10-14 删）
-    /// 需共享同一框架（注册表语义是宿主级，逐实例复制会丢 FsAuthorizer/ApiCallAuthorizer）。
+    /// 改 `Arc`：宿主上下文需共享同一框架（注册表语义是宿主级，逐实例复制会丢
+    /// FsAuthorizer/ApiCallAuthorizer）。
     /// 访问器 [`Self::security`] 返回 `&SecurityFramework`（`Arc::as_ref`），消费点零改动。
     security: Arc<crate::security::SecurityFramework>,
-    /// 能力注册表（core-plugin-manager 票据 06）：能力名 → 宿主原语/系统组件
+    /// 能力注册表（core-plugin-manager）：能力名 → 宿主原语/系统组件
     /// 实例（二选一装配）；宿主侧域函数内经此路由
     capabilities: Arc<dyn CapabilityProvider>,
     /// 实例级能力域端口表（域名 → 端口对象）
     ///
-    /// wasm-core-lib-split 票 04：迁出 `wasm_core` 的能力域（ws 等）在自己的 crate 里
+    /// 迁出 `wasm_core` 的能力域（ws 等）在自己的 crate 里
     /// 实现 `impl … Host for WasmPluginState`，拿不到本上下文，于是经
     /// [`wasmnest_host_kit::ports::HostPorts::domain_ports`] 从这里取回**与本实例同一份
     /// 上下文绑定**的端口（权限管理器 / 消息总线 / 异步桥都取自它）。
@@ -353,16 +352,16 @@ pub struct WasmHostContext {
     domain_ports: Arc<
         std::sync::RwLock<std::collections::HashMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
     >,
-    /// 对等网络上下文装配端口（整核抽出 §3.3）：lib 注入 `peer_net_cmds::peer_ctx`，
+    /// 对等网络上下文装配端口（整核抽出的唯一端口）：lib 注入 `peer_net_cmds::peer_ctx`，
     /// 无头/测试为 `None` → `HEADLESS_UNAVAILABLE` 语义不变。两阶段注入（同
     /// [`Self::set_task_engine`]），`PluginHost::new` 构造后写入。
     peer_ctx_provider: Arc<std::sync::RwLock<Option<Arc<PeerCtxProvider>>>>,
-    /// 应用作用域共享服务注册表（宿主机制；service-leases §4.3）：由宿主在
+    /// 应用作用域共享服务注册表（宿主机制）：由宿主在
     /// [`crate::manager::host::PluginHost::new`] 构造参数注入（在任何激活之前写入）；
     /// 无头 / 测试不注入 → 内核的生命周期释放为 no-op（不造假账）。
     service_registry:
         Arc<std::sync::RwLock<Option<Arc<wasmnest_server_base::service::ServiceRegistry>>>>,
-    /// 宿主引擎端口（移动装配面，票 02 B5 并入超集）：auth / egress / peer /
+    /// 宿主引擎端口（移动装配面并入超集）：auth / egress / peer /
     /// mdns / 平台桥等「离宿主无法实现」的引擎调用唯一入口。桌面构造给
     /// [`UnimplementedPorts`] 占位（桌面引擎调用不经过端口，命中即 fail-visible）。
     ///
@@ -373,7 +372,7 @@ pub struct WasmHostContext {
     ///
     /// 机制在 `host_api/platform.rs`（`fs:pick` 权限门 + `authorize_picked` 授权
     /// 校验 + JSON 形状），选择器本体是端差异（桌面原生对话框 / 移动 SAF），
-    /// 经 [`PlatformPickerPort`] 注入（ADR 0052 D1）：
+    /// 经 [`PlatformPickerPort`] 注入：
     ///
     /// - 桌面：`PluginHost::new` 末参注入宿主实现
     ///   （`桌面宿主 src-tauri/src/plugin/platform_picker.rs`）；
@@ -397,7 +396,7 @@ pub struct WasmHostContext {
     /// 由装配点写入 `runtime.monitor()`；缺省 `UnimplementedMetricsSnapshot`
     /// fail-visible（无头 / 测试上下文不返回空快照冒充「没有插件」）。
     metrics_snapshot: Arc<std::sync::RwLock<Arc<dyn crate::monitor::MetricsSnapshotSource>>>,
-    /// 插件错误状态上报回调（移动装配面，票 02 B5 并入超集）：由
+    /// 插件错误状态上报回调（移动装配面并入超集）：由
     /// `host_mark_plugin_error` 触发（置 Error + 持久化未启用 + 前端通知）。
     /// 桌面等价物是 `plugin_services.mark_plugin_error`，构造给 noop 缺省。
     pub status_reporter: Arc<dyn Fn(&str, &str) + Send + Sync>,
@@ -463,6 +462,30 @@ impl ProcessRegistry {
         let runs = self.runs.read().unwrap_or_else(|e| e.into_inner());
         runs.len()
     }
+
+    /// 终止某插件的全部派生进程组并从注册表移除
+    ///
+    /// 插件停用 / 卸载是唯一销毁点：guest 自己来不及或无法 `process_kill` 时，
+    /// 宿主必须在回收权限前兜底，否则进程会继续运行到超时（默认 600s）。
+    /// 返回杀死的进程数（0 = 无在跑进程）。
+    pub async fn kill_all_for(&self, plugin_id: &str) -> usize {
+        let pids: Vec<u32> = {
+            let mut runs = self.runs.write().unwrap_or_else(|e| e.into_inner());
+            let run_ids: Vec<String> = runs
+                .iter()
+                .filter(|(_, proc)| proc.plugin_id == plugin_id)
+                .map(|(run_id, _)| run_id.clone())
+                .collect();
+            run_ids
+                .into_iter()
+                .filter_map(|run_id| runs.remove(&run_id).map(|proc| proc.pid))
+                .collect()
+        };
+        for pid in &pids {
+            kill_process_group(*pid).await;
+        }
+        pids.len()
+    }
 }
 
 /// 终止进程组（尽力而为，超时 kill 与插件取消共用）
@@ -472,7 +495,7 @@ impl ProcessRegistry {
 ///
 /// 返回是否成功发起（进程已退出 / pid 无效返回 false，属预期内竞态）。
 ///
-/// **pub（票 02 批次 05）**：host-process 域函数随域迁宿主
+/// **pub**：host-process 域函数随域迁宿主
 /// （`src-tauri/src/plugin/process.rs`）后经本公开面复用同一条终止路径——
 /// 两份实现会让「杀整组」的语义漂移（与 `check_permission` 提公开同款理由）。
 pub async fn kill_process_group(pid: u32) -> bool {
@@ -528,8 +551,8 @@ impl WasmHostContext {
     /// 创建宿主上下文
     ///
     /// `app_handle` 为 None 时（无头/测试上下文）emit、数据目录等能力不可用。
-    /// 第 8 参 `capabilities`（票 04 DIP 注入）：宿主上下文持 trait 对象，不依赖
-    /// manager 具体注册表；重构为 Builder 留后续票。
+    /// 第 8 参 `capabilities`（DIP 注入）：宿主上下文持 trait 对象，不依赖
+    /// manager 具体注册表；重构为 Builder 留后续。
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: Arc<Mutex<Database>>,
@@ -542,7 +565,7 @@ impl WasmHostContext {
         capabilities: Arc<dyn CapabilityProvider>,
     ) -> Self {
         let api_registry = Arc::new(crate::security::api_registry::ApiRegistry::new());
-        // 网络出站授权（票 05）：与 fs_auth 同形态——主库句柄 + AppHandle，
+        // 网络出站授权：与 fs_auth 同形态——主库句柄 + AppHandle，
         // app_handle 需先 clone 再 move 进本结构
         let net_auth = Arc::new(NetworkAuthChecker::new(db.clone(), app_handle.clone()));
         // 统一授权框架：注册既有资源的仲裁器（fs 三层校验 / api-call 互调门）
@@ -596,7 +619,7 @@ impl WasmHostContext {
         }
     }
 
-    /// 移动装配构造器（票 02 B5）：桌面全字段给缺省 + 注入移动需要面。
+    /// 移动装配构造器：桌面全字段给缺省 + 注入移动需要面。
     ///
     /// 用户裁决 2026-10-11「wasm-core 机制全部以桌面为准收敛一套」：`fs_auth`
     /// 与桌面同型 `Arc<FsAuthChecker>`（移动不再自持闸门实现，白名单管理命令随
@@ -721,7 +744,7 @@ impl WasmHostContext {
     /// 为插件授予权限（宿主激活路径入口；与桌面 `PluginHost::activate_plugin`
     /// 的 `PermissionManager::grant_permissions` 同一实现）
     ///
-    /// pub（wasm-core 纯净性收口票 05b）：lib 集成测试（session_e2e）经此装配
+    /// pub（wasm-core 纯净性收口后）：lib 集成测试（session_e2e）经此装配
     /// 权限——薄转发 `PermissionManager`（真源在 wasm-core `permission` 模块），
     /// 机制本体不变，`permission` 字段保持 pub(crate)。
     ///
@@ -776,7 +799,7 @@ impl WasmHostContext {
         self.fs_auth.clone()
     }
 
-    /// 网络出站授权校验器（票 05：host-http 出站面 / 应答命令的 Tauri State）
+    /// 网络出站授权校验器（host-http 出站面 / 应答命令的 Tauri State）
     pub fn net_auth(&self) -> &Arc<NetworkAuthChecker> {
         &self.net_auth
     }
@@ -786,7 +809,7 @@ impl WasmHostContext {
         &self.permission
     }
 
-    /// 宿主引擎端口（`host-config` 端专属项的取数通道，票 03）
+    /// 宿主引擎端口（`host-config` 端专属项的取数通道）
     ///
     /// 机制面常编译化后，`config_get` 这类**双端全等 interface** 的实现体不能再引
     /// 某端 SDK 类型，只能经端口取本端事实（网络端口 / 下载目录等）；端口未注入的
@@ -907,7 +930,7 @@ impl WasmHostContext {
     }
 
     /// 两阶段注入：`PluginHost::new` 构造后写入对等网络上下文装配端口
-    /// （整核抽出 §3.3 唯一端口）。无头/测试传 `None` → `HEADLESS_UNAVAILABLE`
+    /// （整核抽出的唯一端口）。无头/测试传 `None` → `HEADLESS_UNAVAILABLE`
     /// 语义不变；重复写入覆盖（无头测试可在用例内替换提供者）。
     pub fn set_peer_ctx_provider(&self, provider: Option<Arc<PeerCtxProvider>>) {
         *self
@@ -947,7 +970,7 @@ impl WasmHostContext {
             .clone()
     }
 
-    /// 获取插件互调 api 注册表引用（ADR-0017 门禁）
+    /// 获取插件互调 api 注册表引用（互调门禁）
     pub fn api_registry(&self) -> &Arc<crate::security::api_registry::ApiRegistry> {
         &self.api_registry
     }
@@ -955,23 +978,23 @@ impl WasmHostContext {
     /// 获取统一授权框架引用（core-security 三段决策管线）
     /// 统一授权框架（core-security）：三段决策管线 + 仲裁器注册表
     ///
-    /// 票 02 B5：字段改 `Arc<SecurityFramework>`（宿主上下文共享同一注册表；
+    /// 改 `Arc<SecurityFramework>`（宿主上下文共享同一注册表；
     /// 历史逐实例派生 `for_plugin` 已于 2026-10-14 删），
     /// 访问器返回值不变（`Arc::as_ref` 解引用）。
     pub fn security(&self) -> &crate::security::SecurityFramework {
         self.security.as_ref()
     }
 
-    /// 宿主侧互调调用（票 11 命令面桥接）：以宿主虚拟身份发布 JSON-RPC 请求到
+    /// 宿主侧互调调用（命令面桥接）：以宿主虚拟身份发布 JSON-RPC 请求到
     /// `wasmnest.api.<api>` topic 并等待回复。
     ///
     /// 与插件 mutual 调用的区别：调用方身份为
     /// [`crate::host_api::api::HOST_API_CALLER_ID`]
     /// （宿主不是插件，reply topic 路由 `wasmnest.api.reply.<caller>.<id>` 用）；
-    /// 互调门禁（ADR 0017 层 1）只校验目标 api 已声明、不校验调用方——未激活
+    /// 互调门禁（层 1）只校验目标 api 已声明、不校验调用方——未激活
     /// 插件在注册表无登记 → 门禁拒绝 → 调用方降级宿主实现。
     ///
-    /// **桌面装配面门控（`desktop-assembly`，票 02 B5 保留）**：`host_api::api`
+    /// **桌面装配面门控（`desktop-assembly`）**：`host_api::api`
     /// （回复道编排）是桌面 WIT 绑定域，随 T-03/04 迁宿主前保持桌面装配面门控——
     /// 单形态（2026-10-13）起统一上下文常编译，但本方法随 `desktop-assembly`
     /// （桌面专属装配面，移动不开——移动互调经宿主侧
@@ -1017,13 +1040,13 @@ impl WasmHostContext {
 
     /// 应用句柄引用；无头 / 测试上下文为 None
     ///
-    /// 存在的理由（审计票 12）：`app_handle` 字段是模块私有的，而 peer-net 节点的
+    /// 存在的理由（审计结论）：`app_handle` 字段是模块私有的，而 peer-net 节点的
     /// **属主清理钩子**在 `manager/host/activation.rs`——那里不是本模块的后代，读不到
     /// 字段。此前那条路走 `AppContext::try_global()`，但 boot 装配期全局尚未注册，
     /// 「插件在 activate 里起了节点、随后激活失败」这个窗口就拿不到句柄去收，
     /// 所以直接从上下文字段取（它在 `PluginHost::new` 之前就已就位）
     ///
-    /// **常编译 pub（票 02 批次 03 起）**：宿主侧 adapter（`src/plugin/mdns.rs`
+    /// **常编译 pub**：宿主侧 adapter（`src/plugin/mdns.rs`
     /// 的 `local_node_id`——取对等网络上下文比对自播）经本访问器读句柄；同批次
     /// adapter 侧唯一的上下文句柄来源（旧 `host_context_registry` 已删除，见 `lib.rs`）。
     pub fn app_handle(&self) -> Option<&tauri::AppHandle> {
@@ -1040,7 +1063,10 @@ impl WasmHostContext {
     ) -> crate::Result<Arc<Mutex<Database>>> {
         // 快速路径：已缓存
         {
-            let dbs = self.plugin_dbs.lock().expect("plugin dbs lock poisoned");
+            let dbs = self
+                .plugin_dbs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(db) = dbs.get(plugin_id) {
                 return Ok(db.clone());
             }
@@ -1082,7 +1108,10 @@ impl WasmHostContext {
         // 缓存连接
         let db_arc = Arc::new(Mutex::new(db));
         {
-            let mut dbs = self.plugin_dbs.lock().expect("plugin dbs lock poisoned");
+            let mut dbs = self
+                .plugin_dbs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             // 双重检查：另一个线程可能已插入
             if let Some(existing) = dbs.get(plugin_id) {
                 return Ok(existing.clone());
@@ -1095,7 +1124,7 @@ impl WasmHostContext {
     }
 }
 
-// ==================== 角色接口（ISP，票 05 接口隔离） ====================
+// ==================== 角色接口（接口隔离） ====================
 // 域函数签名只收自己消费的窄角色视图（`&dyn XxxScope`），不再人手一个
 // `&WasmHostContext` 上帝对象；`WasmHostContext` 实现全部角色接口，调用点
 // `ctx.as_ref()`（&WasmHostContext）自动 unsize coerce 到任一 `&dyn` 角色。
@@ -1109,7 +1138,7 @@ pub trait DbScope: Send + Sync {
     fn plugin_dbs(&self) -> &Arc<Mutex<HashMap<String, Arc<Mutex<Database>>>>>;
     /// 获取或懒加载插件独立数据库（无头上下文须先注入 plugin_db_root，否则报错）。
     /// async 方法经 Pin<Box<dyn Future>> 返回（async-fn-in-trait 在 1.98 仍非 dyn
-    /// 兼容，返回 boxed future 保持 trait object 化，票 05）
+    /// 兼容，返回 boxed future 保持 trait object 化）
     fn get_or_create_plugin_db<'a>(
         &'a self,
         plugin_id: &'a str,
@@ -1122,7 +1151,7 @@ pub trait PermissionScope: Send + Sync {
     fn permission(&self) -> &Arc<crate::permission::PermissionManager>;
 }
 
-/// 插件存储视图（StorageScope，票 03 中立层）
+/// 插件存储视图（StorageScope，中立层）
 pub trait StorageScope: Send + Sync {
     /// 插件持久化存储（SQLite plugin_storage 表）
     fn storage(&self) -> &Arc<crate::storage::PluginStorage>;
@@ -1143,7 +1172,7 @@ pub trait FsAuthScope: Send + Sync {
     }
 }
 
-/// 网络出站授权视图（票 05：`host-http.fetch` 的出站判定面）
+/// 网络出站授权视图（`host-http.fetch` 的出站判定面）
 pub trait NetworkAuthScope: Send + Sync {
     /// 出站授权校验器（`authorize_outbound` 弹窗面 / `is_granted` 无询问面）
     fn net_auth(&self) -> &Arc<crate::security::network_auth::NetworkAuthChecker>;
@@ -1161,7 +1190,7 @@ pub trait AppHandleScope: Send + Sync {
     fn app_handle(&self) -> Option<&tauri::AppHandle>;
 }
 
-/// 本上下文是机制内核的宿主能力端口实现（wasm-core-lib-split 票 03）
+/// 本上下文是机制内核的宿主能力端口实现（wasm-core 拆 lib 时）
 ///
 /// `WasmPluginState` 住在 `wasmnest-host-kit`，它的 `host` 字段是
 /// `Arc<dyn HostPorts>`——kit 不能认识本类型，否则整个宿主（tauri / 数据库 /
@@ -1180,7 +1209,7 @@ impl wasmnest_host_kit::ports::HostPorts for WasmHostContext {
         self
     }
 
-    /// 实例级能力域端口下发（票 04；未装配该域 ⇒ `None`，由能力域按自己的兜底口径处理）
+    /// 实例级能力域端口下发（未装配该域 ⇒ `None`，由能力域按自己的兜底口径处理）
     fn domain_ports(&self, domain: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         self.domain_ports
             .read()
@@ -1210,7 +1239,7 @@ impl HostCtxOf for WasmPluginState {
 /// 插件宿主服务视图（两阶段注入的 PluginServices trait 对象）
 pub trait ServicesScope: Send + Sync {
     /// 宿主服务引用（两阶段初始化完成前返回 None；async：内部 async RwLock；
-    /// Pin<Box<dyn Future>> 返回保持 dyn 兼容，票 05）
+    /// Pin<Box<dyn Future>> 返回保持 dyn 兼容）
     fn services<'a>(
         &'a self,
     ) -> Pin<
@@ -1229,7 +1258,7 @@ pub trait ProcessScope: Send + Sync {
     fn process_registry(&self) -> &Arc<crate::host_api::context::ProcessRegistry>;
 }
 
-/// 插件互调 api 注册表视图（ADR-0017 门禁）
+/// 插件互调 api 注册表视图（互调门禁）
 pub trait ApiRegistryScope: Send + Sync {
     /// 激活登记 / 停用注销的 api 注册表
     fn api_registry(&self) -> &Arc<crate::security::api_registry::ApiRegistry>;
@@ -1241,7 +1270,7 @@ pub trait SecurityScope: Send + Sync {
     fn security(&self) -> &crate::security::SecurityFramework;
 }
 
-/// 能力路由视图（票 04 trait 化端口，host_api 只经 &dyn 消费）
+/// 能力路由视图（trait 化端口，host_api 只经 &dyn 消费）
 pub trait CapabilityScope: Send + Sync {
     /// 能力查询/路由端口
     fn capabilities(&self) -> &Arc<dyn CapabilityProvider>;

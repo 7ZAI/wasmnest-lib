@@ -1,8 +1,7 @@
 //! 插件日志域实现层（转发到宿主 tracing，附加 plugin_id 前缀 + per-plugin 级别阈值）
 //!
-//! 自桌面 `packages/wasmnest-wasm-core/src/host_api/log.rs` 上移（票 18 批次 4），
-//! **以桌面机制为完整基准**（2026-10-09 用户指令「以目前 wasm-core 具有的机制为准
-//! 重构移动端」）：统一 callsite（[`PLUGIN_LOG_CALLSITE`]）+ 按调用点缓存的
+//! 自桌面 `packages/wasmnest-wasm-core/src/host_api/log.rs` 上移，
+//! **以桌面机制为完整基准**（移动端对齐桌面已有机制，不另立一套）：统一 callsite（[`PLUGIN_LOG_CALLSITE`]）+ 按调用点缓存的
 //! `'static` Metadata（[`plugin_log_metadata`]）+ per-plugin 日志级别阈值
 //! （[`emit_plugin_log`] 入口过滤，`WASMNEST_PLUGIN_LOG=id=level,…` 环境变量）。
 //! 双端 adapter（桌面 `host_api/log.rs` / 移动 `component.rs` 内联 host-log 域）
@@ -59,12 +58,19 @@ impl Callsite for PluginLogCallsite {
 ///
 /// `Event::dispatch` 要求 Metadata 为 `'static`，而插件 file 是 WASM 线性内存
 /// 中的运行时字符串，首次出现时泄漏一份（Box::leak）转为 `'static` 复用。
-/// 插件日志调用点数量有限（每个插件几十个），缓存有界，不会无限增长。
+/// **信任边界**：键必须是宿主派生的有限词汇（见 [`plugin_log_metadata`]）；
+/// 当前生产调用恒为 `("", 0)`，实际条目 ≤ 4。
 static PLUGIN_LOG_META_CACHE: OnceLock<
     Mutex<HashMap<(String, u32, Level), &'static Metadata<'static>>>,
 > = OnceLock::new();
 
 /// 获取（或缓存构造）指定插件调用点的日志 Metadata
+///
+/// # 信任边界
+/// `file` / `line` 必须是宿主侧派生的**有限词汇**（如编译期常量或 `""` / `0`），
+/// 不得直接透传 guest 提供的任意字符串——本缓存按 `(file, line, level)` 泄漏式
+/// 驻留（`Box::leak` 转 `'static`），无界键 = 无界宿主堆增长。当前 WIT host-log 面
+/// 不携带调用点参数，生产调用恒为 `("", 0)`。
 pub fn plugin_log_metadata(level: Level, file: &str, line: u32) -> &'static Metadata<'static> {
     let cache = PLUGIN_LOG_META_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());

@@ -1,16 +1,15 @@
 //! Plugin PTY Ring
 //!
-//! 插件私有 PTY 的输出环形缓冲（host-pty 输出面，spec D3）。形态与业务会话环
+//! 插件私有 PTY 输出环形缓冲（host-pty 输出面）。形态与业务会话环
 //! （`session/session_output.rs::UnifiedOutputQueue`）同源：单生产者（PTY 读线程经
 //! [`PtyRingSink`] 投递）+ 消费者按全局字节偏移拉取，驻留超容量即淘汰最旧块。
 //!
 //! **刻意自持实现**而非抽取复用业务环：二者生命周期不同（业务环随业务会话、
-//! 本环随插件 pty 句柄），且 2026-09-17 刚重构完的业务链路不背回归风险；
-//! 代码级抽取候选登记在票 07 的 ADR。
+//! 本环随插件 pty 句柄），且业务链路刚重构完不背回归风险；
+//! 代码级抽取列为后续候选。
 //!
 //! **源零等待**：[`PtyRing::push`] 只做一次入队 + 均摊 O(1) 淘汰，不等待也不感知
-//! 消费者——慢插件只能看到自己的历史被截断（`truncated`），背压绝不回传到读线程
-//! （历史教训见 `.scratch/2026-09-17-pty-pull-subscribers/spec.md`）。
+//! 消费者——慢插件只能看到自己的历史被截断（`truncated`），背压绝不回传到读线程。
 //!
 //! 偏移语义：`max_offset` = 累计产出字节（单调递增，永不因淘汰回退），
 //! `min_offset` = 驻留最旧字节位置。拉取区间为 `[游标, next_offset)`，
@@ -179,6 +178,10 @@ impl PtyRing {
             // 驻留起点不受影响（只动尾块）
         }
         if rest.is_empty() {
+            // ① 分支在并入期间可能已淘汰旧块：驻留起点必须同步前移，否则
+            // `fetch` 的 `truncated` 会失真（旧游标落在已淘汰区间却报 false，
+            // 消费者把数据缺口当成「已追平」）。
+            self.refresh_min_offset();
             return;
         }
         // ② 余量作为新块（先淘汰腾位）
@@ -198,6 +201,11 @@ impl PtyRing {
         self.resident_bytes += len;
         self.max_offset = start + len;
         // 淘汰后驻留起点前移；环此前为空时即本块起点
+        self.refresh_min_offset();
+    }
+
+    /// 按当前驻留块刷新 `min_offset`（淘汰发生在任意 push 分支时必须调用）
+    fn refresh_min_offset(&mut self) {
         self.min_offset = self
             .chunks
             .front()
@@ -491,11 +499,10 @@ mod tests {
         assert_eq!(ring.chunks.len(), 1);
     }
 
-    /// C-012 副作用：sink 投递**只**落自备环（ADR 0022 业务隔离）
+    /// C-012 副作用：sink 投递**只**落自备环
     ///
-    /// 票 11：原用例还断言「业务会话环零留痕」——那个环随 `session/` 目录删除，
-    /// 「隔离」现在是结构事实（引擎环是唯一的输出环，sink 只持有它自己的那段）。
-    /// 保留的部分断言了 sink ↔ ring 的配对契约与字节完整性。
+    /// 「隔离」是结构事实（引擎环是唯一的输出环，sink 只持有它自己的那段）。
+    /// 本用例断言 sink ↔ ring 的配对契约与字节完整性。
     #[tokio::test]
     async fn ring_sink_delivers_only_to_its_own_ring() {
         let (sink, ring) = PtyRingSink::paired(1024);
@@ -535,7 +542,7 @@ mod tests {
         assert!(!fetched.truncated);
     }
 
-    /// C-014 碎块防御：字节有余量、块数达上限时同样淘汰最旧（票 05 条目上限）
+    /// C-014 碎块防御：字节有余量、块数达上限时同样淘汰最旧
     ///
     /// 压满条目上限需要**超过合并目标**的单次 push（否则尾块会吸进去，见
     /// C-017）——这里用 18 KiB/次，块数维度才是唯一生效维度。
@@ -617,6 +624,31 @@ mod tests {
             ring.chunk_count() <= 4 * 1024 * 1024 / PtyRing::COALESCE_TARGET + 1,
             "块数由「容量 / 合并目标」决定（4 MiB → ≤257），不得回到「一次 push 一块」：{}",
             ring.chunk_count()
+        );
+    }
+
+    /// 回归（2026-11-09 审核 Must fix）：合并分支淘汰后提前返回必须前移 `min_offset`
+    ///
+    /// 旧实现：50 KiB + 14 KiB + 1 KiB（cap=64 KiB）时，第二次 push 在尾块合并
+    /// 期间淘汰了 A 块，但 `rest` 耗尽后直接 return，`min_offset` 停在 0，
+    /// `fetch(0).truncated` 因此报 false。
+    #[test]
+    fn coalesce_eviction_advances_min_offset() {
+        let capacity = 64 * 1024;
+        let mut ring = PtyRing::new(capacity);
+        ring.push(&vec![b'a'; 50 * 1024]);
+        ring.push(&vec![b'b'; 14 * 1024]);
+        ring.push(&vec![b'c'; 1024]);
+
+        let (min, _) = ring.watermarks();
+        assert_eq!(min, 50 * 1024, "淘汰旧块后驻留起点必须前移");
+
+        let fetched = ring.fetch(0, 1024);
+        assert!(fetched.truncated, "落后于驻留起点的游标必须报缺口");
+        assert_eq!(
+            fetched.next_offset,
+            50 * 1024 + 1024,
+            "从驻留起点起按请求上限推进"
         );
     }
 
@@ -714,8 +746,7 @@ mod tests {
         assert_eq!(ring.watermarks().1, expected.len() as u64);
     }
 
-    /// C-016 多消费者：一个消费者的读取不释放空间、不影响他人游标（票 05 契约，
-    /// 07 的输入）
+    /// C-016 多消费者：一个消费者的读取不释放空间、不影响他人游标
     ///
     /// `fetch` 是纯读（不消费、不推进全局状态），淘汰由**产出量**驱动（环满即淘汰
     /// 最旧）——快消费者读完不改变慢消费者的驻留窗口：慢消费者（游标未动）落后即

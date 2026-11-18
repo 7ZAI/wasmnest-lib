@@ -1,10 +1,11 @@
 [package]
 name = "wasmnest-server-core"
-version = "0.0.1"
+version = "0.1.0"
 license = "MIT"
-description = "WasmNest 桌面 server 内核层：生命周期/流量过滤链/链路加密/指标/组合装配（TransportFace+serve）——server-lib-split 票 03"
+description = "WasmNest 桌面 server 内核层：跨传输的生命周期/流量过滤链/链路加密/指标/组合装配（TransportFace+serve）。**不是传输无关**：默认依赖树含 actix 与 rusqlite（P1 票据再拆 serve 与 link_crypto 的宿主职责）——server-lib-split 票 03"
 authors = ["binblink"]
 edition = "2021"
+
 
 [dependencies]
 # Actix Web（HTTP + WS 单端口组合）
@@ -25,17 +26,16 @@ sysinfo = "0.33"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 # 加密引擎（link_crypto 算法 + 注册表）
-wasmnest-crypto-engine = { path = "../wasmnest-crypto-engine", version = "0.0.1" }
+wasmnest-crypto-engine = { path = "../wasmnest-crypto-engine", version = "0.1.0" }
 # 链路报文加密协议核心（link_crypto `use wasmnest_link_crypto as proto`）
-wasmnest-link-crypto = { path = "../link-crypto", version = "0.0.1" }
+wasmnest-link-crypto = { path = "../link-crypto", version = "0.1.0" }
 # 共享基础（错误/常量/端口 traits/服务租约模板）
-wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.0.1" }
+wasmnest-server-base = { path = "../wasmnest-server-base", version = "0.1.0" }
 # service：ScopedService 异步 trait
 async-trait = "0.1"
 # 测试/内部使用
 base64 = "0.22"
 hex = "0.4"
-uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

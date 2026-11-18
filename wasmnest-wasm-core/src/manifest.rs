@@ -1,4 +1,4 @@
-//! 插件清单 / 状态 / 贡献 / 角色词汇的中性层（单形态票 02 M4）
+//! 插件清单 / 状态 / 贡献 / 角色词汇的中性层
 //!
 //! 机制层不直接依赖任一 SDK crate（`wasmnest-plugin-api` / `_mobile`）：本模块
 //! 自持与双端 SDK wire 副本**形状对齐**的 serde 类型——取桌面 + 移动 manifest
@@ -8,11 +8,13 @@
 //! （`manager/loader.rs` 解析 plugin.json）与宿主消费面（`HostPluginInfo`）则
 //! 直接只用本模块类型。
 //!
-//! 词汇面契约仍双端独立演进（ADR 0018）：本模块是**宿主机制**的唯一词汇来源，
+//! 词汇面契约仍双端独立演进（既定口径）：本模块是**宿主机制**的唯一词汇来源，
 //! SDK 副本是 guest 面 wire 形状——两侧以 serde 形状对齐 + 绑定层转换衔接，
 //! 不跨 crate 依赖。
 
 use serde::{Deserialize, Serialize};
+
+use crate::permission::PERMISSION_UI_GLOBAL_ENTRY;
 
 /// SDK wire 类型 → 中性形态（JSON 往返：双端 SDK 类型与中性超集形状兼容，
 /// 序列化端差异字段走 skip/默认，反序列化端 default 补回，语义等价无损）
@@ -60,13 +62,13 @@ pub struct PluginManifest {
     /// 请求的权限列表
     #[serde(default)]
     pub permissions: Vec<String>,
-    /// 对外可互调 api 清单（ADR-0017，插件互调机制）
+    /// 对外可互调 api 清单（互调机制）
     #[serde(default)]
     pub api: Vec<String>,
     /// 扩展点声明
     #[serde(default)]
     pub contributes: PluginContributes,
-    /// 插件类型：rust / rust-ts / ts-only / wasm
+    /// 插件产物形态：frontend / backend / full（语言无关三档，见 [`PluginType`]）
     #[serde(default = "default_plugin_type")]
     pub plugin_type: PluginType,
     /// WASM 库文件名（不含路径，相对于插件目录）
@@ -78,7 +80,7 @@ pub struct PluginManifest {
     /// 插件图标：图片路径（相对插件目录）或内联 SVG 标记
     #[serde(default)]
     pub icon: Option<String>,
-    /// WASI 预打开目录声明（**仅 worker 类别可用**，ADR 0034；桌面 manifest 专属）
+    /// WASI 预打开目录声明（**仅 worker 类别可用**；桌面 manifest 专属）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wasi_preopen_dirs: Vec<WasiPreopenDir>,
     /// 装配角色：`basic-service`（L1）/ `internal-business`（L2）/ `business-app`（L3，
@@ -98,6 +100,20 @@ pub struct PluginManifest {
     /// 单插件在册 `host-pty` 句柄数上限声明（会话引擎下沉 P1 / H1）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pty_quota: Option<usize>,
+    /// 内嵌 worker 声明（worker 机制）
+    ///
+    /// 每项是一个即用即弃纯计算 wasm 子资源：wasm 放插件包 `worker/` 目录，
+    /// 主插件（仍 `persistent`）经 `host-worker.submit` 调用。worker **私属于
+    /// 声明插件**，不可跨插件 submit。结构校验（name 唯一 / file 形状 / 条数上限）
+    /// 在 `validation::validate_worker_declarations`，file 存在性在装载入口
+    /// `validation::validate_worker_files`，`wasmHash` 在安装入口（与主 wasm 同一处）。
+    ///
+    /// **wire 形状的已知边界**：桌面 SDK 的 `PluginManifest` 类型尚无本字段，
+    /// 经 `from_sdk_json`（静态注册插件的绑定层往返）会把声明丢掉；文件插件只经
+    /// 本中性类型解析，不受影响。SDK 侧补类型随 worker 构建链（T4）——在那之前
+    /// 不要让静态注册插件依赖本字段。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workers: Vec<WorkerDecl>,
     /// 实例生命周期策略：`persistent`（常驻，缺省）/ `ephemeral`（即用即弃）
     #[serde(default, skip_serializing_if = "InstanceLifecycle::is_persistent")]
     pub lifecycle: InstanceLifecycle,
@@ -125,6 +141,16 @@ pub struct PluginManifest {
     /// 外网访问预授权 URL 声明（移动 manifest 专属；桌面形态不产出该 key，与桌面 SDK JSON 形状一致）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preauth_urls: Vec<String>,
+    /// 应用更新源声明（GitHub Release；缺省 = 不参与更新检查）
+    ///
+    /// 声明即表示应用参与「检查更新」：宿主应用管理页与 SDK 默认设置卡都按
+    /// 本段解析发布仓 / tag 前缀 / 资产 slug。缺省字段收敛到官方应用仓命名
+    /// 约定（`7ZAI/wasmnest-apps`、`<slug>-v<X.Y.Z>`）；第三方应用可声明
+    /// 自己的 repo / tagPrefix / slug。
+    ///
+    /// 纯声明，不含可执行语义：宿主只在用户显式触发检查 / 更新时读取。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<crate::app_update::PluginUpdateDecl>,
 }
 
 /// `skip_serializing_if` 辅助：布尔 `false` 不写入序列化输出
@@ -135,29 +161,108 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// 缺省产物形态（与桌面 SDK 同一真源语义：`pluginType` 缺省 = ts-only）
+/// 缺省产物形态（与双端 SDK 同一真源语义：`pluginType` 缺省 = 纯前端）
 fn default_plugin_type() -> PluginType {
-    PluginType::TsOnly
+    PluginType::Frontend
 }
 
 /// 单插件 Store 资源上限覆盖请求（manifest `resourceOverrides`；真源 =
 /// `crate::config::ResourceOverrides`，本模块再导出供 manifest 词汇统一）
 pub use crate::config::ResourceOverrides;
 
+/// 内嵌 worker 声明条目（manifest `workers` 数组元素；worker 机制）
+///
+/// worker 与主插件不同 world（零宿主 import，仅 WASI 内建；`wit/worker.wit`），
+/// 导出 `wasmnest:plugin/worker@<version>` 的 `run: func(input: string) -> string`
+/// （JSON in/out）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerDecl {
+    /// worker 名（`host-worker.submit(worker)` 的寻址键；同一清单内唯一，加载期校验）
+    pub name: String,
+    /// worker wasm 文件名（不含路径，相对插件包 `worker/` 目录；存在性加载期校验）
+    pub file: String,
+    /// worker wasm 内容 SHA-256（小写十六进制；缺省空串 = 不校验，语义与主
+    /// [`PluginManifest::wasm_hash`] 一致）
+    ///
+    /// 校验落点与主 `wasmHash` 相同：安装入口（`manager::downloader::install_zip`）
+    /// 读盘比对；装载入口只保文件存在性，不重复算摘要。
+    #[serde(default)]
+    pub wasm_hash: String,
+    /// 单 worker 资源覆盖请求（缺省继承缺省档：内存 64 MiB、燃料与主插件同基数；
+    /// 六字段可逐 worker 覆盖，与主插件 `resourceOverrides` 同形）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_overrides: Option<ResourceOverrides>,
+}
+
 // ==================== 枚举词汇 ====================
 
-/// 插件产物形态类型
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// 插件产物形态（语言无关三形态，2026-10-26 语义重定义，wasmnest-apps#21）
+///
+/// 词汇只表达**形态**（是否携带 wasm 后端 / 前端产物），不表达后端语言——
+/// 形态是宿主与装配真正消费的判据（是否实例化 wasm、是否有页面产物），语言
+/// 不是。Go 后端（SDK Go 壳）与 Rust 后端共用同一词汇。
+///
+/// 旧值（rust / rust-ts / ts-only / wasm）已退役：研发起步期无兼容读入义务，
+/// 反序列化**点名拒绝并给出迁移出路**（fail-visible，不静默降级）。本枚举与
+/// 桌面 SDK `types/state.rs`、移动 SDK `types.rs` 的同形定义**逐字对齐**
+/// （三处独立 crate，无共享依赖，漂移面以文本一致纪律维护）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PluginType {
-    /// 纯 Rust 插件，无前端组件
-    Rust,
-    /// Rust + TypeScript 插件
-    RustTs,
-    /// 纯 TypeScript 插件
-    TsOnly,
-    /// WASM 插件（移动 SDK 有该形态；桌面 `plugin_type` 词汇缺省面为 ts-only）
-    Wasm,
+    /// 纯前端（原 ts-only）：仅前端产物，无 wasm 后端
+    Frontend,
+    /// 纯后端（原 rust）：wasm 后端、无页面产物（worker / ephemeral 声明限此形态）
+    Backend,
+    /// 前后端（原 rust-ts；移动端原 `wasm` 形态按是否携带前端核定归属）
+    Full,
+}
+
+impl PluginType {
+    /// wire 值（错误文案 / 对比用；与 serde rename 同源）
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Frontend => "frontend",
+            Self::Backend => "backend",
+            Self::Full => "full",
+        }
+    }
+
+    /// 是否携带 wasm 后端（授权读模型 / guest 生命周期 / 事件派发共用的
+    /// 「有实例」判据——原桌面 `RustTs` 过滤与移动 `Wasm` 匹配的统一语义）
+    pub const fn has_backend(&self) -> bool {
+        matches!(self, Self::Backend | Self::Full)
+    }
+}
+
+impl<'de> Deserialize<'de> for PluginType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "frontend" => Ok(Self::Frontend),
+            "backend" => Ok(Self::Backend),
+            "full" => Ok(Self::Full),
+            "ts-only" => Err(retired_plugin_type::<D::Error>("ts-only", "frontend")),
+            "rust" => Err(retired_plugin_type::<D::Error>("rust", "backend")),
+            "rust-ts" => Err(retired_plugin_type::<D::Error>("rust-ts", "full")),
+            "wasm" => Err(serde::de::Error::custom(
+                "pluginType 'wasm' 已退役（形态三档重定义，2026-10-26，wasmnest-apps#21）：携带前端产物用 'full'，纯后端 worker 用 'backend'（移动端逐 app 核定）",
+            )),
+            other => Err(serde::de::Error::custom(format!(
+                "pluginType '{other}' 不是合法形态值（frontend / backend / full）"
+            ))),
+        }
+    }
+}
+
+/// 退役值 → 迁移出路的错误构造（点名旧值，不静默）
+fn retired_plugin_type<E: serde::de::Error>(old: &str, new: &str) -> E {
+    E::custom(format!(
+        "pluginType '{old}' 已退役（形态三档重定义，2026-10-26，wasmnest-apps#21）：改用 '{new}'——词汇只表达形态，不表达后端语言"
+    ))
 }
 
 impl Default for PluginType {
@@ -173,8 +278,8 @@ impl Default for PluginType {
 ///
 /// `Default` 取 `Both` **仅服务测试夹具与合成清单**（wire 层该字段必填、无 serde
 /// 缺省）：合成清单对两端都可装载，不把测试夹具钉死在某一个端。端名（desktop /
-/// mobile）在此是**双端共享的 wire 词汇**（与 pluginType 的 wasm 同档）——不是按
-/// 端分叉的机制（ADR 0047 D2 判据只针对自持标识符的声明位，wire 取值不在此列）。
+/// mobile）在此是**双端共享的 wire 词汇**——不是按
+/// 端分叉的机制（既定判据只针对自持标识符的声明位，wire 取值不在此列）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginPlatform {
@@ -210,7 +315,7 @@ impl PluginPlatform {
     }
 }
 
-/// 组件装配角色（manifest `type` 字段，core-plugin-manager · ADR 0032）
+/// 组件装配角色（manifest `type` 字段，core-plugin-manager）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginKind {
@@ -330,7 +435,7 @@ impl Default for PluginState {
     }
 }
 
-/// WASI 预打开目录声明条目（桌面 manifest `wasiPreopenDirs`；ADR 0034）
+/// WASI 预打开目录声明条目（桌面 manifest `wasiPreopenDirs`）
 ///
 /// 两形态：裸路径 = 可写挂载，`{path, readonly}` = 只读挂载。只读档只收紧
 /// guest 对该目录的写能力，不放宽授权。
@@ -447,6 +552,18 @@ pub struct PluginContributes {
     /// 自定义监控面板声明（monitor 统一壳消费；面板实现住提供方应用工程）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub monitor_panels: Vec<MonitorPanelContribution>,
+    /// 助手能力描述符（通用应用调用桥）：本应用声明「可被系统助手
+    /// 调用」的命令。宿主据此在 `AppControlAPI.list()` 暴露给持有 `apps:control` 的应用，
+    /// 并在 `invoke()` 做白名单校验。描述符不含任何 AI / 人格 / 会话 / 模型字段。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assistant_tools: Vec<AssistantToolDescriptor>,
+    /// 全局入口声明（壳工具栏 / 胶囊菜单渲染的通用入口；`ui:globalEntry` 权限门控）
+    ///
+    /// 纯 manifest 贡献面：入口只对「已安装、已启用、激活成功」
+    /// 的应用渲染；停用 / 卸载 / 未声明权限 / 用户关闭即消失。装载期一致性检查见
+    /// [`PluginManifest::check_global_entry_permission`]。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub global_entries: Vec<GlobalEntryContribution>,
 }
 
 /// 自定义监控面板声明
@@ -470,6 +587,71 @@ fn default_monitor_panel_order() -> i32 {
     100
 }
 
+/// 全局入口声明（`contributes.globalEntries` 条目）
+///
+/// 壳在工具栏尾部 / 胶囊菜单平台项之前渲染入口；点击经 `openApp` 进全屏。
+/// 宿主不知道入口指向的应用是什么，只渲染声明过的通用入口（宿主薄壳红线 B1–B6）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalEntryContribution {
+    /// 入口声明 id（应用内唯一）
+    pub id: String,
+    /// 显示标题
+    pub title: String,
+    /// 图标文件名（可选；缺省由壳按应用图标色板生成）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// 排序权重（小者靠前；缺省 100，与双端 SDK 镜像 / 前端排序同口径）
+    #[serde(default = "default_global_entry_order")]
+    pub order: i32,
+}
+
+/// 全局入口缺省排序权重（与双端 TS 壳的 `entry.order ?? 100` 一致）
+fn default_global_entry_order() -> i32 {
+    100
+}
+
+/// 助手能力风险等级（应用声明；助手策略只能升不能降）
+///
+/// 纯通用「应用能力描述」词汇——不含任何 AI / 人格 / 会话 / 模型语义（宿主薄壳红线 B1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AssistantToolRisk {
+    Read,
+    Ui,
+    Write,
+    Danger,
+}
+
+/// 助手能力输出形状
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AssistantToolOutput {
+    Text,
+    Json,
+}
+
+/// 助手能力描述符（`contributes.assistantTools` 条目）
+///
+/// `command` 必须是本应用 `contributes.commands` 里已声明的命令 id（构建期校验）；
+/// `args_schema` 为 JSON Schema（object），映射为 agent 工具的 parameters；
+/// `risk` 决定助手侧确认策略。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistantToolDescriptor {
+    /// 应用内唯一；建议 `<slug>.<verb>`
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    /// 目标应用自己的命令 id（必须存在于 contributes.commands）
+    pub command: String,
+    /// JSON Schema（object）
+    pub args_schema: serde_json::Value,
+    pub risk: AssistantToolRisk,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<AssistantToolOutput>,
+}
+
 /// 命令扩展点声明
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandContribution {
@@ -480,6 +662,13 @@ pub struct CommandContribution {
     /// 图标（可选）
     #[serde(default)]
     pub icon: Option<String>,
+    /// CLI 呈现声明（可选；opaque 透传——严格解析真源在能力仓 CLI 域 crate）
+    ///
+    /// 内核不解释段内容（namespace / help / visibility / args 的形状校验在 CLI
+    /// 目录构建侧做，畸形段在那里 fail-visible 点名命令 id）：本字段只保证
+    /// 「有则保留、无则缺省」，避免内核与 CLI 域出现第二份段结构真源。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli: Option<serde_json::Value>,
 }
 
 /// 视图扩展点声明
@@ -618,6 +807,9 @@ impl From<String> for HttpEndpointContribution {
 }
 
 /// 插件 WS 端点声明（桌面；相对路径段）
+///
+/// 链路加密策略属于**应用**（`link_crypto::set_app_policy`），端点声明不携带
+/// `encryption`：同一应用的全部端点共用应用策略，由宿主统一执行。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum WsEndpointContribution {
@@ -798,5 +990,210 @@ mod drift_lock {
                 .is_some(),
             "opt-in 声明必须出现在 wire 形状里"
         );
+    }
+}
+
+#[cfg(test)]
+mod cli_segment_tests {
+    //! `CommandContribution.cli` 段的兼容性面：旧 manifest 零回归 + opaque 透传 +
+    //! 序列化不产新 key（段的严格形状真源在能力仓 CLI 域 crate，这里只测内核职责）。
+    use super::CommandContribution;
+
+    /// 旧 manifest（无 cli 段）解析不受影响，字段为 None
+    #[test]
+    fn command_without_cli_segment_parses_as_none() {
+        let old: CommandContribution =
+            serde_json::from_str(r#"{ "id": "demo.run", "title": "跑一把" }"#).unwrap();
+        assert_eq!(old.id, "demo.run");
+        assert!(old.icon.is_none());
+        assert!(old.cli.is_none(), "无段 manifest 必须解析为 None");
+    }
+
+    /// 有段时 opaque 值原样保留（内核不做形状校验）
+    #[test]
+    fn cli_segment_value_passthrough() {
+        let segment = serde_json::json!({
+            "namespace": "overridden",
+            "args": [{ "name": "path", "type": "string", "required": true }]
+        });
+        let cmd: CommandContribution = serde_json::from_value(serde_json::json!({
+            "id": "demo.run",
+            "title": "跑一把",
+            "cli": segment.clone()
+        }))
+        .unwrap();
+        assert_eq!(cmd.cli.as_ref(), Some(&segment));
+    }
+
+    /// 序列化：无段不产 `cli` key（wire 形状与旧版逐字一致）
+    #[test]
+    fn serialization_omits_absent_cli_key() {
+        let cmd = CommandContribution {
+            id: "demo.run".to_string(),
+            title: "跑一把".to_string(),
+            icon: None,
+            cli: None,
+        };
+        let value = serde_json::to_value(&cmd).unwrap();
+        assert!(value.get("cli").is_none(), "无段不得产出 cli key");
+        assert_eq!(value.get("id"), Some(&serde_json::json!("demo.run")));
+    }
+}
+
+/// workers 块 wire 形状（worker 机制契约面，issue #10）
+///
+/// 未声明 = 零迁移（wire 形状不出现 `workers` 键，与既有 manifest 逐字一致，
+/// 也保住上方漂移锁的双侧同形——桌面 SDK 类型尚无本字段，空值省略是两侧相等
+/// 的前提）；声明 = camelCase 字段名 + 可选字段（`wasmHash` 空串缺省、
+/// `resourceOverrides` 缺省省略）+ 反序列化回读等价。
+#[cfg(test)]
+mod workers_wire_shape {
+    use super::*;
+
+    #[test]
+    fn workers_block_uses_camel_case_and_skips_defaults() {
+        // 未声明：wire 形状零变化
+        let bare = PluginManifest {
+            id: "com.wasmnest.worker".to_string(),
+            name: "w".to_string(),
+            version: "1.0.0".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            serde_json::to_value(&bare)
+                .unwrap()
+                .get("workers")
+                .is_none(),
+            "未声明 workers 不得出现在 wire 形状里（漂移锁双侧同形的前提）"
+        );
+
+        // 完整条目：camelCase 字段名 + 缺省省略
+        let declared = PluginManifest {
+            workers: vec![WorkerDecl {
+                name: "hasher".to_string(),
+                file: "hasher.wasm".to_string(),
+                wasm_hash: "deadbeef".to_string(),
+                resource_overrides: None,
+            }],
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&declared).unwrap();
+        let entry = &value["workers"][0];
+        assert_eq!(entry["name"], "hasher");
+        assert_eq!(entry["file"], "hasher.wasm");
+        assert_eq!(entry["wasmHash"], "deadbeef");
+        assert!(
+            entry.get("resourceOverrides").is_none(),
+            "缺省资源覆盖不得出现在 wire 形状里"
+        );
+
+        // 反序列化回读等价（显式声明的字段保形）
+        let roundtrip: PluginManifest = serde_json::from_value(value).unwrap();
+        assert_eq!(roundtrip.workers, declared.workers);
+
+        // 最小条目：wasmHash 缺省空串（= 不校验，与主 wasmHash 同语义）、
+        // 资源覆盖缺省 None（继承缺省档）
+        let minimal: PluginManifest = serde_json::from_str(
+            r#"{"id":"com.wasmnest.worker","name":"w","version":"1.0.0","platform":"both",
+                "workers":[{"name":"n","file":"n.wasm"}]}"#,
+        )
+        .expect("最小 worker 条目应可解析");
+        assert_eq!(minimal.workers.len(), 1);
+        assert_eq!(minimal.workers[0].wasm_hash, "");
+        assert!(minimal.workers[0].resource_overrides.is_none());
+
+        // 空 wasmHash 在 wire 里显式为空串（与主 wasmHash 的既有行为一致——
+        // 2026-10-28 审核裁决保持该形状；T4 SDK 类型照此对齐）
+        let serialized = serde_json::to_value(&minimal).unwrap();
+        assert_eq!(serialized["workers"][0]["wasmHash"], "");
+    }
+}
+
+impl PluginManifest {
+    /// 全局入口权限一致性检查
+    ///
+    /// `contributes.globalEntries` 是 `ui:globalEntry` 门控的纯 manifest 贡献面：
+    /// 声明了入口却没持有权限 = 清单配置缺口。装载期 **warn 不阻断**——壳前端按
+    /// 权限过滤渲染（未声明权限 / 停用 / 用户关闭即消失），本检查让缺口在日志里
+    /// 点名（fail-visible，不静默返回空），与既定口径「任何机制缺失 → 点名缺
+    /// 什么 + 给出路」一致。
+    pub fn check_global_entry_permission(&self) {
+        if self.contributes.global_entries.is_empty() {
+            return;
+        }
+        let authorized = self
+            .permissions
+            .iter()
+            .any(|p| p == PERMISSION_UI_GLOBAL_ENTRY);
+        if !authorized {
+            tracing::warn!(
+                plugin_id = %self.id,
+                entry_count = self.contributes.global_entries.len(),
+                "[PluginLoader] 应用声明了 contributes.globalEntries 但未持有 {} 权限：全局入口不会渲染（在 manifest permissions 里补声明即可恢复）",
+                PERMISSION_UI_GLOBAL_ENTRY
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod global_entry_tests {
+    //! 全局入口贡献面：wire 形状 + 装载期权限一致性检查
+    use super::*;
+
+    /// `contributes.globalEntries` 的 camelCase wire 形状与缺省（order 缺省 100）
+    #[test]
+    fn global_entries_wire_shape_and_defaults() {
+        let manifest: PluginManifest = serde_json::from_str(
+            r#"{
+                "id": "com.wasmnest.demo", "name": "Demo", "version": "1.0.0", "platform": "both",
+                "contributes": {
+                    "globalEntries": [
+                        { "id": "nest", "title": "Nest" },
+                        { "id": "b", "title": "B", "order": 5 }
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.contributes.global_entries.len(), 2);
+        assert_eq!(
+            manifest.contributes.global_entries[0].order, 100,
+            "缺省 order = 100"
+        );
+        assert_eq!(manifest.contributes.global_entries[1].order, 5);
+        assert!(manifest.contributes.global_entries[0].icon.is_none());
+
+        // 序列化回读等价（camelCase key 保形）
+        let value = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(value["contributes"]["globalEntries"][0]["id"], "nest");
+        assert_eq!(value["contributes"]["globalEntries"][0]["order"], 100);
+    }
+
+    /// 未声明全局入口：wire 形状不出现 `globalEntries` 键（旧 manifest 零迁移）
+    #[test]
+    fn empty_global_entries_omitted_from_wire() {
+        let manifest = PluginManifest::default();
+        let value = serde_json::to_value(&manifest).unwrap();
+        assert!(value["contributes"].get("globalEntries").is_none());
+    }
+
+    /// 权限一致性检查：声明入口但未持权 / 已持权两条路径都走通（warn 不阻断）
+    #[test]
+    fn check_global_entry_permission_both_paths() {
+        let without: PluginManifest = serde_json::from_str(
+            r#"{
+                "id": "com.wasmnest.demo", "name": "Demo", "version": "1.0.0", "platform": "both",
+                "contributes": { "globalEntries": [{ "id": "a", "title": "A" }] }
+            }"#,
+        )
+        .unwrap();
+        without.check_global_entry_permission(); // 未持权：warn 路径，不 panic
+
+        let with = PluginManifest {
+            permissions: vec![PERMISSION_UI_GLOBAL_ENTRY.to_string()],
+            ..without
+        };
+        with.check_global_entry_permission(); // 已持权：静默路径，不 panic
     }
 }

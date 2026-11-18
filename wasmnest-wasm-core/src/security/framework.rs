@@ -1,4 +1,4 @@
-//! 统一授权框架（core-security 骨架，票据 04）
+//! 统一授权框架（core-security 骨架）
 //!
 //! 资源授权的三段决策管线（任一阶段拒绝即整体拒绝）：
 //!
@@ -13,7 +13,7 @@
 //! - fs 资源：[`FsAuthorizer`]——check_permission（阶段 1）+ FsAuthChecker
 //!   三层校验（阶段 2/3）；宿主侧 fs 域实现（`src-tauri/src/plugin/fs.rs`）
 //!   调用链即此管线的手工内联形态
-//! - api-call 资源：[`ApiCallAuthorizer`]——互调门（ADR 0017：注册即声明，
+//! - api-call 资源：[`ApiCallAuthorizer`]——互调门（既定裁决：注册即声明，
 //!   未声明不可调）；bus_publish 门禁经本框架路由
 //!
 //! 新资源类型实现 [`ResourceAuthorizer`] 并 [`SecurityFramework::register`]
@@ -25,7 +25,7 @@ use std::sync::{Arc, RwLock};
 use crate::config::StoreLimits;
 use crate::monitor::{AuthzDecisionKind, MetricsRegistry};
 use crate::permission::{PermissionManager, PERMISSION_FS_READ, PERMISSION_FS_WRITE};
-// ResourceOverrides：中性单份（票 02 M4，crate::config 唯一真源）
+// ResourceOverrides：中性单份（既定单份化，crate::config 唯一真源）
 use crate::config::ResourceOverrides;
 
 use super::api_registry::ApiRegistry;
@@ -182,7 +182,7 @@ impl Default for SecurityFramework {
 /// 管线映射（与宿主侧 fs 域实现的手工内联链语义一致）：
 /// - 阶段 1：manifest `fs:read` / `fs:write` 权限声明（PermissionManager）
 /// - 阶段 2：免弹窗判定——硬拒绝记录 / 第一方目录 / 授权记录（含操作集）/ 旧记录
-///   （`FsAuthChecker::is_granted`，票 02 起带所需能力集）
+///   （`FsAuthChecker::is_granted`，操作拆分后带所需能力集）
 /// - 阶段 3：完整判定（命中放行，未命中弹窗，`FsAuthChecker::check`）
 pub struct FsAuthorizer {
     permission: Arc<PermissionManager>,
@@ -230,7 +230,7 @@ impl ResourceAuthorizer for FsAuthorizer {
     }
 
     fn check_approved(&self, req: &AuthRequest) -> AuthDecision {
-        // 所需能力 = 本次操作（票 02 操作拆分）：授权记录带操作集，「授权读」不再覆盖写。
+        // 所需能力 = 本次操作（操作拆分）：授权记录带操作集，「授权读」不再覆盖写。
         // 阶段 1 已对未知操作 Deny，这里再兜一次（本函数可被单独调用）
         let Some(op) = fs_op_of(req.operation) else {
             return AuthDecision::Deny(format!("未知 fs 操作 '{}'", req.operation));
@@ -263,7 +263,7 @@ impl ResourceAuthorizer for FsAuthorizer {
 
 // ==================== api-call 资源仲裁器 ====================
 
-/// 互调资源仲裁器（ADR-0017 层 1 门禁的框架适配）
+/// 互调资源仲裁器（互调门禁层 1 的框架适配）
 ///
 /// 阶段 1 恒放行：互调无调用方声明段——目标方 manifest `api` 声明
 /// 已由注册表承载（激活登记/停用注销）；阶段 3 即注册表命中判定。
@@ -304,15 +304,15 @@ impl ResourceAuthorizer for ApiCallAuthorizer {
 // ==================== 资源覆盖仲裁 ====================
 
 impl SecurityFramework {
-    /// 单插件 Store 资源覆盖的仲裁（core-config × core-security，票据 07）
+    /// 单插件 Store 资源覆盖的仲裁（core-config × core-security）
     ///
     /// 插件只能自我收紧：最终值逐字段取 `min`（请求值、内核配置值、编译期
     /// 硬上限）——放宽请求被钳回上限并 warn（结构化字段 `plugin_id`）。
     /// 无请求（旧插件 / 未声明 `resourceOverrides`）时原样返回内核配置，
-    /// 行为与票据 07 之前完全一致（零迁移）。
+    /// 行为与此前完全一致（零迁移）。
     ///
     /// 仲裁点在安全模块而非配置模块：资源上限属于安全边界，与授权决策同源
-    /// （spec 配置模块决策：per-plugin 覆盖由安全模块钳制在安全上限内）。
+    /// （配置模块既定决策：per-plugin 覆盖由安全模块钳制在安全上限内）。
     pub fn resolve_store_limits(
         &self,
         plugin_id: &str,
@@ -514,13 +514,13 @@ mod tests {
         );
     }
 
-    // ==================== FsAuthorizer（fs 资源适配，票据 04） ====================
+    // ==================== FsAuthorizer（fs 资源适配） ====================
 
     /// fs 资源测试环境：真实 PermissionManager + FsAuthChecker（无头，弹窗层不可用）；
     /// 返回 (permission, storage, authorizer, framework)——authorizer 供单阶段直调，
     /// framework 已注册同一实例供管线端到端；storage 供预置持久授权记录
     #[allow(clippy::type_complexity)]
-    /// 第一方清单里的插件 id（票 08/P0-2：中性测试 id——测试表由 fs_environment 注入，
+    /// 第一方清单里的插件 id（中性测试 id——测试表由 fs_environment 注入，
     /// 判定机制与插件名无关，wasm-core 测试不持产品清单）
     const FIRST_PARTY_PLUGIN: &str = "test.first-party";
 
@@ -536,7 +536,7 @@ mod tests {
             std::sync::Mutex::new(db),
         )));
         let permission = Arc::new(PermissionManager::new());
-        // 票 08/P0-2：豁免表宿主注入——本测试环境注入测试表（.claude 项目段），
+        // 豁免表宿主注入——本测试环境注入测试表（.claude 项目段），
         // 使 first-party 断言成立；第三方插件不在表内 → 无豁免
         let fs_auth = Arc::new(FsAuthChecker::new(
             storage.clone(),
@@ -599,7 +599,7 @@ mod tests {
         );
     }
 
-    /// 端到端（票 07 改判）：**第一方**在具名集成目录段内经三层校验放行，
+    /// 端到端（改判结论）：**第一方**在具名集成目录段内经三层校验放行，
     /// 第三方在同一目录段被拒——旧实现按 `.claude/` 子串对**任何**插件放行，
     /// 那条判据已退役，这里锁的是改造后的两侧行为。
     #[tokio::test]
@@ -632,7 +632,7 @@ mod tests {
                 fw.authorize(&fs_req("com.test.p", "read", target.to_str().unwrap())),
                 AuthDecision::Deny(_)
             ),
-            "第三方在同一 `.claude` 段必须被拒（无头无弹窗）——票 07 红测的管线侧"
+            "第三方在同一 `.claude` 段必须被拒（无头无弹窗）——红测的管线侧"
         );
     }
 
@@ -719,10 +719,10 @@ mod tests {
         );
     }
 
-    /// 票 04 端到端：`always_allow` 档放行未覆盖目标并落账，但**越不过声明闸门**
+    /// 端到端：`always_allow` 档放行未覆盖目标并落账，但**越不过声明闸门**
     ///
     /// 两段断言在同一条管线上：① 未声明 `fs:read` 时即使档位是「始终允许」也 Deny
-    /// （manifest 声明门在阶段 1，策略层在阶段 2/3——spec §4.2 的硬闸门）；
+    /// （manifest 声明门在阶段 1，策略层在阶段 2/3——硬闸门）；
     /// ② 补上声明后同一路径放行，且读模型里出现一条 `always_allow` 记录。
     /// 变异判据：把策略判定提到声明段之前（或让声明段放行）⇒ ① 转红。
     #[tokio::test]
@@ -771,7 +771,7 @@ mod tests {
         assert_eq!(overview.records[0].ops, vec!["read".to_string()]);
     }
 
-    // ==================== 资源覆盖仲裁（票据 07） ====================
+    // ==================== 资源覆盖仲裁 ====================
 
     /// 无请求（旧插件 / 未声明 resourceOverrides）：原样返回内核配置（零迁移）
     #[test]
@@ -832,7 +832,7 @@ mod tests {
         );
     }
 
-    /// api-call 资源：未声明不可调（ADR-0017 语义经框架保持）
+    /// api-call 资源：未声明不可调（互调门禁语义经框架保持）
     #[test]
     fn api_call_gate_via_framework() {
         let registry = Arc::new(ApiRegistry::new());

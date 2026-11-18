@@ -12,7 +12,7 @@ use chacha20poly1305::{
 use rand::rngs::OsRng;
 use rand::RngCore;
 
-use wasmnest_server_base::error::{AppError, Result};
+use crate::error::{CryptoError, CryptoResult};
 
 /// ChaCha20-Poly1305 密钥长度（字节，256 bit）
 pub const KEY_LEN: usize = 32;
@@ -36,7 +36,12 @@ pub fn generate_nonce() -> [u8; NONCE_LEN] {
 /// 使用 ChaCha20-Poly1305 加密
 ///
 /// 语义与 [`crate::aes_gcm::encrypt`] 一致，返回密文 + Poly1305 认证标签。
-pub fn encrypt(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], plaintext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>> {
+pub fn encrypt(
+    key: &[u8; KEY_LEN],
+    nonce: &[u8; NONCE_LEN],
+    plaintext: &[u8],
+    aad: Option<&[u8]>,
+) -> CryptoResult<Vec<u8>> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let payload = Payload {
         msg: plaintext,
@@ -44,11 +49,16 @@ pub fn encrypt(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], plaintext: &[u8], a
     };
     cipher
         .encrypt(Nonce::from_slice(nonce), payload)
-        .map_err(|e| AppError::Internal(format!("ChaCha20-Poly1305 加密失败: {e}")))
+        .map_err(|e| CryptoError::operation_failed(format!("ChaCha20-Poly1305 加密失败: {e}")))
 }
 
 /// 使用 ChaCha20-Poly1305 解密
-pub fn decrypt(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], ciphertext: &[u8], aad: Option<&[u8]>) -> Result<Vec<u8>> {
+pub fn decrypt(
+    key: &[u8; KEY_LEN],
+    nonce: &[u8; NONCE_LEN],
+    ciphertext: &[u8],
+    aad: Option<&[u8]>,
+) -> CryptoResult<Vec<u8>> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let payload = Payload {
         msg: ciphertext,
@@ -56,7 +66,7 @@ pub fn decrypt(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], ciphertext: &[u8], 
     };
     cipher
         .decrypt(Nonce::from_slice(nonce), payload)
-        .map_err(|e| AppError::Internal(format!("ChaCha20-Poly1305 解密失败: {e}")))
+        .map_err(|e| CryptoError::operation_failed(format!("ChaCha20-Poly1305 解密失败: {e}")))
 }
 
 #[cfg(test)]

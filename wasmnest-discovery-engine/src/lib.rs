@@ -18,34 +18,40 @@
 //!   lib.rs         接线：`bindgen!` 生成的 Host trait 实现 + `HostModule` 自报
 //! ```
 //!
-//! **脱绑（能力域脱绑 P2）**：WIT 绑定层（`bindgen!` / `HostModule` / `inventory::submit!` /
-//! `impl Host`）以 `#[cfg(feature = "common-host")]` 门控——桌面宿主开 feature 后行为
-//! 逐字不变（ABI / WIT / 权限位 / 事件形状 / inventory 注册零变化），无 feature 的宿主
-//! （移动端 / 无头）拿纯引擎：机制（engine/advertiser/types）、端口（ports）、装配
-//! （`install` / `install_ports`）默认全部可用。
+//! **脱绑**：WIT 绑定层（`bindgen!` / `HostModule` / `inventory::submit!` /
+//! `impl Host`）以 `#[cfg(feature = "common-host")]` 门控——**双端宿主**（桌面 /
+//! 移动）同开此 feature，行为逐字不变（ABI / WIT / 权限位 / 事件形状 / inventory
+//! 注册零变化）；不开 feature 的引用方（无头测试 / 第三方宿主）拿纯引擎：机制
+//! （engine/advertiser/types）、端口（ports）、装配（`install` / `install_ports`）
+//! 默认全部可用。
 //!
 //! 判定该域「非 POSIX 原生」的依据：WASI 预览 3 只提供
-//! `cli / clocks / filesystem / random / sockets`，组播 DNS 是应用层协议
-//! （spec §3.1 判据表）。
+//! `cli / clocks / filesystem / random / sockets`，组播 DNS 是应用层协议。
 //!
-//! ## 红线（AGENTS §5.1）
+//! ## 红线
 //!
 //! 本 crate **不含任何产品概念**：无「设备」「会话」「配对」「传输」等名词。
 //! 浏览/广播是**纯引擎参数透传**（serviceType / port / TXT 原样携带），业务含义
-//! 由插件自己解释——这是 §5.1.3「引擎实现」允许进宿主的形态。属主隔离、事件定向
+//! 由插件自己解释——这正是「引擎实现」允许进宿主的形态。属主隔离、事件定向
 //! 投递、停用回收三项语义在 [`engine`] 中逐字保留。
+//!
+//! ## 锁中毒策略
+//!
+//! 本 crate 统一采用「锁中毒即 panic（快速失败）」：中毒意味着持锁线程已 panic，
+//! 受保护状态可能半改，继续运行比显性崩溃更危险。与 `server-core` 对纯数据表
+//! 使用 `into_inner()` 恢复的口径不同——两处取舍都写在各自头注，不算漂移。
 
 use std::sync::Arc;
 
 pub mod engine;
 pub mod ports;
-/// 能力路由词汇自持（票 02 批次 03：能力名 / 方法族前缀 / 提供者导出表；内核零字面量）
+/// 能力路由词汇自持（能力名 / 方法族前缀 / 提供者导出表；内核零字面量）
 pub mod routing;
-/// 类型中枢：全进程对同一服务类型只保留一条 `daemon.browse`（单 listener 槽不变量，
-/// ADR 0054）。出口 [`subscribe_type`] / [`request_type_requery`]
+/// 类型中枢：全进程对同一服务类型只保留一条 `daemon.browse`（单 listener 槽不变量）。
+/// 出口 [`subscribe_type`] / [`request_type_requery`]
 pub mod type_hub;
-/// wire 契约词汇自持副本（能力域脱绑 P2：发现事件名 / topic 命名规则，
-/// 与桌面 SDK 原版逐字一致由平台仓漂移锁 `cross-end-tests/tests/wire_drift_locks.rs` 钉死）
+/// wire 契约词汇自持副本（发现事件名 / topic 命名规则，
+/// 与桌面 SDK 原版逐字一致，由测试仓 `wire_drift_locks` 钉死）
 pub mod wire;
 
 /// 自播面：宿主把本机 `_wasmnest._tcp.local.` 服务广播到局域网供移动端发现
@@ -64,15 +70,14 @@ pub use type_hub::{
     TypeHubSet,
 };
 
-// mDNS 浏览单例不变量（ADR 0054：全进程对同一服务类型只允许类型中枢调
+// mDNS 浏览单例不变量（全进程对同一服务类型只允许类型中枢调
 // `daemon.browse` / `stop_browse`，守护实例只允许 `engine` 创建一次）的源码锁
-// 已随三仓拆分 L2/E2b（票 08）迁平台仓：扫描面横跨能力仓 `packages/**/src` 与
-// 双端宿主 `src-tauri/src`，只有平台仓能同时看到两侧——
-// `cross-end-tests/tests/mdns_browse_singleton_lock.rs`（判据与白名单逐字未变）。
+// 在测试仓 `mdns_browse_singleton_lock`：判据要同时看能力 crate 与双端宿主源码，
+// 只有跨仓测试面能同时看到两侧（判据与白名单逐字未变）。
 
 // ==================== 模块描述符词汇（常编译 pub：宿主 adapter 引用） ====================
 //
-// wasm-core 纯净性收口票 02 批次 03：宿主侧 adapter（`src-tauri/src/plugin/mdns.rs`）
+// 宿主侧 adapter（`src-tauri/src/plugin/mdns.rs`）
 // 用 `expect_host_module!(MODULE_NAME)` 声明白名单条目，并断言接口路径 / 权限位与
 // 本 crate 逐字一致——三个常量必须**常编译 pub**（与 pty-engine 先例同形），且
 // `DESC` 直接取自它们（结构上不可能漂移）。
@@ -80,7 +85,7 @@ pub use type_hub::{
 /// 能力模块名（白名单键；`HostModuleDesc::name` 的真源）
 pub const MODULE_NAME: &str = "discovery";
 /// 本模块提供的 guest interface 路径
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.1/host-mdns"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:mdns@0.0.1/host-mdns"];
 /// 本模块读写的权限位
 pub const MODULE_PERMISSIONS: &[&str] = &["network:mdns"];
 
@@ -93,7 +98,7 @@ use wasmnest_host_kit::{HostModule, HostModuleDesc, ModuleEntry, WasmPluginState
 #[cfg(feature = "common-host")]
 use wasmtime::component::{bindgen, Linker};
 
-/// 能力模块描述符（只描述机制，禁带产品名词——AGENTS §5.1 B1/B5）
+/// 能力模块描述符（只描述机制，禁带产品名词）
 #[cfg(feature = "common-host")]
 const DESC: HostModuleDesc = HostModuleDesc {
     name: MODULE_NAME,
@@ -113,7 +118,7 @@ impl HostModule for DiscoveryModule {
     }
 
     fn register(&self, linker: &mut Linker<WasmPluginState>) -> wasmtime::Result<()> {
-        wasmnest::plugin::host_mdns::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
+        wasmnest::mdns::host_mdns::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
     }
 }
 
@@ -130,8 +135,9 @@ static MODULE: DiscoveryModule = DiscoveryModule;
 // **依赖前提**：宿主必须有一行 `use wasmnest_discovery_engine as _;` 强制引用
 // （见 `wasm_core::manager::runtime::component`），否则本 rlib 不进最终二进制、
 // 静态不执行 ⇒ 注册丢失，且 guest 会在实例化期报「无该 import」。
-// 无 `common-host` feature 的宿主（移动端 / 无头）**不应**注册——它没有插件宿主
-// 机制，桌面侧强制引用行同步 `#[cfg(feature = "common-host")]`。
+// 不开 `common-host` 的引用方（无头测试 / 第三方宿主）**不应**注册——它没有插件
+// 宿主机制；双端宿主的强制引用行与 `expect_host_module!` 同处（桌面
+// `plugin/mdns.rs`、移动 `plugin/host_domains/mdns.rs`）。
 #[cfg(feature = "common-host")]
 inventory::submit! {
     ModuleEntry { module: &MODULE }
@@ -145,16 +151,16 @@ bindgen!({
     // provider 侧。
     //
     // ⚠️ 由此产生的**硬约束**：本 crate 与宿主各自生成的
-    // `wasmnest::plugin::host_mdns::Host` 是**同名但不同类型**的 trait。宿主必须
+    // `wasmnest::mdns::host_mdns::Host` 是**同名但不同类型**的 trait。宿主必须
     // 同时删掉自己的 mdns `Host` impl 与 `add_to_linker` 行，否则同一个
     // interface 被注册两次 → 装配期 `defined twice`。
-    // 票 05 / ADR 0052 D2：契约面脱端——本文件是 `host-mdns` 的**共享契约真源**
+    // 契约面脱端：本文件是 `host-mdns` 的**共享契约真源**
     // （`world cap-mdns`，双端 compose 直接消费），不再读桌面 SDK 生成物目录，
     // 也不再是「core.wit 的副本」。
     path: "wit/mdns.wit",
     world: "cap-mdns",
     // 与宿主同款：全部导出绑定生成 async 变体（wasmtime async store 要求）。
-    // cap-mdns 无 export 成员，此配置无生效对象（实测编译绿，票 05 实施记录）
+    // cap-mdns 无 export 成员，此配置无生效对象（实测编译绿）
     exports: { default: async },
 });
 
@@ -164,7 +170,7 @@ bindgen!({
 // 同迁），此层只做「拿端口 → 转调 → 按 WIT `result` 形状返回」。
 
 #[cfg(feature = "common-host")]
-impl wasmnest::plugin::host_mdns::Host for WasmPluginState {
+impl wasmnest::mdns::host_mdns::Host for WasmPluginState {
     fn browse(&mut self, service_type: String) -> Result<String, String> {
         engine::browse(&ports::ports(), &self.plugin_id, &service_type)
     }
@@ -201,7 +207,7 @@ pub fn install<P: DiscoveryPorts + 'static>(ports: P) {
 /// 回收实现自持（句柄表在 [`engine`]）：本钩子只做形状适配——域内返回回收计数，
 /// 钩子契约是 `fn(&str)`，计数就地 `debug!` 吸收（不让返回值反向污染通用契约）。
 ///
-/// **为什么经钩子而不是内核直调**（wasm-core 纯净性收口票 02 批次 03）：宿主侧
+/// **为什么经钩子而不是内核直调**：宿主侧
 /// adapter 迁出内核后，内核不再点名本域（`host_api/mdns.rs` 与它的
 /// `purge_for_plugin` 转发一并删除）；停用路径经
 /// `wasmnest_host_kit::DomainHooksRegistry::on_plugin_purge` 遍历（与 pty 同款）。
@@ -223,3 +229,39 @@ pub static HOOKS: wasmnest_host_kit::DomainHooks = wasmnest_host_kit::DomainHook
 
 #[cfg(feature = "common-host")]
 wasmnest_host_kit::submit_hooks!(HOOKS);
+
+// ==================== 契约包身份（WIT 按包拆分） ====================
+
+/// 本能力域 WIT 包全名（`namespace:name@version`）
+///
+/// 与 `wit/mdns.wit` 的 `package` 行逐字一致（下方锁测试断言），也是宿主
+/// `MODULE_INTERFACES` 各项的前缀。拆包后每个能力域独立版本：只在本包 WIT
+/// 变更时 bump，不再随 `wasmnest:plugin` 全局版本前进。
+pub const WIT_PACKAGE: &str = "wasmnest:mdns@0.0.1";
+
+#[cfg(test)]
+mod wit_package_lock {
+    /// 常量 ↔ 分片真源 package 行（两侧任一手改即红）
+    #[test]
+    fn wit_package_matches_slice_package_line() {
+        let raw = include_str!("../wit/mdns.wit");
+        let line = raw
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("package "))
+            .expect("WIT 分片缺 package 行");
+        assert_eq!(line, format!("package {};", super::WIT_PACKAGE));
+    }
+
+    /// 宿主模块接口路径必须属于本包（包名/版本漂移＝运行期 import 失配，编译面不红）
+    #[test]
+    fn module_interfaces_belong_to_wit_package() {
+        for iface in super::MODULE_INTERFACES {
+            assert!(
+                iface.starts_with(&format!("{}/", super::WIT_PACKAGE)),
+                "MODULE_INTERFACES 项 {iface} 不属于 {}",
+                super::WIT_PACKAGE
+            );
+        }
+    }
+}

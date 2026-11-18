@@ -11,7 +11,7 @@ async fn connect_denied_without_ws_client_permission() {
     let err = ws_connect(&ports, &plugin, r#"{"url":"ws://127.0.0.1:1/"}"#).expect_err("denied");
     assert_eq!(err, denied_client());
 
-    // 只有服务端域权限也不得放行客户端域（分域隔离，spec D6）
+    // 只有服务端域权限也不得放行客户端域（分域隔离）
     let ports: Arc<dyn WsPorts> = FakePorts::with(&[(&plugin, PERMISSION_WS_SERVER)]);
     let err = ws_connect(&ports, &plugin, r#"{"url":"ws://127.0.0.1:1/"}"#).expect_err("denied");
     assert_eq!(err, denied_client());

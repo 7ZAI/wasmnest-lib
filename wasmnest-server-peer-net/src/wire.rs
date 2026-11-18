@@ -7,9 +7,7 @@
 //! 权限位判据字符串因此改为**本域自持副本**：权限门的判据是宿主安全闸门与能力域
 //! 之间的 wire 契约，漂移会让插件声明 `peer` 却匹配不上宿主权限位。
 //!
-//! 桌面 SDK 原常量**不删除**（插件侧 manifest / WIT 契约面仍有消费方），副本与
-//! 原版逐字一致由平台仓漂移锁钉死（三仓拆分 L2/E2b 票 08 迁出本 crate：
-//! `cross-end-tests/tests/wire_drift_locks.rs`）：任一侧漂移即红。
+//! 副本与原版逐字一致，由测试仓 `wire_drift_locks` 钉死：任一侧漂移即红。
 //!
 //! 注意：本模块定义块的注释与桌面 SDK **逐字一致**（漂移锁按文本块比对），
 //! 本地说明一律写在本模块文档里，不要改动定义块内注释。
@@ -24,3 +22,10 @@
 
 /// 权限位：`peer`（与桌面 SDK `wasmnest_plugin_api::permission` 逐字一致）
 pub const PERMISSION_PEER: &str = "peer";
+
+// 内网穿透权限位（非 doc 注释：上面的 `PERMISSION_PEER` doc 块由测试仓
+// 漂移锁按文本比对，新增位不得混进该块）。
+pub const PERMISSION_TUNNEL_SERVE: &str = "tunnel:serve";
+pub const PERMISSION_TUNNEL_CONNECT: &str = "tunnel:connect";
+/// 只读连通性探测（`host-tunnel.probe-relay`）；不蕴含任何写面
+pub const PERMISSION_TUNNEL_PROBE: &str = "tunnel:probe";

@@ -2,6 +2,7 @@
 //!
 //! 数据库连接管理
 
+use crate::error::DbResultExt;
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -58,20 +59,51 @@ fn explicit_indexes(conn: &Connection, table: &str) -> crate::Result<Vec<String>
     Ok(names)
 }
 
+/// 插件私有库连接的文件边界加固（2026-11-09 审核 2.1）
+///
+/// SQLite 侧两道闸：
+/// - `SQLITE_LIMIT_ATTACHED = 0`：运行期拒绝一切 `ATTACH`；
+/// - authorizer 拒绝 `Attach` / `Detach`（纵深防御：即便 limit 被后续代码放宽，
+///   或 SQLite 版本对 limit 的解释变化，挂载仍过不去）。
+///
+/// `VACUUM INTO '<path>'` 不走 authorizer，它的 SQL 文本拒绝在
+/// `wasmnest-host-api-core::database::reject_file_boundary_sql`（五个 WIT 原语入口
+/// 都经过那里）——两处一起才是完整的文件边界。
+fn harden_connection(conn: &Connection) {
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0);
+    conn.authorizer(Some(|ctx: rusqlite::hooks::AuthContext<'_>| {
+        use rusqlite::hooks::{AuthAction, Authorization};
+        match ctx.action {
+            AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
+            _ => Authorization::Allow,
+        }
+    }));
+}
+
 impl Database {
     /// Create a new database connection
+    ///
+    /// 打开即做**文件边界加固**（[`harden_connection`]）：本 wrapper 是 guest SQL
+    /// 唯一可达的连接面（插件私有库），`ATTACH` 能在 step 期把一个任意 SQLite
+    /// 文件挂在连接上（返回 0 行，不报错，副作用留在缓存的连接里）——等于绕过
+    /// `fs_auth` 的文件授权模型读其它插件私有库 / 宿主主库。
     pub fn new(path: &Path) -> crate::Result<Self> {
-        let conn = Connection::open(path)?;
+        let conn = Connection::open(path).db()?;
+        harden_connection(&conn);
         Ok(Self { conn })
     }
 
-    /// 从既有连接构造（常编译，票 02 M9 单形态化）：宿主主库连接由宿主侧打开
+    /// 从既有连接构造（常编译，单形态化）：宿主主库连接由宿主侧打开
     /// （路径与锁归宿主），**建表与迁移真源在本 crate**——调用方开库后必须调
     /// [`Database::init_schema`]。宿主持有独立 DDL 副本会与 `db/schema.sql` 漂移：
     /// 2026-10-14 实证：宿主自持副本建出的旧 `plugin_auth_records` 缺 `id`，
     /// `security::fs_auth` 每次读取都报 `no such column: id`（按未命中处理 ⇒
     /// 授权记录面恒失败）。移动 host_domains/db 域消费；桌面宿主按需复用。
+    ///
+    /// 同样做文件边界加固（[`harden_connection`]）：主库虽不直接接 guest SQL，
+    /// 但「同一段护栏适用于本 wrapper 的每一条连接」比「按开库入口分辨」更难写错。
     pub fn from_connection(conn: Connection) -> Self {
+        harden_connection(&conn);
         Self { conn }
     }
 
@@ -190,13 +222,13 @@ impl Database {
         // （auth_records / quick_actions / session_db / task_data）整体退役，
         // 旧库滞留表不读不迁不清理（无残留迁移代码）。
         //
-        // 2026-09-27 授权策略增强（票 01）：`plugin_auth_policies` /
+        // 2026-09-27 授权策略增强：`plugin_auth_policies` /
         // `plugin_auth_records` 两表 + `idx_auth_records_lookup` 索引全由
-        // `schema.sql` 的 `IF NOT EXISTS` 建出（单一事实源，见 AGENTS §9），
+        // `schema.sql` 的 `IF NOT EXISTS` 建出（单一事实源），
         // 无需列级迁移；幂等性由 `auth_tables_migration_is_idempotent` 与
         // `auth_tables_are_created_on_legacy_db` 两条锁覆盖。
         //
-        // v33（2026-09-29 ADR 0033）：入场签发密钥的真源迁到认证中心，宿主不再
+        // v33（2026-09-29）：入场签发密钥的真源迁到认证中心，宿主不再
         // 读写入场密钥。`plugin_secrets` 里属主为 `host` 的那把 `jwt.key` 因此成为
         // 不可达的旧密钥材料——**清掉它**（幂等：不存在也视为成功）。
         //
@@ -214,7 +246,7 @@ impl Database {
         if purged > 0 {
             tracing::info!(
                 purged_rows = purged,
-                "db migration v33: purged retired host-owned entry-token signing key (ADR 0033)"
+                "db migration v33: purged retired host-owned entry-token signing key"
             );
         }
 
@@ -257,12 +289,32 @@ impl Database {
 mod tests {
     use super::*;
 
-    /// 打开内存库并跑生产初始化（票据 21 修复：不再复制迁移逻辑，
+    /// 打开内存库并跑生产初始化（修复：不再复制迁移逻辑，
     /// 直接调用 `init_schema`，使迁移被破坏时测试真实变红）
     fn open_in_memory_and_init() -> Database {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
         db.init_schema().expect("init schema");
         db
+    }
+
+    /// 插件私有库连接不得 `ATTACH` 任意文件（2026-11-09 审核 2.1）
+    ///
+    /// 两层都在：`SQLITE_LIMIT_ATTACHED = 0`（报 too many attached databases）与
+    /// authorizer 拒 Attach（报 not authorized）。只要求 Err，不锁具体文案——
+    /// SQLite 版本差异不应让这条安全用例变脆。
+    #[test]
+    fn attach_is_denied_at_connection_level() {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        assert!(
+            db.conn()
+                .prepare("ATTACH DATABASE ':memory:' AS x")
+                .is_err(),
+            "plugin database connections must not attach other files"
+        );
+        // 普通 SQL 不受影响
+        db.conn()
+            .execute("CREATE TABLE t (x INTEGER)", [])
+            .expect("normal DDL must still work");
     }
 
     /// sqlite_master 里某类对象的同名条目数（建表 / 建索引幂等的唯一可观测面）
@@ -276,7 +328,7 @@ mod tests {
             .expect("sqlite_master count query")
     }
 
-    /// 授权两表 + 索引的建表语句幂等（spec §5.1 / C13 正例）：
+    /// 授权两表 + 索引的建表语句幂等（正例）：
     /// 同一库连跑两次生产初始化，结果一致，且已播种的授权数据不被清掉
     #[test]
     fn auth_tables_migration_is_idempotent() {
@@ -328,7 +380,7 @@ mod tests {
     }
 
     /// C13 反例：旧库（有 `fs_granted_paths`、无授权两表）跑一次生产初始化
-    /// 即建表成功；旧记录原样保留（存量用户零感知，spec §5.2）
+    /// 即建表成功；旧记录原样保留（存量用户零感知）
     ///
     /// 旧库形态用「生产初始化后删掉新表」构造：既得到真实的历史库形状
     /// （settings / plugin_storage / plugin_secrets + 旧 fs 授权数据），
@@ -621,7 +673,7 @@ CREATE TABLE plugin_auth_records (\n    plugin_id   TEXT NOT NULL,\n    target  
         }
     }
 
-    /// v33（ADR 0033）+ v34（B-downsink）：宿主属主的入场签发密钥行与宿主托管
+    /// v33 + v34：宿主属主的入场签发密钥行与宿主托管
     /// 的生物公钥行被清掉，**且只清这两类**
     ///
     /// 判据：

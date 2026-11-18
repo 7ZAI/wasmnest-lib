@@ -167,7 +167,7 @@ impl PtyPorts for TestPorts {
 
 /// 常驻配置：进程阻塞在 `read`，句柄在整个断言窗口内保持在册
 ///
-/// **为什么不能再用 `/bin/true` 这类短命命令**：票 04 起「终态事件即摘除」——进程
+/// **为什么不能再用 `/bin/true` 这类短命命令**：「终态事件即摘除」——进程
 /// 一退出，退出监听任务就把句柄与环从注册表摘掉，随后任何 `ring-fetch` /
 /// `is-running` 都会得到 `pty handle not found` 而非预期的行为。凡以「句柄仍在」
 /// 为前提的用例一律用本配置（数据面/生命面的载体必须是活进程）。
@@ -369,7 +369,7 @@ fn io_apis_enforce_owner() {
     );
 }
 
-/// 反例（票 06 矩阵分格）：**完全不授权**的插件调用全部 6 个函数 → 一律权限拒绝，
+/// 反例（矩阵分格）：**完全不授权**的插件调用全部 6 个函数 → 一律权限拒绝，
 /// 且证明权限门先于属主仲裁与句柄查表（用不存在的句柄也必须回权限错，而不是 not-found）
 #[test]
 fn every_api_without_any_permission_is_denied_before_any_lookup() {
@@ -419,11 +419,11 @@ fn every_api_without_any_permission_is_denied_before_any_lookup() {
     );
 }
 
-// ==================== 生命周期（票 04：kill / 退出事件 / 停用回收） ====================
+// ==================== 生命周期（kill / 退出事件 / 停用回收） ====================
 
 /// 漂移锁：宿主发布的事件名必须与 SDK 常量一致，且两侧形状共用 `owned_topic`
 ///
-/// 票 05 前宿主按 `{EVENT_EXIT}.{owner}` 手拼、插件按 SDK `pty_event_topic` 订阅，
+/// 旧形态下宿主按 `{EVENT_EXIT}.{owner}` 手拼、插件按 SDK `pty_event_topic` 订阅，
 /// 两处各写一份就会「订阅成功但永远收不到」，且这类错配在单侧测试里不可见。
 /// 现在两侧都走 `crate::wire::owned_topic`（与 SDK `bus::owned_topic` 漂移锁钉死），
 /// 形状不再有漂移面；
@@ -444,7 +444,7 @@ fn exit_event_name_matches_sdk_subscription_helper() {
 /// 按 SDK 订阅助手构造属主定向 topic（`<owner>::pty:exit`）
 ///
 /// 测试订阅侧刻意走 SDK 助手而非宿主侧拼接：宿主发布形状若与插件订阅形状分叉，
-/// 下面的投递断言直接收不到事件（票 05 命名空间的行为性漂移锁）。
+/// 下面的投递断言直接收不到事件（命名空间的行为性漂移锁）。
 fn exit_topic(owner: &str) -> String {
     crate::wire::pty_event_topic(crate::wire::PTY_EXIT, owner)
 }
@@ -519,7 +519,7 @@ fn kill_terminates_handle_and_publishes_killed_event() {
     assert_eq!(registered_count_for(owner), 0, "kill 后注册表不得留残项");
 }
 
-/// 正例：进程自然退出 → 属主收到 reason=stopped + 真实退出码（票 01 的 exitCode 能力）
+/// 正例：进程自然退出 → 属主收到 reason=stopped + 真实退出码（exitCode 能力）
 #[cfg(target_os = "linux")]
 #[test]
 fn natural_exit_publishes_stopped_event_with_exit_code() {
@@ -740,7 +740,7 @@ fn failed_spawn_publishes_no_event_and_registers_nothing() {
     assert_eq!(registered_count_for(owner), 0, "失败不得留句柄");
     assert!(
         wait_event_timeout(&events, Duration::from_millis(300)).is_none(),
-        "失败路径不得发布任何事件（回归票 02 契约）"
+        "失败路径不得发布任何事件（回归契约）"
     );
 }
 
@@ -919,7 +919,7 @@ fn output_notify_without_subscribers_keeps_ring_intact() {
     assert!(pty_is_running(ctx.ports(), owner, &pty_id).expect("句柄应在册"));
 }
 
-// ==================== 数据面（票 03：write / resize / is-running） ====================
+// ==================== 数据面（write / resize / is-running） ====================
 
 /// 反例：只授创建域（pty:spawn）→ 数据面三函数一律拒绝（两域独立）
 #[cfg(target_os = "linux")]
@@ -1017,7 +1017,7 @@ fn write_over_limit_is_rejected_without_partial_input() {
     let ctx = ctx_with_pty(
         "pty-test.limit",
         // 收到一行才回显标记：据此判定「前一次超限写入没有半个字节漏进去」；
-        // 末尾再阻塞一次，保证断言窗口内句柄不被退出监听摘走（票 04）
+        // 末尾再阻塞一次，保证断言窗口内句柄不被退出监听摘走
         r#"{"command":"/bin/sh","args":["-c","read line; echo PASSED; read go"]}"#,
     );
     let pty_id = find_handle_of("pty-test.limit");
@@ -1064,10 +1064,10 @@ fn resize_changes_kernel_winsize_observed_by_process() {
     );
 }
 
-/// 契约：`is-running` 判据四格真值表（票 03 C-②的确定性锁）
+/// 契约：`is-running` 判据四格真值表（确定性锁）
 ///
 /// 「进程自然退出但句柄尚未摘除」这一格在端到端上只有毫秒窗口（EOF 后退出监听
-/// 立即摘环，票 04），故把组合判定做成纯函数逐格断言：去掉 `!output_terminated`
+/// 立即摘环），故把组合判定做成纯函数逐格断言：去掉 `!output_terminated`
 /// 的变异必须在此翻红，否则该判据就退化成「只信 `running` 标志」——那会让插件
 /// 在丢事件时永远看到一个死进程是活的。
 #[test]
@@ -1153,7 +1153,7 @@ fn ring_tail_readable_during_exit_read_window() {
     }
 }
 
-// ==================== 限额与背压（票 05） ====================
+// ==================== 限额与背压 ====================
 
 /// 持续产出的流式载体（`stty -echo` 关掉 tty 回显，环内内容即进程产出）
 #[cfg(target_os = "linux")]
@@ -1178,7 +1178,7 @@ fn quiet_cat_config() -> &'static str {
 }
 
 /// 由短行拼装的 N 字节载荷（canonical 终端下行块才不会卡在内核输入队列，
-/// 与票 03 的边界用例同一约束）
+/// 与边界用例同一约束）
 #[cfg(target_os = "linux")]
 fn line_payload(len: usize) -> Vec<u8> {
     let mut payload: Vec<u8> = Vec::with_capacity(len);
@@ -1377,7 +1377,7 @@ fn declared_ring_bytes_out_of_range_is_rejected_without_side_effects() {
 /// 背压契约：小环 + 从不拉取的消费者 → 产出持续推进，落后游标得到 truncated 并可续拉
 ///
 /// 「源侧零等待」在环这一维的可观测判据是**产出偏移持续增长**（读线程从不因消费者
-/// 停摆；无丢帧属引擎侧，票 01 的 `pty_reader` 用例覆盖）。
+/// 停摆；无丢帧属引擎侧，`pty_reader` 用例覆盖）。
 #[cfg(target_os = "linux")]
 #[test]
 fn small_declared_ring_evicts_for_a_never_fetching_consumer_without_stalling_output() {
@@ -1570,7 +1570,7 @@ fn second_fetch_from_next_offset_returns_nothing_new() {
 
 /// 裁剪线证据：参数数组原样 exec，宿主不做 shell 解释（分号不构成第二条命令）
 ///
-/// 载体用常驻 `sed`（票 04 后短命命令会立刻被摘环）：宿主若做 shell 包装
+/// 载体用常驻 `sed`（「终态事件即摘除」下短命命令会立刻被摘环）：宿主若做 shell 包装
 /// （`sh -c "sed s/^/literal; echo PWNED"`），sed 的参数会被截断为 `s/^/literal;`、
 /// `echo PWNED` 另行执行，连续字面量 `literal; echo PWNED` 就不会出现在输出里。
 #[cfg(target_os = "linux")]
@@ -1652,8 +1652,8 @@ fn spawn_applies_requested_terminal_size() {
 
 /// 正例：插件私有 PTY 只活在引擎注册表（业务线的两条注册表都不存在了）
 ///
-/// 票 11：原断言查的是「业务输出总线有没有它 / 业务会话表有没有它」——这两个对象
-/// 随 `session/` 目录删除，**类型层面已不可能被登记**。保留的是这个用例仍然有效的
+/// 旧断言查的是「业务输出总线有没有它 / 业务会话表有没有它」——这两个对象
+/// 已不存在，**类型层面已不可能被登记**。保留的是这个用例仍然有效的
 /// 那一半：句柄确实在引擎注册表里在册、输出确实只落引擎环（`ring_of` / `is_registered`
 /// 的正向断言），业务线零感知由「没有业务线」这件事本身保证。
 #[cfg(target_os = "linux")]

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 // ==================== 任务单元执行器（C4：core-task 经注册表分发到域实现） ====================
 
-/// 执行器自报（票 02 批次 05）：内核装配点经 `collected_unit_executors` 遍历注册
+/// 执行器自报：内核装配点经 `collected_unit_executors` 遍历注册
 /// ——manager 不点名本域；执行器随 fs 域（核心子集）留内核，自报静态随之常编译。
 fn make_fs_executor() -> Arc<dyn UnitExecutor> {
     Arc::new(FsUnitExecutor)
@@ -24,7 +24,7 @@ crate::submit_unit_executor!("fs.", make_fs_executor);
 /// fs 单元执行器（kind 前缀 `fs.`）
 ///
 /// 执行前按管线顺序预检声明闸门 + fs_auth 已授权（判据同源、**绝不从池线程触发
-/// 弹窗**——spec §6：未授权 fail-visible 并指名 `host-fs.request-auth` 出路）；
+/// 弹窗**——未授权 fail-visible 并指名 `host-fs.request-auth` 出路）；
 /// 预检通过后再调用单路径 fs 原语，错误文案与同步链逐字一致。
 pub(crate) struct FsUnitExecutor;
 
@@ -117,14 +117,14 @@ fn ensure_unit_path_granted(
         // 缺路径的单元由各 kind 自己报错（那才是它契约里的事），这里不替它判
         return Ok(());
     };
-    // 所需能力按单元种类取（票 02 操作拆分）：写单元要写授权，其余要读授权——
+    // 所需能力按单元种类取：写单元要写授权，其余要读授权——
     // 不带操作集的话「授权读」的目录能跑写单元，池线程这条无弹窗通道就成了绕过口
     let needed = if needs_write {
         FsOps::WRITE
     } else {
         FsOps::READ
     };
-    // 票 02 B5：`is_granted` 是 FsAuthChecker 具体机制方法（不在窄 FsAuthGate trait
+    // `is_granted` 是 FsAuthChecker 具体机制方法（不在窄 FsAuthGate trait
     // 上）——经下转型访问器取回（桌面装配形态恒 Some）
     let checker = host_ctx.fs_auth_checker();
     if block_on_async(checker.is_granted(owner, path, needed)) {
@@ -134,6 +134,23 @@ fn ensure_unit_path_granted(
         "fs unit path not authorized: {} — request it via host-fs.request-auth before submitting units",
         path
     ))
+}
+
+/// 授权判定与真实 IO 共用的路径口径（2026-11-02 安全审查 #40 修复建议 2）
+///
+/// 每个 fs 原语只解析一次路径，并用**同一份结果**做授权与读 / 写 / 删：
+/// 「校验一份、落盘另一份」是多组件路径（`..` / 符号链接）被两侧解释出差异的根源，
+/// 差异一处即为沙箱逃逸。解析失败即拒（fail-visible），不降级为原始路径。
+///
+/// WSL UNC 路径由 `wsl.exe` 桥接解释（远端自己解析 `..`），本地规范化会破坏其
+/// 形态，故原样透传——它仍要过同一条 fs 授权链。
+fn io_target(path: &str) -> Result<String, String> {
+    if wsl_fs::is_wsl_unc_path(path) {
+        return Ok(path.to_string());
+    }
+    crate::security::fs_auth::FsAuthChecker::resolve_for_io(path)
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .ok_or_else(|| format!("fs error: path cannot be resolved: {path}"))
 }
 
 /// 读取文本文件（WSL UNC 路径走 wsl.exe 桥接）
@@ -157,7 +174,7 @@ fn write_text_file(path: &str, content: &str) -> std::io::Result<()> {
     std::fs::write(path, content)
 }
 
-/// fs 资源授权：统一经 core-security 三段决策管线（wasm-core 票据 08）
+/// fs 资源授权：统一经 core-security 三段决策管线
 ///
 /// 替代改造前的手工内联链（`super::check_permission` + `fs_auth.check`）：
 /// 语义等价（声明 → 审批 → 强制，fs 三层校验为框架的 fs 资源实现），
@@ -199,7 +216,7 @@ fn authorize_fs(
 ///
 /// 注：批量预授权（一次弹窗覆盖多路径，`check_batch` 语义）**不并入单路径
 /// 授权函数**——管线 fs 资源实现的强制段是单路径 `check`，批量语义不同，
-/// 强行合并会改变弹窗次数与用户交互，故保留原手工链（见票据 08）。
+/// 强行合并会改变弹窗次数与用户交互，故保留原手工链。
 ///
 /// paths-json 为 JSON 字符串数组；返回是否全部同意（拒绝/超时均为 false）
 pub(crate) fn fs_request_auth(
@@ -219,7 +236,7 @@ pub(crate) fn fs_request_auth(
     let fs_auth = fs_auth.fs_auth_checker();
     // 操作集 = 读 + 写：`request-auth` 的 WIT 签名没有操作维度，插件的用途（fs 单元
     // 可读可写）决定这里要申请两种能力——与改造前「无操作维度 = 读写等价」逐字一致
-    // （票 02 只做拆分与落账，不动这条原语的契约；将来要收窄需 WIT 加参）
+    // （拆分与落账不动这条原语的契约；将来要收窄需 WIT 加参）
     let allowed = block_on_async(fs_auth.check_batch(plugin_id, &paths, FsOps::READ_WRITE));
     if !allowed {
         tracing::warn!(
@@ -285,8 +302,9 @@ pub(crate) fn fs_read(
     plugin_id: &str,
     path: &str,
 ) -> Result<Option<String>, String> {
-    authorize_fs(sec, plugin_id, path, "read")?;
-    read_text_file(path).map(Some).or_else(|e| {
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "read")?;
+    read_text_file(&target).map(Some).or_else(|e| {
         // SDK HostFs 契约：文件不存在返回 Ok(None)（store.rs 等插件依赖此语义处理新建文件）
         if e.kind() == std::io::ErrorKind::NotFound {
             Ok(None)
@@ -303,8 +321,9 @@ pub(crate) fn fs_write(
     path: &str,
     data: &str,
 ) -> Result<(), String> {
-    authorize_fs(sec, plugin_id, path, "write")?;
-    write_text_file(path, data).map_err(|e| format!("fs error: file write failed: {}", e))
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "write")?;
+    write_text_file(&target, data).map_err(|e| format!("fs error: file write failed: {}", e))
 }
 
 /// 复制文件（读源 + 写目标双授权）
@@ -314,10 +333,13 @@ pub(crate) fn fs_copy(
     src: &str,
     dst: &str,
 ) -> Result<(), String> {
-    // 双授权：源读 + 目标写（与改造前一致，逐路径经授权管线）
-    authorize_fs(sec, plugin_id, src, "read")?;
-    authorize_fs(sec, plugin_id, dst, "write")?;
-    copy_file(src, dst).map_err(|e| format!("fs error: file copy failed: {}", e))
+    // 双授权：源读 + 目标写（与改造前一致，逐路径经授权管线）；
+    // 两侧各解析一次，随后用同一份结果做授权与复制
+    let src_target = io_target(src)?;
+    let dst_target = io_target(dst)?;
+    authorize_fs(sec, plugin_id, &src_target, "read")?;
+    authorize_fs(sec, plugin_id, &dst_target, "write")?;
+    copy_file(&src_target, &dst_target).map_err(|e| format!("fs error: file copy failed: {}", e))
 }
 
 /// 删除文件（权限 + 三层访问校验；文件不存在视为成功，幂等）
@@ -326,8 +348,9 @@ pub(crate) fn fs_delete(
     plugin_id: &str,
     path: &str,
 ) -> Result<(), String> {
-    authorize_fs(sec, plugin_id, path, "write")?;
-    delete_file(path).map_err(|e| format!("fs error: file delete failed: {}", e))
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "write")?;
+    delete_file(&target).map_err(|e| format!("fs error: file delete failed: {}", e))
 }
 
 /// 检查文件是否存在（权限 + 三层访问校验，支持 WSL UNC 路径）
@@ -336,18 +359,19 @@ pub(crate) fn fs_exists(
     plugin_id: &str,
     path: &str,
 ) -> Result<bool, String> {
-    authorize_fs(sec, plugin_id, path, "read")?;
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "read")?;
     // 支持 WSL UNC 路径
-    if let Some((distro, wsl_path)) = wsl_fs::parse_wsl_unc_path(path) {
+    if let Some((distro, wsl_path)) = wsl_fs::parse_wsl_unc_path(&target) {
         return wsl_fs::exists_via_wsl(&distro, &wsl_path)
             .map_err(|e| format!("fs error: WSL check failed: {}", e));
     }
-    Ok(std::path::Path::new(path).exists())
+    Ok(std::path::Path::new(&target).exists())
 }
 
-// ==================== v19 追加（票 03 文件浏览域） ====================
+// ==================== v19 追加：文件浏览域 ====================
 //
-// 票 02 批次 06（v36 交集切片）：三个函数拆入 `host-fs-desktop` interface，其
+// 批次 06（v36 交集切片）：三个函数拆入 `host-fs-desktop` interface，其
 // **WIT impl 迁宿主**（`src-tauri/src/plugin/fs.rs` 路径 B）。实现本体留内核作
 // **机制**（与 `check_permission` 提 pub 同款先例）：① 内核 `FsUnitExecutor`
 // （`fs.read-dir` / `fs.stat` task 单元）仍消费同一条实现；② 宿主 WIT impl 经
@@ -366,9 +390,10 @@ pub fn fs_read_dir(
     plugin_id: &str,
     path: &str,
 ) -> Result<String, String> {
-    authorize_fs(sec, plugin_id, path, "read")?;
-    let read_dir = std::fs::read_dir(path)
-        .map_err(|e| format!("fs error: read dir '{}' failed: {}", path, e))?;
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "read")?;
+    let read_dir = std::fs::read_dir(&target)
+        .map_err(|e| format!("fs error: read dir '{}' failed: {}", target, e))?;
     let mut entries = Vec::new();
     for entry in read_dir {
         let entry = entry.map_err(|e| format!("fs error: read dir entry failed: {}", e))?;
@@ -419,8 +444,9 @@ pub fn fs_stat(
     plugin_id: &str,
     path: &str,
 ) -> Result<Option<String>, String> {
-    authorize_fs(sec, plugin_id, path, "read")?;
-    match std::fs::metadata(path) {
+    let target = io_target(path)?;
+    authorize_fs(sec, plugin_id, &target, "read")?;
+    match std::fs::metadata(&target) {
         Ok(meta) => Ok(Some(
             serde_json::json!({
                 "size": meta.len(),
@@ -430,7 +456,7 @@ pub fn fs_stat(
             .to_string(),
         )),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("fs error: stat '{}' failed: {}", path, e)),
+        Err(e) => Err(format!("fs error: stat '{}' failed: {}", target, e)),
     }
 }
 
@@ -447,7 +473,7 @@ mod tests {
 
     const PLUGIN: &str = "test-plugin";
 
-    /// fs.* 单元的授权预检按管线顺序判两件事，且**不弹窗**（票 07 C4：随
+    /// fs.* 单元的授权预检按管线顺序判两件事，且**不弹窗**（随
     /// FsUnitExecutor 自 manager::task 迁入本域；执行器经注册表由 core-task 分发）
     #[test]
     fn fs_unit_executor_gate_follows_pipeline_order_and_never_prompts() {
@@ -530,10 +556,10 @@ mod tests {
         (dir, root)
     }
 
-    /// 临时目录根 + **持久化授权预置**（票 07 后无弹窗放行的唯一测试入口）
+    /// 临时目录根 + **持久化授权预置**（无弹窗放行的唯一测试入口）
     ///
     /// 旧做法把目录塞进 `.claude` 段借路径白名单免检——那条白名单对**任何**插件都
-    /// 放行，已随票 07 退役。这里改走生产同款通道：用户在弹窗里勾选「记住」后落的
+    /// 放行，已退役。这里改走生产同款通道：用户在弹窗里勾选「记住」后落的
     /// `fs_granted_paths` 前缀记录，测的仍然是 fs 原语本身而不是授权豁免的后门。
     fn granted_temp_root(
         name: &str,
@@ -766,7 +792,7 @@ mod tests {
         assert_eq!(content, "payload");
     }
 
-    // ==================== 票据 08：fs 授权经统一框架 + 决策埋点 ====================
+    // ==================== fs 授权经统一框架 + 决策埋点 ====================
 
     /// 埋点：无权限的 fs 访问被框架拒绝 → 决策进 `authz.deny` 计数
     /// （改造前 fs 走手工链、不进监控；这是本次的核心可观测性收益）

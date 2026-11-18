@@ -4,7 +4,7 @@
 //! 使用 Actix Web 提供 HTTP REST API + WebSocket 终端
 //! 连接跟踪和按端点消息转发通过 WsSessionRegistry 实现
 //!
-//! 终态（websocket 业务下沉票 08）：宿主业务 `Message` 发送/广播 API 已随
+//! 终态：宿主业务 `Message` 发送/广播 API 已随
 //! `/ws/event` 与 `/ws/terminal/session/{id}` 删除——本类只负责服务器生命周期
 //! （启动 / 优雅停机 / 事件订阅）与连接事实清单（`list_clients` / `client_count`，
 //! 供 host-connection 原语与停机守卫使用）。插件的帧收发走
@@ -179,7 +179,7 @@ impl WebSocketManager {
     /// 调用 `ServerHandle::stop(true)` 优雅停机，等待所有 WS actor 的 stopping() 回调完成
     /// actor stopping() 中已负责 unregister，此处仅做防御性清理残留
     pub async fn stop(&self) -> Result<()> {
-        // 插件端点客户端：优雅停机前统一下发 Close(1001)（spec §4.5 停机关闭码）。
+        // 插件端点客户端：优雅停机前统一下发 Close(1001)（停机关闭码）。
         // 此刻 actor 仍在运行 → 消息送达 → 通道层照常上报 client-disconnect
         // （「恰好一次」的停机路径），随后 stop(true) 等待其 stopping() 收尾
         let registry = WsSessionRegistry::global();

@@ -8,7 +8,7 @@
 //!
 //! | 方法 | 为什么需要它 |
 //! | --- | --- |
-//! | [`PtyPorts::check_permission`] | 权限门（`pty:spawn` / `pty:io`）是**宿主安全闸门**（AGENTS §5.1.3 四类薄壳之二），不该可插拔 ⇒ 留宿主，本域只问结果（拒绝文案与 warn 落宿主侧） |
+//! | [`PtyPorts::check_permission`] | 权限门（`pty:spawn` / `pty:io`）是**宿主安全闸门**，不该可插拔 ⇒ 留宿主，本域只问结果（拒绝文案与 warn 落宿主侧） |
 //! | [`PtyPorts::publish`] | 消息总线投递面在宿主（`<owner>::pty:exit` / `<owner>::pty:output` 的命名空间门禁与有界队列是总线裁决）；topic 拼装留本域（纯字符串逻辑） |
 //! | [`PtyPorts::config`] | 宿主配置真源（终端默认列行 / 读缓冲 / 生命周期广播容量）在本域之外，本域只收快照 |
 //! | [`PtyPorts::block_on_any`] | 同步↔异步桥：guest 侧 host function 是同步的，而引擎面是 async。**桥的实现在宿主**（含 wasmtime-wasi ambient runtime 与 actix `current_thread` 自锁规避），本域不复制第二份 |
@@ -68,11 +68,11 @@ pub struct PtyHostConfig {
 /// 宿主能力端口
 ///
 /// 实现方是各端宿主的适配器（桌面端见 `桌面宿主 src-tauri/src/plugin/pty.rs`
-/// 的 `HostPtyPorts`；票 02 批次 02 从 wasm-core `host_api/pty.rs` 整文件迁入）。
+/// 的 `HostPtyPorts`；原本住 wasm-core `host_api/pty.rs`，整文件迁入本域）。
 pub trait PtyPorts: Send + Sync + 'static {
     /// 权限判定（`pty:spawn` / `pty:io`）
     ///
-    /// 返回 `false` 时**宿主侧**必须已按 AGENTS §8 落 `warn`（结构化字段
+    /// 返回 `false` 时**宿主侧**必须已落 `warn`（结构化字段
     /// `plugin_id` / `permission` / `api`）；本域不重复落日志。
     fn check_permission(&self, plugin_id: &str, permission: &str, api: &str) -> bool;
 

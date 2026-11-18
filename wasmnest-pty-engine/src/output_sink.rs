@@ -3,10 +3,10 @@
 //! PTY 输出读取线程（`pty_reader`）只负责「read → 有序队列 → 单消费者顺序投递」，
 //! **投递到哪里由调用方注入**：
 //!
-//! - **引擎环（票 11 起唯一形态）→ `PtyRingSink`**（`pty_ring` 的配对输出汇）：
+//! - **引擎环（唯一形态）→ `PtyRingSink`**（`pty_ring` 的配对输出汇）：
 //!   输出落进本句柄的 `PtyRing`，宿主按游标应答 `host-pty.ring-fetch`；
 //!   插件私有 PTY 与业务会话共用同一实现（业务会话也是引擎句柄，输出读取归插件
-//!   `ring-fetch`，websocket 业务下沉票 08 起宿主不再直读会话输出环）
+//!   `ring-fetch`，宿主不直读会话输出环）
 //! - 调用方自备（测试 / 特殊用途）→ 任意 `PtyOutputSink` 实现（测试替身
 //!   `CollectingSink` 即这一形态）
 //!
@@ -67,20 +67,9 @@ mod tests {
     use super::test_support::CollectingSink;
     use super::*;
 
-    fn unique_id(prefix: &str) -> String {
-        format!(
-            "{prefix}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        )
-    }
-
-    /// C-002 正例：自备 sink 只收自己的字节（按序、不合并、不改写）
+    /// 自备 sink 只收自己的字节（按序、不合并、不改写）
     ///
-    /// 票 11：原用例还断言「业务总线不留痕」——业务输出环随 `session/` 目录删除，
-    /// 「sink 只影响自己」现在由类型契约保证（`PtyOutputSink` 只被引擎持有）。
+    /// 「sink 只影响自己」由类型契约保证（`PtyOutputSink` 只被引擎持有）。
     #[tokio::test]
     async fn collecting_sink_receives_bytes_in_order() {
         let sink = CollectingSink::new();

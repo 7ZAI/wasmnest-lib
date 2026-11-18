@@ -8,7 +8,7 @@
 //! - 内部引用已改指统一运行时壳（`LoadedWasmPlugin` / 统一 `add_to_linker`）；
 //!   共享符号（`TEST_PLUGIN_ID` / `plugin_raw_store`）单点定义在父模块。
 //!
-//! **夹具组件构建器已归位移动宿主测试面（票 08 批次三）**：
+//! **夹具组件构建器已归位移动宿主测试面**：
 //! `build_test_component` / `build_terminal_session_component` 读移动夹具 crate
 //! （`plugin-component-test`）与应用仓 bedcode 工程，随包夹具与产物均住平台仓；
 //! 能力仓单克隆不再要求它们在场。移动宿主侧同名构建器住
@@ -71,7 +71,7 @@ pub fn setup_headless_runtime(
 /// 单形态（2026-10-13）：`abi-form` 要求是宿主注入的策略（wasm-core 零端 ABI
 /// 知识）——端宿主测试要断言「形态不符的组件被拒绝」，必须注入端真实规格而非
 /// 一律 `UNCONSTRAINED`。整数 ABI 版本上限检查已随 wit 包版本化退役
-/// （ADR 0051 D2）：产物新旧由 linker 的 import 名逐字匹配裁决，无"高版本自报"
+/// 产物新旧由 linker 的 import 名逐字匹配裁决，无"高版本自报"
 /// 形态可注入。
 pub fn setup_headless_runtime_with_abi(
     aot_cache_dir: Option<std::path::PathBuf>,
@@ -103,7 +103,7 @@ pub fn setup_headless_runtime_with_config(
     Ok(runtime)
 }
 
-/// 构造插件实例 state（统一 host-kit 形态，wasm-core-mobile-purity 票 04）
+/// 构造插件实例 state（统一 host-kit 形态）
 ///
 /// 取代旧自持 `WasmPluginState { plugin_id, host_ctx, runtime_handle,
 /// granted_permissions, on_message_binary }` 字面量：权限真源 = 共享内核
@@ -139,7 +139,7 @@ pub fn build_component_state_with_ctx(
     )
 }
 
-// ==================== 组件实例观测面（宿主集成测试转发，票 05） ====================
+// ==================== 组件实例观测面（宿主集成测试转发） ====================
 //
 // 宿主集成测试链的是**不带 cfg(test)** 的 lib（`#[cfg(test)]` 项等价于不可达），
 // 而 fixture e2e 随绑定归位迁到移动宿主 `src-tauri/tests/`——它们需要的壳内私有面
@@ -319,122 +319,6 @@ impl HostEnginePorts for MockPorts {
         None
     }
 
-    async fn peer_dial_endpoint(
-        &self,
-        app: &tauri::AppHandle,
-        n: String,
-        a: String,
-        p: u16,
-    ) -> crate::Result<String> {
-        self.base.peer_dial_endpoint(app, n, a, p).await
-    }
-    async fn peer_disconnect(&self, app: &tauri::AppHandle, n: String) -> crate::Result<bool> {
-        self.base.peer_disconnect(app, n).await
-    }
-    async fn peer_respond_consent(
-        &self,
-        app: &tauri::AppHandle,
-        r: String,
-        ok: bool,
-    ) -> crate::Result<bool> {
-        self.base.peer_respond_consent(app, r, ok).await
-    }
-    async fn peer_list_trusted(&self, app: &tauri::AppHandle) -> crate::Result<String> {
-        self.base.peer_list_trusted(app).await
-    }
-    async fn peer_revoke_trusted(&self, app: &tauri::AppHandle, n: String) -> crate::Result<bool> {
-        self.base.peer_revoke_trusted(app, n).await
-    }
-    async fn peer_set_shared_roots(&self, app: &tauri::AppHandle, j: String) -> crate::Result<()> {
-        self.base.peer_set_shared_roots(app, j).await
-    }
-    async fn peer_start_node(&self, app: &tauri::AppHandle, c: &str) -> crate::Result<bool> {
-        self.base.peer_start_node(app, c).await
-    }
-    async fn peer_stop_node(&self, app: &tauri::AppHandle, c: &str) -> crate::Result<bool> {
-        self.base.peer_stop_node(app, c).await
-    }
-    async fn peer_cancel_transfer(&self, app: &tauri::AppHandle, b: String) -> crate::Result<bool> {
-        self.base.peer_cancel_transfer(app, b).await
-    }
-    async fn peer_cancel_receiving(
-        &self,
-        app: &tauri::AppHandle,
-        b: String,
-    ) -> crate::Result<bool> {
-        self.base.peer_cancel_receiving(app, b).await
-    }
-    async fn peer_send_files_with_policy(
-        &self,
-        app: &tauri::AppHandle,
-        n: String,
-        paths: Vec<String>,
-        e: Option<bool>,
-    ) -> crate::Result<String> {
-        self.base
-            .peer_send_files_with_policy(app, n, paths, e)
-            .await
-    }
-    async fn peer_respond_transfer(
-        &self,
-        app: &tauri::AppHandle,
-        b: String,
-        ok: bool,
-    ) -> crate::Result<()> {
-        self.base.peer_respond_transfer(app, b, ok).await
-    }
-    async fn peer_set_receive_policy(
-        &self,
-        app: &tauri::AppHandle,
-        m: String,
-        t: u64,
-    ) -> crate::Result<()> {
-        self.base.peer_set_receive_policy(app, m, t).await
-    }
-    async fn peer_pause_transfer(&self, app: &tauri::AppHandle, b: String) -> crate::Result<bool> {
-        self.base.peer_pause_transfer(app, b).await
-    }
-    async fn peer_resume_transfer(&self, app: &tauri::AppHandle, b: String) -> crate::Result<bool> {
-        self.base.peer_resume_transfer(app, b).await
-    }
-    async fn peer_set_download_dir(
-        &self,
-        app: &tauri::AppHandle,
-        p: Option<String>,
-    ) -> crate::Result<()> {
-        self.base.peer_set_download_dir(app, p).await
-    }
-    async fn peer_list_shared_roots(
-        &self,
-        app: &tauri::AppHandle,
-        n: String,
-    ) -> crate::Result<String> {
-        self.base.peer_list_shared_roots(app, n).await
-    }
-    async fn peer_browse_directory(
-        &self,
-        app: &tauri::AppHandle,
-        n: String,
-        d: String,
-        r: String,
-    ) -> crate::Result<String> {
-        self.base.peer_browse_directory(app, n, d, r).await
-    }
-    async fn peer_pull_files(
-        &self,
-        app: &tauri::AppHandle,
-        n: String,
-        d: String,
-        f: String,
-    ) -> crate::Result<u32> {
-        self.base.peer_pull_files(app, n, d, f).await
-    }
-    async fn peer_active_transfers(&self, app: &tauri::AppHandle) -> crate::Result<String> {
-        self.base.peer_active_transfers(app).await
-    }
-    async fn peer_collect_outgoing(&self, paths: Vec<String>) -> crate::Result<String> {
-        self.base.peer_collect_outgoing(paths).await
-    }
     async fn platform_pick_files(&self, app: &tauri::AppHandle) -> crate::Result<Vec<String>> {
         self.base.platform_pick_files(app).await
     }

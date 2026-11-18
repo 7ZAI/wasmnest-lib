@@ -1,9 +1,9 @@
 //! 传输会话引擎：控制面批协商 + 数据面流式推送 + 接收策略 + 进度/取消。
 //!
-//! 以 git 标签 v2.0.0 移动端 file_service 的传输语义为种子去 host 化改造
-//! （issue 05）：upload session 契约收敛为「接收端已写字节 = 断点真源」——
+//! 以 git 标签 v2.0.0 移动端 file_service 的传输语义为种子去 host 化改造：
+//! upload session 契约收敛为「接收端已写字节 = 断点真源」——
 //! 每个文件由接收端先发 [`TransferFrame::StartFile`] 声明起点偏移，发送端
-//! 必须从该偏移起推流；`.part` 临时文件在取消/中断时保留（issue 06 续传
+//! 必须从该偏移起推流；`.part` 临时文件在取消/中断时保留（续传
 //! 在此契约上生长）。终端 WS 与 Announce token 依赖已剥离，信任放行后的
 //! 已认证连接经 [`ConnectionHandler`] 缝挂载接收角色。
 //!
@@ -26,8 +26,9 @@
 //! 取消双向可用：任一端发 [`TransferFrame::Cancel`] 并关连接，对端落
 //! `Cancelled{by_peer=true}`；本端落 `Cancelled{by_peer=false}`。
 //!
-//! 本票保持单活跃会话假设（一条连接一个批）；并发多批属后续票。中断续传
-//! 已落地（issue 06）：以同 batch_id 重发 Offer 即从接收端落盘偏移续传，
+//! 本模块保持单活跃会话假设（一条连接一个批）；并发多批属后续工作。
+//! 中断续传
+//! 已落地：以同 batch_id 重发 Offer 即从接收端落盘偏移续传，
 //! 批内已完成文件零重传直接跳过，进度按批聚合跨会话单调推进。
 
 pub mod batch;
@@ -51,7 +52,7 @@ pub use message::{
 
 // ==================== 配置 ====================
 
-/// 接收落位钩子：文件完整落位于 download_dir 后由引擎回调（issue 07）
+/// 接收落位钩子：文件完整落位于 download_dir 后由引擎回调
 ///
 /// 引擎只保证「rename 已完成、路径即最终位置」；钩子实现方自行决定后续动作
 /// （如移动端把私有副本提升进 MediaStore.Downloads，失败保留私有副本即天然
@@ -68,13 +69,13 @@ pub trait FileLanding: Send + Sync {
 /// 传输会话配置
 #[derive(Clone)]
 pub struct TransferConfig {
-    /// 全局接收策略（spec Decision 10：单开关粒度，不区分对端）
+    /// 全局接收策略（单开关粒度，不区分对端）
     pub policy: ReceivePolicy,
     /// 接收落点目录（桌面端缺省 `Downloads\WasmNest\` 由宿主注入）
     pub download_dir: PathBuf,
     /// 数据面分块大小（字节）
     pub chunk_size: usize,
-    /// 落位钩子（None = 仅落盘，无后续动作；issue 07 移动端注入 MediaStore 提升）
+    /// 落位钩子（None = 仅落盘，无后续动作；移动端注入 MediaStore 提升）
     pub landing: Option<Arc<dyn FileLanding>>,
 }
 
@@ -113,7 +114,7 @@ const OFFER_TIMEOUT: Duration = Duration::from_secs(10);
 /// flag + Notify 组合而非裸 Notify：`notify_waiters` 不留存许可，cancel 先于
 /// wait 注册时会丢事件；flag 先落状态使后注册的等待者立即通过检查退出。
 ///
-/// 父子层级（issue 10）：会话持有 `child(&global)` 令牌——宿主既能经全局
+/// 父子层级：会话持有 `child(&global)` 令牌——宿主既能经全局
 /// 令牌一键急停全部会话，也能按 batch_id 单独取消一条，互不牵连。
 #[derive(Clone, Default)]
 pub struct CancelToken {
@@ -327,7 +328,7 @@ pub enum TransferEvent {
     /// 进度：已传字节 / 总量 / 瞬时速率（B/s，滑动窗口）
     ///
     /// 发送端按「实际写入网络」计数，接收端按「实际落盘」计数——两侧
-    /// 各自独立上报，互为校验。计数为批内累计口径（issue 06）：续传会话
+    /// 各自独立上报，互为校验。计数为批内累计口径（续传会话
     /// 把接收端已写偏移（含已完成文件的满额）计入基线，进度跨重试会话
     /// 单调推进至总量，不因重发归零。
     Progress {
@@ -471,6 +472,21 @@ fn part_file_name(batch_id: &str, index: u32) -> String {
     format!(".wasmnest-transfer-{batch_id}-{index}.part")
 }
 
+/// 对端可控的 `batch_id` 参与落盘文件名：只收保守字符集与长度
+///
+/// `batch_id` 直接来自 Offer 帧，而 `.part` 会拼进 `download_dir` 下的路径；
+/// 允许 `/` / `..` 会让恶意 Offer 把临时文件写到落位目录之外（`sanitize_relative_path`
+/// 只覆盖 `meta.path`，此函数是同一不变量的另一半）。
+fn is_valid_batch_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && !id.contains("..")
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        && id != "."
+        && id != ".."
+}
+
 /// 上报一条事件；宿主已弃收通道时不阻断会话主流程
 pub(crate) async fn emit(events: &mpsc::Sender<TransferEvent>, event: TransferEvent) {
     if events.send(event).await.is_err() {
@@ -483,7 +499,7 @@ pub(crate) async fn emit(events: &mpsc::Sender<TransferEvent>, event: TransferEv
 /// 接收端连接处理器：作为 [`ConnectionHandler`] 挂到节点上，信任放行后的
 /// 连接进入接收会话（策略分流 → 落盘 → 终态上报）。
 ///
-/// 单活跃会话假设（issue 05）：`cancel_token` 取消的是「当前活跃」的那条
+/// 单活跃会话假设：`cancel_token` 取消的是「当前活跃」的那条
 /// 接收会话；并发多批属后续票。
 pub struct TransferReceiveHandler {
     config: TransferConfig,
@@ -676,7 +692,7 @@ where
 /// BatchDone。终态事件由 [`TransferReceiveHandler`] 包装层统一上报，本函数
 /// 只发 OfferPending / Progress 中间事件。
 ///
-/// 断点契约（issue 06）：每个文件的续传起点 = `.part` 已落盘字节数，
+/// 断点契约：每个文件的续传起点 = `.part` 已落盘字节数，
 /// 经 StartFile 告知发送端；取消/中断一律保留 `.part`；同 batch_id 重发
 /// Offer 即续传，批内已完成文件跳过。
 ///
@@ -685,7 +701,7 @@ where
 /// 发送会话门控推流（本端永不停止读，保证对端 Resume/Cancel 帧始终可达）。
 /// 这补齐了「双端对同一传输任务对称暂停」：此前仅发送端/供流端能本地门控。
 ///
-/// `pre_read`：上层分发器（issue 07 [`crate::base::shared::SharedDirHandler`]）已
+/// `pre_read`：上层分发器（[`crate::base::shared::SharedDirHandler`]）已
 /// 预读首帧做会话分流时传入该帧（必须为 Offer），独立接收端传 `None`。
 pub(crate) async fn run_receive(
     mut conn: crate::base::transport::Connection,
@@ -743,9 +759,15 @@ pub(crate) async fn run_receive(
             ))
         }
     };
+    if !is_valid_batch_id(&batch_id) {
+        return Err(proto_violation(
+            ROLE,
+            format!("offer carries invalid batch id: {batch_id:?}"),
+        ));
+    }
     *batch_slot = Some(batch_id.clone());
 
-    // ---- 接收策略分流（spec Decision 10）----
+    // ---- 接收策略分流 ----
     let mut batch = TransferBatch {
         batch_id: batch_id.clone(),
         files: files.clone(),
@@ -842,8 +864,8 @@ pub(crate) async fn run_receive(
 }
 
 /// 放行后的逐文件接收数据面：建落点目录 → 逐文件 StartFile/Data/FileDone →
-/// BatchDone。由 [`run_receive`]（push 批放行后）与 issue 07 的 pull 客户端
-/// 流程共用——断点真源契约（issue 06）、取消语义与落位钩子在两条路径上
+/// BatchDone。由 [`run_receive`]（push 批放行后）与 pull 客户端
+/// 流程共用——断点真源契约、取消语义与落位钩子在两条路径上
 /// 天然一致。
 ///
 /// 调用方负责已写 Decision{accepted=true}（push 协商放行）或按语义免协商
@@ -901,7 +923,7 @@ pub(crate) async fn receive_files_after_accept(
         let tmp_dir = target.parent().unwrap_or(&config.download_dir).to_path_buf();
         let tmp = tmp_dir.join(part_file_name(batch_id, index));
 
-        // ---- 断点扫描（issue 06）：三类起点，断点真源恒在落盘侧 ----
+        // ---- 断点扫描：三类起点，断点真源恒在落盘侧 ----
         // 1) target 已落位且尺寸与 Offer 一致 → 上次会话已完成：声明满偏移，
         //    发送端 remaining=0 零推流；本端不重写不 rename，直接 FileDone
         // 2) target 已存在但尺寸不符 → 名称冲突（沿用 v2.0.0 duplicate-name
@@ -1120,7 +1142,7 @@ pub(crate) async fn receive_files_after_accept(
         }
         tokio::fs::rename(&tmp, &target).await.map_err(|e| sess_io(ROLE, e))?;
 
-        // 落位钩子（issue 07）：完整文件已就位；实现方自行兜底失败，
+        // 落位钩子：完整文件已就位；实现方自行兜底失败，
         // 引擎不因钩子结果改变会话终态（移动端在此提升 MediaStore）
         if let Some(landing) = &config.landing {
             let display_name = target
@@ -1540,7 +1562,7 @@ async fn drive_send(
             ));
         }
 
-        // 进度按批聚合（issue 06）：接收端声明的续传基线先入账——重试会话
+        // 进度按批聚合（续传会话）：接收端声明的续传基线先入账——重试会话
         // 的进度从真实批位置继续推进至全量，而非每次归零只计补发字节
         transferred_total += offset;
         rate.sync_base(transferred_total);
@@ -2041,5 +2063,25 @@ mod tests {
             rate.sample_at(2 * 1024 * 1024, base + Duration::from_millis(600)),
             first
         );
+    }
+
+    #[test]
+    fn batch_id_must_be_path_safe() {
+        for ok in ["batch-1", "B_2", "a.b", "0123456789abcdef"] {
+            assert!(is_valid_batch_id(ok), "合法批 ID 被拒: {ok}");
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a/../../b",
+            "a\\b",
+            "a..b",
+            "a b",
+            "../x",
+            &"x".repeat(65),
+        ] {
+            assert!(!is_valid_batch_id(bad), "越界批 ID 被放行: {bad:?}");
+        }
     }
 }

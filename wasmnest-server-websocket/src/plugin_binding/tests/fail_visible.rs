@@ -82,7 +82,7 @@ async fn close_config_defaults_to_1000_and_reports_hit() {
     let handle = format!("wsc-{}", uuid::Uuid::new_v4());
     fake_client(&ports, &plugin, &handle, "ws://127.0.0.1:1/");
 
-    // 缺省 code = 1000（spec §4.4 close 语义）
+    // 缺省 code = 1000
     assert!(ws_close(&ports, &plugin, &handle, "{}").unwrap());
     // 句柄已摘除 → 幂等 false
     assert!(!ws_close(&ports, &plugin, &handle, "{}").unwrap());

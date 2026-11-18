@@ -1,9 +1,8 @@
 //! host-pty 能力域 —— 插件私有伪终端（6 条原语 + 能力模块自报）
 //!
-//! spec：`.scratch/2026-10-06-pty-capability-domain/spec.md`（D1/D2：引擎 crate
-//! 升格为能力域 crate，WIT 接线随域机制整体迁出内核，边界走窄端口 trait）。
+//! 形态：引擎 crate 即能力域 crate，WIT 接线随域机制整体驻在本 crate，边界走窄端口 trait。
 //!
-//! **零业务代码红线（ADR 0022）**：本文件与 [`primitives`] / [`registry`] /
+//! **零业务代码红线**：本文件与 [`primitives`] / [`registry`] /
 //! [`output`] 只做引擎原语与机制闸门；PTY 之外的任何解读（会话、终端产品线、AI…）
 //! 全在插件侧。
 //!
@@ -17,12 +16,12 @@
 //!   ports.rs     边界：权限门 / 总线投递 / 配置快照 / 异步桥 / 任务派生
 //! ```
 //!
-//! 宿主侧只剩一个 adapter（票 02 批次 02 起住宿主
+//! 宿主侧只剩一个 adapter（住宿主
 //! `桌面宿主 src-tauri/src/plugin/pty.rs` 的 `HostPtyPorts`，原
 //! `wasm_core::host_api::pty`）与一次开机装配调用——与 http / ws / peer-net / mdns
 //! 四域同形。
 //!
-//! **脱绑（能力域脱绑 P4）**：WIT 绑定层（`DESC` / `HostModule` / `inventory::submit!` /
+//! **脱绑**：WIT 绑定层（`DESC` / `HostModule` / `inventory::submit!` /
 //! `ports_for` / `bindgen!` / `impl Host`）以 `#[cfg(feature = "common-host")]` 门控——
 //! 桌面宿主开 feature 后行为逐字不变；无 feature 的宿主（移动端 / 无头）拿纯引擎：
 //! 域机制（[`primitives`] / [`registry`] / [`output`]）、端口、装配（[`install`] /
@@ -72,7 +71,7 @@ use wasmtime::component::{bindgen, Linker};
 pub const MODULE_NAME: &str = "pty";
 
 /// 能力模块接口路径（与 WIT 契约逐字一致；纯字符串，默认可用）
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:plugin@0.0.1/host-pty"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:pty@0.0.1/host-pty"];
 
 /// 能力模块权限位（`pty:spawn` / `pty:io`；纯字符串，默认可用）
 pub const MODULE_PERMISSIONS: &[&str] = &["pty:spawn", "pty:io"];
@@ -105,7 +104,7 @@ impl HostModule for PtyModule {
     }
 
     fn register(&self, linker: &mut Linker<WasmPluginState>) -> wasmtime::Result<()> {
-        wasmnest::plugin::host_pty::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
+        wasmnest::pty::host_pty::add_to_linker::<WasmPluginState, HasSelf>(linker, |s| s)
     }
 }
 
@@ -132,10 +131,10 @@ inventory::submit! {
 /// 装载期回调：从 manifest **原文**解析本域配额（`ptyQuota`）并**仲裁区间**
 ///
 /// **为什么内核只下发原文**：manifest 字段的解释权属于能力域——内核一旦解释
-/// 「pty 配额是多少」就是在解释产品声明（AGENTS §5.1 B6）。字段名随 SDK 演进时
+/// 「pty 配额是多少」就是在解释产品声明。字段名随 SDK 演进时
 /// 只改本函数，内核与 host-kit 都不动。
 ///
-/// **区间仲裁也归本域（票 02 批次 03）**：`1..=PLUGIN_PTY_SESSIONS_CEILING_PER_PLUGIN`
+/// **区间仲裁也归本域**：`1..=PLUGIN_PTY_SESSIONS_CEILING_PER_PLUGIN`
 /// 这条判据原在内核 `manager/validation.rs::validate_pty_quota`（内核为此要读 SDK
 /// manifest 的 `pty_quota` 字段，等于替本域解释声明语义）。判据落在装载期而不是
 /// `spawn`：配额是自我声明的静态事实，装载时就能判定，拖到运行期等于把配置错误
@@ -187,10 +186,10 @@ fn on_plugin_purge(plugin_id: &str) {
     );
 }
 
-/// 生命周期钩子自报（票 02 批次 01 机制）
+/// 生命周期钩子自报
 ///
 /// 内核侧改为遍历 `DomainHooksRegistry`，**不再点名本域**——这是内核能去掉对本
-/// crate 依赖的前提（批次 02 第三步摘依赖）。
+/// crate 依赖的前提。
 #[cfg(feature = "common-host")]
 pub static HOOKS: DomainHooks = DomainHooks {
     name: MODULE_NAME,
@@ -201,8 +200,7 @@ pub static HOOKS: DomainHooks = DomainHooks {
 #[cfg(feature = "common-host")]
 wasmnest_host_kit::submit_hooks!(HOOKS);
 
-/// 装载期配额仲裁的域侧单测（原内核 `manager/validation.rs` 两条用例迁此，
-/// 票 02 批次 03：判据随真源一起搬离内核）
+/// 装载期配额仲裁的域侧单测（判据随真源一起搬离内核）
 #[cfg(all(test, feature = "common-host"))]
 mod manifest_quota_tests {
     use super::*;
@@ -258,16 +256,16 @@ bindgen!({
     // provider 侧。
     //
     // ⚠️ 由此产生的**硬约束**：本 crate 与宿主各自生成的
-    // `wasmnest::plugin::host_pty::Host` 是**同名但不同类型**的 trait。宿主必须
+    // `wasmnest::pty::host_pty::Host` 是**同名但不同类型**的 trait。宿主必须
     // 同时删掉自己的 pty `Host` impl 与 `add_to_linker` 行，否则同一个 interface
-    // 被注册两次 → 装配期 `defined twice`（本次迁移同批删除，见 spec §3.2）。
-    // 票 05：契约面脱端——bindgen 改指本 crate 自持分片 `wit/pty.wit`
-    // （`world cap-pty`，票 03 起兼作端组合的 cap 真源，compose.json caps.pty 指向它），
-    // 不再读桌面 SDK 生成物目录（桌面宿主绑整 world 是端组合根的本分，ADR 0045）。
+    // 被注册两次 → 装配期 `defined twice`（迁移时已同批删除宿主侧实现）。
+    // 契约面脱端：bindgen 改指本 crate 自持分片 `wit/pty.wit`
+    // （`world cap-pty`，兼作端组合的 cap 真源，compose.json caps.pty 指向它），
+    // 不再读桌面 SDK 生成物目录（桌面宿主绑整 world 是端组合根的本分）。
     path: "wit/pty.wit",
     world: "cap-pty",
     // 与宿主同款：全部导出绑定生成 async 变体（wasmtime async store 要求）。
-    // cap-pty 无 export 成员，此配置无生效对象（实测编译绿，票 05 实施记录）
+    // cap-pty 无 export 成员，此配置无生效对象（实测编译绿）
     exports: { default: async },
 });
 
@@ -310,7 +308,7 @@ pub fn ports_for(state: &WasmPluginState) -> Arc<dyn PtyPorts> {
 // 经端口问宿主结果），此层只做「取端口 → 转调 → 按 WIT `result` 形状返回」。
 
 #[cfg(feature = "common-host")]
-impl wasmnest::plugin::host_pty::Host for WasmPluginState {
+impl wasmnest::pty::host_pty::Host for WasmPluginState {
     fn spawn(&mut self, config_json: String) -> Result<String, String> {
         primitives::pty_spawn(&ports_for(self), &self.plugin_id, &config_json)
     }
@@ -332,7 +330,7 @@ impl wasmnest::plugin::host_pty::Host for WasmPluginState {
         pty_id: String,
         from_offset: u64,
         max_bytes: u32,
-    ) -> Result<Option<wasmnest::plugin::host_pty::RingFetchResult>, String> {
+    ) -> Result<Option<wasmnest::pty::host_pty::RingFetchResult>, String> {
         primitives::pty_ring_fetch(
             &ports_for(self),
             &self.plugin_id,
@@ -341,7 +339,7 @@ impl wasmnest::plugin::host_pty::Host for WasmPluginState {
             max_bytes,
         )
         .map(|fetched| {
-            fetched.map(|ring| wasmnest::plugin::host_pty::RingFetchResult {
+            fetched.map(|ring| wasmnest::pty::host_pty::RingFetchResult {
                 data: ring.data,
                 next_offset: ring.next_offset,
                 truncated: ring.truncated,

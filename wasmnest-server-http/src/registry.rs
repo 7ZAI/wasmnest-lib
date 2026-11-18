@@ -148,6 +148,9 @@ fn hex_val(b: u8) -> Option<u8> {
 /// - `host_path`：对外别名（必须以 `/` 开头；支持 `{name}` 模板段）。
 /// - `methods`：host 别名的允许方法；空 → 缺省 `["GET"]`。
 /// - `auth`：认证档位（缺省语义由调用方给定：HTTP 面未声明即最严 `jwt`）。
+///
+/// 链路加密策略按**应用**（owner）由宿主统一执行（应用在设置页决定，见
+/// `link_crypto::set_app_policy`），端点注册不携带加密声明。
 pub fn register(
     owner: &str,
     path: &str,
@@ -231,6 +234,9 @@ pub fn register(
                 .insert((h.clone(), m.clone()), entry.endpoint_id.clone());
         }
     }
+    // 先释放注册表锁再落日志：注册路径与请求热路径（find_by_host）共用同一把锁，
+    // 慢日志后端不应把注册风暴传导成请求延迟
+    drop(table);
     tracing::info!(
         plugin_id = %owner,
         endpoint_id = %entry.endpoint_id,
@@ -281,7 +287,10 @@ pub fn find_by_host(path: &str, method: &str) -> Option<HostMatch> {
         .collect();
     drop(table);
     for entry in candidates {
-        let host = entry.host_path.as_ref()?;
+        // 用 continue 而不是 `?`：单条候选缺 host_path 不得放弃整个搜索
+        let Some(host) = entry.host_path.as_ref() else {
+            continue;
+        };
         if !entry.methods.iter().any(|m| m == method) {
             continue;
         }
@@ -329,6 +338,16 @@ pub fn list_by_owner(owner: &str) -> Vec<HttpRouteEntry> {
 /// 本插件已注册端点数
 pub fn count_by_owner(owner: &str) -> usize {
     lock().by_id.values().filter(|e| e.owner == owner).count()
+}
+
+/// 全部已注册端点快照（宿主审计面：未声明策略的端点也必须可枚举）
+///
+/// 排序 = 属主 + 内部路径（稳定展示序；HashMap 遍历序不保证）。声明值不在这里：
+/// 端点策略是 `link_crypto` 的表，宿主按句柄拼合后才是完整的"谁在明文"快照。
+pub fn list_all() -> Vec<HttpRouteEntry> {
+    let mut entries: Vec<HttpRouteEntry> = lock().by_id.values().cloned().collect();
+    entries.sort_by(|a, b| (&a.owner, &a.internal_path).cmp(&(&b.owner, &b.internal_path)));
+    entries
 }
 
 // ==================== 注销 / 回收 ====================
@@ -379,9 +398,16 @@ pub fn purge_for_plugin(owner: &str) -> Vec<HttpRouteEntry> {
 #[cfg(test)]
 pub fn clear_all() {
     let mut table = lock();
+    let owners: Vec<(String, String)> = table
+        .by_id
+        .values()
+        .map(|entry| (entry.owner.clone(), entry.endpoint_id.clone()))
+        .collect();
     table.by_id.clear();
     table.id_by_internal.clear();
     table.id_by_host.clear();
+    drop(table);
+    let _ = owners;
 }
 
 // ==================== Tests ====================
@@ -436,6 +462,30 @@ mod tests {
         assert!(!remove_if_owner(&entry.endpoint_id, &plugin).unwrap(), "幂等 false");
         assert!(find_by_internal(&entry.internal_path).is_none());
         assert_eq!(count_by_owner(&plugin), 0);
+    }
+
+    /// 审计面：全部已注册端点（含未声明策略的）都能枚举，且同属主按内部路径升序
+    #[test]
+    fn list_all_enumerates_every_registered_endpoint_in_stable_order() {
+        let plugin = owner("list-all");
+        let b = register_path(&plugin, "b").expect("register b");
+        let a = register_path(&plugin, "a").expect("register a");
+
+        let entries = list_all();
+        let ia = entries
+            .iter()
+            .position(|e| e.endpoint_id == a.endpoint_id)
+            .expect("a 应在全量快照中");
+        let ib = entries
+            .iter()
+            .position(|e| e.endpoint_id == b.endpoint_id)
+            .expect("b 应在全量快照中");
+        assert!(ia < ib, "同属主按内部路径升序（a 在 b 前）");
+        assert_eq!(entries[ia].internal_path, format!("/api/plugin/{plugin}/a"));
+
+        for entry in [a, b] {
+            let _ = remove_if_owner(&entry.endpoint_id, &plugin);
+        }
     }
 
     #[test]

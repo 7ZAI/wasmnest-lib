@@ -1,10 +1,10 @@
-//! 对等网络远端浏览/拉取（issue 11）：浏览可信对端共享目录 + 多文件拉取。
+//! 对等网络远端浏览/拉取：浏览可信对端共享目录 + 多文件拉取。
 //!
 //! 浏览为单请求会话——每次操作对对端新拨号（线协议「单连接单请求」契约），
 //! 返回引擎排好序的条目与「可能被权限过滤」提示位；拉取按文件逐条独立会话
-//! （免协商、断点续传复用 issue 05/06 数据面）。
+//! （免协商、断点续传复用既有数据面）。
 //!
-//! **口径（传输编排下沉票 3 修正）**：拉取的并发信号量（读设置并发上限）与
+//! **口径（传输编排下沉后）**：拉取的并发信号量（读设置并发上限）与
 //! 任务行预登记（register_remote_pull / fail_task）属产品编排，已随编排整体
 //! 下沉 `file-transfer` 插件——`pull-files` 收窄为「逐文件会话立即发起，
 //! 并发节流归调用方分批调用自控」；每个拉取会话发起时直推 `pull-started`
@@ -18,11 +18,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::base::{
-    browse_shared_dir, list_shared_roots, pull_shared_file, CancelToken, NodeId, PauseCmd, PauseSlot, PeerNetError,
-    TransferEvent,
+    browse_shared_dir, fetch_shared_config, list_shared_roots, pull_shared_file, CancelToken, NodeId, PauseCmd,
+    PauseSlot, PeerNetError, TransferEvent,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use wasmnest_p2p_engine::Multiaddr;
 use wasmnest_server_base::error::{AppError, Result};
 
 use super::{map_peer_net_error, parse_node_id, runtime_snapshot, PeerCtx};
@@ -72,7 +73,7 @@ struct SessionCtx {
 }
 
 /// 拉取会话句柄条目：取消令牌 + 暂停句柄（wire Pause/Resume 门控数据供方）
-/// ——纯引擎控制面（票 3：并发编排归插件）
+/// ——纯引擎控制面（并发编排归插件）
 struct PullSession {
     /// 按批取消令牌（cancel_pull / 节点停止共用）
     token: CancelToken,
@@ -202,21 +203,28 @@ pub(crate) fn register_pull_for_test(ctx: &PeerCtx, batch_id: &str) -> Arc<Pause
 
 // ==================== 内部辅助 ====================
 
-/// 解析拨号记录并建立到对端的新连接（浏览/拉取共用前置）
+/// 解析会话句柄记忆的有序候选地址并建立到对端的新连接（浏览/拉取共用前置）
 ///
-/// denied/unreachable 以带上下文的错误上抛——入口仅在已连接态展示，
-/// 到达此处仍被拒说明信任关系已变化，如实呈现给调用方。
-async fn dial_peer(ctx: &PeerCtx, node_id: &NodeId, action: &str) -> Result<crate::base::Connection> {
-    let (node, cache) = runtime_snapshot(ctx)
+/// T11：寻址完全来自会话句柄，**不查 mDNS 发现缓存**；候选按入参顺序逐个
+/// 短超时尝试（调用方策略顺序）。denied/unreachable 以带上下文的错误上抛——
+/// 入口仅在已连接态展示，到达此处仍被拒说明信任关系已变化，如实呈现。
+async fn dial_peer(
+    ctx: &PeerCtx,
+    node_id: &NodeId,
+    addrs: &[Multiaddr],
+    action: &str,
+) -> Result<crate::base::Connection> {
+    let (node, _cache) = runtime_snapshot(ctx)
         .await
         .ok_or_else(|| AppError::Internal(format!("peer-net {action} failed: node not started")))?;
-    let record = cache.get(node_id).ok_or_else(|| {
-        AppError::Internal(format!(
-            "peer-net {action} failed: peer {} not in discovery cache (offline or unknown)",
-            node_id.as_str()
-        ))
-    })?;
-    node.dial(&record.to_static_peer_record()).await.map_err(|e| match e {
+    node.dial_addrs_with(
+        node_id,
+        addrs,
+        crate::DIAL_PER_ADDR_TIMEOUT,
+        wasmnest_p2p_engine::stream_proto::SHARED_DIR,
+    )
+    .await
+    .map_err(|e| match e {
         PeerNetError::DialDeniedByPeer { .. } => AppError::Internal(format!(
             "peer-net {action} failed: not trusted by peer {}",
             node_id.as_str()
@@ -238,9 +246,13 @@ pub struct PeerSharedRootDto {
 }
 
 /// 列可信对端暴露中的共享根（浏览入口：先取根清单再逐根下钻）
-pub async fn list_peer_shared_roots(ctx: Arc<PeerCtx>, node_id: String) -> Result<Vec<PeerSharedRootDto>> {
+pub async fn list_peer_shared_roots(
+    ctx: Arc<PeerCtx>,
+    node_id: String,
+    addrs: Vec<Multiaddr>,
+) -> Result<Vec<PeerSharedRootDto>> {
     let parsed = parse_node_id(&node_id)?;
-    let conn = dial_peer(&ctx, &parsed, "roots").await?;
+    let conn = dial_peer(&ctx, &parsed, &addrs, "roots").await?;
     let roots = list_shared_roots(conn)
         .await
         .map_err(|e| AppError::Internal(format!("peer-net list shared roots failed: {e}")))?;
@@ -259,15 +271,38 @@ pub async fn list_peer_shared_roots(ctx: Arc<PeerCtx>, node_id: String) -> Resul
         .collect())
 }
 
+/// 拉取可信对端的穿透配置快照（单请求会话；每操作新拨号）
+///
+/// 与共享根同一寻址口径：服务句柄记忆的有序候选地址，不查 mDNS 缓存。
+/// 对端未设置快照返回 `None`（不是错误）。
+pub async fn fetch_peer_config(
+    ctx: Arc<PeerCtx>,
+    node_id: String,
+    addrs: Vec<Multiaddr>,
+) -> Result<Option<String>> {
+    let parsed = parse_node_id(&node_id)?;
+    let conn = dial_peer(&ctx, &parsed, &addrs, "config").await?;
+    let snapshot = fetch_shared_config(conn)
+        .await
+        .map_err(|e| AppError::Internal(format!("peer-net fetch config failed: {e}")))?;
+    tracing::info!(
+        node_id = %parsed,
+        present = snapshot.is_some(),
+        "peer config snapshot fetched"
+    );
+    Ok(snapshot)
+}
+
 /// 浏览可信对端的共享目录（单请求会话；每操作新拨号）
 pub async fn browse_peer_directory(
     ctx: Arc<PeerCtx>,
     node_id: String,
+    addrs: Vec<Multiaddr>,
     dir_id: String,
     rel_path: String,
 ) -> Result<RemoteBrowseDto> {
     let parsed = parse_node_id(&node_id)?;
-    let conn = dial_peer(&ctx, &parsed, "browse").await?;
+    let conn = dial_peer(&ctx, &parsed, &addrs, "browse").await?;
     let listing = browse_shared_dir(conn, &dir_id, &rel_path)
         .await
         .map_err(|e| AppError::Internal(format!("peer-net browse '{rel_path}' in dir '{dir_id}' failed: {e}")))?;
@@ -295,19 +330,25 @@ pub async fn browse_peer_directory(
 
 /// 从可信对端拉取多个文件到本机下载目录（逐文件独立会话）
 ///
-/// 免协商直取（用户主动获取即放行）。**票 3 收窄**：所有文件会话立即发起、
+/// 免协商直取（用户主动获取即放行）。**传输编排下沉后收窄**：所有文件会话立即发起、
 /// 无宿主并发信号量——并发节流由调用方分批调用自控（「多选下载逐条呈现」
 /// 等编排语义归插件，经 `pull-started` 引擎事件自建任务行）；中断后重试
 /// 同一文件自动断点续传。返回入队文件数。
 pub async fn pull_peer_files(
     ctx: Arc<PeerCtx>,
     node_id: String,
+    addrs: Vec<Multiaddr>,
     dir_id: String,
     files: Vec<RemotePullFileDto>,
 ) -> Result<usize> {
     if files.is_empty() {
         return Err(AppError::InvalidInput(
             "pull peer files: file list must not be empty".to_string(),
+        ));
+    }
+    if addrs.is_empty() {
+        return Err(AppError::InvalidInput(
+            "pull peer files: peer addrs must not be empty".to_string(),
         ));
     }
     // 诊断插桩：拉取编排入口（逐文件会话另有 dial/serve 日志）
@@ -338,14 +379,9 @@ pub async fn pull_peer_files(
             None => return Err(AppError::Internal("peer-net pull failed: node not started".to_string())),
         }
     };
-    let (node, cache) = runtime_snapshot(&ctx)
+    let (node, _cache) = runtime_snapshot(&ctx)
         .await
         .ok_or_else(|| AppError::Internal("peer-net pull failed: node not started".to_string()))?;
-    let record = cache.get(&parsed).ok_or_else(|| {
-        AppError::Internal(format!(
-            "peer-net pull failed: peer {node_id} not in discovery cache (offline or unknown)"
-        ))
-    })?;
 
     let count = files.len();
     wasmnest_server_base::error_boundary::spawn_with_error_boundary(
@@ -354,7 +390,7 @@ pub async fn pull_peer_files(
             ctx.clone(),
             parsed,
             node,
-            record.to_static_peer_record(),
+            addrs,
             dir_id,
             files,
             config,
@@ -376,7 +412,7 @@ async fn run_pull_queue(
     ctx: Arc<PeerCtx>,
     peer: NodeId,
     node: crate::base::PeerNetNode,
-    record: crate::base::StaticPeerRecord,
+    addrs: Vec<Multiaddr>,
     dir_id: String,
     files: Vec<RemotePullFileDto>,
     config: crate::base::TransferConfig,
@@ -404,15 +440,17 @@ async fn run_pull_queue(
             },
         );
 
-        // pull-started 引擎事实事件直推（票 3）：任务行由插件归约自建
+        // pull-started 引擎事实事件直推：任务行由插件归约自建
         super::publish_engine_event(
             &ctx,
             super::TOPIC_RECEIVE_EVENT,
-            super::engine_pull_started_payload(&peer, &batch_id, &file.rel_path, file.size),
+            super::engine_pull_started_payload(&peer.clone(), &batch_id, &file.rel_path, file.size),
         );
 
         let node = node.clone();
-        let record = record.clone();
+        let addrs = addrs.clone();
+        // 每文件会话独立，peer 随 spawn 移动：每轮先克隆一份（事件已用 clone 构造）
+        let peer = peer.clone();
         let dir_id = dir_id.clone();
         let config = config.clone();
         let events = events.clone();
@@ -424,7 +462,15 @@ async fn run_pull_queue(
             if cancel_root.is_cancelled() {
                 return;
             }
-            match node.dial(&record).await {
+            match node
+                .dial_addrs_with(
+                    &peer,
+                    &addrs,
+                    crate::DIAL_PER_ADDR_TIMEOUT,
+                    wasmnest_p2p_engine::stream_proto::SHARED_DIR,
+                )
+                .await
+            {
                 Ok(conn) => {
                     let _ = pull_shared_file(
                         conn,

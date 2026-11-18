@@ -1,16 +1,17 @@
-//! 事务批次（票据 06）：`execute-batch` 的全提交 / 全回滚语义与语句数上限
+//! 事务批次：`execute-batch` 的全提交 / 全回滚语义与语句数上限
 //!
 //! 另含裸事务控制（`BEGIN` / `COMMIT` / `SAVEPOINT` …）在 execute 级的拒绝——跨调用
 //! 持有事务会占住全局连接锁，必须引导到批次原语。
 
 use crate::host_api::database::{
-    plugin_db_execute, plugin_db_execute_batch, plugin_db_query, reject_bare_transaction_control,
+    plugin_db_execute, plugin_db_execute_batch, plugin_db_query, plugin_db_query_params,
+    reject_bare_transaction_control,
 };
 use crate::host_api::sqlite_scaffold::*;
 use crate::permission::PERMISSION_STORAGE;
 use crate::system::constants::PLUGIN_DB_EXECUTE_BATCH_MAX_STATEMENTS;
 
-// ==================== 事务批次（票据 06）：execute-batch ====================
+// ==================== 事务批次：execute-batch ====================
 
 /// 事务批次语义：全部成功才提交；任一句失败整体回滚（前序语句一并回滚）
 #[test]
@@ -98,6 +99,17 @@ fn bare_transaction_control_rejected_at_execute() {
         let err =
             plugin_db_execute(ports, "p1", sql).expect_err(&format!("'{}' must be rejected", sql));
         assert!(err.contains("execute-batch"), "'{}' err: {}", sql, err);
+    }
+    // query / query_params 同一族护栏（旧实现只在 execute 面检查——三缺二）
+    for sql in ["BEGIN", "COMMIT;", "SAVEPOINT sp1"] {
+        assert!(
+            plugin_db_query(ports, "p1", sql).is_err(),
+            "query must reject '{sql}'"
+        );
+        assert!(
+            plugin_db_query_params(ports, "p1", sql, "[]").is_err(),
+            "query_params must reject '{sql}'"
+        );
     }
 }
 
