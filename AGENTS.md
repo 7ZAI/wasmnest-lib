@@ -37,7 +37,7 @@
 
 ## 1. 仓速览
 
-**无根 workspace**：22 个独立 crate（各自 `Cargo.toml` + 跟踪的 `Cargo.lock`）+ 4 个夹具。**命令在 crate 目录跑，一个 crate 一次 cargo；没有仓级 `cargo test`。**
+**无根 workspace**：23 个独立 crate（各自 `Cargo.toml` + 跟踪的 `Cargo.lock`）+ 4 个夹具。**命令在 crate 目录跑，一个 crate 一次 cargo；没有仓级 `cargo test`。**
 
 ```text
 插件（应用仓）
@@ -63,6 +63,7 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 | `wasmnest-server-base` | server 叶子地基：错误信封 / 常量 / 端口 traits / wire | `[]`；`tauri-compat` / `mdns` / `system-info` 默认关 |
 | `wasmnest-server-core` | 跨传输内核：supervisor / 过滤链 / link_crypto / `TransportFace` + actix `serve` | 仍依赖 actix / rusqlite |
 | `wasmnest-server-http` | HTTP 传输面 + `host-http` 绑定层 | `[]+ch`；`wit/http.wit` |
+| `wasmnest-server-browser` | 浏览器渲染：导航 + 声明式 CSS 提取 + 协议 / 私网闸门 + 响应上限；浏览器进程由端后端经端口注入 | `[]+ch`；`wit/browser.wit` |
 | `wasmnest-server-websocket` | WS 传输面 + `host-websocket` 客户端域 / 服务端引擎函数 | `[]+ch`；`wit/ws.wit` |
 | `wasmnest-server-peer-net` | 对等网络引擎域（`base/` 底座 + `host-peer` 绑定；非传输面） | `[]+ch`；`wit/{peer,tunnel}.wit` |
 | `wasmnest-p2p-engine` | libp2p 机制引擎：身份桥 / swarm / 入站准入闸门 / 具名流协议 | 无 feature |
@@ -157,11 +158,11 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 
 ### 3.1 能力域默认形态（`default = []` + `common-host`）
 
-带 `common-host` 的 7 个 crate：`wasmnest-{discovery,pty,audio,stt}-engine` + `wasmnest-server-{http,websocket,peer-net}`。
+带 `common-host` 的 8 个 crate：`wasmnest-{discovery,pty,audio,stt}-engine` + `wasmnest-server-{http,websocket,peer-net,browser}`。
 
 - **默认形态 = 纯引擎 + 端口**：零 WIT / 零 SDK / 零 wasmtime / 零宿主框架（Tauri、actix）/ 零 bundled SQLite / 零系统信息与文件监听——任何宿主可直接引用。
 - **例外**：`server-http` / `-websocket` / `-core` 与 `wasm-core` 不在此承诺内（默认树仍有 actix / rusqlite；wasm-core 带 Tauri / actix / rusqlite）——不得描述为「任何宿主可直接引用」。
-- **判据**：`sh scripts/check-default-form-deps.sh --offline`（CI 不带 `--offline`）覆盖 9 个宿主无关 crate（server-base / crypto / cli / pty / audio / stt / discovery / ws-client / p2p），命中 `tauri` / `actix*` / `rusqlite` / `sysinfo` / `notify` / `inotify` 即红（按 crate 名 token 精确匹配，别用裸 grep——路径含 `tauriProject`）。
+- **判据**：`sh scripts/check-default-form-deps.sh --offline`（CI 不带 `--offline`）覆盖 10 个宿主无关 crate（server-base / crypto / cli / pty / audio / stt / discovery / ws-client / p2p / server-browser），命中 `tauri` / `actix*` / `rusqlite` / `sysinfo` / `notify` / `inotify` 即红（按 crate 名 token 精确匹配，别用裸 grep——路径含 `tauriProject`）。
 - **`common-host` 才装配** `bindgen!` / `HostModule` 自报 / `inventory::submit!` / `impl Host`；开 feature 后 ABI / WIT / 权限位 / 事件形状 / 注册零变化（装配桌面 WIT 依赖，不是行为分叉）。
 - 平台边经端口 trait 注入；**端口缺席 fail-visible**；引擎里不写 `#[cfg]` 端分支、不自建平台判断。
 - **无头探针门禁**：永不开 `common-host`；`cargo tree -e normal` 出现 `wasmtime` / `wit-bindgen` / `inventory` / `wasmnest-host-kit` / `wasmnest-plugin-api` 即违规。

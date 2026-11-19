@@ -50,6 +50,13 @@ pub const PERMISSION_UI_INPUT: &str = "ui:input";
 /// 文件处理器贡献（纯前端贡献面）：`ui.registerFileHandler`
 pub const PERMISSION_UI_FILE_HANDLER: &str = "ui:fileHandler";
 pub const PERMISSION_NETWORK_HTTP: &str = "network:http";
+/// 浏览器渲染（WIT `host-browser` 的 `fetch-rendered`）：宿主在独立浏览器进程里
+/// 导航、执行页面脚本并按声明式选择器提取结构化结果。
+///
+/// 与 `network:http` 不互相隐含：静态 HTTP 走前者，只有需要执行 JS 或读取 DOM
+/// 时才走本位。本位是更高风险的出站面——宿主默认连回环 / 私网 / 链路本地都不去，
+/// 且按 origin 记录用户授权；未声明本位的插件在调用入口即被拒绝。
+pub const PERMISSION_NETWORK_BROWSER: &str = "network:browser";
 pub const PERMISSION_STORAGE: &str = "storage";
 pub const PERMISSION_FS_READ: &str = "fs:read";
 pub const PERMISSION_FS_WRITE: &str = "fs:write";
@@ -245,6 +252,10 @@ pub const PERMISSION_VOCABULARY: &[(&str, &str)] = &[
         PERMISSION_UI_FILE_HANDLER,
     ),
     (stringify!(PERMISSION_NETWORK_HTTP), PERMISSION_NETWORK_HTTP),
+    (
+        stringify!(PERMISSION_NETWORK_BROWSER),
+        PERMISSION_NETWORK_BROWSER,
+    ),
     (stringify!(PERMISSION_STORAGE), PERMISSION_STORAGE),
     (stringify!(PERMISSION_FS_READ), PERMISSION_FS_READ),
     (stringify!(PERMISSION_FS_WRITE), PERMISSION_FS_WRITE),
@@ -365,6 +376,9 @@ pub static PERMISSION_API_MAP: &[(&str, &[&str])] = &[
     ),
     (PERMISSION_UI_FILE_HANDLER, &["ui.registerFileHandler"]),
     (PERMISSION_NETWORK_HTTP, &["http.registerEndpoint"]),
+    // 浏览器渲染（WASM-only：宿主 `host-browser.fetch-rendered`，无前端调用点）。
+    // 门禁落点 = 能力域 `service::fetch_rendered` 首行 + 宿主端口 `check_permission`。
+    (PERMISSION_NETWORK_BROWSER, &["browser.fetchRendered"]),
     (
         PERMISSION_STORAGE,
         &[

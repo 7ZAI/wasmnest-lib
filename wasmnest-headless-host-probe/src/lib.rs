@@ -4,12 +4,12 @@
 //!
 //! 能力域 crate 的默认形态 = 纯引擎机制 + 端口抽象（零 WIT 依赖），**任何宿主**
 //! 可直接引用。本 crate 就是那个「任何宿主」的最小实证：以非桌面宿主形态（永不
-//! 开 `common-host` feature）引用七个带桌面 WIT 绑定面的能力域 + CLI 机制 +
+//! 开 `common-host` feature）引用八个带桌面 WIT 绑定面的能力域 + CLI 机制 +
 //! server 地基/内核，编译通过 + 引擎面 smoke 断言即门禁。
 //!
 //! ## 钉住的三件事
 //!
-//! 1. **链接自足**：九行 `use … as _;` 强制引用让九个 rlib 进本 crate 的编译图
+//! 1. **链接自足**：十行 `use … as _;` 强制引用让十个 rlib 进本 crate 的编译图
 //!    ——`common-host` 未开 ⇒ `inventory::submit!` 静态不存在 ⇒ 无任何注册，
 //!    链接成功即证明纯引擎形态不需要插件宿主机制。
 //! 2. **零桌面依赖**：配套 `cargo tree -i wasmnest-plugin-api` 与
@@ -34,6 +34,7 @@
 use wasmnest_audio_engine as _;
 use wasmnest_discovery_engine as _;
 use wasmnest_pty_engine as _;
+use wasmnest_server_browser as _;
 use wasmnest_server_http as _;
 use wasmnest_server_peer_net as _;
 use wasmnest_server_websocket as _;
@@ -125,5 +126,25 @@ mod smoke {
         assert_eq!(pcm::duration_ms(32_000), 1_000);
         assert_eq!(PERMISSION_STT_INFER, "stt:infer");
         assert_eq!(PERMISSION_STT_MODEL, "stt:model");
+    }
+
+    /// 浏览器渲染能力域的默认形态可直接消费（纯引擎：闸门 + 错误分类 + 权限词汇）
+    ///
+    /// 端后端（浏览器进程 / CDP）经 `BrowserPorts` 注入；默认树若拉进任何浏览器
+    /// 或 CDP 依赖，本探针的 `cargo tree` 门禁会先红。
+    #[test]
+    fn browser_engine_default_form_is_backend_free() {
+        use std::net::IpAddr;
+        use wasmnest_server_browser::wire::PERMISSION_NETWORK_BROWSER;
+        use wasmnest_server_browser::{is_private_ip, BrowserError, BrowserErrorKind, MAX_ITEMS};
+
+        assert_eq!(PERMISSION_NETWORK_BROWSER, "network:browser");
+        assert_eq!(MAX_ITEMS, 200);
+        let private: IpAddr = "10.0.0.1".parse().expect("ip");
+        let public: IpAddr = "1.1.1.1".parse().expect("ip");
+        assert!(is_private_ip(private));
+        assert!(!is_private_ip(public));
+        let error = BrowserError::new(BrowserErrorKind::Unsupported, "mobile stub");
+        assert_eq!(error.code(), "browser.unsupported");
     }
 }

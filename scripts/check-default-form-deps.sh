@@ -37,6 +37,7 @@ wasmnest-stt-engine
 wasmnest-discovery-engine
 wasmnest-ws-client-engine
 wasmnest-p2p-engine
+wasmnest-server-browser
 "
 
 # 禁止出现在正常依赖树里的包（精确名，大小写不敏感）

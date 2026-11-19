@@ -1,0 +1,12 @@
+# ==================== 能力 crate 共享 target 目录 ====================
+# 与 `wasmnest-host-kit` / 既有能力域共用本仓根 `target/host-kits`：
+# 本 crate 的 `common-host` 形态依赖 wasmtime + wit-bindgen，与机制内核的
+# 依赖图高度重叠，分开落点会把这份巨型依赖图编两遍。
+#
+# 路径以本 `.cargo` 目录的父目录（= crate 根）为基准解析，故
+# `../target/host-kits` 落在本仓根，与相邻能力 crate 同一目录。
+# 改这一行后必须核验：
+#   cd wasmnest-server-browser && cargo metadata --no-deps --format-version 1
+# 其 `target_directory` 应为 `<wasmnest-lib>/target/host-kits`。
+[build]
+target-dir = "../target/host-kits"

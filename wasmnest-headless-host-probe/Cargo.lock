@@ -4597,6 +4597,7 @@ dependencies = [
  "wasmnest-discovery-engine",
  "wasmnest-pty-engine",
  "wasmnest-server-base",
+ "wasmnest-server-browser",
  "wasmnest-server-core",
  "wasmnest-server-http",
  "wasmnest-server-peer-net",
@@ -4665,6 +4666,16 @@ dependencies = [
  "tokio",
  "tracing",
  "wasmnest-contract",
+]
+
+[[package]]
+name = "wasmnest-server-browser"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+ "url",
 ]
 
 [[package]]

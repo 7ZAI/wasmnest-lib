@@ -1,0 +1,102 @@
+package wasmnest:browser@0.0.1;
+// ======================================================================
+// 浏览器渲染能力域自持契约分片（world `cap-browser` 只 import `host-browser`）
+//
+// 本文件是 `host-browser` 的共享契约真源：双端 `compose.json` 的 caps.browser
+// 直接指向本文件。契约必须双端同形——共享业务核两端共用同一份 wasm 产物时，
+// world 的 import 必须全部可满足；移动宿主提供 stub 实现并返回
+// `browser.unsupported`，能力可用性不等于契约存在性。
+//
+// 端生成物由组合脚本拼装（本文件与 core 及其余能力分片同 package 同版本）。
+// 分片只换绑定源、不换装配语义：`impl Host` / `HostModule` / `MODULE_*` /
+// `DESC` 与本契约的函数集逐字一致。
+//
+// 边界：
+// - 只接受声明式 CSS 选择器，不暴露任意脚本执行面；
+// - 不返回整页 HTML，只返回页面文本与结构化条目（避免大载荷进入 guest 线性内存）；
+// - 时间字段原样返回文本，时间语义由调用方解释；
+// - 相对链接由宿主按最终 URL 绝对化。
+// ======================================================================
+
+/// 浏览器渲染与结构化提取（双端同形；移动实现返回 `browser.unsupported`）
+///
+/// 错误以稳定前缀返回，便于调用方分类与 UI 文案：
+/// `browser.denied` / `browser.unsupported` / `browser.blocked-private` /
+/// `browser.timeout` / `browser.http-error` / `browser.parse-error` /
+/// `browser.too-large` / `browser.unavailable` / `browser.invalid-request`。
+interface host-browser {
+    /// 导航完成的判定时机
+    enum wait-until {
+        /// 页面 `load` 事件
+        load,
+        /// DOM 解析完成
+        dom-content-loaded,
+        /// 网络空闲（宿主按浏览器引擎能力近似）
+        network-idle,
+    }
+
+    /// 列表提取：`item` 命中条目容器，其余字段相对容器查找
+    ///
+    /// 字段取值是 CSS 选择器；`url` / `time` 额外接受 `attr:<name>` 形式，
+    /// 表示读取元素自身的属性（例如 `attr:href`）。
+    record list-spec {
+        item: string,
+        title: option<string>,
+        url: option<string>,
+        time: option<string>,
+        summary: option<string>,
+    }
+
+    /// 正文提取：只取一个容器内的可读文本
+    record page-spec {
+        /// 正文容器选择器；缺省取整页可读文本
+        content: option<string>,
+    }
+
+    /// 一次渲染请求
+    record request {
+        url: string,
+        wait-until: wait-until,
+        /// 总超时；宿主收敛到 1..=30000 毫秒
+        timeout-ms: u32,
+        /// 私网访问申请；最终由宿主按用户对该 origin 的授权记录裁决
+        allow-private-network: bool,
+        extract-list: option<list-spec>,
+        extract-page: option<page-spec>,
+    }
+
+    /// 列表条目；`url` 已由宿主解析为绝对 URL
+    record extracted-item {
+        title: string,
+        url: string,
+        /// 原始时间文本，时间语义由调用方解析
+        time-text: option<string>,
+        summary: option<string>,
+    }
+
+    /// 渲染结果
+    record response {
+        status: u16,
+        final-url: string,
+        title: option<string>,
+        /// 整页可读文本，最多 256 KiB
+        text: option<string>,
+        /// 正文文本，最多 256 KiB
+        content-text: option<string>,
+        /// 列表条目，最多 200 条
+        items: list<extracted-item>,
+        /// 任一字段被截断即 true
+        truncated: bool,
+    }
+
+    /// 导航并在页面上下文执行内置提取逻辑
+    ///
+    /// **权限 `network:browser`（manifest 必须单独声明）**：未声明即 `Err`。
+    /// 与 `network:http` 不互相隐含。
+    fetch-rendered: func(req: request) -> result<response, string>;
+}
+
+/// 浏览器能力域端组合 world（双端 compose.json 的 `caps.browser` 指向本文件）
+world cap-browser {
+    import host-browser;
+}

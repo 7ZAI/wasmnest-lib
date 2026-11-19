@@ -1,0 +1,46 @@
+[package]
+name = "wasmnest-server-browser"
+version = "0.0.1"
+license = "MIT"
+description = "WasmNest 浏览器渲染能力域（host-browser 1 条原语）：导航后按声明式 CSS 选择器提取结构化结果，内置协议白名单 / 私网闸门 / 响应上限与稳定错误码。默认形态 = 纯引擎机制 + BrowserPorts 端口抽象（零 WIT、零 SDK、零 native 浏览器依赖），任何宿主可直接引用；`common-host` feature 装配 WIT 绑定层（bindgen!/HostModule/inventory/impl Host）。浏览器进程（sidecar / CDP / 移动 stub）由各端宿主经端口实现，本 crate 不携带任何端实现。"
+authors = ["binblink"]
+edition = "2021"
+
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
+[features]
+# 默认 = 纯引擎（任何宿主可引用：桌面 / 移动 / 无头测试宿主 / 第三方宿主）
+default = []
+
+# 宿主 WIT 绑定层（bindgen!/HostModule/inventory::submit!/impl Host）；
+# 语义 = 装配 WIT 依赖，行为与开 feature 前逐字不变
+# （ABI / WIT / 权限位 / 载荷形状 / inventory 注册零变化）。
+common-host = ["dep:wasmnest-host-kit", "dep:wasmtime", "dep:wit-bindgen", "dep:inventory"]
+
+[dependencies]
+# 提取脚本的参数序列化与脚本返回值解析（选择器经 JSON 转义后注入页面脚本）
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# URL 语法校验 / 相对链接绝对化 / origin 归一（闸门与服务共用的纯机制依赖）
+url = "2"
+
+# 错误分类只写结构化事件，不落页面正文
+tracing = { version = "0.1", features = ["attributes"] }
+
+# ==================== 插件绑定层（WIT 绑定，common-host feature） ====================
+# 全部 optional：只随 `common-host` feature 进编译图（纯引擎形态）——
+# 无 feature 时 `cargo tree` 不出现以下任何 crate。
+# 机制内核：插件实例状态（`add_to_linker::<S,D>` 的单态 S 必须在本 crate 可命名）
+wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true, version = "0.1.0" }
+
+# WIT 契约绑定（`bindgen!` 在 src/lib.rs，本 crate 自带 provider 侧生成）
+wit-bindgen = { version = "=0.60.0", features = ["macros"], optional = true }
+
+# `Linker` / `HasSelf` / `add_to_linker::<S,D>` 的宿主侧类型与函数；
+# 版本随双端宿主锁版
+wasmtime = { version = "48", features = ["component-model"], optional = true }
+
+# 能力模块自报（`submit_module!` 展开为 inventory 静态提交）
+inventory = { version = "0.3", optional = true }
