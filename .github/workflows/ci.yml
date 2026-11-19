@@ -62,9 +62,17 @@ jobs:
     name: default-form-deps
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # 与 test job 同口径：本仓 cargo 走 sccache，缓存压小（CI 磁盘有限）
+      SCCACHE_CACHE_SIZE: "2147483648"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # 仓根 .cargo/config.toml 强制 `rustc-wrapper = "sccache"`（显性失败设计：未装
+      # 则一切 cargo 调用直接失败，不静默降级）。本 job 的 cargo fetch / cargo tree
+      # 同样是 cargo 调用，缺这一步会在 `Updating crates.io index` 阶段报
+      # `could not execute process sccache ... rustc -vV (never executed)`。
+      - uses: mozilla/sccache-action@v0.0.7
       # 门禁只解析依赖图（不编译）：cargo tree 需要 registry 索引，全新检出先 fetch。
       - name: cargo fetch（逐 crate 补 registry 索引）
         run: |
