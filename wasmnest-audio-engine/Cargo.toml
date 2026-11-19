@@ -12,14 +12,17 @@ publish = false
 [features]
 # 默认 = 纯引擎（任何宿主可引用：桌面 / 移动 / 无头测试宿主 / 第三方宿主）
 default = []
+
 # 桌面宿主 WIT 绑定层（bindgen!/HostModule/inventory::submit!/impl Host）；
 # 语义 = 装配桌面 WIT 依赖，行为与开 feature 前逐字不变
 # （ABI / WIT / 权限位 / 句柄形状 / inventory 注册零变化）。
 common-host = ["dep:wasmnest-host-kit", "dep:wasmtime", "dep:wit-bindgen", "dep:inventory"]
+
 # cpal 跨平台采集后端（四端同一套 API：ALSA / WASAPI / CoreAudio / AAudio）。
 # **默认关**：它是 native 依赖（Linux 需 libasound2-dev，Android 需 NDK 链 libaaudio），
 # 开在默认树上会让「默认形态任何宿主可直接引用」的承诺失真——由需要真实采集的宿主显式开启。
 backend-cpal = ["dep:cpal"]
+
 # 可编排后端（ScriptedBackend：测试与无麦克风 CI 手工灌帧）。纯附加 feature，
 # 不改变任何既有公开项；`cfg(test)` 下同码常编译，故默认单测无需开它。
 test-util = []
@@ -28,26 +31,34 @@ test-util = []
 # 归一前后的 PCM / 设备清单 / 会话状态的线协议形状
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
 # 引擎错误类型（语义变体 + 结构化字段；与 crypto-engine 同款 thiserror 形态）
 thiserror = "1"
+
 # 采集回调与装配面的结构化日志（不落音频字节）
 tracing = { version = "0.1", features = ["attributes"] }
+
 # 句柄铸造（`audio-<uuid>`，与 host-pty 的 `pty-<uuid>` 同范式）
 uuid = { version = "1", features = ["v4"] }
+
 # ==================== 后端（feature 门控） ====================
 # cpal：默认无 feature（`default-features = false`）——四端后端由 target cfg 自动选择，
 # 不打开 asio / jack / pipewire / pulseaudio / realtime（realtime 会拉进
 # audio_thread_priority + dbus，属宿主实时性策略，不该由能力域替宿主决定）。
 cpal = { version = "0.18", default-features = false, optional = true }
+
 # ==================== 能力域层（host-audio，随 common-host 装配） ====================
 # 全部 optional：只随 `common-host` feature 进编译图——
 # 无 feature 时 `cargo tree` 不出现以下 crate（纯引擎形态，无头探针钉死）。
 # 机制内核：插件实例状态（`add_to_linker::<S,D>` 的单态 S 必须在本 crate 可命名）
-wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true, version = "0.0.1" }
+wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true, version = "0.1.0" }
+
 # WIT 契约绑定（`bindgen!` 在 src/plugin_binding.rs，本 crate 自带 provider 侧生成）
 wit-bindgen = { version = "=0.60.0", features = ["macros"], optional = true }
+
 # `Linker` / `HasSelf` / `add_to_linker::<S,D>` 的宿主侧类型与函数；版本随两端宿主锁版
 wasmtime = { version = "48", features = ["component-model"], optional = true }
+
 # 能力模块自报（`inventory::submit!` 展开为 linker-section 静态提交）
 inventory = { version = "0.3", optional = true }
 

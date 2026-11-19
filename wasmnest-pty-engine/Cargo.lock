@@ -1966,7 +1966,7 @@ version = "0.0.1"
 
 [[package]]
 name = "wasmnest-host-kit"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "inventory",
  "serde",
