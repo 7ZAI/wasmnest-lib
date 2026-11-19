@@ -63,12 +63,11 @@ pub fn validate_config_snapshot(snapshot_json: &str) -> crate::base::Result<()> 
             detail: format!("config snapshot exceeds {MAX_CONFIG_SNAPSHOT_LEN} bytes"),
         });
     }
-    let value: serde_json::Value = serde_json::from_str(snapshot_json).map_err(|e| {
-        crate::base::error::PeerNetError::TransferProtocol {
+    let value: serde_json::Value =
+        serde_json::from_str(snapshot_json).map_err(|e| crate::base::error::PeerNetError::TransferProtocol {
             role: "config",
             detail: format!("config snapshot is not valid json: {e}"),
-        }
-    })?;
+        })?;
     if !value.is_object() {
         return Err(crate::base::error::PeerNetError::TransferProtocol {
             role: "config",
@@ -658,10 +657,7 @@ async fn serve_config(
     if let Err(e) = check_version(protocol_version) {
         return Err(e);
     }
-    let value = snapshot
-        .lock()
-        .expect("shared config snapshot lock poisoned")
-        .clone();
+    let value = snapshot.lock().expect("shared config snapshot lock poisoned").clone();
     let served = value.is_some();
     message::write_control(&mut conn, &TransferFrame::ConfigResponse { snapshot: value })
         .await
@@ -1326,7 +1322,9 @@ pub async fn fetch_shared_config(mut conn: Connection) -> crate::base::Result<Op
             ROLE,
             format!(
                 "config request rejected: {}",
-                reason.unwrap_or(crate::base::transfer::RejectReason::PolicyDenied).as_str()
+                reason
+                    .unwrap_or(crate::base::transfer::RejectReason::PolicyDenied)
+                    .as_str()
             ),
         )),
         other => Err(proto_violation(
@@ -1579,9 +1577,18 @@ mod config_snapshot_tests {
     #[test]
     fn rejects_non_object_invalid_and_oversized_snapshots() {
         assert!(validate_config_snapshot("[]").is_err(), "array must be rejected");
-        assert!(validate_config_snapshot(r#""text""#).is_err(), "string must be rejected");
-        assert!(validate_config_snapshot("not-json").is_err(), "invalid json must be rejected");
+        assert!(
+            validate_config_snapshot(r#""text""#).is_err(),
+            "string must be rejected"
+        );
+        assert!(
+            validate_config_snapshot("not-json").is_err(),
+            "invalid json must be rejected"
+        );
         let oversized = format!(r#"{{"v":1,"pad":"{}"}}"#, "a".repeat(MAX_CONFIG_SNAPSHOT_LEN));
-        assert!(validate_config_snapshot(&oversized).is_err(), "oversized must be rejected");
+        assert!(
+            validate_config_snapshot(&oversized).is_err(),
+            "oversized must be rejected"
+        );
     }
 }

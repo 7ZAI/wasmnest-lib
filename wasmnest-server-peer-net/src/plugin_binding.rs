@@ -465,11 +465,7 @@ pub fn peer_set_shared_roots(ports: &Arc<dyn PeerPorts>, plugin_id: &str, dirs_j
 }
 
 /// 写入本机穿透配置快照（对端 `fetch-config` 只读返回；不透明 JSON 对象）
-pub fn peer_set_config_snapshot(
-    ports: &Arc<dyn PeerPorts>,
-    plugin_id: &str,
-    config_json: &str,
-) -> Result<(), String> {
+pub fn peer_set_config_snapshot(ports: &Arc<dyn PeerPorts>, plugin_id: &str, config_json: &str) -> Result<(), String> {
     if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_set_config_snapshot") {
         return Err(denied());
     }
@@ -478,11 +474,7 @@ pub fn peer_set_config_snapshot(
 }
 
 /// 拉取可信对端的穿透配置快照（session 句柄寻址；`None` = 对端未设置）
-pub fn peer_fetch_config(
-    ports: &Arc<dyn PeerPorts>,
-    plugin_id: &str,
-    session: &str,
-) -> Result<Option<String>, String> {
+pub fn peer_fetch_config(ports: &Arc<dyn PeerPorts>, plugin_id: &str, session: &str) -> Result<Option<String>, String> {
     if !ports.check_permission(plugin_id, PERMISSION_PEER, "host_peer_fetch_config") {
         return Err(denied());
     }

@@ -119,14 +119,13 @@ use serde::Serialize;
 // server-base AppError 别名，两义共存时冲突；消费方需要底座错误时用全限定 `base::Result`。
 pub use crate::base::{
     browse_shared_dir, fetch_shared_config, list_shared_roots, pull_shared_file, resolve_rel_path, saf_not_found,
-    send_batch, sort_entries,
-    spawn_peer_mdns_daemon, BrowseListing, CancelOrigin, CancelToken, Connection, ConnectionHandler, DirEntry,
-    DiscoveredPeerRecord, DiscoveryCache, DiscoveryConfig, DiscoveryDaemon, FileLanding, FileMeta, HandlerFuture,
-    IncomingFrame, NodeId, NodeIdentity, OutgoingFile, PauseCmd, PauseSlot, PeerMdnsBrowse, PeerNetError, PeerNetNode,
-    PeerNetNodeConfig, ReceivePolicy, RejectReason, RunningNode, SeqReader, SharedDirEntry, SharedDirHandler,
-    SharedDirRoot, SharedDirStore, SharedRootMeta, SharedSafAccess, StaticPeerRecord, TerminalState, TransferConfig,
-    TransferEvent, TransferFrame, TransferReceiveHandler, TrustEvent, TrustHelloFrame, TrustStatus, TrustStatusFrame,
-    TrustStore, TrustedPeerEntry, CAP_FILE_TRANSFER, CONFIRM_TIMEOUT, DISCOVERY_PROTOCOL_VERSION,
+    send_batch, sort_entries, spawn_peer_mdns_daemon, BrowseListing, CancelOrigin, CancelToken, Connection,
+    ConnectionHandler, DirEntry, DiscoveredPeerRecord, DiscoveryCache, DiscoveryConfig, DiscoveryDaemon, FileLanding,
+    FileMeta, HandlerFuture, IncomingFrame, NodeId, NodeIdentity, OutgoingFile, PauseCmd, PauseSlot, PeerMdnsBrowse,
+    PeerNetError, PeerNetNode, PeerNetNodeConfig, ReceivePolicy, RejectReason, RunningNode, SeqReader, SharedDirEntry,
+    SharedDirHandler, SharedDirRoot, SharedDirStore, SharedRootMeta, SharedSafAccess, StaticPeerRecord, TerminalState,
+    TransferConfig, TransferEvent, TransferFrame, TransferReceiveHandler, TrustEvent, TrustHelloFrame, TrustStatus,
+    TrustStatusFrame, TrustStore, TrustedPeerEntry, CAP_FILE_TRANSFER, CONFIRM_TIMEOUT, DISCOVERY_PROTOCOL_VERSION,
     MAX_PENDING_CONFIRMATIONS, PEER_DISCOVERY_TTL, SERVICE_TYPE, SWEEP_INTERVAL,
 };
 // 底座子模块（`transfer` / `shared` 等）对消费方保持模块路径可用：旧 `wasmnest_peer_net::transfer`

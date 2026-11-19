@@ -323,10 +323,7 @@ mod tests {
             pty_reader.wait();
 
             let collected = drain_engine_ring_until(&ring, payload.len()).await;
-            assert_eq!(
-                collected, payload,
-                "PTY 输出必须完整按序落入引擎环"
-            );
+            assert_eq!(collected, payload, "PTY 输出必须完整按序落入引擎环");
         });
     }
 

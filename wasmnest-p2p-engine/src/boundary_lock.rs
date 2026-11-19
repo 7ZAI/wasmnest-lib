@@ -672,8 +672,7 @@ fn crate_root_has_no_external_test_surfaces() {
             .unwrap_or(false);
         if !only_contracts {
             violations.push(
-                "wit/ 含非契约文件 —— WIT 绑定层载体不得在场（只允许 `.wit` 契约分片）"
-                    .to_string(),
+                "wit/ 含非契约文件 —— WIT 绑定层载体不得在场（只允许 `.wit` 契约分片）".to_string(),
             );
         }
     }

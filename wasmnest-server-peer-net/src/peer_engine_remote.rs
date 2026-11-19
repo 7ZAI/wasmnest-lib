@@ -275,11 +275,7 @@ pub async fn list_peer_shared_roots(
 ///
 /// 与共享根同一寻址口径：服务句柄记忆的有序候选地址，不查 mDNS 缓存。
 /// 对端未设置快照返回 `None`（不是错误）。
-pub async fn fetch_peer_config(
-    ctx: Arc<PeerCtx>,
-    node_id: String,
-    addrs: Vec<Multiaddr>,
-) -> Result<Option<String>> {
+pub async fn fetch_peer_config(ctx: Arc<PeerCtx>, node_id: String, addrs: Vec<Multiaddr>) -> Result<Option<String>> {
     let parsed = parse_node_id(&node_id)?;
     let conn = dial_peer(&ctx, &parsed, &addrs, "config").await?;
     let snapshot = fetch_shared_config(conn)
