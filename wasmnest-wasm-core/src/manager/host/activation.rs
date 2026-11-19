@@ -309,6 +309,9 @@ impl PluginHost {
         // 持写锁回调会死锁（锁约定见 PluginManager::activate，双侧一致）
         struct ActivatePlan {
             source: PluginSource,
+            /// manifest `rustLibrary`：与 `source` 共同决定「本插件是否有 wasm 实例」
+            /// （见 `PluginSource::has_wasm_backend`）——激活期的 guest 门以它为准
+            rust_library: String,
             api: Vec<String>,
             subscribes: Vec<String>,
             declared_preopen_dirs: Vec<crate::manifest::WasiPreopenDir>,
@@ -421,6 +424,7 @@ impl PluginHost {
 
             ActivatePlan {
                 source: loaded.source.clone(),
+                rust_library: loaded.manifest.rust_library.clone(),
                 api: loaded.manifest.api.clone(),
                 subscribes: loaded.manifest.contributes.subscribes.clone(),
                 declared_preopen_dirs: loaded.manifest.wasi_preopen_dirs.clone(),
@@ -461,8 +465,13 @@ impl PluginHost {
         // 阶段 2（无 map 锁）：执行 WASM activate + on_startup
         // 仅持单插件实例锁（避免重入死锁），失败置 Error 状态
         // on_startup 的 guest 自报失败记录于此，phase 3 据此写 Degraded 终态
+        //
+        // 门判据 = 「本插件有 wasm 后端」，不是「来源是内置 WASM」：用户 zip 安装的
+        // full 形态（`UserInstalled` + 非空 `rustLibrary`）同样有实例，跳过 guest
+        // `activate()` / `on_startup()` 会让终态写 `Activated` 而 guest 侧 OnceLock
+        // 状态（数据目录、私有库建表）永不初始化——此后任意命令在未初始化实例上执行
         let mut startup_failure: Option<String> = None;
-        if plan.source == PluginSource::Wasm {
+        if plan.source.has_wasm_backend(&plan.rust_library) {
             // 实例就绪性 + WASI 预打开目录漂移检测（合并为一次判定，避免连续重建）：
             // ① `event-loop` 实例在上次停用后属主已停（store 已丢）⇒ 必须重建才能
             //    再入（停用即丢 store 是 I3③ 的语义）；
@@ -832,14 +841,51 @@ impl PluginHost {
 
         // WASM 插件：调用 on_shutdown + __wasmnest_deactivate
         //
+        // guest 清理钩子有两道门，缺一即显性跳过（不静默）：
+        // ① **有 wasm 后端**（`has_wasm_backend`，与激活门同源）——用户 zip 安装的
+        //    full 形态同样有实例，只按内置来源判会漏掉它们；
+        // ② **状态实际处于 `Activated` / `Degraded`**，即 guest `activate()` 真跑过。
+        //    在未激活的实例上调用（启动重放卸载对刚创建的 `Loaded` 实例调停用）会
+        //    让 guest 在未初始化的 OnceLock 状态上执行清理并 trap，宿主随后照常打印
+        //    deactivated successfully；在已停用的实例上重复调用，guest 清理则跑在
+        //    `revoke_all` 之后，逐条报 `permission denied`。
+        //    宿主侧资源清扫（属主回收 / 域钩子 purge / task purge / 进程回收 / 撤权 /
+        //    订阅摘除）与本门无关，任何状态都照常执行——跳过 guest 不等于跳过回收。
+        //
         // 步骤 ① 已停属主：`event-loop` 实例的 store 已丢，guest 清理**无法执行**
         // ——按 spec I3③ 显性告警 + 计数（fail-visible），不静默跳过；`mutex`
         // 实例仍走原路径（行为与改造前逐字一致）。
-        let wasm_source = {
+        let guest_gate = {
             let plugins = self.plugins.read().await;
-            plugins.get(plugin_id).map(|p| p.source.clone())
+            plugins.get(plugin_id).map(|p| {
+                (
+                    p.source.clone(),
+                    p.manifest.rust_library.clone(),
+                    p.state.clone(),
+                )
+            })
         };
-        if wasm_source == Some(PluginSource::Wasm) {
+        let call_guest_hooks = match &guest_gate {
+            Some((source, rust_library, state)) => {
+                let has_backend = source.has_wasm_backend(rust_library);
+                let initialized = guest_lifecycle_runnable(state);
+                if has_backend && !initialized {
+                    let skipped_total =
+                        self.guest_lifecycle_skipped.fetch_add(1, Ordering::Relaxed) + 1;
+                    tracing::warn!(
+                        plugin_id = %plugin_id,
+                        state = ?state,
+                        skipped = "on_shutdown+deactivate",
+                        skipped_total = skipped_total,
+                        "guest cleanup skipped: plugin never activated (or already deactivated); host-side cleanup still runs"
+                    );
+                }
+                has_backend && initialized
+            }
+            // 记录缺席：本函数尾部的 `plugins.get_mut` 会以 Plugin not found 显性失败
+            None => false,
+        };
+        if call_guest_hooks {
             match self.get_instance(plugin_id).await {
                 Some(entry) if entry.call_model() == CallModel::EventLoop => {
                     let skipped_total =
@@ -905,7 +951,9 @@ impl PluginHost {
                         }
                     }
                 }
-                // 实例缺失（纯前端插件 / 加载失败）：无可调用，静默跳过（与改造前一致）
+                // 实例缺失：纯前端插件已被上方 `has_wasm_backend` 门排除，此处只剩
+                // 「状态仍是运行中、实例却已不在」（加载失败 / 实例被摘除）。无可调用，
+                // 静默跳过（与改造前一致）
                 None => {}
             }
         }
@@ -1055,6 +1103,22 @@ impl PluginHost {
     }
 }
 
+// ==================== guest 生命周期门 ====================
+
+/// guest 清理钩子（`on_shutdown` / `deactivate`）允许调用的插件状态
+///
+/// 判据只有一条：**guest `activate()` 是否真的跑过**。`Activated` 与 `Degraded`
+/// 跑过（降级是「实例可用、启动初始化未完成」，guest 侧状态已建立），其余状态
+/// 没跑过——`Loaded`（从未激活 / 启动重放卸载）、`Deactivated`（重复停用，权限
+/// 已 `revoke_all`）、`Error`（激活失败，实例可能压根没建起来）、`NeedsApproval`、
+/// `Activating`（激活在途，钩子会和在途调用抢同一实例锁）。
+///
+/// 与 [`PluginHost::is_running`] 同一状态集合，取纯函数形态供停用门与单测共用
+/// （`is_running` 走读锁，停用处已在快照里取到 state，不再二次加锁）。
+fn guest_lifecycle_runnable(state: &PluginState) -> bool {
+    matches!(state, PluginState::Activated | PluginState::Degraded { .. })
+}
+
 // ==================== 插件名唯一性（用户裁定 ⑨，激活期最终闸门） ====================
 
 /// 查找「键不一致但 manifest.id 相同」的重复插件记录
@@ -1114,6 +1178,43 @@ fn with_api_aliases(plugin_id: &str, apis: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ==================== guest 生命周期门（状态短路判据） ====================
+
+    /// 短路门只放开「guest `activate()` 真跑过」的两个状态
+    ///
+    /// 逐个状态点名，防止后续把 `Error`（激活失败，实例可能未建）或 `Activating`
+    /// （在途激活）当成可清理态放回 guest 钩子。放回的两个既有故障形态：
+    /// ① 启动重放卸载对刚创建、从未 activate 的实例调 `export=deactivate` → guest
+    /// trap（`on_shutdown` 侥幸返回，deactivate 仍炸）；② 先停用撤权、再走卸载 →
+    /// guest 清理在无权限上下文里执行，报 `permission denied`。
+    #[test]
+    fn guest_hooks_run_only_for_initialized_states() {
+        assert!(
+            guest_lifecycle_runnable(&PluginState::Activated),
+            "Activated：guest 已初始化，清理钩子必须执行"
+        );
+        assert!(
+            guest_lifecycle_runnable(&PluginState::Degraded {
+                error: "on_startup 失败".into()
+            }),
+            "Degraded：实例可用，guest 侧状态已建立"
+        );
+        for not_initialized in [
+            PluginState::Loaded,
+            PluginState::Activating,
+            PluginState::NeedsApproval,
+            PluginState::Deactivated,
+            PluginState::Error {
+                error: "activate 失败".into(),
+            },
+        ] {
+            assert!(
+                !guest_lifecycle_runnable(&not_initialized),
+                "{not_initialized:?} 状态下 guest 未初始化（或已清理），不得调用钩子"
+            );
+        }
+    }
 
     // ==================== 插件名唯一性（用户裁定 ⑨，激活期最终闸门） ====================
 

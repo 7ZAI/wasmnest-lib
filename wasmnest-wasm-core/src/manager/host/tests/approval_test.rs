@@ -5,13 +5,8 @@ use super::*;
 
 // ==================== 审批门禁 ====================
 
-/// 注册一个「用户 zip 安装」的 TS-only 插件，安装目录指向 `dir`
-async fn register_user_installed(host: &PluginHost, id: &str, dir: &Path, permissions: &[&str]) {
-    let mut plugin = make_plugin(id, PluginSource::UserInstalled, PluginState::Loaded);
-    plugin.manifest.permissions = permissions.iter().map(|p| p.to_string()).collect();
-    plugin.extension_path = dir.to_string_lossy().to_string();
-    host.plugins.write().await.insert(id.to_string(), plugin);
-}
+// `register_user_installed`（用户 zip 安装记录的公共构造入口）在 `scaffold.rs`，
+// 与 guest 生命周期门用例共用
 
 /// 无批准记录 → 拒绝激活、落 NeedsApproval、一位权限都不授予
 #[tokio::test]

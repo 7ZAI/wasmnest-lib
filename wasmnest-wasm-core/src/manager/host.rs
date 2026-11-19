@@ -432,6 +432,13 @@ pub struct PluginHost {
     /// I3③ 的 fail-visible 观测量：`event-loop` 实例停用即丢 store（不赌挂起
     /// task 放行），guest 清理无法执行——必须可见，不得静默跳过
     owner_cleanup_skipped: Arc<AtomicU64>,
+    /// 因「guest 从未激活 / 已停用」而跳过的 guest 清理钩子（`on_shutdown` /
+    /// `deactivate`）计数
+    ///
+    /// 停用门的第二道判据（状态）的 fail-visible 观测量：有 wasm 后端但状态不在
+    /// `Activated` / `Degraded` 时不调 guest——不计数就等于把「本该发生的清理被
+    /// 短路」重新变成静默跳过。写入点见 `deactivate_plugin_inner`
+    guest_lifecycle_skipped: Arc<AtomicU64>,
     /// 宿主上下文工厂（供 WASM 插件激活时使用）
     wasm_host_ctx: Arc<WasmHostContext>,
     /// 消息总线
@@ -652,6 +659,7 @@ impl PluginHost {
             wasm_plugins: Arc::new(RwLock::new(HashMap::new())),
             owner_sink: HostOwnerFailureSink::new(),
             owner_cleanup_skipped: Arc::new(AtomicU64::new(0)),
+            guest_lifecycle_skipped: Arc::new(AtomicU64::new(0)),
             wasm_host_ctx,
             message_bus,
             plugin_timers: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -1069,6 +1077,7 @@ mod tests {
     mod approval_test;
     mod commands_test;
     mod contributions_test;
+    mod guest_lifecycle_gate_test;
     mod host_api_test;
     mod instance_call_model_test;
     // l2_gating_test（L2 反向依赖红线锁）已迁桌面宿主测试面

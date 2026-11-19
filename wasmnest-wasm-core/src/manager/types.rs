@@ -217,6 +217,22 @@ mod tests {
         assert_eq!(PluginSource::Wasm.as_str(), "wasm");
     }
 
+    /// `has_wasm_backend` 真值表：激活 / 停用期 guest 门的「有无 wasm 后端」判据
+    ///
+    /// 钉住口径：内置 `Wasm` 恒真；`UserInstalled` 随 `rust_library` 而变
+    /// （非空 = full 形态 zip 安装，必有 wasm 实例）；`StaticRegistry` / `FileScan`
+    /// 恒假。缺这张表时 `UserInstalled` 会被误判成「无后端」，装上后不跑
+    /// `activate()`，命令却照常分发。
+    #[test]
+    fn test_has_wasm_backend_truth_table() {
+        assert!(PluginSource::Wasm.has_wasm_backend(""));
+        assert!(PluginSource::Wasm.has_wasm_backend("wasmnest_test.wasm"));
+        assert!(PluginSource::UserInstalled.has_wasm_backend("wasmnest_test.wasm"));
+        assert!(!PluginSource::UserInstalled.has_wasm_backend(""));
+        assert!(!PluginSource::StaticRegistry.has_wasm_backend("wasmnest_test.wasm"));
+        assert!(!PluginSource::FileScan.has_wasm_backend("wasmnest_test.wasm"));
+    }
+
     /// LoadedPlugin → HostPluginInfo 字段一一映射（期望值为手写字面量）
     #[test]
     fn test_loaded_plugin_to_host_info_mapping() {

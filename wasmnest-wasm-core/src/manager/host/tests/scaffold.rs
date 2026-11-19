@@ -96,6 +96,7 @@ pub(super) async fn setup_host() -> PluginHost {
         wasm_plugins: Arc::new(RwLock::new(HashMap::new())),
         owner_sink: HostOwnerFailureSink::new(),
         owner_cleanup_skipped: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        guest_lifecycle_skipped: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         wasm_host_ctx,
         message_bus,
         plugin_timers: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -112,6 +113,24 @@ pub(super) async fn setup_host() -> PluginHost {
 // `setup_host_shared`（`Arc<PluginHost>` + 手工 `owner_sink.bind`）随夹具用例
 // 迁宿主一并删除：宿主侧经 `PluginHost::new` 真实装配路径构造（该路径本身已按生产
 // 顺序绑定属主失败端口），不再需要结构体字面量 scaffold。
+
+/// 注册一条「用户 zip 安装」的插件记录，安装目录指向 `dir`
+///
+/// 落的是 `Loaded` 态、`rustLibrary` 为空（= 纯前端 zip 形态）；用例要 full 形态
+/// （有 wasm 后端）就在此之后再写 `plugin.manifest.rust_library`。
+/// 审批门禁只作用 `UserInstalled`，用例要走到激活/停用门必须先经此入口落一条
+/// 免审批记录之外的插件记录（批准由 `PluginHost::approve_plugin` 显式调用）。
+pub(super) async fn register_user_installed(
+    host: &PluginHost,
+    id: &str,
+    dir: &std::path::Path,
+    permissions: &[&str],
+) {
+    let mut plugin = make_plugin(id, PluginSource::UserInstalled, PluginState::Loaded);
+    plugin.manifest.permissions = permissions.iter().map(|p| p.to_string()).collect();
+    plugin.extension_path = dir.to_string_lossy().to_string();
+    host.plugins.write().await.insert(id.to_string(), plugin);
+}
 
 /// 构造一个最小 LoadedPlugin（manifest 含 storage + terminal:input 权限）
 pub(super) fn make_plugin(id: &str, source: PluginSource, state: PluginState) -> LoadedPlugin {

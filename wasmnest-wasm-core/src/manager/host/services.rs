@@ -354,6 +354,7 @@ impl Clone for PluginHost {
             wasm_plugins: self.wasm_plugins.clone(),
             owner_sink: self.owner_sink.clone(),
             owner_cleanup_skipped: self.owner_cleanup_skipped.clone(),
+            guest_lifecycle_skipped: self.guest_lifecycle_skipped.clone(),
             wasm_host_ctx: self.wasm_host_ctx.clone(),
             message_bus: self.message_bus.clone(),
             plugin_timers: self.plugin_timers.clone(),
