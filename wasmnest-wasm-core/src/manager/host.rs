@@ -579,6 +579,17 @@ impl PluginHost {
         // 对等网络上下文装配端口（整核抽出）：与 monitor 同构的两阶段注入
         wasm_host_ctx.set_peer_ctx_provider(peer_ctx_provider);
 
+        // 能力域端口装配（wasm-core 拆 lib 后）：mDNS / WS / peer-net /
+        // HTTP / audio / stt 等域的实现已迁进能力 crate，其 `impl Host for
+        // WasmPluginState` 经进程级端口反取宿主实现。**必须早于插件扫描**——
+        // 扫描期会回调 `DomainHooks::on_manifest_load`，域钩子可能依赖本函数
+        // 装入的引擎（如 audio 的 `install_hub`）；晚装会让域在装载期不可用。
+        // 同时也必须早于任何插件激活：guest 一调域原语就取端口，取不到直接
+        // panic（fail-visible，不静默空转）。单一入口见
+        // `host_api::install_capability_domain_ports`（两个测试夹具共用同一条链，
+        // 免得再出现「只在生产装了」的漏装）。
+        crate::host_api::install_capability_domain_ports(&wasm_host_ctx);
+
         // 1. 收集静态注册的 Rust 插件
         let static_plugins: Vec<&'static wasmnest_plugin_api::WasmNestPluginEntry> =
             inventory::iter::<wasmnest_plugin_api::WasmNestPluginEntry>
@@ -692,13 +703,6 @@ impl PluginHost {
                 host.wasm_host_ctx().clone(),
             )))
             .await;
-        // 能力域端口装配（wasm-core 拆 lib 后）：mDNS / WS / peer-net /
-        // HTTP 四域的实现已迁进 `packages/` 能力 crate，其 `impl Host for WasmPluginState`
-        // 经进程级端口反取宿主实现。**必须早于任何插件激活**——guest 一调该域原语就取
-        // 端口，取不到直接 panic（fail-visible，不静默空转）。单一入口见
-        // `host_api::install_capability_domain_ports`（两个测试夹具共用同一条链，
-        // 免得再出现「只在生产装了」的漏装）。
-        crate::host_api::install_capability_domain_ports(host.wasm_host_ctx());
         // 任务单元执行器：域实现 `submit_unit_executor!` 自报
         // （fs / http 在内核域文件，process 随 host-process 域住宿主
         // `src/plugin/process.rs`），装配点遍历注册——本处不点名任何执行器，
@@ -1075,6 +1079,7 @@ mod tests {
     // 模块树 `host::tests::<文件>` 与内联形态等价；各域文件经 `use super::*;` 拿到宿主项
     // 与测试常量，跨文件复用的脚手架另按需显式引入（顶层项已标 `pub(super)`）。
     mod approval_test;
+    mod boot_order_lock;
     mod commands_test;
     mod contributions_test;
     mod guest_lifecycle_gate_test;

@@ -283,9 +283,11 @@ impl PluginLoader {
 
                     // 非核心能力域的装载期回调（批次 02 / 批次 03）：manifest
                     // **原文**下发，解析权与**声明仲裁权**都在能力域——内核不解释
-                    // manifest 字段。`Err` = 该域拒绝此 manifest ⇒
-                    // **不装载**（fail-visible，不静默降级；如 host-pty 的 `ptyQuota`
-                    // 越界）。故本回调**必须先于任何副作用**（授权登记在下一条）执行：
+                    // manifest 字段。域侧失败分两类（注册表已按类型分流）：
+                    // `Rejected` = 该插件声明非法 ⇒ 此处拿到 `Err`，**不装载**
+                    // （fail-visible，不静默降级；如 host-pty 的 `ptyQuota` 越界）；
+                    // `Unavailable` = 域未就绪 ⇒ 注册表已记录并放行，不会走到这里。
+                    // 故本回调**必须先于任何副作用**（授权登记在下一条）执行：
                     // 被拒插件不留半成品状态（权限 / 配额登记都不该发生）。
                     // 原文重读失败不阻断装载（域侧声明落各自默认档），但必须留痕。
                     match std::fs::read_to_string(&manifest_path) {

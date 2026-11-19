@@ -341,48 +341,117 @@ fn descriptor_constants_match_the_wit_slice() {
 #[cfg(feature = "common-host")]
 mod bound {
     use super::*;
-    use crate::plugin_binding::{on_manifest_load, HOOKS, MODULE_NAME};
+    use crate::plugin_binding::{
+        manifest_load_with, on_manifest_load, ManifestLoadFailure, HOOKS, MODULE_NAME,
+    };
+
+    /// 独立引擎（不碰进程级单例：用例可显式传 `None` 验证不可用分支）
+    fn test_hub() -> Arc<AudioHub> {
+        let backend = ScriptedBackend::new(PcmFormat::new(16_000, 1, SampleFormat::S16));
+        Arc::new(AudioHub::new(Arc::new(backend), AudioLimits::default()))
+    }
 
     /// 全局引擎必须先于插件装载：夹具装一次（进程级单例，首个装配者胜出）
     fn install_global_hub() {
-        let backend = ScriptedBackend::new(PcmFormat::new(16_000, 1, SampleFormat::S16));
-        crate::plugin_binding::install_hub(Arc::new(AudioHub::new(
-            Arc::new(backend),
-            AudioLimits::default(),
-        )));
+        crate::plugin_binding::install_hub(test_hub());
     }
 
     /// P-009 正例：缺省 / 区间两端可装载；0 与越界一律拒绝（不夹取）
     #[test]
     fn manifest_quota_is_arbitrated_at_load_time() {
-        install_global_hub();
+        let hub = test_hub();
         let owner = "audio-test.manifest-quota";
-        let hub = crate::plugin_binding::registry::try_hub().expect("已装配");
 
-        on_manifest_load(owner, r#"{"id":"x","name":"x","version":"1.0.0"}"#)
-            .expect("缺省即默认档");
+        // 声明了音频权限但未声明 audioQuota ⇒ 默认档（作用域含权限声明）
+        manifest_load_with(
+            Some(Arc::clone(&hub)),
+            owner,
+            r#"{"permissions":["audio:capture"]}"#,
+        )
+        .expect("声明音频权限即默认档");
         assert_eq!(
             hub.quota_of(owner),
             hub.limits().max_sessions_per_owner,
-            "未声明 ⇒ 默认档"
+            "未声明 audioQuota ⇒ 默认档"
         );
 
-        on_manifest_load(owner, r#"{"audioQuota":1}"#).expect("下界可装载");
+        manifest_load_with(Some(Arc::clone(&hub)), owner, r#"{"audioQuota":1}"#)
+            .expect("下界可装载");
         assert_eq!(hub.quota_of(owner), 1);
         let ceiling = hub.limits().max_sessions_ceiling_per_owner;
-        on_manifest_load(owner, &format!(r#"{{"audioQuota":{ceiling}}}"#)).expect("上界可装载");
+        manifest_load_with(
+            Some(Arc::clone(&hub)),
+            owner,
+            &format!(r#"{{"audioQuota":{ceiling}}}"#),
+        )
+        .expect("上界可装载");
         assert_eq!(hub.quota_of(owner), ceiling);
 
         for bad in [0usize, ceiling + 1, 10_000] {
-            let err = on_manifest_load(owner, &format!(r#"{{"audioQuota":{bad}}}"#))
-                .err()
-                .unwrap_or_else(|| panic!("audioQuota={bad} 必须被拒"));
+            let err = manifest_load_with(
+                Some(Arc::clone(&hub)),
+                owner,
+                &format!(r#"{{"audioQuota":{bad}}}"#),
+            )
+            .expect_err(&format!("audioQuota={bad} 必须被拒"));
+            assert!(
+                matches!(err, ManifestLoadFailure::Rejected(_)),
+                "插件声明越界必须分类为 Rejected，实得 {err:?}"
+            );
+            let err = err.to_string();
             assert!(
                 err.contains(&bad.to_string()) && err.contains("audioQuota"),
                 "错误必须点名越界值与字段，实得 {err}"
             );
         }
         assert_eq!(hub.quota_of(owner), ceiling, "被拒的声明不得改写生效配额");
+
+        // 生产入口（进程级引擎）同样可仲裁
+        install_global_hub();
+        on_manifest_load(owner, r#"{"audioQuota":1}"#).expect("装配后钩子可仲裁");
+        assert_eq!(
+            crate::plugin_binding::registry::try_hub()
+                .expect("已装配")
+                .quota_of(owner),
+            1
+        );
+    }
+
+    /// P-012 反例：引擎未装配时只有声明音频能力的 manifest 受影响，且分类为 `Unavailable`
+    ///
+    /// 现场来源：未装配音频引擎时钩子拒绝每一个 manifest，10 个随包应用全部装载失败。
+    /// 加载隔离要求：无关应用照常装载，音频应用也装载（原语运行期显性报错）。
+    #[test]
+    fn missing_engine_is_unavailable_and_isolated_to_audio_manifests() {
+        let owner = "audio-test.missing-engine";
+
+        for manifest in [
+            r#"{"permissions":["audio:capture"]}"#,
+            r#"{"permissions":["audio:io"]}"#,
+            r#"{"audioQuota":1}"#,
+        ] {
+            let err = manifest_load_with(None, owner, manifest)
+                .expect_err("声明音频能力的 manifest 应得到 Unavailable");
+            assert!(
+                matches!(err, ManifestLoadFailure::Unavailable(_)),
+                "引擎缺口不是插件声明问题，必须分类为 Unavailable，实得 {err:?}"
+            );
+            assert!(
+                err.to_string().contains("install_hub"),
+                "错误必须点名装配入口，实得 {err}"
+            );
+        }
+
+        // 其余应用完全不受影响（含无 permissions 字段与无关权限）
+        for manifest in [
+            r#"{"id":"x","name":"x","version":"1.0.0"}"#,
+            r#"{"permissions":["storage","network:http"]}"#,
+            r#"{"permissions":[]}"#,
+        ] {
+            manifest_load_with(None, owner, manifest).unwrap_or_else(|e| {
+                panic!("非音频 manifest 不得被音频域阻断: {manifest} -> {e:?}")
+            });
+        }
     }
 
     /// P-010 正例：钩子与模块描述符自报一致（内核按 name 索引，不能各说各话）

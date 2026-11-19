@@ -26,6 +26,30 @@
 //! 两者由同一个能力域自报、共用同一个白名单键（[`DomainHooks::name`] 与
 //! [`crate::HostModuleDesc::name`] 同源），故宿主白名单校验对两面同时生效。
 
+/// 装载期 manifest 回调的失败分类
+///
+/// 两个变体的处置**不同**，能力域必须按语义选：
+/// - [`Self::Rejected`]：插件自身的声明在本域非法 ⇒ 内核不装载**该插件**；
+/// - [`Self::Unavailable`]：本域未就绪（引擎未装配 / 后端不可用）⇒ 内核记录错误后
+///   **继续装载**，把失败留给运行期原语显性回报，避免一个域拖垮全部应用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManifestLoadFailure {
+    /// 插件自身的 manifest 声明在本域非法：该插件不得装载
+    Rejected(String),
+    /// 本域当前不可用：记录错误，但不阻断该插件及其他插件的装载
+    Unavailable(String),
+}
+
+impl std::fmt::Display for ManifestLoadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(reason) | Self::Unavailable(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for ManifestLoadFailure {}
+
 /// 能力域生命周期钩子（每项可选：能力域只报自己关心的时点）
 #[derive(Debug, Clone, Copy)]
 pub struct DomainHooks {
@@ -36,12 +60,13 @@ pub struct DomainHooks {
     /// **为什么传原文而不是结构化配额**：解析 manifest 字段等于替能力域解释它的
     /// 声明语义，且字段一变内核就要跟着改。原文下发后，字段演进只需动能力域。
     ///
-    /// **返回 `Result<(), String>`**：能力域可**拒绝**该 manifest
-    /// ——`Err(reason)` = 「本域不接受此插件装载」，内核据此不装载并把 `reason` 原样
-    /// 落 `error!`。域内声明越界（如 `ptyQuota` 超出上限）必须走这条返回值，而不是域内
-    /// 记日志后静默降级：降级后插件会按自己声明的并发数规划业务、实际却少得多，属
-    /// fail-visible 反例（与 `PLUGIN_PTY_SESSIONS_CEILING_PER_PLUGIN` 的「不夹取」同口径）。
-    pub on_manifest_load: Option<fn(&str, &str) -> Result<(), String>>,
+    /// **返回 [`ManifestLoadFailure`]**：`Rejected` = 「本域不接受此插件装载」，内核
+    /// 据此不装载并把 `reason` 落 `error!`；`Unavailable` = 「本域当前不可用」，内核
+    /// 记录错误后继续装载（加载隔离，见 [`DomainHooksRegistry::on_manifest_load`]）。
+    /// 域内声明越界（如 `ptyQuota` 超出上限）必须走 `Rejected`，而不是域内记日志后
+    /// 静默降级：降级后插件会按自己声明的并发数规划业务、实际却少得多，属 fail-visible
+    /// 反例（与 `PLUGIN_PTY_SESSIONS_CEILING_PER_PLUGIN` 的「不夹取」同口径）。
+    pub on_manifest_load: Option<fn(&str, &str) -> Result<(), ManifestLoadFailure>>,
     /// 停用期回调：`(plugin_id)`——回收该插件在能力域内的全部资源
     ///
     /// 无返回值：回收是尽力而为的清理（句柄已失效时重复回收必须幂等），失败一律
@@ -152,13 +177,36 @@ impl DomainHooksRegistry {
     ///
     /// 内核侧唯一入口——**调用方不得再点名任何能力域 crate**。
     ///
-    /// 任一钩子返回 `Err` 即**短路**并原样上抛（遍历顺序 = 能力域名典序，确定性）：
-    /// 该 manifest 已被拒绝 ⇒ 再让后续域登记等于为「不会装载的插件」留状态。调用方
-    /// （装载漏斗）必须把 `Err` 变成「不装载」，**不得**吞掉后继续（fail-visible）。
+    /// **隔离判据**：
+    /// - `Rejected`：该插件已被本域拒绝 ⇒ **短路**并原样上抛；调用方（装载漏斗）
+    ///   必须把 `Err` 变成「不装载该插件」，**不得**吞掉后继续（fail-visible）。
+    /// - `Unavailable`：本域未就绪，与插件声明本身无关 ⇒ 落 `error!` 后**继续遍历**，
+    ///   最终返回 `Ok` 让插件照常装载。该域的运行期原语仍按既有 fail-visible 口径
+    ///   逐调用报错（不静默给空数据），但**不阻断**其他插件或无关能力面的加载。
     pub fn on_manifest_load(&self, plugin_id: &str, manifest_json: &str) -> Result<(), String> {
         for hooks in &self.hooks {
-            if let Some(callback) = hooks.on_manifest_load {
-                callback(plugin_id, manifest_json)?;
+            let Some(callback) = hooks.on_manifest_load else {
+                continue;
+            };
+            match callback(plugin_id, manifest_json) {
+                Ok(()) => {}
+                Err(ManifestLoadFailure::Rejected(reason)) => {
+                    return Err(format!(
+                        "capability domain `{}` rejected manifest: {reason}",
+                        hooks.name
+                    ));
+                }
+                Err(ManifestLoadFailure::Unavailable(reason)) => {
+                    // 加载隔离：域不可用是宿主装配 / 后端问题，不是该插件的声明问题。
+                    // 只记录并继续，避免一个域把全部应用挡在门外；运行期调用该域原语
+                    // 时仍会拿到显性错误。
+                    tracing::error!(
+                        domain = hooks.name,
+                        plugin_id,
+                        reason = %reason,
+                        "capability domain unavailable while loading manifest; continuing without it"
+                    );
+                }
             }
         }
         Ok(())
@@ -179,7 +227,7 @@ mod tests {
     //! 注册表自身行为的单测（自报与收集需要 inventory 静态，故在本 crate 内起一个
     //! 探针钩子；`tests/` 目录受治理锁约束 ⇒ 一律写在 `src/` 并 `#[cfg(test)] mod` 引入）
 
-    use super::{DomainHooks, DomainHooksRegistry};
+    use super::{DomainHooks, DomainHooksRegistry, ManifestLoadFailure};
 
     static PROBE: DomainHooks = DomainHooks {
         name: "kit-lifecycle-probe",
@@ -198,10 +246,50 @@ mod tests {
 
     crate::submit_hooks!(REJECT_PROBE);
 
-    fn reject_manifest(plugin_id: &str, _manifest_json: &str) -> Result<(), String> {
-        Err(format!(
+    fn reject_manifest(plugin_id: &str, manifest_json: &str) -> Result<(), ManifestLoadFailure> {
+        if !manifest_json.contains(r#""reject":true"#) {
+            return Ok(());
+        }
+        Err(ManifestLoadFailure::Rejected(format!(
             "kit-lifecycle-reject-probe 拒绝 {plugin_id} 的 manifest 声明"
+        )))
+    }
+
+    /// 不可用探针：名字排序在观察探针之前，用来证明「Unavailable 不短路」
+    static UNAVAILABLE_PROBE: DomainHooks = DomainHooks {
+        name: "kit-lifecycle-a-unavailable-probe",
+        on_manifest_load: Some(unavailable_manifest),
+        on_plugin_purge: None,
+    };
+
+    crate::submit_hooks!(UNAVAILABLE_PROBE);
+
+    fn unavailable_manifest(
+        _plugin_id: &str,
+        _manifest_json: &str,
+    ) -> Result<(), ManifestLoadFailure> {
+        Err(ManifestLoadFailure::Unavailable(
+            "kit-lifecycle-a-unavailable-probe 暂不可用".to_string(),
         ))
+    }
+
+    /// 观察探针：名字排序在不可用探针之后，记录是否仍被遍历到
+    static OBSERVER_PROBE: DomainHooks = DomainHooks {
+        name: "kit-lifecycle-z-observer-probe",
+        on_manifest_load: Some(observe_manifest),
+        on_plugin_purge: None,
+    };
+
+    crate::submit_hooks!(OBSERVER_PROBE);
+
+    static OBSERVED_PLUGIN_IDS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    fn observe_manifest(plugin_id: &str, _manifest_json: &str) -> Result<(), ManifestLoadFailure> {
+        OBSERVED_PLUGIN_IDS
+            .lock()
+            .expect("observed plugin ids lock")
+            .push(plugin_id.to_string());
+        Ok(())
     }
 
     /// 自报的探针必须被收集到（强制引用在本文件内成立 ⇒ inventory 静态被执行）
@@ -220,7 +308,12 @@ mod tests {
     fn whitelist_matches_returns_ok() {
         let registry = DomainHooksRegistry::collected();
         registry
-            .verify_whitelist(&["kit-lifecycle-probe", "kit-lifecycle-reject-probe"])
+            .verify_whitelist(&[
+                "kit-lifecycle-probe",
+                "kit-lifecycle-reject-probe",
+                "kit-lifecycle-a-unavailable-probe",
+                "kit-lifecycle-z-observer-probe",
+            ])
             .expect("白名单与收集结果一致时应通过");
     }
 
@@ -232,6 +325,8 @@ mod tests {
             .verify_whitelist(&[
                 "kit-lifecycle-probe",
                 "kit-lifecycle-reject-probe",
+                "kit-lifecycle-a-unavailable-probe",
+                "kit-lifecycle-z-observer-probe",
                 "not-linked-domain",
             ])
             .expect_err("白名单多出未收集项应失败");
@@ -255,11 +350,32 @@ mod tests {
     fn manifest_load_rejection_is_propagated() {
         let registry = DomainHooksRegistry::collected();
         let err = registry
-            .on_manifest_load("plugin-a", "{}")
+            .on_manifest_load("plugin-a", r#"{"reject":true}"#)
             .expect_err("拒绝探针必须让装载期回调失败");
         assert!(
             err.contains("kit-lifecycle-reject-probe") && err.contains("plugin-a"),
             "错误须点名拒绝域与被拒插件：{err}"
+        );
+    }
+
+    /// 隔离语义：域返回 `Unavailable` 不得短路，后续域仍被遍历，整体返回 `Ok`
+    ///
+    /// 现场来源：音频引擎未装配时域钩子拒绝每一个 manifest，10 个随包应用全部
+    /// 装载失败。域不可用是宿主装配问题，与插件声明无关，必须只记录错误后放行。
+    #[test]
+    fn manifest_load_unavailable_neither_blocks_nor_short_circuits() {
+        let registry = DomainHooksRegistry::collected();
+        let plugin_id = "kit-lifecycle-isolation-probe";
+        registry
+            .on_manifest_load(plugin_id, "{}")
+            .expect("Unavailable 域不得阻断装载");
+
+        let observed = OBSERVED_PLUGIN_IDS
+            .lock()
+            .expect("observed plugin ids lock");
+        assert!(
+            observed.iter().any(|id| id == plugin_id),
+            "名字排在不可用域之后的钩子仍须被遍历到，实际：{observed:?}"
         );
     }
 }

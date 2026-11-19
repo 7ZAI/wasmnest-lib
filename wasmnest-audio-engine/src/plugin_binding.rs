@@ -24,8 +24,13 @@
 //!
 //! [`crate::AudioHub`] 需要一份后端实现（cpal / 宿主自带 / 无头测试），能力域无法替宿主
 //! 选择，故由宿主在开机期调用 [`crate::plugin_binding::install_hub`] 一次。未装配时所有原语返回显性错误
-//! （fail-visible，不静默给空数据），生命周期钩子也拒绝装载——这类缺口必须在接线期暴露，
-//! 而不是变成「插件能调但永远没有数据」。
+//! （fail-visible，不静默给空数据）。
+//!
+//! 装载期钩子只仲裁**声明了音频能力**的 manifest（`audioQuota` 或 `audio:capture` /
+//! `audio:io` 权限）：引擎未装配时这些 manifest 得到 `Unavailable` 分类，
+//! 内核记录错误后继续装载（原语调用仍显性失败），不会让一个域拖垮全部应用；未声明音频
+//! 能力的 manifest 完全不受本域影响。声明越界（`audioQuota` 为 0 / 超上界）则是插件
+//! 自己的问题，返回 `Rejected` 分类拒绝该插件。
 
 use std::sync::Arc;
 
@@ -75,7 +80,9 @@ pub fn install<P: ports::AudioPorts + 'static>(ports: P, hub: Arc<AudioHub>) {
 // ==================== 能力模块自报（WIT 绑定层，`common-host` feature） ====================
 
 #[cfg(feature = "common-host")]
-use wasmnest_host_kit::{DomainHooks, HostModule, HostModuleDesc, ModuleEntry, WasmPluginState};
+use wasmnest_host_kit::{
+    DomainHooks, HostModule, HostModuleDesc, ManifestLoadFailure, ModuleEntry, WasmPluginState,
+};
 #[cfg(feature = "common-host")]
 use wasmtime::component::{bindgen, Linker};
 
@@ -120,30 +127,73 @@ inventory::submit! {
     ModuleEntry { module: &MODULE }
 }
 
+/// manifest 是否声明了音频能力面
+///
+/// 判据取两处（任一声明即算）：`audioQuota` 字段，或 `permissions` 里的
+/// `audio:capture` / `audio:io`。**作用域收窄是加载隔离的前提**：未声明音频能力的
+/// 应用与音频域无关，本域是否装配不得影响它装载。
+#[cfg(feature = "common-host")]
+fn declares_audio_capability(manifest: &serde_json::Value) -> bool {
+    if manifest
+        .get("audioQuota")
+        .is_some_and(|quota| !quota.is_null())
+    {
+        return true;
+    }
+    manifest
+        .get("permissions")
+        .and_then(|permissions| permissions.as_array())
+        .is_some_and(|permissions| {
+            permissions
+                .iter()
+                .filter_map(|permission| permission.as_str())
+                .any(|permission| MODULE_PERMISSIONS.contains(&permission))
+        })
+}
+
 /// 装载期回调：从 manifest **原文**解析本域配额（`audioQuota`）并**仲裁区间**
 ///
 /// 与其它能力域同判据：manifest 字段的解释权属于能力域（内核不解释产品声明），
 /// 区间（`1..=max_sessions_ceiling_per_owner`）在装载期就判定，越界即拒绝装载，
 /// **不夹取**——静默降级会让插件按自己声明的并发数规划业务、实际却少得多。
 ///
-/// 引擎未装配时**拒绝装载**而不是跳过配额：那说明宿主开了本域却没装引擎，属于接线
-/// 错误，必须在装载期暴露（否则插件会拿到「能调但永远没数据」的假象）。
+/// **失败分类**（见 [`ManifestLoadFailure`]）：
+/// - 引擎未装配且 manifest 声明了音频能力 ⇒ `Unavailable`：宿主接线缺口，不能因此
+///   拒绝该插件或拖垮无关应用；原语调用仍逐次显性报错。
+/// - `audioQuota` 越界 ⇒ `Rejected`：插件自己的声明非法，不装载该插件。
 #[cfg(feature = "common-host")]
-fn on_manifest_load(plugin_id: &str, manifest_json: &str) -> Result<(), String> {
-    let declared: Option<usize> = serde_json::from_str::<serde_json::Value>(manifest_json)
-        .ok()
-        .and_then(|value| value.get("audioQuota").cloned())
-        .and_then(|value| {
-            serde_json::from_value::<Option<usize>>(value)
-                .ok()
-                .flatten()
-        });
-    let hub = registry::try_hub().ok_or_else(|| {
-        "audio engine is not installed: the host must call `plugin_binding::install_hub` before loading plugins"
-            .to_string()
-    })?;
-    hub.set_quota(plugin_id, declared)
-        .map_err(|err| format!("plugin.json audioQuota rejected: {err}"))
+fn on_manifest_load(plugin_id: &str, manifest_json: &str) -> Result<(), ManifestLoadFailure> {
+    manifest_load_with(registry::try_hub(), plugin_id, manifest_json)
+}
+
+/// [`on_manifest_load`] 的可测内核（引擎显式传入，避免用例依赖进程级单例顺序）
+#[cfg(feature = "common-host")]
+fn manifest_load_with(
+    hub: Option<Arc<AudioHub>>,
+    plugin_id: &str,
+    manifest_json: &str,
+) -> Result<(), ManifestLoadFailure> {
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(manifest_json) else {
+        // JSON 语法由内核校验面先拒；本域不替内核做通用 manifest 判决
+        return Ok(());
+    };
+    if !declares_audio_capability(&manifest) {
+        return Ok(());
+    }
+    let declared: Option<usize> = manifest
+        .get("audioQuota")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Option<usize>>(value).ok())
+        .flatten();
+    let Some(hub) = hub else {
+        return Err(ManifestLoadFailure::Unavailable(
+            "audio engine is not installed: the host must call `plugin_binding::install_hub` before loading plugins"
+                .to_string(),
+        ));
+    };
+    hub.set_quota(plugin_id, declared).map_err(|err| {
+        ManifestLoadFailure::Rejected(format!("plugin.json audioQuota rejected: {err}"))
+    })
 }
 
 /// 停用期回调：回收本插件的全部采集流（停流 + 摘句柄 + 清配额登记）

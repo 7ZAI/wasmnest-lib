@@ -63,7 +63,9 @@ pub use registry::{
 // WIT 绑定层依赖（host-kit / wasmtime）只随 `common-host` feature 编译：
 // 能力域默认形态 = 纯引擎机制（零 WIT 依赖），任何宿主可直接引用。
 #[cfg(feature = "common-host")]
-use wasmnest_host_kit::{DomainHooks, HostModule, HostModuleDesc, ModuleEntry, WasmPluginState};
+use wasmnest_host_kit::{
+    DomainHooks, HostModule, HostModuleDesc, ManifestLoadFailure, ModuleEntry, WasmPluginState,
+};
 #[cfg(feature = "common-host")]
 use wasmtime::component::{bindgen, Linker};
 
@@ -144,13 +146,16 @@ inventory::submit! {
 ///
 /// 解析失败（字段缺失 / 类型不符）落默认档（`register_quota` 的 `None` 分支），
 /// 与「未声明」同形——既有插件零迁移。
+///
+/// 越界属于插件自身声明非法 ⇒ [`ManifestLoadFailure::Rejected`]；本域不依赖宿主
+/// 装配的引擎（配额表是进程级静态登记），故不存在 `Unavailable` 分支。
 #[cfg(feature = "common-host")]
 use wasmnest_server_base::constants::{
     PLUGIN_PTY_MAX_SESSIONS_PER_PLUGIN, PLUGIN_PTY_SESSIONS_CEILING_PER_PLUGIN,
 };
 
 #[cfg(feature = "common-host")]
-fn on_manifest_load(plugin_id: &str, manifest_json: &str) -> Result<(), String> {
+fn on_manifest_load(plugin_id: &str, manifest_json: &str) -> Result<(), ManifestLoadFailure> {
     let declared: Option<usize> = serde_json::from_str::<serde_json::Value>(manifest_json)
         .ok()
         .and_then(|value| value.get("ptyQuota").cloned())
@@ -162,9 +167,9 @@ fn on_manifest_load(plugin_id: &str, manifest_json: &str) -> Result<(), String> 
     if let Some(quota) = declared {
         if quota == 0 || quota > PLUGIN_PTY_SESSIONS_CEILING_PER_PLUGIN {
             // 先判后动：拒绝时不登记（不让越界值残留在配额表）
-            return Err(format!(
+            return Err(ManifestLoadFailure::Rejected(format!(
                 "plugin.json ptyQuota out of range ({quota}); allowed 1..={PLUGIN_PTY_SESSIONS_CEILING_PER_PLUGIN}, omit the field for the default {PLUGIN_PTY_MAX_SESSIONS_PER_PLUGIN}"
-            ));
+            )));
         }
     }
     registry::register_quota(plugin_id, declared);
@@ -236,6 +241,11 @@ mod manifest_quota_tests {
             let err = on_manifest_load(owner, &manifest(&bad.to_string()))
                 .err()
                 .unwrap_or_else(|| panic!("ptyQuota={bad} 必须被拒绝"));
+            assert!(
+                matches!(err, ManifestLoadFailure::Rejected(_)),
+                "插件声明越界必须分类为 Rejected，got: {err:?}"
+            );
+            let err = err.to_string();
             assert!(
                 err.contains(&bad.to_string()) && err.contains("ptyQuota"),
                 "错误必须点名越界值与字段名，got: {err}"

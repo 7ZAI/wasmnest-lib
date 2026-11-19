@@ -60,7 +60,7 @@ pub use assembly::{
     expected_host_modules, install_domain_ports, DomainPortsInstaller, DomainPortsInstallerEntry,
     ExpectedModuleEntry,
 };
-pub use lifecycle::{DomainHooks, DomainHooksEntry, DomainHooksRegistry};
+pub use lifecycle::{DomainHooks, DomainHooksEntry, DomainHooksRegistry, ManifestLoadFailure};
 pub use limits::{defaults, StoreLimits};
 pub use metrics::{
     AuthzDecisionKind, CallTimer, LifecycleEvent, PluginMetrics, PluginMetricsSnapshot,
