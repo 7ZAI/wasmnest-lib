@@ -4533,6 +4533,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmnest-audio-engine"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "wasmnest-cli-engine"
 version = "0.0.1"
 dependencies = [
@@ -4581,6 +4592,7 @@ name = "wasmnest-headless-host-probe"
 version = "0.0.1"
 dependencies = [
  "serde_json",
+ "wasmnest-audio-engine",
  "wasmnest-cli-engine",
  "wasmnest-discovery-engine",
  "wasmnest-pty-engine",
@@ -4589,6 +4601,7 @@ dependencies = [
  "wasmnest-server-http",
  "wasmnest-server-peer-net",
  "wasmnest-server-websocket",
+ "wasmnest-stt-engine",
 ]
 
 [[package]]
@@ -4683,6 +4696,7 @@ dependencies = [
  "actix-service",
  "actix-web",
  "anyhow",
+ "base64 0.22.1",
  "futures-util",
  "reqwest",
  "serde",
@@ -4742,6 +4756,18 @@ dependencies = [
  "uuid",
  "wasmnest-server-base",
  "wasmnest-server-core",
+]
+
+[[package]]
+name = "wasmnest-stt-engine"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

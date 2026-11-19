@@ -4,12 +4,12 @@
 //!
 //! 能力域 crate 的默认形态 = 纯引擎机制 + 端口抽象（零 WIT 依赖），**任何宿主**
 //! 可直接引用。本 crate 就是那个「任何宿主」的最小实证：以非桌面宿主形态（永不
-//! 开 `common-host` feature）引用五个带桌面 WIT 绑定面的能力域 + CLI 机制 +
+//! 开 `common-host` feature）引用七个带桌面 WIT 绑定面的能力域 + CLI 机制 +
 //! server 地基/内核，编译通过 + 引擎面 smoke 断言即门禁。
 //!
 //! ## 钉住的三件事
 //!
-//! 1. **链接自足**：五行 `use … as _;` 强制引用让五个 rlib 进本 crate 的编译图
+//! 1. **链接自足**：九行 `use … as _;` 强制引用让九个 rlib 进本 crate 的编译图
 //!    ——`common-host` 未开 ⇒ `inventory::submit!` 静态不存在 ⇒ 无任何注册，
 //!    链接成功即证明纯引擎形态不需要插件宿主机制。
 //! 2. **零桌面依赖**：配套 `cargo tree -i wasmnest-plugin-api` 与
@@ -28,14 +28,16 @@
 
 // ==================== 强制引用（rlib 进编译图的最小面） ====================
 //
-//! 五行缺一不可：少一行 = 该 crate 未被链接 = 「可引用」断言静默缩水。
+//! 强制引用缺一不可：少一行 = 该 crate 未被链接 = 「可引用」断言静默缩水。
 //! `common-host` 未开 ⇒ 这些引用不触发任何 inventory 注册（非桌面宿主
 //! 不应注册——它没有插件宿主机制，语义见各能力域 plugin_binding 模块头）。
+use wasmnest_audio_engine as _;
 use wasmnest_discovery_engine as _;
 use wasmnest_pty_engine as _;
 use wasmnest_server_http as _;
 use wasmnest_server_peer_net as _;
 use wasmnest_server_websocket as _;
+use wasmnest_stt_engine as _;
 // CLI 机制与 server 内核也必须在**链接**面自证：只被编译未被引用时，
 // 「非桌面宿主可链接」对它们不成立（编译过 ≠ 链接得过）。
 use wasmnest_cli_engine as _;
@@ -86,5 +88,42 @@ mod smoke {
             Ok(HttpEndpointAuth::Jwt)
         );
         assert!(WsEndpointAuth::parse_with(Some("JWT"), WsEndpointAuth::None).is_err());
+    }
+
+    /// 音频采集能力域的默认形态可直接消费（纯引擎：缺省目标格式 + 权限词汇）
+    ///
+    /// 这里刻意只碰**无需硬件**的面：`PcmFormat` / `TargetFormat` / 权限常量。
+    /// 一旦有人把 cpal 或其它原生依赖塞回默认树，本探针的 `cargo tree` 门禁会先红。
+    #[test]
+    fn audio_engine_default_form_is_hardware_free() {
+        use wasmnest_audio_engine::format::{PcmFormat, SampleFormat, SPEECH_16K_MONO};
+        use wasmnest_audio_engine::wire::{PERMISSION_AUDIO_CAPTURE, PERMISSION_AUDIO_IO};
+
+        assert_eq!(SPEECH_16K_MONO.sample_rate, 16_000);
+        assert_eq!(SPEECH_16K_MONO.channels, 1);
+        assert_eq!(SPEECH_16K_MONO.bytes_per_frame(), 2);
+        assert_eq!(
+            PcmFormat::new(48_000, 2, SampleFormat::F32).bytes_per_frame(),
+            8
+        );
+        assert_eq!(PERMISSION_AUDIO_CAPTURE, "audio:capture");
+        assert_eq!(PERMISSION_AUDIO_IO, "audio:io");
+    }
+
+    /// 本地语音识别能力域的默认形态可直接消费（纯引擎：catalog 元数据 + PCM 换算 + 权限词汇）
+    ///
+    /// 只碰无需模型 / 硬件 / 网络的面；whisper 后端或 HTTP 下载若回流默认依赖树，
+    /// 本探针的 `cargo tree` 门禁会先红。
+    #[test]
+    fn stt_engine_default_form_is_hardware_free() {
+        use wasmnest_stt_engine::pcm;
+        use wasmnest_stt_engine::wire::{PERMISSION_STT_INFER, PERMISSION_STT_MODEL};
+
+        assert_eq!(wasmnest_stt_engine::CATALOG.len(), 3);
+        assert!(wasmnest_stt_engine::default_model().recommended);
+        assert_eq!(pcm::SAMPLE_RATE, 16_000);
+        assert_eq!(pcm::duration_ms(32_000), 1_000);
+        assert_eq!(PERMISSION_STT_INFER, "stt:infer");
+        assert_eq!(PERMISSION_STT_MODEL, "stt:model");
     }
 }

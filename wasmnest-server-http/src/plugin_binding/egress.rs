@@ -294,11 +294,34 @@ pub fn http_fetch(
 
 // ==================== Streaming Execution ====================
 
+/// 解析请求体：`body`（UTF-8 文本）或 `bodyBase64`（二进制），二者互斥
+///
+/// `bodyBase64` 让插件发送 multipart / 二进制请求；WIT 仍只有
+/// `fetch(request-json)`，不需要新增 ABI 面。错误只回显字段名与解码原因，
+/// 不回显请求内容（音频 / 密钥不进日志）。
+fn request_body_bytes(request: &serde_json::Value) -> anyhow::Result<Option<Vec<u8>>> {
+    use base64::Engine as _;
+    let text = request.get("body").and_then(|v| v.as_str());
+    let binary = request.get("bodyBase64").and_then(|v| v.as_str());
+    match (text, binary) {
+        (Some(_), Some(_)) => Err(anyhow::anyhow!(
+            "HTTP request must not set both 'body' and 'bodyBase64'"
+        )),
+        (Some(text), None) => Ok(Some(text.as_bytes().to_vec())),
+        (None, Some(encoded)) => base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map(Some)
+            .map_err(|err| anyhow::anyhow!("invalid 'bodyBase64': {err}")),
+        (None, None) => Ok(None),
+    }
+}
+
 /// 执行非流式 HTTP 请求
 ///
 /// 宿主代为执行 HTTP 请求，返回完整响应
-/// request 格式：{ "method", "url", "headers", "body", "jwtAuth"?: bool }
-/// response 格式：{ "status", "body", "headers" }
+/// request 格式：`{ "method", "url", "headers", "body" | "bodyBase64", "jwtAuth"?: bool }`
+/// ——`body` 是 UTF-8 文本；`bodyBase64` 是二进制请求体（二选一，同时出现即报错）
+/// response 格式：`{ "status", "body", "headers" }`
 ///
 /// `bearer` = 宿主代注的 Bearer token（由 [`http_fetch`] 经端口取来；`None` =
 /// 本宿主无全局 token 概念，也不替 guest 改写自带头）。
@@ -313,7 +336,7 @@ pub(crate) async fn execute_http_request(
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'url' in HTTP request"))?;
     let headers = request.get("headers").and_then(as_string_map);
-    let body = request.get("body").and_then(|v| v.as_str());
+    let body_bytes = request_body_bytes(request)?;
 
     // 链路信封：宿主裁决为「本次出站加密」时才 seal（改写头 + 加密 body）。
     // 密封失败即上抛，不把明文发给 required 端点。
@@ -324,7 +347,7 @@ pub(crate) async fn execute_http_request(
                 .map(|map| map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default();
             let sealed_body = envelope
-                .seal_request(&mut header_pairs, body.map(|b| b.as_bytes().to_vec()))
+                .seal_request(&mut header_pairs, body_bytes.clone())
                 .map_err(|e| anyhow::anyhow!("http error: link encryption seal failed: {e}"))?;
             Some((header_pairs, sealed_body))
         }
@@ -350,7 +373,7 @@ pub(crate) async fn execute_http_request(
 
     let request_body = match &sealed {
         Some((_, sealed_body)) => sealed_body.clone(),
-        None => body.map(|b| b.as_bytes().to_vec()),
+        None => body_bytes,
     };
     if let Some(b) = request_body {
         req_builder = req_builder.body(b);
@@ -429,7 +452,7 @@ async fn execute_streaming_http(
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'url' in streaming HTTP request"))?;
     let headers = request.get("headers").and_then(as_string_map);
-    let body = request.get("body").and_then(|v| v.as_str());
+    let body_bytes = request_body_bytes(request)?;
     let sse_format = request.get("sseFormat").and_then(|v| v.as_str()).unwrap_or("");
 
     let mut req_builder = stream_client_for(url).request(method.parse()?, url);
@@ -440,8 +463,8 @@ async fn execute_streaming_http(
         }
     }
 
-    if let Some(b) = body {
-        req_builder = req_builder.body(b.to_string());
+    if let Some(b) = body_bytes {
+        req_builder = req_builder.body(b);
     }
 
     let response = req_builder.send().await?;
@@ -586,4 +609,53 @@ fn as_string_map(value: &serde_json::Value) -> Option<std::collections::HashMap<
         }
     }
     Some(map)
+}
+
+#[cfg(test)]
+mod body_base64_tests {
+    use super::request_body_bytes;
+    use base64::Engine as _;
+    use serde_json::json;
+
+    #[test]
+    fn text_body_is_utf8_bytes() {
+        let bytes = request_body_bytes(&json!({ "body": "hello 世界" }))
+            .expect("text body")
+            .expect("present");
+        assert_eq!(bytes, "hello 世界".as_bytes());
+    }
+
+    #[test]
+    fn base64_body_is_decoded() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"\x00binary\xff");
+        let bytes = request_body_bytes(&json!({ "bodyBase64": encoded }))
+            .expect("base64 body")
+            .expect("present");
+        assert_eq!(bytes, b"\x00binary\xff");
+    }
+
+    #[test]
+    fn conflict_is_rejected() {
+        let err = request_body_bytes(&json!({
+            "body": "text",
+            "bodyBase64": "dGV4dA=="
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("must not set both"));
+    }
+
+    #[test]
+    fn invalid_base64_is_rejected_without_echoing_content() {
+        let err = request_body_bytes(&json!({ "bodyBase64": "not base64!!" })).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("invalid 'bodyBase64'"));
+        assert!(!message.contains("not base64!!"));
+    }
+
+    #[test]
+    fn absent_body_is_none() {
+        assert!(request_body_bytes(&json!({ "method": "GET" }))
+            .expect("no body")
+            .is_none());
+    }
 }

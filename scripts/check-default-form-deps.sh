@@ -32,6 +32,8 @@ wasmnest-server-base
 wasmnest-crypto-engine
 wasmnest-cli-engine
 wasmnest-pty-engine
+wasmnest-audio-engine
+wasmnest-stt-engine
 wasmnest-discovery-engine
 wasmnest-ws-client-engine
 wasmnest-p2p-engine
@@ -56,6 +58,8 @@ MDNS_FREE_CRATES="
 wasmnest-crypto-engine
 wasmnest-cli-engine
 wasmnest-pty-engine
+wasmnest-audio-engine
+wasmnest-stt-engine
 "
 
 fail=0

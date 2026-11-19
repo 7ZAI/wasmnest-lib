@@ -1,0 +1,52 @@
+[package]
+name = "wasmnest-stt-engine"
+version = "0.0.1"
+license = "MIT"
+description = "WasmNest 语音识别能力域（host-stt）：宿主侧本地 ASR 的模型目录 / 会话 / 异步任务 / 结果归一；默认形态 = 纯机制 + 端口 + SttBackend trait，`common-host` 装配 WIT 绑定层，`backend-whisper` 装配 whisper.cpp 后端，`model-download` 装配模型下载与校验"
+authors = ["binblink"]
+edition = "2021"
+
+# 内部 crate：只经 sibling path / git tag 被三仓消费，无 crates.io 发布计划
+publish = false
+
+[features]
+# 默认 = 纯引擎（任何宿主可引用：桌面 / 移动 / 无头测试宿主 / 第三方宿主）
+default = []
+# 桌面宿主 WIT 绑定层（bindgen!/HostModule/inventory::submit!/impl Host）
+common-host = ["dep:wasmnest-host-kit", "dep:wasmtime", "dep:wit-bindgen", "dep:inventory"]
+# whisper.cpp 后端（GGML 模型，CPU/GPU 由 whisper-rs 的编译期特性决定）
+# **默认关**：它是 native 依赖（C++ 工具链 + cmake），开在默认树上会让
+# 「默认形态任何宿主可直接引用」的承诺失真——由需要真实推理的宿主显式开启。
+backend-whisper = ["dep:whisper-rs"]
+# 模型下载 + SHA-256 校验（固定目录内的 catalog URL；不接受任意 URL）
+model-download = ["dep:ureq"]
+# 可编排后端（无模型 / 无硬件 CI 与单测）
+test-util = []
+
+[dependencies]
+# 会话参数 / 任务状态 / 模型目录的线协议形状
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 引擎错误类型（语义变体 + 结构化字段；与 audio-engine 同款 thiserror 形态）
+thiserror = "1"
+# 生命周期与下载路径的结构化日志（不落音频字节、不落模型内容）
+tracing = { version = "0.1", features = ["attributes"] }
+# 句柄铸造（`stt-<uuid>` / `stt-job-<uuid>`，与 host-audio 的 `audio-<uuid>` 同范式）
+uuid = { version = "1", features = ["v4"] }
+# ==================== 推理后端（feature 门控） ====================
+# whisper-rs：whisper.cpp 的 Rust 绑定，GGML 模型；CPU 默认，GPU 由宿主构建特性决定。
+# 16 kHz 单声道 f32 输入与 host-audio 的归一目标一致。
+whisper-rs = { version = "0.16", optional = true }
+# ==================== 模型下载（feature 门控） ====================
+# 阻塞式 HTTP 客户端（模型下载在独立线程，不需要异步运行时）。
+ureq = { version = "2", optional = true }
+sha2 = "0.10"
+# ==================== 能力域层（host-stt，随 common-host 装配） ====================
+# 全部 optional：只随 `common-host` feature 进编译图——
+# 无 feature 时 `cargo tree` 不出现以下 crate（纯引擎形态）。
+wasmnest-host-kit = { path = "../wasmnest-host-kit", optional = true, version = "0.0.1" }
+wit-bindgen = { version = "=0.60.0", features = ["macros"], optional = true }
+wasmtime = { version = "48", features = ["component-model"], optional = true }
+inventory = { version = "0.3", optional = true }
+
+# 零 dev-dependencies：单测全部住 `src/` 内（治理锁判据）
