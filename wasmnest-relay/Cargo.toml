@@ -53,11 +53,14 @@ tokio = { version = "1", features = [
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "io"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
 # 配置文件格式（TOML）：运维可手改、可注释；JSON 只用于对外机器可读输出
 toml = "0.8"
+
 # 身份指纹与 enrollment token 摘要（只落哈希，不落明文）
 sha2 = "0.10"
 hex = "0.4"
+
 # enrollment token 生成需要密码学随机源（Linux 上 getrandom）
 rand = "0.8"
 tracing = "0.1"

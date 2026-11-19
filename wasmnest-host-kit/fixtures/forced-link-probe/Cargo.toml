@@ -13,7 +13,9 @@ edition = "2021"
 # Cargo 明确允许（经典先例：serde --dev-dep--> serde_derive --> serde），
 # 因为 dev-dep 不进入发布图与依赖方构建路径。
 wasmnest-host-kit = { path = "../.." }
+
 # 能力 crate 自报用的宏（`submit_module!` 展开为 inventory 静态提交）
 inventory = "0.3"
+
 # `HostModule::register` 的签名面（`Linker` / `Result`）
 wasmtime = { version = "48", features = ["component-model"] }

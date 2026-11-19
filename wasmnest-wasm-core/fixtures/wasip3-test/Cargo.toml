@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 wit-bindgen = { version = "=0.60.0", features = ["macros"] }
 serde_json = "1"
 anyhow = "1"
+
 # getrandom 0.4 支持 target_env = "p3"（走 wasi:random/random 的 async
 # get-random-bytes）——`a03.get-random` 探针「async 随机字节返回熵」用
 getrandom = "0.4"
