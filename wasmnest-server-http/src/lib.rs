@@ -29,11 +29,12 @@
 //! 改这些形状 = 改跨端 wire 契约，必须两端同步评估。
 //!
 //! **插件绑定层**：[`plugin_binding`] 是本 crate 的
-//! `host-http` 能力域（3 条原语）——入站端点注册 / 注销两条与服务端域注册表同住，
-//! 出站 `fetch`（含 SSE 流式推流）在同 crate 的 [`plugin_binding::egress`] 模块。
-//! WIT 接线与能力模块自报都在该模块里，经 `wasmnest-host-kit` 的能力模块注册表
-//! 自动装配；宿主侧只剩一个端口 adapter（宿主 host_api 域的 http 适配器）与一次
-//! 开机装配调用，不再有该域的逐接口接线。
+//! `host-http` 能力域——入站端点注册 / 注销两条引擎 API 与服务端域注册表同住，
+//! 出站 `fetch`（含 SSE 流式推流）在 [`plugin_binding::egress`] 模块，批量授权
+//! 询问 [`plugin_binding::consent::request_egress_consent`] 在
+//! [`plugin_binding::consent`] 模块。WIT 接线与能力模块自报都在该域里，经
+//! `wasmnest-host-kit` 的能力模块注册表自动装配；宿主侧只剩一个端口 adapter
+//! （宿主 host_api 域的 http 适配器）与一次开机装配调用，不再有该域的逐接口接线。
 
 pub mod controllers;
 pub mod dtos;
@@ -56,7 +57,7 @@ pub use routes::configure_routes;
 /// 与 `wit/http.wit` 的 `package` 行逐字一致（下方锁测试断言），也是宿主
 /// `MODULE_INTERFACES` 各项的前缀。拆包后每个能力域独立版本：只在本包 WIT
 /// 变更时 bump，不再随 `wasmnest:plugin` 全局版本前进。
-pub const WIT_PACKAGE: &str = "wasmnest:http@0.0.1";
+pub const WIT_PACKAGE: &str = "wasmnest:http@0.0.2";
 
 #[cfg(test)]
 mod wit_package_lock {

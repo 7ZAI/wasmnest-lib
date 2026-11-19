@@ -8,6 +8,7 @@
 
 use super::*;
 
+mod egress_consent;
 mod egress_gates;
 mod inbound;
 mod scaffold;

@@ -82,7 +82,7 @@ wasmnest-wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter�
 
 默认形态 = **纯引擎机制 + 端口抽象**，零 WIT / 零 SDK / 零 wasmtime / 零宿主框架；`common-host` 才装配 `bindgen!` / `HostModule` 自报 / `inventory::submit!` / `impl Host`，开 feature 后 ABI / WIT / 权限位 / 事件形状 / 注册零变化。平台边经端口 trait 注入（权限门 / 事件投递 / 后台任务 / 路径 / 系统信息等），**端口缺席 fail-visible**。
 
-- **`wasmnest-server-http`**：HTTP 传输面 + `host-http` 能力域绑定层（入站 2 + 出站 1 原语）。
+- **`wasmnest-server-http`**：HTTP 传输面 + `host-http` 能力域绑定层（入站 2 + 出站 2 原语：`fetch` / `request-egress-consent`）。
 - **`wasmnest-server-browser`**：浏览器渲染能力域（`host-browser` 1 原语）。只做机制——协议白名单 / 私网裁决 / 选择器形状校验 / 提取脚本生成与输出解析 / 响应上限 / 稳定错误码；浏览器进程（sidecar / CDP）与移动 stub 由端后端经 `BrowserPorts` 注入，本 crate 不携带任何浏览器或 CDP 依赖。
 - **`wasmnest-server-websocket`**：WebSocket 传输面（连接骨架 / 插件端点通道 / 注册表 / 优雅停机）+ `host-websocket` 绑定层。
 - **`wasmnest-server-peer-net`**：对等网络**引擎域**，不是传输面——不过 actix 组合、不过过滤链、不用链路加密；mDNS 句柄以纯值经 `MdnsPort` 注入（单 listener 不变量）。产品业务（传输任务 / 策略 / 历史 / 共享根 / 浏览编排）在应用仓插件，本 crate 只留引擎原语与生命周期；底座机制（原 `wasmnest-peer-net` 拆分并入 `base/`：身份/信任/mDNS 注册/传输会话引擎原语）为 crate 自身内容，传输栈经 `wasmnest-p2p-engine`（noise/yamux 具名流）。

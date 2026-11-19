@@ -4,12 +4,13 @@
 //!
 //! 消费方（本 crate）声明端口，宿主实现。本 crate **不依赖 tauri、不依赖宿主
 //! bin crate**，故出站域的机制面（客户端池 / 跳转裁决 / 响应体上限 / SSE 切分 /
-//! 载荷校验）自持，只把「宿主才有的四件事」经端口要过来。
+//! 载荷校验）自持，只把「宿主才有的五件事」经端口要过来。
 //!
 //! | 方法 | 为什么需要它 |
 //! | --- | --- |
 //! | [`HttpPorts::check_permission`] | 权限门（`network:http`）是**宿主安全闸门**，不该可插拔 ⇒ 留宿主，本域只问结果（拒绝文案与 warn 落宿主侧） |
 //! | [`HttpPorts::authorize_outbound`] | 出站授权裁决（弹窗询问 / 网络授权记录 / 档位策略）**整条链留在宿主**（闸门不应可插拔），本域只消费三态结果 |
+//! | [`HttpPorts::authorize_outbound_batch`] | 批量授权裁决（归一化 / 去重 / 一次弹窗 / 按 origin 落账）整条链留在宿主；默认实现返回「本端不支持」，无批量能力的宿主无需改装配 |
 //! | [`HttpPorts::event_sink`] | 流式推送的前端事件通道（宿主才有前端事件面）。**必须能表达「缺席」**——无头上下文的流式请求要显性报错，不得静默丢弃 chunk |
 //! | [`HttpPorts::block_on_any`] | 同步↔异步桥：guest 侧的 host function 是同步的，而 HTTP 客户端是 async。**桥的实现在宿主**（含 wasmtime-wasi ambient runtime 与 actix `current_thread` 自锁规避），本域不复制第二份 |
 //!
@@ -91,6 +92,84 @@ pub enum OutboundAuth {
     CheckFailed(String),
 }
 
+/// 批量裁决的来源（决定应用展示与后续判定链的行为）
+///
+/// 词汇与单 origin 授权记录同口径：允许方向区分「已存记录 / 始终允许策略 /
+/// 本次用户允许」，拒绝方向区分「已存拒绝 / 本次拒绝 / 以后都拒绝」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchAuthSource {
+    /// 命中既有 allow 记录
+    Record,
+    /// 策略档位为「始终允许」，免询问放行并留痕
+    AlwaysAllow,
+    /// 本次用户允许（已按 origin 落账）
+    User,
+    /// 命中既有 deny 记录，未询问
+    DenyRecord,
+    /// 用户本次拒绝，不落账
+    UserDenied,
+    /// 用户选择「以后都拒绝」，已落 deny 记录
+    UserDeniedAlways,
+}
+
+impl BatchAuthSource {
+    /// 响应 JSON 里的稳定取值（蛇形转连字符）
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Record => "record",
+            Self::AlwaysAllow => "always-allow",
+            Self::User => "user",
+            Self::DenyRecord => "deny-record",
+            Self::UserDenied => "user-denied",
+            Self::UserDeniedAlways => "user-denied-always",
+        }
+    }
+}
+
+/// 单个 URL 的批量裁决（不携带原始 URL / query / userinfo）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchOutboundVerdict {
+    /// 放行（`origin` = 宿主归一化后的 origin）
+    Allowed {
+        /// 归一化 origin（不含 path / query / fragment / userinfo）
+        origin: String,
+        /// 裁决来源
+        source: BatchAuthSource,
+    },
+    /// 拒绝（`origin` = 宿主归一化后的 origin）
+    Denied {
+        /// 归一化 origin（不含 path / query / fragment / userinfo）
+        origin: String,
+        /// 裁决来源
+        source: BatchAuthSource,
+    },
+}
+
+/// 批量出站授权结果
+///
+/// 批量入口**只询问**、不发请求；本类型只表达询问与落账结果，不构成通行证——
+/// 实际出站仍由 `fetch` 的判定链逐次裁决。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchOutboundAuth {
+    /// 宿主完成批量裁决
+    Verdicts {
+        /// 与传入 URL 列表**等长且同序**（宿主可对同 origin 去重询问，但仍须逐项回填）
+        verdicts: Vec<BatchOutboundVerdict>,
+        /// 因授权记录容量上限未能落账的 allow 条数（放行方向不变）
+        dropped_records: usize,
+    },
+    /// 当前策略是「总是询问」，批量提前询问与该档语义冲突
+    AlwaysAsk,
+    /// 当前端不支持批量询问（应用应回退到逐个 `fetch`）
+    Unsupported,
+    /// 无弹窗通道（无头 / 测试 / 事件投递失败），不落账
+    Unavailable(String),
+    /// 授权记录读取失败，无法判定
+    StoreFailed(String),
+    /// 其他宿主内部错误
+    Internal(String),
+}
+
 /// 宿主能力端口
 ///
 /// 实现方是各端宿主的适配器（桌面端见宿主 adapter `src-tauri/src/plugin/http.rs`
@@ -109,6 +188,19 @@ pub trait HttpPorts: Send + Sync + 'static {
     /// `false` 是任务单元路径（池线程绝不弹窗——弹窗会占住池槽位最短 30s，
     /// 且用户在错误的时机看到问题，与 fs 任务单元同款约束）。
     fn authorize_outbound(&self, plugin_id: &str, url: &str, may_prompt: bool) -> OutboundAuth;
+
+    /// 批量出站授权提前询问（声明门之后、能力域完成 URL 可归一化校验之后）
+    ///
+    /// `urls` 均为可解析为 `http` / `https` 且带 host 的原始 URL；宿主负责归一化
+    /// 到 origin、去重、过滤既有 allow / deny 记录，并把未决 origin 放进**一次**
+    /// 询问。返回值须与 `urls` **等长且同序**，由能力域逐项回填入参索引。
+    ///
+    /// **默认实现返回 [`BatchOutboundAuth::Unsupported`]**：没有批量询问能力的
+    /// 宿主（例如当前移动端）无需实现该方法，批量入口会显性返回
+    /// `consent.unsupported`，应用据此回退到逐个 `fetch`；不得伪造批量成功。
+    fn authorize_outbound_batch(&self, _plugin_id: &str, _urls: &[String]) -> BatchOutboundAuth {
+        BatchOutboundAuth::Unsupported
+    }
 
     /// 流式推送所需的前端事件通道；`None` = 无头上下文（本域据此显性报错）
     fn event_sink(&self) -> Option<Arc<dyn HttpEventSink>>;

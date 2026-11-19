@@ -55,7 +55,7 @@ use crate::security::auth_policy::{
     AUTH_EFFECT_ALLOW, AUTH_EFFECT_DENY,
 };
 use crate::security::strategy::{self, StrategyStep, Tier};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
@@ -81,6 +81,12 @@ const PROMPT_MERGE_WINDOW: Duration = Duration::from_secs(2);
 /// 弹窗事件名（前端 `NetworkAuthDialog` 监听；与 fs 的 `plugin:fs-auth-request` 分开，
 /// 因为两者的应答决定形状不同——见文件头「为什么走新事件 + 新命令」）
 pub const NETWORK_AUTH_REQUEST_EVENT: &str = "plugin:network-auth-request";
+
+/// 批量授权弹窗事件名（前端 `NetworkAuthBatchDialog` 监听）
+///
+/// 与单 origin 事件分开：载荷是 origin 列表，应答是三态批量决定；改造单 origin
+/// 事件会让现有弹窗、测试与兼容字段同时承担两种形状。
+pub const NETWORK_AUTH_BATCH_REQUEST_EVENT: &str = "plugin:network-auth-batch-request";
 
 /// 弹窗事件投递口（生产 = `AppHandle.emit`；同模块测试 = 捕获闭包）
 ///
@@ -199,6 +205,60 @@ impl NetworkDecision {
     }
 }
 
+/// 批量授权的应答决定（wire 值即命令参数）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkBatchDecision {
+    /// 允许本次批量覆盖的全部未决 origin，并按 origin 落 allow 记录
+    Allow,
+    /// 拒绝本次，不落账（下次批量或单 origin 访问仍会询问）
+    Deny,
+    /// 拒绝本次并逐 origin 落 deny 记录（以后都拒绝）
+    DenyAlways,
+}
+
+impl NetworkBatchDecision {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+            Self::DenyAlways => "deny_always",
+        }
+    }
+
+    /// 解析 wire 值；未知值返回 `None`（调用方显性报错，不兜底放行）
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "allow" => Some(Self::Allow),
+            "deny" => Some(Self::Deny),
+            "deny_always" => Some(Self::DenyAlways),
+            _ => None,
+        }
+    }
+}
+
+/// 批量授权的整体结果
+///
+/// 逐项结果与入参 URL **等长且同序**；`AlwaysAsk` / `Unavailable` / `StoreFailed` /
+/// `Internal` 是整批失败，不伪造任何逐项成功。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchAuth {
+    /// 批量判定完成（全部或部分命中记录 / 一次询问落定）
+    Verdicts {
+        /// 与入参 URL 等长且同序
+        verdicts: Vec<OutboundVerdict>,
+        /// 因授权记录容量上限未能落账的 allow 条数（放行方向不变）
+        dropped_records: usize,
+    },
+    /// 当前策略为「总是询问」，批量提前询问与该档语义冲突
+    AlwaysAsk,
+    /// 无弹窗通道（无头 / 事件投递失败）
+    Unavailable(String),
+    /// 授权记录读取失败，无法判定
+    StoreFailed(String),
+    /// 其他宿主内部错误（含 URL 不可归一化）
+    Internal(String),
+}
+
 /// 出站判定结果（供调用方决定放行 / 报错，附带**命中的判据层**用于日志）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutboundVerdict {
@@ -246,6 +306,21 @@ struct PromptKey {
     origin: String,
 }
 
+/// 批量询问的应答内容（落账在应答通道完成后随决定一起回传）
+struct BatchReply {
+    decision: NetworkBatchDecision,
+    /// 批量允许时因容量上限未落账的条数
+    dropped_records: usize,
+}
+
+/// 在途批量询问（一个询问挂 N 个未决 origin，一次应答整批落定）
+struct BatchPrompt {
+    plugin_id: String,
+    /// 去重后的未决 origin（保持首次出现顺序，即弹窗展示顺序）
+    origins: Vec<String>,
+    waiters: Vec<oneshot::Sender<BatchReply>>,
+}
+
 /// 在途（或刚落定）的同 origin 询问
 struct OriginPrompt {
     request_id: String,
@@ -279,6 +354,8 @@ pub struct NetworkAuthChecker {
     emit: Option<PromptEmitter>,
     /// 在途 / 刚落定的询问（键 = 属主 + origin）
     prompts: Arc<Mutex<HashMap<PromptKey, OriginPrompt>>>,
+    /// 在途批量询问（键 = request_id；一次批量入口只发一次询问）
+    batch_prompts: Arc<Mutex<HashMap<String, BatchPrompt>>>,
     /// 询问等待上限（生产 30s；同模块测试调小，免用例挂 30 秒）
     prompt_timeout: Duration,
     /// 同 origin 合并窗口（生产 2s；同模块测试调小）
@@ -309,6 +386,7 @@ impl NetworkAuthChecker {
             store: AuthPolicyStore::new(db),
             emit,
             prompts: Arc::new(Mutex::new(HashMap::new())),
+            batch_prompts: Arc::new(Mutex::new(HashMap::new())),
             prompt_timeout: PROMPT_TIMEOUT,
             merge_window: PROMPT_MERGE_WINDOW,
         }
@@ -433,6 +511,351 @@ impl NetworkAuthChecker {
                 origin: target.origin,
                 reason: "user-denied-always",
             }),
+        }
+    }
+
+    /// 批量出站授权提前询问（只询问、不发请求）
+    ///
+    /// 与单 origin 判定链同源：硬拒绝记录优先，其次是策略档与 allow 记录；未决
+    /// origin 去重后进入一次询问，应答按 origin 逐条落账。与单 origin 的差异：
+    /// - 「总是询问」档整体返回 [`BatchAuth::AlwaysAsk`]（批量提前询问与该档的
+    ///   「每次都问」语义冲突）；
+    /// - 无弹窗通道返回 [`BatchAuth::Unavailable`]（不静默降级成逐项拒绝）；
+    /// - 同 origin 的多个 URL 只占一行询问，逐项结果仍按入参顺序回填。
+    ///
+    /// 返回的逐项裁决与 `urls` **等长且同序**；批量入口本身不发放越过 `fetch`
+    /// 判定链的通行证，实际出站仍逐次经过完整判定。
+    pub async fn authorize_batch(&self, plugin_id: &str, urls: &[String]) -> BatchAuth {
+        let started = Instant::now();
+        let mut targets = Vec::with_capacity(urls.len());
+        for url in urls {
+            let Some(target) = normalize_target(url) else {
+                return BatchAuth::Internal(
+                    "网络批量授权：URL 不可归一化（缺 scheme / host / 端口），已拒绝".to_string(),
+                );
+            };
+            targets.push(target);
+        }
+        if targets.is_empty() {
+            return BatchAuth::Verdicts {
+                verdicts: Vec::new(),
+                dropped_records: 0,
+            };
+        }
+
+        let records = match self
+            .store
+            .records_for_match(plugin_id, AuthResource::Network)
+            .await
+        {
+            Ok(records) => records,
+            Err(e) => {
+                tracing::error!(
+                    plugin_id = %plugin_id,
+                    error = %e,
+                    "network_auth: 批量授权读取授权记录失败"
+                );
+                return BatchAuth::StoreFailed(e.to_string());
+            }
+        };
+
+        let strategy = self.read_strategy(plugin_id).await;
+        let tier = strategy.step.tier();
+        if matches!(tier, Tier::Ask) {
+            tracing::info!(
+                plugin_id = %plugin_id,
+                count = targets.len(),
+                "network_auth: 总是询问档不支持批量提前询问"
+            );
+            return BatchAuth::AlwaysAsk;
+        }
+
+        let mut verdicts: Vec<Option<OutboundVerdict>> = vec![None; targets.len()];
+        let mut pending_origins: Vec<String> = Vec::new();
+        let mut pending_seen: HashSet<String> = HashSet::new();
+        let mut dropped_records = 0usize;
+
+        for (index, target) in targets.iter().enumerate() {
+            // 第 1 步：硬拒绝记录优先于一切放行路径（与单 origin 同判据）
+            if records
+                .iter()
+                .any(|row| row.effect == AUTH_EFFECT_DENY && record_covers(row, target))
+            {
+                verdicts[index] = Some(OutboundVerdict::Deny {
+                    origin: target.origin.clone(),
+                    reason: "deny-record",
+                });
+                continue;
+            }
+
+            match tier {
+                // 第 2 步：「始终允许」免询问放行 + 留痕（不询问）
+                Tier::AutoAllow => {
+                    match self
+                        .store
+                        .grant(
+                            plugin_id,
+                            AuthResource::Network,
+                            &target.origin,
+                            &[],
+                            AuthRecordSource::AlwaysAllow,
+                        )
+                        .await
+                    {
+                        Ok(GrantOutcome::Stored) => {}
+                        Ok(GrantOutcome::DroppedByCap) => dropped_records += 1,
+                        Err(e) => {
+                            tracing::warn!(
+                                plugin_id = %plugin_id,
+                                origin = %target.origin,
+                                error = %e,
+                                "network_auth: 始终允许档的批量落账失败（放行方向不变）"
+                            );
+                        }
+                    }
+                    verdicts[index] = Some(OutboundVerdict::Allow {
+                        origin: target.origin.clone(),
+                        layer: "always-allow",
+                    });
+                }
+                // 第 3 步：默认档读 allow 记录；未命中进入批量询问（同 origin 只占一行）
+                Tier::ConsultRecords => {
+                    if strategy.step.reads_allow_records()
+                        && records.iter().any(|row| {
+                            row.effect == AUTH_EFFECT_ALLOW && record_covers(row, target)
+                        })
+                    {
+                        verdicts[index] = Some(OutboundVerdict::Allow {
+                            origin: target.origin.clone(),
+                            layer: "record",
+                        });
+                    } else if pending_seen.insert(target.origin.clone()) {
+                        pending_origins.push(target.origin.clone());
+                    }
+                }
+                Tier::Ask => unreachable!("总是询问档已在批量询问前返回"),
+            }
+        }
+
+        if !pending_origins.is_empty() {
+            let reply = match self.batch_prompt(plugin_id, &pending_origins).await {
+                Ok(reply) => reply,
+                Err(reason) => return BatchAuth::Unavailable(reason),
+            };
+            for (index, target) in targets.iter().enumerate() {
+                if verdicts[index].is_some() {
+                    continue;
+                }
+                verdicts[index] = Some(match reply.decision {
+                    NetworkBatchDecision::Allow => OutboundVerdict::Allow {
+                        origin: target.origin.clone(),
+                        layer: "user",
+                    },
+                    NetworkBatchDecision::Deny => OutboundVerdict::Deny {
+                        origin: target.origin.clone(),
+                        reason: "user-denied",
+                    },
+                    NetworkBatchDecision::DenyAlways => OutboundVerdict::Deny {
+                        origin: target.origin.clone(),
+                        reason: "user-denied-always",
+                    },
+                });
+            }
+            if reply.decision == NetworkBatchDecision::Allow {
+                dropped_records = reply.dropped_records;
+            }
+        }
+
+        let verdicts: Vec<OutboundVerdict> = verdicts
+            .into_iter()
+            .map(|verdict| verdict.expect("批量目标在询问结束后必须有裁决"))
+            .collect();
+        let allowed = verdicts
+            .iter()
+            .filter(|verdict| verdict.is_allowed())
+            .count();
+        let denied = verdicts.len() - allowed;
+        tracing::info!(
+            plugin_id = %plugin_id,
+            requested = verdicts.len(),
+            pending = pending_origins.len(),
+            allowed,
+            denied,
+            dropped_records,
+            elapsed_micros = started.elapsed().as_micros() as u64,
+            "network_auth: 批量出站授权完成"
+        );
+        BatchAuth::Verdicts {
+            verdicts,
+            dropped_records,
+        }
+    }
+
+    /// 处理批量询问应答（由前端 Tauri 命令调用；仅宿主面凭证可代答）
+    ///
+    /// 落账只在这里发生一次：`allow` 逐 origin 落 `user` allow 记录，
+    /// `deny_always` 逐 origin 落 `user_deny` deny 记录，`deny` 不落账。
+    /// 落账的容量丢弃数随决定回传给等待中的批量入口。
+    /// 返回 `false` = 未知 / 已作答 / 已超时的 request_id，调用方显性报错。
+    pub async fn respond_batch(&self, request_id: &str, decision: NetworkBatchDecision) -> bool {
+        let prompt = {
+            let mut prompts = self.batch_prompts.lock().await;
+            prompts.remove(request_id)
+        };
+        let Some(prompt) = prompt else {
+            tracing::warn!(
+                request_id = %request_id,
+                "network_auth: 批量应答指向未知或已失效的询问（已忽略）"
+            );
+            return false;
+        };
+
+        let mut dropped_records = 0usize;
+        match decision {
+            NetworkBatchDecision::Allow => {
+                for origin in &prompt.origins {
+                    match self
+                        .store
+                        .grant(
+                            &prompt.plugin_id,
+                            AuthResource::Network,
+                            origin,
+                            &[],
+                            AuthRecordSource::User,
+                        )
+                        .await
+                    {
+                        Ok(GrantOutcome::Stored) => {}
+                        Ok(GrantOutcome::DroppedByCap) => dropped_records += 1,
+                        Err(e) => {
+                            tracing::warn!(
+                                plugin_id = %prompt.plugin_id,
+                                origin = %origin,
+                                error = %e,
+                                "network_auth: 批量允许记录落账失败（本次已放行）"
+                            );
+                        }
+                    }
+                }
+            }
+            NetworkBatchDecision::Deny => {}
+            NetworkBatchDecision::DenyAlways => {
+                for origin in &prompt.origins {
+                    if let Err(e) = self
+                        .store
+                        .deny(
+                            &prompt.plugin_id,
+                            AuthResource::Network,
+                            origin,
+                            AuthRecordSource::UserDeny,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            plugin_id = %prompt.plugin_id,
+                            origin = %origin,
+                            error = %e,
+                            "network_auth: 批量拒绝记录落账失败（本次已拒绝）"
+                        );
+                    }
+                }
+            }
+        }
+
+        for waiter in prompt.waiters {
+            let _ = waiter.send(BatchReply {
+                decision,
+                dropped_records,
+            });
+        }
+        tracing::info!(
+            plugin_id = %prompt.plugin_id,
+            request_id = %request_id,
+            decision = decision.as_str(),
+            origins = prompt.origins.len(),
+            dropped_records,
+            "network_auth: 批量出站授权应答已落定"
+        );
+        true
+    }
+
+    /// 发起一次批量询问并等待应答（超时 / 通道关闭按本次拒绝）
+    ///
+    /// 无事件通道（无头上下文）或事件投递失败返回 `Err`，由批量入口整体映射为
+    /// 「不可用」；不伪造逐项结果，也不落账。
+    async fn batch_prompt(
+        &self,
+        plugin_id: &str,
+        origins: &[String],
+    ) -> Result<BatchReply, String> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let batch_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut prompts = self.batch_prompts.lock().await;
+            prompts.insert(
+                request_id.clone(),
+                BatchPrompt {
+                    plugin_id: plugin_id.to_string(),
+                    origins: origins.to_vec(),
+                    waiters: vec![tx],
+                },
+            );
+        }
+
+        let Some(emit) = self.emit.as_ref() else {
+            self.batch_prompts.lock().await.remove(&request_id);
+            tracing::warn!(
+                plugin_id = %plugin_id,
+                origins = origins.len(),
+                "network_auth: 无事件通道（无头上下文），批量出站授权不可用"
+            );
+            return Err("no prompt channel (headless context)".to_string());
+        };
+
+        let payload = serde_json::json!({
+            "requestId": request_id,
+            "batchId": batch_id,
+            "pluginId": plugin_id,
+            "origins": origins,
+            "remembers": true,
+        });
+        if let Err(e) = emit(NETWORK_AUTH_BATCH_REQUEST_EVENT, payload) {
+            self.batch_prompts.lock().await.remove(&request_id);
+            tracing::error!(
+                plugin_id = %plugin_id,
+                error = %e,
+                "network_auth: 批量弹窗事件投递失败，批量授权不可用"
+            );
+            return Err(format!("batch prompt event delivery failed: {e}"));
+        }
+        tracing::info!(
+            plugin_id = %plugin_id,
+            batch_id = %batch_id,
+            request_id = %request_id,
+            origins = origins.len(),
+            "network_auth: 发起批量出站授权询问"
+        );
+
+        match tokio::time::timeout(self.prompt_timeout, rx).await {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(_)) => Ok(BatchReply {
+                decision: NetworkBatchDecision::Deny,
+                dropped_records: 0,
+            }),
+            Err(_) => {
+                self.batch_prompts.lock().await.remove(&request_id);
+                tracing::warn!(
+                    plugin_id = %plugin_id,
+                    request_id = %request_id,
+                    origins = origins.len(),
+                    "network_auth: 批量出站授权询问超时（按本次拒绝，不落账）"
+                );
+                Ok(BatchReply {
+                    decision: NetworkBatchDecision::Deny,
+                    dropped_records: 0,
+                })
+            }
         }
     }
 
@@ -860,6 +1283,7 @@ impl NetworkAuthChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod batch;
     mod decision_chain;
     mod general;
     mod no_prompt_task;

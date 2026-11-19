@@ -546,6 +546,50 @@ pub async fn plugin_network_auth_respond(
     Ok(())
 }
 
+/// 回复批量网络出站授权询问（由前端批量弹窗调用）
+///
+/// 批量决定只有三态：`allow` 逐 origin 落 allow 记录、`deny` 不落账、
+/// `deny_always` 逐 origin 落 deny 记录。未知决定值显性报错，不兜底放行。
+///
+/// **只接受宿主面凭证**（与单 origin 应答同一判据）：询问事件是广播的，
+/// 插件前端也能收到；不绑身份的话插件就能替用户批准自己的批量出站访问。
+///
+/// 未知 / 已作答 / 已超时的 `request_id` 返回失败并记 warn（调用方无需重试）。
+#[tauri::command]
+pub async fn plugin_network_auth_batch_respond(
+    webview: tauri::Webview,
+    request_id: String,
+    decision: String,
+    credential: String,
+    plugin_host: State<'_, Arc<PluginHost>>,
+    net_auth: State<'_, Arc<crate::security::network_auth::NetworkAuthChecker>>,
+) -> crate::Result<()> {
+    require_host_surface(
+        &plugin_host,
+        webview.label(),
+        "plugin_network_auth_batch_respond",
+        &credential,
+        "network authorization must be answered by the host frontend",
+    )?;
+    let decision = crate::security::network_auth::NetworkBatchDecision::parse(&decision)
+        .ok_or_else(|| {
+            crate::AppError::InvalidInput(format!(
+                "未知批量网络授权决定 '{decision}'（允许 allow / deny / deny_always）"
+            ))
+        })?;
+    tracing::info!(
+        "[API] plugin_network_auth_batch_respond: request_id={}, decision={}",
+        request_id,
+        decision.as_str()
+    );
+    if !net_auth.respond_batch(&request_id, decision).await {
+        return Err(crate::AppError::InvalidInput(format!(
+            "未知或已失效的批量网络授权请求 '{request_id}'"
+        )));
+    }
+    Ok(())
+}
+
 // ==================== 应用授权读模型（授权策略增强） ====================
 
 /// 应用授权读模型：策略 + 授权记录 + 第一方免询问项

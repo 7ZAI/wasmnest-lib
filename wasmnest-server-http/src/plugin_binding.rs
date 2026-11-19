@@ -1,4 +1,4 @@
-//! host-http 能力域 —— HTTP 协议能力（出站 fetch 1 条；服务端域端点注册引擎 API）
+//! host-http 能力域 —— HTTP 协议能力（出站 fetch / 批量授权询问 2 条；服务端域端点注册引擎 API）
 //!
 //! 入站与出站两个模块同住本 crate：原本住 wasm-core 的 host_api http 实现整体迁入。
 //!
@@ -17,8 +17,9 @@
 //! ## 分层
 //!
 //! ```text
-//!   本文件        入站机制 + WIT 接线（3 条原语的宿主实现 + 能力模块自报）
+//!   本文件        入站机制 + WIT 接线（各原语的宿主实现 + 能力模块自报）
 //!   egress.rs     出站机制（客户端池 / 跳转裁决 / 请求执行 / SSE 切分）
+//!   consent.rs    出站批量授权询问（JSON 形状 / 上限 / 归一化前置校验 / 逐项回填）
 //!   ports.rs      边界：权限门 / 出站授权裁决 / 前端事件通道 / 异步桥
 //! ```
 //!
@@ -55,6 +56,9 @@ pub mod ports;
 
 /// 出站段（客户端池 / 跳转裁决 / 请求执行 / SSE 切分）
 pub mod egress;
+
+/// 出站批量授权询问段（逐项 JSON 结果 / 稳定错误码）
+pub mod consent;
 
 // ==================== 服务端域（ABI v29：插件动态路由注册） ====================
 
@@ -148,7 +152,7 @@ pub const MODULE_NAME: &str = "http";
 /// `host-http`（出站交集）契约真源在本 crate `wit/http.wit`；
 /// 服务端域 `host-http-endpoint`（桌面扩展）的 WIT 声明与 `impl Host` 已归桌面
 /// 宿主（本模块不再注册/声明它）。
-pub const MODULE_INTERFACES: &[&str] = &["wasmnest:http@0.0.1/host-http"];
+pub const MODULE_INTERFACES: &[&str] = &["wasmnest:http@0.0.2/host-http"];
 
 /// 本域的权限位（必须与 `wasmnest.wit` / SDK 权限表逐字一致）
 pub const MODULE_PERMISSIONS: &[&str] = &["network:http"];
@@ -298,6 +302,10 @@ impl wasmnest::http::host_http::Host for WasmPluginState {
     fn fetch(&mut self, request_json: String) -> Result<Option<String>, String> {
         // may_prompt = true：插件主流程（guest 调用栈）可弹窗询问出站授权
         egress::http_fetch(&ports_for(self), &self.plugin_id, &request_json, true)
+    }
+
+    fn request_egress_consent(&mut self, request_json: String) -> Result<String, String> {
+        consent::request_egress_consent(&ports_for(self), &self.plugin_id, &request_json)
     }
 }
 
