@@ -37,7 +37,7 @@
 
 ## 1. 仓速览
 
-**无根 workspace**：21 个独立 crate（各自 `Cargo.toml` + 跟踪的 `Cargo.lock`）+ 4 个夹具。**命令在 crate 目录跑，一个 crate 一次 cargo；没有仓级 `cargo test`。**
+**无根 workspace**：22 个独立 crate（各自 `Cargo.toml` + 跟踪的 `Cargo.lock`）+ 4 个夹具。**命令在 crate 目录跑，一个 crate 一次 cargo；没有仓级 `cargo test`。**
 
 ```text
 插件（应用仓）
@@ -223,15 +223,20 @@ wasm-core（运行期：运行时壳 + core 绑定 + host_api adapter，消费 h
 
 ### 4.2 `wasm-core` 的独立克隆解析限制（重要）
 
-`desktop-assembly` 依赖未发布的 `wasmnest-plugin-api = "0.0.1"`，独立克隆直接 `cargo test` / `cargo metadata` 会报 `no matching package named wasmnest-plugin-api found`（`--no-default-features` 或删 lock 条目也一样）。**唯一本仓内测试路径 = 逃生阀**：
+`desktop-assembly` 依赖 `wasmnest-plugin-api = "0.0.1"`。crates.io 上那份 `0.0.1` 早于形态三档重定义（`pluginType` 仍是 `ts-only` / `rust` / `rust-ts`），而本仓中性 manifest 转换层对退役词汇 fail-closed：独立克隆不带逃生阀**能解析、能编译**，但 `cargo test --lib` 恒红 8 项（`manager::host::commands::tests` ×4、`manager::host::services::tests` ×2、`manager::host::tests::scan_dedup_test` ×1、`manifest::drift_lock` ×1，全部 panic 在 `src/manifest.rs` 的 SDK→中性转换）。这 8 项是解析向量产物而非代码回归——判据：`git stash` 后跑 HEAD 基线，失败集合逐条相同。把补丁直接指工作树 SDK 也会被 cargo 拒（工作树已升 `0.0.2`，补丁版本必须满足声明的 `"0.0.1"`，否则报 `patch ... was not used`）。**本仓内当前唯一可用测试路径 = 逃生阀 + 重标版本的工作树 SDK 副本**：
 
 ```bash
+# 1) 取工作树 SDK 源码副本（rust 与其同级 rust-macros），把三处 0.0.2 改标 0.0.1
+cp -r ../wasmnest/wasmnest-{desktop}/packages/plugin-sdk-desktop/{rust,rust-macros} /tmp/sdk001/
+sed -i 's/^version = "0.0.2"/version = "0.0.1"/; s/version = "0.0.2"/version = "0.0.1"/' \
+  /tmp/sdk001/rust/Cargo.toml /tmp/sdk001/rust-macros/Cargo.toml
+# 2) 逃生阀指向该副本（花括号先展开为端目录真名，§0）
 cd wasmnest-wasm-core
 cargo test --offline \
-  --config 'patch.crates-io.wasmnest-plugin-api.path="../../wasmnest/wasmnest-{desktop}/packages/plugin-sdk-desktop/rust"'
+  --config 'patch.crates-io.wasmnest-plugin-api.path="/tmp/sdk001/rust"'
 ```
 
-- 花括号先展开为端目录真名（§0）；补丁路径版本须与 SDK `Cargo.toml` 的 `version` 逐字一致。**不要把补丁写进任何 `Cargo.toml`**。
+- 副本只在 `/tmp`，**不改平台仓、不把补丁写进任何 `Cargo.toml`**；SDK 源码真源仍是平台仓工作树，改过 SDK 后需重新复制。
 - 报 `failed to download` 时先去掉 `--offline` 跑一次补齐索引。
 - **逃生阀会改写 `Cargo.lock`**：会把 `wasmnest-plugin-api` 的 `source` / `checksum` 两行删掉。提交前从 `HEAD` 还原；`git diff -- '*Cargo.lock' | grep -E '^[-+].*(source|checksum)'` 应只剩合法整包增删。
 - **平台装配不能跑 wasm-core 自身测试**：非 workspace 成员 + dev-deps 会被 cargo 拒绝（`requires dev-dependencies and is not a member of the workspace`）。宿主侧价值 = 编译同图 + 宿主集成测试 + 读本仓源码的结构锁（§2.4）；测试仓的 `[patch.crates-io]` 也只服务它自己的成员。
@@ -370,7 +375,7 @@ cargo tree --offline -e normal -i wasmnest-plugin-api                           
 
 ## 8. 已知债（动手前复核）
 
-1. **wasm-core 的 SDK 版本依赖**：`desktop-assembly` → 未发布 `wasmnest-plugin-api = "0.0.1"`，导致独立克隆无法解析（§4.2）。终态票据未做，**勿扩大**。
+1. **wasm-core 的 SDK 版本依赖**：`desktop-assembly` → `wasmnest-plugin-api = "0.0.1"`；crates.io 那份 `0.0.1` 已发布但词汇陈旧（形态三档重定义前的 `ts-only` 家族），独立克隆能解析却恒红 8 项，工作树 SDK 已升 `0.0.2` 不能直接作补丁目标——本仓测试只能走 §4.2 的重标版本副本。终态票据未做，**勿扩大**。
 2. **`Cargo.lock` 版本残留**：部分 crate 内部版本仍 `0.1.0`（应 `0.0.1`）；首次 cargo 运行自动刷新，刷前 `--locked` 失败（预期）；刷新单独提交（§4.4）。
 3. **wasm-core 两处产品 id 泄漏**：`security/fs_auth.rs` 的 `FIRST_PARTY_TRUSTED_DIRS`、`manager/host/activation.rs` 的 `LEGACY_API_PLUGIN_ALIASES`——独立票据处置；平台语义锁暂不扫 wasm-core。
 
